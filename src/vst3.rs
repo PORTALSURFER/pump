@@ -5,18 +5,18 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::cell::Cell;
 use std::ffi::{c_void, CStr};
 use std::ptr;
 use std::slice;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use toybox::clap::automation::AutomationQueue;
 use toybox::vst3::prelude::Steinberg::*;
 use toybox::vst3::prelude::*;
 
 use crate::dsp::{DspSettings, PumpEngine};
-use crate::gui::{WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::gui::{PumpGui, WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::params::{
     decode_state_payload, encode_state_payload, sync_division_index_from_text, sync_division_label,
     PumpParams, DEFAULT_DEPTH, DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET,
@@ -24,6 +24,7 @@ use crate::params::{
     MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET,
 };
 use crate::sync::TransportState;
+use crate::GuiStatus;
 
 const PLUGIN_NAME: &str = "pump";
 const PROCESSOR_CID: TUID = uid(0xE5A9A79F, 0xC4A94392, 0x97A8A8AA, 0xA9A90B3C);
@@ -658,104 +659,60 @@ impl IEditControllerTrait for PumpVst3Controller {
             return ptr::null_mut();
         }
 
-        let Some(view) = ComWrapper::new(PumpVst3View::new()).to_com_ptr::<IPlugView>() else {
+        let adapter = PumpVst3GuiAdapter::new(self.params.clone());
+        let Some(view) = ComWrapper::new(HostedVst3View::new(adapter, WINDOW_WIDTH, WINDOW_HEIGHT))
+            .to_com_ptr::<IPlugView>()
+        else {
             return ptr::null_mut();
         };
         ComPtr::into_raw(view)
     }
 }
 
-struct PumpVst3View {
-    rect: Cell<ViewRect>,
-    attached: Cell<bool>,
+struct PumpVst3GuiAdapter {
+    params: Arc<PumpParams>,
+    status: Arc<GuiStatus>,
+    automation_queue: Arc<AutomationQueue>,
+    gui: PumpGui,
 }
 
-impl PumpVst3View {
-    fn new() -> Self {
+impl PumpVst3GuiAdapter {
+    fn new(params: Arc<PumpParams>) -> Self {
         Self {
-            rect: Cell::new(view_rect(WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32)),
-            attached: Cell::new(false),
+            params,
+            status: Arc::new(GuiStatus::default()),
+            automation_queue: Arc::new(AutomationQueue::default()),
+            gui: PumpGui::default(),
         }
     }
 }
 
-impl Class for PumpVst3View {
-    type Interfaces = (IPlugView,);
-}
-
-impl IPlugViewTrait for PumpVst3View {
-    unsafe fn isPlatformTypeSupported(&self, r#type: FIDString) -> tresult {
-        bool_to_tresult(platform_type_matches(r#type, default_platform_type()))
+impl Vst3HostedGui for PumpVst3GuiAdapter {
+    fn set_parent_raw(&mut self, parent: toybox::raw_window_handle::RawWindowHandle) {
+        self.gui.set_parent_raw(parent);
     }
 
-    unsafe fn attached(&self, parent: *mut c_void, r#type: FIDString) -> tresult {
-        if parent.is_null() {
-            return kInvalidArgument;
-        }
-        if !platform_type_matches(r#type, default_platform_type()) {
-            return kResultFalse;
-        }
-        self.attached.set(true);
-        kResultOk
+    fn open(&mut self) -> bool {
+        self.gui
+            .open(
+                &self.params,
+                &self.status,
+                self.automation_queue.clone(),
+                None,
+            )
+            .is_ok()
     }
 
-    unsafe fn removed(&self) -> tresult {
-        self.attached.set(false);
-        kResultOk
+    fn close(&mut self) {
+        self.gui.close();
     }
 
-    unsafe fn onWheel(&self, _distance: f32) -> tresult {
-        kResultFalse
+    fn last_size(&self) -> Option<(u32, u32)> {
+        self.gui.last_size()
     }
 
-    unsafe fn onKeyDown(&self, _key: char16, _key_code: int16, _modifiers: int16) -> tresult {
-        kResultFalse
-    }
-
-    unsafe fn onKeyUp(&self, _key: char16, _key_code: int16, _modifiers: int16) -> tresult {
-        kResultFalse
-    }
-
-    unsafe fn getSize(&self, size: *mut ViewRect) -> tresult {
-        if size.is_null() {
-            return kInvalidArgument;
-        }
-        unsafe { *size = self.rect.get() };
-        kResultOk
-    }
-
-    unsafe fn onSize(&self, new_size: *mut ViewRect) -> tresult {
-        if new_size.is_null() {
-            return kInvalidArgument;
-        }
-        self.rect.set(unsafe { *new_size });
-        kResultOk
-    }
-
-    unsafe fn onFocus(&self, _state: TBool) -> tresult {
-        kResultOk
-    }
-
-    unsafe fn setFrame(&self, _frame: *mut IPlugFrame) -> tresult {
-        kResultOk
-    }
-
-    unsafe fn canResize(&self) -> tresult {
-        kResultTrue
-    }
-
-    unsafe fn checkSizeConstraint(&self, rect: *mut ViewRect) -> tresult {
-        if rect.is_null() {
-            return kInvalidArgument;
-        }
-        let rect = unsafe { &mut *rect };
-        if rect.right - rect.left < WINDOW_WIDTH as i32 {
-            rect.right = rect.left + WINDOW_WIDTH as i32;
-        }
-        if rect.bottom - rect.top < WINDOW_HEIGHT as i32 {
-            rect.bottom = rect.top + WINDOW_HEIGHT as i32;
-        }
-        kResultOk
+    fn request_resize(&self, width: u32, height: u32) {
+        self.gui.request_resize(width, height);
     }
 }
 
@@ -855,7 +812,11 @@ mod tests {
 
     #[test]
     fn view_enforces_minimum_size() {
-        let view = PumpVst3View::new();
+        let view = HostedVst3View::new(
+            PumpVst3GuiAdapter::new(Arc::new(PumpParams::new())),
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
         let mut rect = view_rect(10, 10);
         let result = unsafe { view.checkSizeConstraint(&mut rect) };
         assert_eq!(result, kResultOk);

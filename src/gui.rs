@@ -96,6 +96,11 @@ impl PumpGui {
         )
     }
 
+    /// Request a logical resize from the GUI thread.
+    pub fn request_resize(&self, width: u32, height: u32) {
+        self.window.request_resize(width, height);
+    }
+
     /// Close editor if it is open.
     pub fn close(&mut self) {
         self.window.hide();
