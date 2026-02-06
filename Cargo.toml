@@ -1,0 +1,16 @@
+[package]
+name = "pump"
+version = "0.1.0"
+edition = "2021"
+publish = false
+resolver = "2"
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "ff20edaa7a547c0b60037b7ccf1de7ea70931f41", features = ["gui", "vst3"] }
+
+[patch."https://github.com/PORTALSURFER/toybox.git"]
+toybox = { path = "../toybox" }
