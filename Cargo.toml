@@ -10,4 +10,4 @@ build = "build.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "ea71c3992b86ee11a8831560acf58e0f4af58c23", features = ["gui", "vst3"] }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "aebe8dda0e9b1b96caed34d5eb4fa2ea1f0f8250", features = ["gui", "vst3"] }
