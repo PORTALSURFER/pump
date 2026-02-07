@@ -193,7 +193,7 @@ impl GuiState {
         }
     }
 
-    fn build_ui(&self, _input: &InputState) -> UiSpec {
+    fn build_ui(&self, input: &InputState) -> UiSpec {
         let (selected_node, curve_hovered, curve_local_pointer) =
             if let Ok(runtime) = self.runtime.lock() {
                 (
@@ -224,9 +224,12 @@ impl GuiState {
                 )
             })
             .flatten();
-        let preview_node = (curve_hovered && hovered_node.is_none() && direct_segment.is_some())
-            .then(|| preview_node_on_curve(&editable_curve, curve_local_pointer))
-            .flatten();
+        let preview_node = (curve_hovered
+            && !input.alt_down
+            && hovered_node.is_none()
+            && direct_segment.is_some())
+        .then(|| preview_node_on_curve(&editable_curve, curve_local_pointer))
+        .flatten();
         let hovered_segment = (curve_hovered && preview_node.is_none())
             .then(|| {
                 find_segment_line_hit_within(
@@ -475,7 +478,12 @@ impl GuiState {
                     return;
                 }
 
-                if find_segment_line_hit_within(&editable, local_pointer, SEGMENT_DIRECT_HIT_RADIUS)
+                if !alt_down
+                    && find_segment_line_hit_within(
+                        &editable,
+                        local_pointer,
+                        SEGMENT_DIRECT_HIT_RADIUS,
+                    )
                     .is_some()
                 {
                     let preview_node = preview_node_on_curve(&editable, local_pointer)
