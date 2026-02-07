@@ -58,10 +58,10 @@ const DROPDOWN_X: i32 = PADDING_X + CONTROL_STEP * 4;
 const DROPDOWN_W: u32 = 132;
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
-const SEGMENT_HIT_RADIUS: i32 = 8;
+const SEGMENT_NEAR_HIT_RADIUS: i32 = 12;
+const SEGMENT_DIRECT_HIT_RADIUS: i32 = 4;
 const NODE_DELETE_HIT_RADIUS: i32 = 14;
 const NODE_INSERT_GUARD_RADIUS: i32 = 12;
-const SEGMENT_INSERT_GUARD_RADIUS: i32 = 11;
 const CURVE_DRAG_START_THRESHOLD_PX: i32 = 2;
 const CURVE_TENSION_PIXEL_SCALE: f32 = 120.0;
 const NODE_PUSH_THROUGH_PX: i32 = 10;
@@ -151,6 +151,8 @@ enum CurveDragMode {
     MoveSegment {
         index: usize,
         start_pointer: Point,
+        start_left_x: f32,
+        start_right_x: f32,
         start_left_y: f32,
         start_right_y: f32,
         dragging: bool,
@@ -213,14 +215,33 @@ impl GuiState {
         let hovered_node = curve_hovered
             .then(|| find_node_hit(&editable_curve, curve_local_pointer))
             .flatten();
-        let hovered_segment = curve_hovered
-            .then(|| find_segment_line_hit(&editable_curve, curve_local_pointer))
+        let direct_segment = curve_hovered
+            .then(|| {
+                find_segment_line_hit_within(
+                    &editable_curve,
+                    curve_local_pointer,
+                    SEGMENT_DIRECT_HIT_RADIUS,
+                )
+            })
+            .flatten();
+        let preview_node = (curve_hovered && hovered_node.is_none() && direct_segment.is_some())
+            .then(|| preview_node_on_curve(&editable_curve, curve_local_pointer))
+            .flatten();
+        let hovered_segment = (curve_hovered && preview_node.is_none())
+            .then(|| {
+                find_segment_line_hit_within(
+                    &editable_curve,
+                    curve_local_pointer,
+                    SEGMENT_NEAR_HIT_RADIUS,
+                )
+            })
             .flatten();
         let draw_commands = self.build_curve_draw_commands(
             &editable_curve,
             selected_node,
             hovered_node,
             hovered_segment,
+            preview_node,
         );
 
         let controls = vec![
@@ -335,7 +356,7 @@ impl GuiState {
                     x: CURVE_X,
                     y: CURVE_Y + CURVE_H as i32 + 6,
                 },
-                label("Tip: right-click deletes nodes; Alt+drag line adjusts curve.")
+                label("Tip: direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
                     .text_color(Color::rgb(132, 142, 160)),
             ),
         ];
@@ -449,7 +470,26 @@ impl GuiState {
                     return;
                 }
 
-                if let Some(index) = find_segment_line_hit(&editable, local_pointer) {
+                if find_segment_line_hit_within(&editable, local_pointer, SEGMENT_DIRECT_HIT_RADIUS)
+                    .is_some()
+                {
+                    let preview_node = preview_node_on_curve(&editable, local_pointer)
+                        .unwrap_or(normalized_pointer);
+                    let inserted_index = insert_node(&mut editable, preview_node);
+                    runtime.selected_node = Some(inserted_index);
+                    runtime.drag_mode = Some(CurveDragMode::MoveNode {
+                        index: inserted_index,
+                        start_pointer: local_pointer,
+                        dragging: false,
+                    });
+                    enforce_wrapped_endpoints(&mut editable);
+                    self.params.set_editable_curve(&editable);
+                    return;
+                }
+
+                if let Some(index) =
+                    find_segment_line_hit_within(&editable, local_pointer, SEGMENT_NEAR_HIT_RADIUS)
+                {
                     runtime.drag_mode = if alt_down {
                         let start_tension = editable
                             .segments
@@ -468,6 +508,8 @@ impl GuiState {
                         Some(CurveDragMode::MoveSegment {
                             index,
                             start_pointer: local_pointer,
+                            start_left_x: editable.nodes[index].x,
+                            start_right_x: editable.nodes[right_index].x,
                             start_left_y: editable.nodes[index].y,
                             start_right_y: editable.nodes[right_index].y,
                             dragging: false,
@@ -485,37 +527,6 @@ impl GuiState {
                         start_pointer: local_pointer,
                         dragging: false,
                     });
-                    return;
-                }
-
-                if let Some(index) = find_segment_line_hit_within(
-                    &editable,
-                    local_pointer,
-                    SEGMENT_INSERT_GUARD_RADIUS,
-                ) {
-                    runtime.drag_mode = if alt_down {
-                        let start_tension = editable
-                            .segments
-                            .get(index)
-                            .copied()
-                            .unwrap_or(CurveSegment { tension: 0.0 })
-                            .tension;
-                        Some(CurveDragMode::AdjustSegmentCurve {
-                            index,
-                            start_pointer: local_pointer,
-                            start_tension,
-                            dragging: false,
-                        })
-                    } else {
-                        let right_index = (index + 1).min(editable.nodes.len().saturating_sub(1));
-                        Some(CurveDragMode::MoveSegment {
-                            index,
-                            start_pointer: local_pointer,
-                            start_left_y: editable.nodes[index].y,
-                            start_right_y: editable.nodes[right_index].y,
-                            dragging: false,
-                        })
-                    };
                     return;
                 }
 
@@ -566,6 +577,8 @@ impl GuiState {
                         CurveDragMode::MoveSegment {
                             index,
                             start_pointer,
+                            start_left_x,
+                            start_right_x,
                             start_left_y,
                             start_right_y,
                             mut dragging,
@@ -580,18 +593,25 @@ impl GuiState {
                                 return;
                             }
                             dragging = true;
-                            let delta = (start_pointer.y - local_pointer.y) as f32
+                            let delta_x = (local_pointer.x - start_pointer.x) as f32
+                                / (CURVE_W.max(2) - 1) as f32;
+                            let delta_y = (start_pointer.y - local_pointer.y) as f32
                                 / (CURVE_H.max(2) - 1) as f32;
-                            move_segment_vertical(
+                            move_segment_translated(
                                 &mut editable,
                                 index,
+                                start_left_x,
+                                start_right_x,
                                 start_left_y,
                                 start_right_y,
-                                delta,
+                                delta_x,
+                                delta_y,
                             );
                             drag_mode = CurveDragMode::MoveSegment {
                                 index,
                                 start_pointer,
+                                start_left_x,
+                                start_right_x,
                                 start_left_y,
                                 start_right_y,
                                 dragging,
@@ -669,6 +689,7 @@ impl GuiState {
         selected_node: Option<usize>,
         hovered_node: Option<usize>,
         hovered_segment: Option<usize>,
+        preview_node: Option<CurveNode>,
     ) -> Vec<DrawCommand> {
         let rect = Rect {
             origin: Point { x: 0, y: 0 },
@@ -725,7 +746,7 @@ impl GuiState {
                 x: left.x,
                 y: sample_editable_curve(editable_curve, left.x),
             });
-            let highlight = hovered_segment == Some(segment_index);
+            let highlight = preview_node.is_none() && hovered_segment == Some(segment_index);
             let line_color = if highlight {
                 Color::rgb(190, 230, 255)
             } else {
@@ -758,6 +779,21 @@ impl GuiState {
                 }
                 prev = point;
             }
+        }
+
+        if let Some(preview) = preview_node {
+            let center = local_from_node(preview);
+            commands.push(DrawCommand::FillCircle {
+                center,
+                radius: NODE_DRAW_RADIUS + 1,
+                color: Color::rgb(170, 244, 193),
+            });
+            commands.push(DrawCommand::StrokeCircle {
+                center,
+                radius: NODE_DRAW_RADIUS + 2,
+                thickness: 1,
+                color: Color::rgb(224, 255, 236),
+            });
         }
 
         for (index, node) in editable_curve.nodes.iter().copied().enumerate() {
@@ -906,10 +942,6 @@ fn find_node_hit_within(curve: &EditableCurve, local_pointer: Point, radius: i32
     best.map(|(index, _)| index)
 }
 
-fn find_segment_line_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
-    find_segment_line_hit_within(curve, local_pointer, SEGMENT_HIT_RADIUS)
-}
-
 fn find_segment_line_hit_within(
     curve: &EditableCurve,
     local_pointer: Point,
@@ -999,20 +1031,33 @@ fn move_node_with_push_through(
     moved_index
 }
 
-fn move_segment_vertical(
+fn move_segment_translated(
     curve: &mut EditableCurve,
     segment_index: usize,
+    start_left_x: f32,
+    start_right_x: f32,
     start_left_y: f32,
     start_right_y: f32,
-    delta: f32,
+    delta_x: f32,
+    delta_y: f32,
 ) {
     if curve.nodes.len() < 2 || segment_index >= curve.nodes.len() - 1 {
         return;
     }
 
     let right_index = segment_index + 1;
-    curve.nodes[segment_index].y = (start_left_y + delta).clamp(0.0, 1.0);
-    curve.nodes[right_index].y = (start_right_y + delta).clamp(0.0, 1.0);
+    let mut applied_dx = delta_x;
+    if segment_index == 0 || right_index == curve.nodes.len() - 1 {
+        applied_dx = 0.0;
+    } else {
+        let min_dx = curve.nodes[segment_index - 1].x + NODE_X_MIN_SPACING - start_left_x;
+        let max_dx = curve.nodes[right_index + 1].x - NODE_X_MIN_SPACING - start_right_x;
+        applied_dx = applied_dx.clamp(min_dx, max_dx);
+    }
+    curve.nodes[segment_index].x = (start_left_x + applied_dx).clamp(0.0, 1.0);
+    curve.nodes[right_index].x = (start_right_x + applied_dx).clamp(0.0, 1.0);
+    curve.nodes[segment_index].y = (start_left_y + delta_y).clamp(0.0, 1.0);
+    curve.nodes[right_index].y = (start_right_y + delta_y).clamp(0.0, 1.0);
 
     if segment_index == 0 {
         set_wrapped_endpoint_y(curve, curve.nodes[0].y);
@@ -1156,6 +1201,17 @@ fn point_to_segment_distance_squared(point: Point, a: Point, b: Point) -> f32 {
     dx * dx + dy * dy
 }
 
+fn preview_node_on_curve(curve: &EditableCurve, local_pointer: Point) -> Option<CurveNode> {
+    if curve.nodes.len() < 2 {
+        return None;
+    }
+    let x = node_from_local(local_pointer).x;
+    Some(CurveNode {
+        x,
+        y: sample_editable_curve(curve, x).clamp(0.0, 1.0),
+    })
+}
+
 fn drag_threshold_crossed(start_pointer: Point, current_pointer: Point, threshold_px: i32) -> bool {
     let threshold = threshold_px.max(0) as i64;
     distance_squared(start_pointer, current_pointer) >= threshold * threshold
@@ -1194,9 +1250,9 @@ fn find_nearest_interior_node_within(
 mod tests {
     use super::{
         find_nearest_interior_node_within, find_segment_line_hit_within, local_from_node,
-        move_node_with_push_through,
+        move_node_with_push_through, move_segment_translated, preview_node_on_curve,
     };
-    use crate::curve::{CurveNode, CurveSegment, EditableCurve};
+    use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use toybox::gui::Point;
 
     #[test]
@@ -1302,5 +1358,43 @@ mod tests {
         move_node_with_push_through(&mut curve, 0, CurveNode { x: 0.0, y: 0.31 }, 10);
         let last_index = curve.nodes.len() - 1;
         assert!((curve.nodes[0].y - curve.nodes[last_index].y).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn preview_node_snaps_to_curve_value_at_pointer_x() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.5, y: 0.0 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
+        };
+        let pointer = local_from_node(CurveNode { x: 0.5, y: 0.9 });
+        let preview = preview_node_on_curve(&curve, pointer).expect("preview exists");
+        let expected = sample_editable_curve(&curve, preview.x);
+        assert!((preview.y - expected).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn segment_translation_moves_interior_segment_horizontally() {
+        let mut curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.3, y: 0.5 },
+                CurveNode { x: 0.6, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        };
+        move_segment_translated(&mut curve, 1, 0.3, 0.6, 0.5, 0.5, 0.1, 0.1);
+        assert!((curve.nodes[1].x - 0.4).abs() < 1.0e-6);
+        assert!((curve.nodes[2].x - 0.7).abs() < 1.0e-6);
+        assert!((curve.nodes[1].y - 0.6).abs() < 1.0e-6);
+        assert!((curve.nodes[2].y - 0.6).abs() < 1.0e-6);
     }
 }
