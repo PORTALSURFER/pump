@@ -357,9 +357,12 @@ impl GuiState {
                     runtime.drag_mode = None;
                 }
             }
-            UiAction::RegionInteracted { key, kind } if key == CURVE_KEY => {
-                self.reduce_curve_interaction(kind)
-            }
+            UiAction::RegionInteracted {
+                key,
+                kind,
+                local_pointer,
+            } if key == CURVE_KEY => self.reduce_curve_interaction(kind, local_pointer),
+            UiAction::RegionInteracted { .. } => {}
             _ => {}
         }
     }
@@ -396,12 +399,11 @@ impl GuiState {
         self.push_single_value_update(PARAM_SYNC_DIVISION_ID, clamped as f64);
     }
 
-    fn reduce_curve_interaction(&mut self, kind: RegionInteractionKind) {
+    fn reduce_curve_interaction(&mut self, kind: RegionInteractionKind, local_pointer: Point) {
         let Ok(mut runtime) = self.runtime.lock() else {
             return;
         };
 
-        let local_pointer = local_from_pointer(runtime.last_pointer);
         let normalized_pointer = node_from_local(local_pointer);
 
         match kind {
