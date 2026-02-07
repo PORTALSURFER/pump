@@ -135,9 +135,10 @@ struct GuiState {
 }
 
 struct GuiRuntime {
-    last_pointer: Point,
     selected_node: Option<usize>,
     drag_mode: Option<CurveDragMode>,
+    curve_hovered: bool,
+    curve_local_pointer: Point,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -159,9 +160,10 @@ enum CurveDragMode {
 impl GuiRuntime {
     fn new() -> Self {
         Self {
-            last_pointer: Point { x: 0, y: 0 },
             selected_node: None,
             drag_mode: None,
+            curve_hovered: false,
+            curve_local_pointer: Point { x: 0, y: 0 },
         }
     }
 }
@@ -183,13 +185,17 @@ impl GuiState {
         }
     }
 
-    fn build_ui(&self, input: &InputState) -> UiSpec {
-        let selected_node = if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.last_pointer = input.pointer_pos;
-            runtime.selected_node
-        } else {
-            None
-        };
+    fn build_ui(&self, _input: &InputState) -> UiSpec {
+        let (selected_node, curve_hovered, curve_local_pointer) =
+            if let Ok(runtime) = self.runtime.lock() {
+                (
+                    runtime.selected_node,
+                    runtime.curve_hovered,
+                    runtime.curve_local_pointer,
+                )
+            } else {
+                (None, false, Point { x: 0, y: 0 })
+            };
 
         let mix = self.params.mix();
         let depth = self.params.depth();
@@ -199,9 +205,12 @@ impl GuiState {
 
         let curve = self.params.curve_snapshot();
         let editable_curve = self.params.editable_curve_snapshot();
-        let local_pointer = local_from_pointer(input.pointer_pos);
-        let hovered_node = find_node_hit(&editable_curve, local_pointer);
-        let hovered_segment = find_segment_handle_hit(&editable_curve, local_pointer);
+        let hovered_node = curve_hovered
+            .then(|| find_node_hit(&editable_curve, curve_local_pointer))
+            .flatten();
+        let hovered_segment = curve_hovered
+            .then(|| find_segment_handle_hit(&editable_curve, curve_local_pointer))
+            .flatten();
         let draw_commands = self.build_curve_draw_commands(
             &curve,
             &editable_curve,
@@ -357,6 +366,17 @@ impl GuiState {
                     runtime.drag_mode = None;
                 }
             }
+            UiAction::RegionHover {
+                key,
+                hovered,
+                local_pointer,
+            } if key == CURVE_KEY => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.curve_hovered = hovered;
+                    runtime.curve_local_pointer = local_pointer;
+                }
+            }
+            UiAction::RegionHover { .. } => {}
             UiAction::RegionInteracted {
                 key,
                 kind,
@@ -797,12 +817,6 @@ impl GuiState {
             .push_gesture_end(&self.automation_config, param_id);
         self.request_flush();
     }
-}
-
-fn local_from_pointer(pointer: Point) -> Point {
-    let x = (pointer.x - CURVE_X).clamp(0, CURVE_W.saturating_sub(1) as i32);
-    let y = (pointer.y - CURVE_Y).clamp(0, CURVE_H.saturating_sub(1) as i32);
-    Point { x, y }
 }
 
 fn local_from_node(node: CurveNode) -> Point {
