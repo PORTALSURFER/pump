@@ -31,12 +31,20 @@ use crate::{GuiStatus, HostParamRequester};
 ///
 /// Patchbay owns runtime scaling and resize policy; Pump only publishes this
 /// baseline logical size.
-pub const WINDOW_WIDTH: u32 = 420;
+pub const WINDOW_WIDTH: u32 = 700;
 /// Default logical height for the Pump design canvas.
 ///
 /// Patchbay owns runtime scaling and resize policy; Pump only publishes this
 /// baseline logical size.
-pub const WINDOW_HEIGHT: u32 = 258;
+pub const WINDOW_HEIGHT: u32 = 430;
+
+/// Default host-open width for the Pump window.
+///
+/// Pump keeps its design canvas at `WINDOW_WIDTH x WINDOW_HEIGHT`, but opens
+/// at a smaller baseline host size so Patchbay scales the full design uniformly.
+const DEFAULT_OPEN_WIDTH: u32 = WINDOW_WIDTH * 3 / 5;
+/// Default host-open height for the Pump window.
+const DEFAULT_OPEN_HEIGHT: u32 = WINDOW_HEIGHT * 3 / 5;
 
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
@@ -523,8 +531,11 @@ impl GuiState {
         };
         let spec = self.build_ui(&baseline_input);
         match measure_checked(&spec) {
-            Ok(size) => (size.width.max(1), size.height.max(1)),
-            Err(_) => (WINDOW_WIDTH, WINDOW_HEIGHT),
+            Ok(size) => (
+                (size.width.saturating_mul(3) / 5).max(1),
+                (size.height.saturating_mul(3) / 5).max(1),
+            ),
+            Err(_) => (DEFAULT_OPEN_WIDTH, DEFAULT_OPEN_HEIGHT),
         }
     }
 
@@ -1395,7 +1406,8 @@ mod tests {
     use super::{
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
-        preview_node_on_curve, GuiState, CURVE_KEY, SPLINE_SECTION_H, WINDOW_HEIGHT, WINDOW_WIDTH,
+        preview_node_on_curve, GuiState, CURVE_KEY, DEFAULT_OPEN_HEIGHT, DEFAULT_OPEN_WIDTH,
+        SPLINE_SECTION_H, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -1552,8 +1564,8 @@ mod tests {
             None,
         );
         let (width, height) = state.measured_open_size();
-        assert!(width >= WINDOW_WIDTH);
-        assert!(height >= WINDOW_HEIGHT);
+        assert_eq!(width, DEFAULT_OPEN_WIDTH);
+        assert_eq!(height, DEFAULT_OPEN_HEIGHT);
     }
 
     #[test]
@@ -1568,8 +1580,8 @@ mod tests {
         let (measured_width, measured_height) = state.measured_open_size();
         assert_eq!(preferred_width, measured_width);
         assert_eq!(preferred_height, measured_height);
-        assert!(preferred_width >= WINDOW_WIDTH);
-        assert!(preferred_height >= WINDOW_HEIGHT);
+        assert_eq!(preferred_width, DEFAULT_OPEN_WIDTH);
+        assert_eq!(preferred_height, DEFAULT_OPEN_HEIGHT);
     }
 
     #[test]
