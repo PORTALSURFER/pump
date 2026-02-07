@@ -517,7 +517,8 @@ impl<'a> PluginGuiImpl for PumpMainThread<'a> {
     }
 
     fn set_size(&mut self, size: clack_extensions::gui::GuiSize) -> Result<(), PluginError> {
-        let _ = size;
+        self.gui
+            .request_resize(size.width.max(1), size.height.max(1));
         Ok(())
     }
 
