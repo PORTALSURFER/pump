@@ -317,6 +317,68 @@ enum CurveDragMode {
     },
 }
 
+/// Runtime-dependent layout dimensions for one UI frame.
+#[derive(Clone, Copy, Debug)]
+struct UiLayoutMetrics {
+    content_w: u32,
+    content_h: u32,
+    curve_h: u32,
+    dropdown_control_w: u32,
+    subtitle_label_w: u32,
+    tip_label_w: u32,
+    curve_size: Size,
+}
+
+impl UiLayoutMetrics {
+    /// Resolve all frame-dependent layout dimensions from host window size.
+    fn from_input(input: &InputState) -> Self {
+        let content_w = input.window_size.width.max(WINDOW_WIDTH);
+        let content_h = input.window_size.height.max(WINDOW_HEIGHT);
+        let (_header_h, curve_h, _controls_h) = resolve_runtime_vertical_section_heights(content_h);
+        let (_knobs_section_w, dropdown_section_w) =
+            resolve_runtime_controls_section_widths(content_w);
+        let dropdown_control_w = dropdown_section_w.saturating_sub(8).max(64);
+        let subtitle_label_w = content_w
+            .saturating_sub((PADDING_X.max(0) as u32).saturating_add(72))
+            .max(1);
+        let tip_label_w = content_w
+            .saturating_sub((PADDING_X.max(0) as u32).saturating_add(8))
+            .max(1);
+        let curve_size = Size {
+            width: content_w,
+            height: curve_h,
+        };
+        Self {
+            content_w,
+            content_h,
+            curve_h,
+            dropdown_control_w,
+            subtitle_label_w,
+            tip_label_w,
+            curve_size,
+        }
+    }
+}
+
+/// Snapshot of host-automation control values used to build one UI frame.
+#[derive(Clone, Copy, Debug)]
+struct ControlSnapshot {
+    mix: f32,
+    depth: f32,
+    phase_offset: f32,
+    output_gain_db: f32,
+    division: usize,
+}
+
+/// Snapshot of curve-editor hover/selection state used for drawing.
+#[derive(Clone, Copy, Debug)]
+struct CurveRenderState {
+    selected_node: Option<usize>,
+    hovered_node: Option<usize>,
+    hovered_segment: Option<usize>,
+    preview_node: Option<CurveNode>,
+}
+
 impl GuiRuntime {
     fn new() -> Self {
         Self {
@@ -349,83 +411,67 @@ impl GuiState {
         }
     }
 
-    fn build_ui(&self, input: &InputState) -> UiSpec {
-        let content_w = input.window_size.width.max(WINDOW_WIDTH);
-        let content_h = input.window_size.height.max(WINDOW_HEIGHT);
-        let theme = PumpTheme::main();
-        let (_header_h, curve_h, _controls_h) = resolve_runtime_vertical_section_heights(content_h);
-        let (_knobs_section_w, dropdown_section_w) =
-            resolve_runtime_controls_section_widths(content_w);
-        let dropdown_control_w = dropdown_section_w.saturating_sub(8).max(64);
-        let label_line_h = LABEL_LINE_H;
-        let padding_x = PADDING_X;
-        let spline_title_y = SPLINE_TITLE_Y;
-        let spline_tip_y = curve_h as i32 - label_line_h as i32 - 4;
-        let subtitle_label_w =
-            content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(72));
-        let subtitle_label_w = subtitle_label_w.max(1);
-        let tip_label_w = content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(8));
-        let tip_label_w = tip_label_w.max(1);
+    /// Snapshot runtime pointer/selection state and update curve dimensions.
+    fn snapshot_curve_runtime(&self, curve_size: Size) -> (Option<usize>, bool, Point) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.curve_size = curve_size;
+            (
+                runtime.selected_node,
+                runtime.curve_hovered,
+                runtime.curve_local_pointer,
+            )
+        } else {
+            (None, false, Point { x: 0, y: 0 })
+        }
+    }
 
-        let curve_size = Size {
-            width: content_w,
-            height: curve_h,
-        };
-        let (selected_node, curve_hovered, curve_local_pointer) =
-            if let Ok(mut runtime) = self.runtime.lock() {
-                runtime.curve_size = curve_size;
-                (
-                    runtime.selected_node,
-                    runtime.curve_hovered,
-                    runtime.curve_local_pointer,
-                )
-            } else {
-                (None, false, Point { x: 0, y: 0 })
-            };
+    /// Snapshot current plugin control values for UI rendering.
+    fn snapshot_controls(&self) -> ControlSnapshot {
+        ControlSnapshot {
+            mix: self.params.mix(),
+            depth: self.params.depth(),
+            phase_offset: self.params.phase_offset(),
+            output_gain_db: self.params.output_gain_db(),
+            division: self.params.sync_division(),
+        }
+    }
 
-        let mix = self.params.mix();
-        let depth = self.params.depth();
-        let phase_offset = self.params.phase_offset();
-        let output_gain_db = self.params.output_gain_db();
-        let division = self.params.sync_division();
+    /// Build the top header section node.
+    fn build_header_section(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
+        let header_controls = vec![
+            AbsoluteChild::new(
+                Point {
+                    x: PADDING_X,
+                    y: SPLINE_TITLE_Y,
+                },
+                label("PUMP")
+                    .text_color(theme.title_text)
+                    .layout(fixed_box(TITLE_LABEL_W, LABEL_LINE_H)),
+            ),
+            AbsoluteChild::new(
+                Point {
+                    x: PADDING_X + 72,
+                    y: SPLINE_TITLE_Y,
+                },
+                label("Spline Beat-Synced Ducking")
+                    .text_color(theme.subtitle_text)
+                    .layout(fixed_box(metrics.subtitle_label_w, LABEL_LINE_H)),
+            ),
+        ];
+        let header_content =
+            Node::Absolute(AbsoluteSpec::new(header_controls).layout(LayoutBox::fill()))
+                .layout(LayoutBox::fill());
+        panel("header", header_content).pad_all(0)
+    }
 
-        let editable_curve = self.params.editable_curve_snapshot();
-        let hovered_node = curve_hovered
-            .then(|| find_node_hit(&editable_curve, curve_local_pointer))
-            .flatten();
-        let direct_segment = curve_hovered
-            .then(|| {
-                find_segment_line_hit_within(
-                    &editable_curve,
-                    curve_local_pointer,
-                    SEGMENT_DIRECT_HIT_RADIUS,
-                )
-            })
-            .flatten();
-        let preview_node = (curve_hovered
-            && !input.alt_down
-            && hovered_node.is_none()
-            && direct_segment.is_some())
-        .then(|| preview_node_on_curve(&editable_curve, curve_local_pointer))
-        .flatten();
-        let hovered_segment = (curve_hovered && preview_node.is_none())
-            .then(|| {
-                find_segment_line_hit_within(
-                    &editable_curve,
-                    curve_local_pointer,
-                    SEGMENT_NEAR_HIT_RADIUS,
-                )
-            })
-            .flatten();
-        let draw_commands = self.build_curve_draw_commands(
-            &editable_curve,
-            curve_size,
-            selected_node,
-            hovered_node,
-            hovered_segment,
-            preview_node,
-            &theme,
-        );
+    /// Build the spline/curve section node.
+    fn build_spline_section(
+        &self,
+        metrics: UiLayoutMetrics,
+        theme: PumpTheme,
+        draw_commands: Vec<DrawCommand>,
+    ) -> Node {
+        let spline_tip_y = metrics.curve_h as i32 - LABEL_LINE_H as i32 - 4;
         let spline_controls = vec![
             AbsoluteChild::new(
                 Point { x: 0, y: 0 },
@@ -433,8 +479,8 @@ impl GuiState {
                     RegionSpec::new(
                         CURVE_KEY,
                         Size {
-                            width: content_w,
-                            height: curve_h,
+                            width: metrics.content_w,
+                            height: metrics.curve_h,
                         },
                     )
                     .draw_commands(draw_commands),
@@ -442,104 +488,81 @@ impl GuiState {
             ),
             AbsoluteChild::new(
                 Point {
-                    x: padding_x,
+                    x: PADDING_X,
                     y: spline_tip_y,
                 },
                 label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
                     .text_color(theme.hint_text)
-                    .layout(fixed_box(tip_label_w, label_line_h)),
+                    .layout(fixed_box(metrics.tip_label_w, LABEL_LINE_H)),
             ),
         ];
-
-        let header_controls = vec![
-            AbsoluteChild::new(
-                Point {
-                    x: padding_x,
-                    y: spline_title_y,
-                },
-                label("PUMP")
-                    .text_color(theme.title_text)
-                    .layout(fixed_box(TITLE_LABEL_W, label_line_h)),
-            ),
-            AbsoluteChild::new(
-                Point {
-                    x: padding_x + 72,
-                    y: spline_title_y,
-                },
-                label("Spline Beat-Synced Ducking")
-                    .text_color(theme.subtitle_text)
-                    .layout(fixed_box(subtitle_label_w, label_line_h)),
-            ),
-        ];
-
-        let header_content =
-            Node::Absolute(AbsoluteSpec::new(header_controls).layout(LayoutBox::fill()))
-                .layout(LayoutBox::fill());
-
         let spline_content =
             Node::Absolute(AbsoluteSpec::new(spline_controls).layout(LayoutBox::fill()))
                 .layout(LayoutBox::fill());
-
-        let header_section = panel("header", header_content).pad_all(0);
-
-        let spline_section = panel("spline", spline_content)
+        panel("spline", spline_content)
             .background(theme.curve_bg)
             .outline(theme.curve_border)
-            .pad_all(0);
+            .pad_all(0)
+    }
 
+    /// Build the controls section node.
+    fn build_controls_section(
+        &self,
+        metrics: UiLayoutMetrics,
+        theme: PumpTheme,
+        controls: ControlSnapshot,
+    ) -> Node {
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; 4])
                 .rows(vec![TrackSize::Fr(1)])
                 .gap(0)
                 .justify_start(),
             vec![
-                knob(MIX_KEY, "Mix", mix, (MIN_MIX, MAX_MIX))
-                    .value_label(format!("{:.0}%", mix * 100.0)),
-                knob(DEPTH_KEY, "Depth", depth, (MIN_DEPTH, MAX_DEPTH))
-                    .value_label(format!("{:.0}%", depth * 100.0)),
+                knob(MIX_KEY, "Mix", controls.mix, (MIN_MIX, MAX_MIX))
+                    .value_label(format!("{:.0}%", controls.mix * 100.0)),
+                knob(DEPTH_KEY, "Depth", controls.depth, (MIN_DEPTH, MAX_DEPTH))
+                    .value_label(format!("{:.0}%", controls.depth * 100.0)),
                 knob(
                     PHASE_KEY,
                     "Phase",
-                    phase_offset,
+                    controls.phase_offset,
                     (MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
                 )
-                .value_label(format!("{:.0}%", phase_offset * 100.0)),
+                .value_label(format!("{:.0}%", controls.phase_offset * 100.0)),
                 knob(
                     OUTPUT_KEY,
                     "Output",
-                    output_gain_db,
+                    controls.output_gain_db,
                     (MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
                 )
-                .value_label(format!("{output_gain_db:+.1} dB")),
+                .value_label(format!("{:+.1} dB", controls.output_gain_db)),
             ],
         )
         .layout(LayoutBox::fill());
 
         let knobs_section = panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_all(8);
-
         let dropdown_section_content = column(vec![
             dropdown(
                 DIVISION_KEY,
                 "Division",
                 sync_division_labels(),
-                division.min(MAX_SYNC_DIVISION as usize),
+                controls.division.min(MAX_SYNC_DIVISION as usize),
             )
             .control_size(Size {
-                width: dropdown_control_w,
+                width: metrics.dropdown_control_w,
                 height: 24,
             }),
             button(RESET_KEY, "Reset Curve").control_size(Size {
-                width: dropdown_control_w,
+                width: metrics.dropdown_control_w,
                 height: 24,
             }),
-            label(format!("Cycle: {}", sync_division_label(division)))
+            label(format!("Cycle: {}", sync_division_label(controls.division)))
                 .text_color(theme.hint_text)
-                .layout(fixed_box(dropdown_control_w, label_line_h)),
+                .layout(fixed_box(metrics.dropdown_control_w, LABEL_LINE_H)),
         ])
         .gap(4)
         .pad_all(0)
         .layout(LayoutBox::fill());
-
         let dropdown_section = panel(
             "dropdown",
             dropdown_section_content.layout(LayoutBox::fill()),
@@ -550,15 +573,53 @@ impl GuiState {
             weighted(knobs_section, KNOBS_SECTION_WEIGHT),
             weighted(dropdown_section, DROPDOWN_SECTION_WEIGHT),
         ]);
+        panel("controls", controls_row).pad_all(0)
+    }
 
-        let controls_section = panel("controls", controls_row).pad_all(0);
+    /// Resolve curve-hover and preview state for frame rendering.
+    fn compute_curve_render_state(
+        &self,
+        editable_curve: &EditableCurve,
+        selected_node: Option<usize>,
+        curve_hovered: bool,
+        curve_local_pointer: Point,
+        alt_down: bool,
+    ) -> CurveRenderState {
+        let hovered_node = curve_hovered
+            .then(|| find_node_hit(editable_curve, curve_local_pointer))
+            .flatten();
+        let direct_segment = curve_hovered
+            .then(|| {
+                find_segment_line_hit_within(
+                    editable_curve,
+                    curve_local_pointer,
+                    SEGMENT_DIRECT_HIT_RADIUS,
+                )
+            })
+            .flatten();
+        let preview_node =
+            (curve_hovered && !alt_down && hovered_node.is_none() && direct_segment.is_some())
+                .then(|| preview_node_on_curve(editable_curve, curve_local_pointer))
+                .flatten();
+        let hovered_segment = (curve_hovered && preview_node.is_none())
+            .then(|| {
+                find_segment_line_hit_within(
+                    editable_curve,
+                    curve_local_pointer,
+                    SEGMENT_NEAR_HIT_RADIUS,
+                )
+            })
+            .flatten();
+        CurveRenderState {
+            selected_node,
+            hovered_node,
+            hovered_segment,
+            preview_node,
+        }
+    }
 
-        let content = column_sections(vec![
-            weighted(header_section, HEADER_SECTION_WEIGHT),
-            weighted(spline_section, CURVE_SECTION_WEIGHT),
-            weighted(controls_section, CONTROLS_SECTION_WEIGHT),
-        ]);
-
+    /// Build the root UI spec for the current frame dimensions and content tree.
+    fn build_root_spec(&self, metrics: UiLayoutMetrics, theme: PumpTheme, content: Node) -> UiSpec {
         UiSpec::new(
             root_frame_sized(
                 ROOT_KEY,
@@ -567,11 +628,52 @@ impl GuiState {
                     width: WINDOW_WIDTH,
                     height: WINDOW_HEIGHT,
                 },
-                input.window_size,
+                Size {
+                    width: metrics.content_w,
+                    height: metrics.content_h,
+                },
             )
             .padding(0)
             .tokens(theme.tokens),
         )
+    }
+
+    /// Build curve draw commands for the current frame input and runtime state.
+    fn build_curve_commands_for_frame(
+        &self,
+        input: &InputState,
+        metrics: UiLayoutMetrics,
+        theme: PumpTheme,
+    ) -> Vec<DrawCommand> {
+        let (selected_node, curve_hovered, curve_local_pointer) =
+            self.snapshot_curve_runtime(metrics.curve_size);
+        let editable_curve = self.params.editable_curve_snapshot();
+        let curve_state = self.compute_curve_render_state(
+            &editable_curve,
+            selected_node,
+            curve_hovered,
+            curve_local_pointer,
+            input.alt_down,
+        );
+        self.build_curve_draw_commands(&editable_curve, metrics.curve_size, curve_state, &theme)
+    }
+
+    fn build_ui(&self, input: &InputState) -> UiSpec {
+        let metrics = UiLayoutMetrics::from_input(input);
+        let theme = PumpTheme::main();
+        let controls = self.snapshot_controls();
+        let draw_commands = self.build_curve_commands_for_frame(input, metrics, theme);
+
+        let header_section = self.build_header_section(metrics, theme);
+        let spline_section = self.build_spline_section(metrics, theme, draw_commands);
+        let controls_section = self.build_controls_section(metrics, theme, controls);
+
+        let content = column_sections(vec![
+            weighted(header_section, HEADER_SECTION_WEIGHT),
+            weighted(spline_section, CURVE_SECTION_WEIGHT),
+            weighted(controls_section, CONTROLS_SECTION_WEIGHT),
+        ]);
+        self.build_root_spec(metrics, theme, content)
     }
 
     fn measured_open_size(&self) -> (u32, u32) {
@@ -895,10 +997,7 @@ impl GuiState {
         &self,
         editable_curve: &EditableCurve,
         curve_size: Size,
-        selected_node: Option<usize>,
-        hovered_node: Option<usize>,
-        hovered_segment: Option<usize>,
-        preview_node: Option<CurveNode>,
+        state: CurveRenderState,
         theme: &PumpTheme,
     ) -> Vec<DrawCommand> {
         let rect = Rect {
@@ -957,7 +1056,8 @@ impl GuiState {
                 x: left.x,
                 y: sample_editable_curve(editable_curve, left.x),
             }));
-            let highlight = preview_node.is_none() && hovered_segment == Some(segment_index);
+            let highlight =
+                state.preview_node.is_none() && state.hovered_segment == Some(segment_index);
             let line_color = if highlight {
                 theme.curve_line_highlight
             } else {
@@ -992,7 +1092,7 @@ impl GuiState {
             }
         }
 
-        if let Some(preview) = preview_node {
+        if let Some(preview) = state.preview_node {
             let center = to_canvas(local_from_node(preview));
             commands.push(DrawCommand::FillCircle {
                 center,
@@ -1009,8 +1109,8 @@ impl GuiState {
 
         for (index, node) in editable_curve.nodes.iter().copied().enumerate() {
             let center = to_canvas(local_from_node(node));
-            let selected = selected_node == Some(index);
-            let hovered = hovered_node == Some(index);
+            let selected = state.selected_node == Some(index);
+            let hovered = state.hovered_node == Some(index);
             let fill_color = if selected {
                 theme.node_selected_fill
             } else if hovered {
