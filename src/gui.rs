@@ -76,22 +76,18 @@ const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 
 const PADDING_X: i32 = scale_i32(18);
-const ROOT_HEADER_H: u32 = 20;
-const CONTENT_H: u32 = WINDOW_HEIGHT - ROOT_HEADER_H;
+const SPLINE_SECTION_H: u32 = scale_u32(260);
+const BOTTOM_SECTION_H: u32 = scale_u32(170);
+const CONTENT_H: u32 = SPLINE_SECTION_H + BOTTOM_SECTION_H;
 const SPLINE_TITLE_Y: i32 = scale_i32(4);
-const SPLINE_CURVE_X: i32 = PADDING_X;
-const SPLINE_CURVE_Y: i32 = scale_i32(24);
-const CURVE_W: u32 = scale_u32(664);
-const CURVE_H: u32 = scale_u32(200);
-const SPLINE_TIP_Y: i32 = SPLINE_CURVE_Y + CURVE_H as i32 + scale_i32(4);
-const SPLINE_SECTION_H: u32 = (SPLINE_TIP_Y + LABEL_LINE_H as i32 + scale_i32(6)) as u32;
-const BOTTOM_SECTION_H: u32 = CONTENT_H - SPLINE_SECTION_H;
+const CURVE_W: u32 = WINDOW_WIDTH;
+const CURVE_H: u32 = SPLINE_SECTION_H;
+const SPLINE_TIP_Y: i32 = CURVE_H as i32 - LABEL_LINE_H as i32 - scale_i32(4);
 const DROPDOWN_W: u32 = scale_u32(132);
 const DROPDOWN_SECTION_W: u32 = DROPDOWN_W + scale_u32(20);
-const KNOBS_SECTION_W: u32 = WINDOW_WIDTH - DROPDOWN_SECTION_W;
 const TITLE_LABEL_W: u32 = scale_u32(64);
-const SUBTITLE_LABEL_W: u32 = CURVE_W.saturating_sub(scale_u32(72));
-const TIP_LABEL_W: u32 = CURVE_W;
+const SUBTITLE_LABEL_W: u32 = CURVE_W.saturating_sub(scale_u32(96));
+const TIP_LABEL_W: u32 = CURVE_W.saturating_sub(scale_u32(12));
 const CYCLE_LABEL_W: u32 = DROPDOWN_W;
 const LABEL_LINE_H: u32 = 16;
 const NODE_DRAW_RADIUS: i32 = scale_i32(4);
@@ -377,6 +373,19 @@ impl GuiState {
 
         let spline_controls = vec![
             AbsoluteChild::new(
+                Point { x: 0, y: 0 },
+                Node::Region(
+                    RegionSpec::new(
+                        CURVE_KEY,
+                        Size {
+                            width: CURVE_W,
+                            height: CURVE_H,
+                        },
+                    )
+                    .draw_commands(draw_commands),
+                ),
+            ),
+            AbsoluteChild::new(
                 Point {
                     x: PADDING_X,
                     y: SPLINE_TITLE_Y,
@@ -396,23 +405,7 @@ impl GuiState {
             ),
             AbsoluteChild::new(
                 Point {
-                    x: SPLINE_CURVE_X,
-                    y: SPLINE_CURVE_Y,
-                },
-                Node::Region(
-                    RegionSpec::new(
-                        CURVE_KEY,
-                        Size {
-                            width: CURVE_W,
-                            height: CURVE_H,
-                        },
-                    )
-                    .draw_commands(draw_commands),
-                ),
-            ),
-            AbsoluteChild::new(
-                Point {
-                    x: SPLINE_CURVE_X,
+                    x: PADDING_X,
                     y: SPLINE_TIP_Y,
                 },
                 label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
@@ -458,13 +451,17 @@ impl GuiState {
                 .value_label(format!("{output_gain_db:+.1} dB")),
             ],
         )
-        .layout(LayoutBox::fixed(KNOBS_SECTION_W, BOTTOM_SECTION_H));
+        .layout(LayoutBox::fill());
 
         let knobs_section = panel(KNOBS_SECTION_KEY, knobs_grid)
             .pad_all(0)
             .background(theme.panel_background)
             .outline(theme.panel_outline)
-            .layout(LayoutBox::fixed(KNOBS_SECTION_W, BOTTOM_SECTION_H));
+            .layout(
+                LayoutBox::auto()
+                    .fill_width()
+                    .fixed_height(BOTTOM_SECTION_H),
+            );
 
         let dropdown_section_content = column(vec![
             dropdown(
@@ -518,7 +515,7 @@ impl GuiState {
                 .title("pump")
                 .padding(0)
                 .tokens(theme.tokens)
-                .layout(LayoutBox::fixed(WINDOW_WIDTH, WINDOW_HEIGHT)),
+                .layout(LayoutBox::auto().min(WINDOW_WIDTH, WINDOW_HEIGHT)),
         )
     }
 
@@ -1387,13 +1384,15 @@ mod tests {
     use super::{
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
-        preview_node_on_curve, GuiState, WINDOW_HEIGHT, WINDOW_WIDTH,
+        preview_node_on_curve, GuiState, CURVE_H, CURVE_KEY, CURVE_W, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
     use crate::GuiStatus;
     use std::sync::Arc;
     use toybox::clap::automation::AutomationQueue;
+    use toybox::clap::gui::InputState;
+    use toybox::gui::declarative::Node;
     use toybox::gui::Point;
 
     #[test]
@@ -1543,7 +1542,7 @@ mod tests {
         );
         let (width, height) = state.measured_open_size();
         assert!(width >= WINDOW_WIDTH);
-        assert!(height >= WINDOW_HEIGHT);
+        assert!(height > WINDOW_HEIGHT);
     }
 
     #[test]
@@ -1559,6 +1558,44 @@ mod tests {
         assert_eq!(preferred_width, measured_width);
         assert_eq!(preferred_height, measured_height);
         assert!(preferred_width >= WINDOW_WIDTH);
-        assert!(preferred_height >= WINDOW_HEIGHT);
+        assert!(preferred_height > WINDOW_HEIGHT);
+    }
+
+    #[test]
+    fn build_ui_places_curve_region_at_full_spline_extent() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let spec = state.build_ui(&InputState::default());
+        let region = find_curve_region_node(&spec.root.content).expect("curve region should exist");
+        assert_eq!(region.size.width, CURVE_W);
+        assert_eq!(region.size.height, CURVE_H);
+    }
+
+    fn find_curve_region_node(node: &Node) -> Option<&toybox::gui::declarative::RegionSpec> {
+        match node {
+            Node::Region(region) if region.key == CURVE_KEY => Some(region),
+            Node::Panel(panel) => find_curve_region_node(&panel.content),
+            Node::Row(flex) | Node::Column(flex) => {
+                flex.children.iter().find_map(find_curve_region_node)
+            }
+            Node::Grid(grid) => grid.children.iter().find_map(find_curve_region_node),
+            Node::Absolute(absolute) => absolute
+                .children
+                .iter()
+                .find_map(|child| find_curve_region_node(&child.node)),
+            Node::Region(_) => None,
+            Node::Label(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::Indicator(_) => None,
+        }
     }
 }
