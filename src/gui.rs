@@ -8,8 +8,9 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
-    button, dropdown, knob, label, panel, AbsoluteChild, AbsoluteSpec, DrawCommand, LayoutBox,
-    Node, RegionInteractionKind, RegionSpec, RootFrameSpec, UiAction, UiSpec,
+    button, dropdown, knob, label, measure_checked, panel, AbsoluteChild, AbsoluteSpec,
+    DrawCommand, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec, UiAction,
+    UiSpec,
 };
 use toybox::gui::{Color, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -87,6 +88,11 @@ const KNOB_X: [i32; 4] = [
 ];
 const DROPDOWN_X: i32 = PADDING_X + CONTROL_STEP * 4;
 const DROPDOWN_W: u32 = scale_u32(132);
+const TITLE_LABEL_W: u32 = scale_u32(64);
+const SUBTITLE_LABEL_W: u32 = CURVE_W.saturating_sub(scale_u32(72));
+const TIP_LABEL_W: u32 = CURVE_W;
+const CYCLE_LABEL_W: u32 = DROPDOWN_W;
+const LABEL_LINE_H: u32 = 16;
 const NODE_DRAW_RADIUS: i32 = scale_i32(4);
 const NODE_HIT_RADIUS: i32 = scale_i32(8);
 const SEGMENT_NEAR_HIT_RADIUS: i32 = scale_i32(16);
@@ -96,6 +102,10 @@ const CURVE_DRAG_START_THRESHOLD_PX: i32 = scale_i32(2);
 const CURVE_TENSION_PIXEL_SCALE: f32 = scale_f32(120.0);
 const NODE_PUSH_THROUGH_PX: i32 = scale_i32(10);
 const NODE_X_MIN_SPACING: f32 = 1.0e-3;
+
+const fn fixed_box(width: u32, height: u32) -> LayoutBox {
+    LayoutBox::fixed(width, height).max(width, height)
+}
 
 /// Host-window wrapper for the Pump editor.
 #[derive(Default)]
@@ -128,10 +138,11 @@ impl PumpGui {
             automation_queue,
             param_requester,
         );
+        let open_size = state.measured_open_size();
 
         self.window.open_parented(
             "pump".to_string(),
-            (WINDOW_WIDTH, WINDOW_HEIGHT),
+            open_size,
             state,
             |_state| {},
             |input, state| state.build_ui(input),
@@ -283,14 +294,18 @@ impl GuiState {
                     x: PADDING_X,
                     y: TITLE_Y,
                 },
-                label("PUMP").text_color(Color::rgb(242, 244, 248)),
+                label("PUMP")
+                    .text_color(Color::rgb(242, 244, 248))
+                    .layout(fixed_box(TITLE_LABEL_W, LABEL_LINE_H)),
             ),
             AbsoluteChild::new(
                 Point {
                     x: PADDING_X + scale_i32(72),
                     y: TITLE_Y,
                 },
-                label("Spline Beat-Synced Ducking").text_color(Color::rgb(168, 176, 192)),
+                label("Spline Beat-Synced Ducking")
+                    .text_color(Color::rgb(168, 176, 192))
+                    .layout(fixed_box(SUBTITLE_LABEL_W, LABEL_LINE_H)),
             ),
             AbsoluteChild::new(
                 Point {
@@ -382,7 +397,8 @@ impl GuiState {
                     y: CONTROL_Y + scale_i32(88),
                 },
                 label(format!("Cycle: {}", sync_division_label(division)))
-                    .text_color(Color::rgb(173, 182, 198)),
+                    .text_color(Color::rgb(173, 182, 198))
+                    .layout(fixed_box(CYCLE_LABEL_W, LABEL_LINE_H)),
             ),
             AbsoluteChild::new(
                 Point {
@@ -390,7 +406,8 @@ impl GuiState {
                     y: CURVE_Y + CURVE_H as i32 + scale_i32(6),
                 },
                 label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
-                    .text_color(Color::rgb(132, 142, 160)),
+                    .text_color(Color::rgb(132, 142, 160))
+                    .layout(fixed_box(TIP_LABEL_W, LABEL_LINE_H)),
             ),
         ];
 
@@ -411,6 +428,14 @@ impl GuiState {
             .padding(0)
             .layout(LayoutBox::fixed(WINDOW_WIDTH, WINDOW_HEIGHT)),
         )
+    }
+
+    fn measured_open_size(&self) -> (u32, u32) {
+        let spec = self.build_ui(&InputState::default());
+        match measure_checked(&spec) {
+            Ok(size) => (size.width.max(1), size.height.max(1)),
+            Err(_) => (WINDOW_WIDTH, WINDOW_HEIGHT),
+        }
     }
 
     fn reduce_action(&mut self, action: UiAction) {
@@ -1268,9 +1293,14 @@ fn find_deletable_node_hit(curve: &EditableCurve, local_pointer: Point) -> Optio
 mod tests {
     use super::{
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
-        move_node_with_push_through, move_segment_translated, preview_node_on_curve,
+        move_node_with_push_through, move_segment_translated, preview_node_on_curve, GuiState,
+        WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
+    use crate::params::PumpParams;
+    use crate::GuiStatus;
+    use std::sync::Arc;
+    use toybox::clap::automation::AutomationQueue;
     use toybox::gui::Point;
 
     #[test]
@@ -1408,5 +1438,18 @@ mod tests {
         assert!((curve.nodes[2].x - 0.7).abs() < 1.0e-6);
         assert!((curve.nodes[1].y - 0.6).abs() < 1.0e-6);
         assert!((curve.nodes[2].y - 0.6).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn measured_open_size_is_at_least_default_window_baseline() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let (width, height) = state.measured_open_size();
+        assert!(width >= WINDOW_WIDTH);
+        assert!(height >= WINDOW_HEIGHT);
     }
 }
