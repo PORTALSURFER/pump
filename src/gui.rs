@@ -60,6 +60,9 @@ const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const HANDLE_DRAW_RADIUS: i32 = 4;
 const HANDLE_HIT_RADIUS: i32 = 8;
+const NODE_INSERT_GUARD_RADIUS: i32 = 12;
+const HANDLE_INSERT_GUARD_RADIUS: i32 = 11;
+const CURVE_DRAG_START_THRESHOLD_PX: i32 = 2;
 const HANDLE_TENSION_PIXEL_SCALE: f32 = 28.0;
 const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
@@ -140,11 +143,15 @@ struct GuiRuntime {
 enum CurveDragMode {
     MoveNode {
         index: usize,
+        start_pointer: Point,
+        dragging: bool,
     },
     AdjustSegment {
         index: usize,
         start_tension: f32,
         start_pointer_y: i32,
+        start_pointer: Point,
+        dragging: bool,
     },
 }
 
@@ -191,7 +198,16 @@ impl GuiState {
 
         let curve = self.params.curve_snapshot();
         let editable_curve = self.params.editable_curve_snapshot();
-        let draw_commands = self.build_curve_draw_commands(&curve, &editable_curve, selected_node);
+        let local_pointer = local_from_pointer(input.pointer_pos);
+        let hovered_node = find_node_hit(&editable_curve, local_pointer);
+        let hovered_segment = find_segment_handle_hit(&editable_curve, local_pointer);
+        let draw_commands = self.build_curve_draw_commands(
+            &curve,
+            &editable_curve,
+            selected_node,
+            hovered_node,
+            hovered_segment,
+        );
 
         let controls = vec![
             AbsoluteChild::new(
@@ -300,6 +316,14 @@ impl GuiState {
                 label(format!("Cycle: {}", sync_division_label(division)))
                     .text_color(Color::rgb(173, 182, 198)),
             ),
+            AbsoluteChild::new(
+                Point {
+                    x: CURVE_X,
+                    y: CURVE_Y + CURVE_H as i32 + 6,
+                },
+                label("Tip: right-click a node to delete it.")
+                    .text_color(Color::rgb(132, 142, 160)),
+            ),
         ];
 
         let content = Node::Absolute(
@@ -384,7 +408,11 @@ impl GuiState {
                 let mut editable = self.params.editable_curve_snapshot();
                 if let Some(index) = find_node_hit(&editable, local_pointer) {
                     runtime.selected_node = Some(index);
-                    runtime.drag_mode = Some(CurveDragMode::MoveNode { index });
+                    runtime.drag_mode = Some(CurveDragMode::MoveNode {
+                        index,
+                        start_pointer: local_pointer,
+                        dragging: false,
+                    });
                     return;
                 }
 
@@ -399,6 +427,41 @@ impl GuiState {
                         index,
                         start_tension,
                         start_pointer_y: local_pointer.y,
+                        start_pointer: local_pointer,
+                        dragging: false,
+                    });
+                    return;
+                }
+
+                if let Some(index) =
+                    find_node_hit_within(&editable, local_pointer, NODE_INSERT_GUARD_RADIUS)
+                {
+                    runtime.selected_node = Some(index);
+                    runtime.drag_mode = Some(CurveDragMode::MoveNode {
+                        index,
+                        start_pointer: local_pointer,
+                        dragging: false,
+                    });
+                    return;
+                }
+
+                if let Some(index) = find_segment_handle_hit_within(
+                    &editable,
+                    local_pointer,
+                    HANDLE_INSERT_GUARD_RADIUS,
+                ) {
+                    let start_tension = editable
+                        .segments
+                        .get(index)
+                        .copied()
+                        .unwrap_or(CurveSegment { tension: 0.0 })
+                        .tension;
+                    runtime.drag_mode = Some(CurveDragMode::AdjustSegment {
+                        index,
+                        start_tension,
+                        start_pointer_y: local_pointer.y,
+                        start_pointer: local_pointer,
+                        dragging: false,
                     });
                     return;
                 }
@@ -407,31 +470,77 @@ impl GuiState {
                 runtime.selected_node = Some(inserted_index);
                 runtime.drag_mode = Some(CurveDragMode::MoveNode {
                     index: inserted_index,
+                    start_pointer: local_pointer,
+                    dragging: false,
                 });
                 self.params.set_editable_curve(&editable);
             }
             RegionInteractionKind::Dragged => {
-                if let Some(drag_mode) = runtime.drag_mode {
+                if let Some(mut drag_mode) = runtime.drag_mode {
                     let mut editable = self.params.editable_curve_snapshot();
+                    let mut curve_changed = false;
                     match drag_mode {
-                        CurveDragMode::MoveNode { index } => {
+                        CurveDragMode::MoveNode {
+                            index,
+                            start_pointer,
+                            mut dragging,
+                        } => {
+                            if !dragging
+                                && !drag_threshold_crossed(
+                                    start_pointer,
+                                    local_pointer,
+                                    CURVE_DRAG_START_THRESHOLD_PX,
+                                )
+                            {
+                                return;
+                            }
+                            dragging = true;
                             move_node(&mut editable, index, normalized_pointer);
                             runtime.selected_node = Some(index);
+                            drag_mode = CurveDragMode::MoveNode {
+                                index,
+                                start_pointer,
+                                dragging,
+                            };
+                            curve_changed = true;
                         }
                         CurveDragMode::AdjustSegment {
                             index,
                             start_tension,
                             start_pointer_y,
+                            start_pointer,
+                            mut dragging,
                         } => {
+                            if !dragging
+                                && !drag_threshold_crossed(
+                                    start_pointer,
+                                    local_pointer,
+                                    CURVE_DRAG_START_THRESHOLD_PX,
+                                )
+                            {
+                                return;
+                            }
+                            dragging = true;
                             if let Some(segment) = editable.segments.get_mut(index) {
                                 let delta = (start_pointer_y - local_pointer.y) as f32
                                     / HANDLE_TENSION_PIXEL_SCALE;
                                 segment.tension = (start_tension + delta)
                                     .clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
+                                curve_changed = true;
                             }
+                            drag_mode = CurveDragMode::AdjustSegment {
+                                index,
+                                start_tension,
+                                start_pointer_y,
+                                start_pointer,
+                                dragging,
+                            };
                         }
                     }
-                    self.params.set_editable_curve(&editable);
+                    runtime.drag_mode = Some(drag_mode);
+                    if curve_changed {
+                        self.params.set_editable_curve(&editable);
+                    }
                 }
             }
             RegionInteractionKind::Released => {
@@ -463,6 +572,8 @@ impl GuiState {
         curve: &[f32; CURVE_TABLE_LEN],
         editable_curve: &EditableCurve,
         selected_node: Option<usize>,
+        hovered_node: Option<usize>,
+        hovered_segment: Option<usize>,
     ) -> Vec<DrawCommand> {
         let rect = Rect {
             origin: Point { x: 0, y: 0 },
@@ -527,45 +638,68 @@ impl GuiState {
 
         for segment_index in 0..editable_curve.segments.len() {
             let (base_point, handle_point) = segment_handle_points(editable_curve, segment_index);
+            let hovered = hovered_segment == Some(segment_index);
+            let guide_color = if hovered {
+                Color::rgb(134, 157, 198)
+            } else {
+                Color::rgb(86, 98, 122)
+            };
+            let fill_color = if hovered {
+                Color::rgb(191, 214, 255)
+            } else {
+                Color::rgb(129, 146, 176)
+            };
+            let stroke_color = if hovered {
+                Color::rgb(226, 238, 255)
+            } else {
+                Color::rgb(193, 205, 228)
+            };
             commands.push(DrawCommand::Line {
                 start: base_point,
                 end: handle_point,
-                color: Color::rgb(86, 98, 122),
+                color: guide_color,
             });
             commands.push(DrawCommand::FillCircle {
                 center: handle_point,
                 radius: HANDLE_DRAW_RADIUS,
-                color: Color::rgb(129, 146, 176),
+                color: fill_color,
             });
             commands.push(DrawCommand::StrokeCircle {
                 center: handle_point,
                 radius: HANDLE_DRAW_RADIUS,
                 thickness: 1,
-                color: Color::rgb(193, 205, 228),
+                color: stroke_color,
             });
         }
 
         for (index, node) in editable_curve.nodes.iter().copied().enumerate() {
             let center = local_from_node(node);
             let selected = selected_node == Some(index);
+            let hovered = hovered_node == Some(index);
+            let fill_color = if selected {
+                Color::rgb(255, 206, 118)
+            } else if hovered {
+                Color::rgb(187, 223, 255)
+            } else {
+                Color::rgb(230, 240, 255)
+            };
+            let stroke_color = if selected {
+                Color::rgb(255, 242, 206)
+            } else if hovered {
+                Color::rgb(220, 236, 255)
+            } else {
+                Color::rgb(116, 129, 148)
+            };
             commands.push(DrawCommand::FillCircle {
                 center,
                 radius: NODE_DRAW_RADIUS,
-                color: if selected {
-                    Color::rgb(255, 206, 118)
-                } else {
-                    Color::rgb(230, 240, 255)
-                },
+                color: fill_color,
             });
             commands.push(DrawCommand::StrokeCircle {
                 center,
                 radius: NODE_DRAW_RADIUS,
                 thickness: 1,
-                color: if selected {
-                    Color::rgb(255, 242, 206)
-                } else {
-                    Color::rgb(116, 129, 148)
-                },
+                color: stroke_color,
             });
         }
 
@@ -655,11 +789,16 @@ fn node_from_local(local: Point) -> CurveNode {
 }
 
 fn find_node_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
+    find_node_hit_within(curve, local_pointer, NODE_HIT_RADIUS)
+}
+
+fn find_node_hit_within(curve: &EditableCurve, local_pointer: Point, radius: i32) -> Option<usize> {
     let mut best: Option<(usize, i64)> = None;
+    let radius_squared = radius.max(0) as i64 * radius.max(0) as i64;
     for (index, node) in curve.nodes.iter().copied().enumerate() {
         let center = local_from_node(node);
         let distance = distance_squared(center, local_pointer);
-        if distance <= (NODE_HIT_RADIUS as i64 * NODE_HIT_RADIUS as i64) {
+        if distance <= radius_squared {
             match best {
                 Some((_, best_distance)) if distance >= best_distance => {}
                 _ => best = Some((index, distance)),
@@ -670,11 +809,20 @@ fn find_node_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
 }
 
 fn find_segment_handle_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
+    find_segment_handle_hit_within(curve, local_pointer, HANDLE_HIT_RADIUS)
+}
+
+fn find_segment_handle_hit_within(
+    curve: &EditableCurve,
+    local_pointer: Point,
+    radius: i32,
+) -> Option<usize> {
     let mut best: Option<(usize, i64)> = None;
+    let radius_squared = radius.max(0) as i64 * radius.max(0) as i64;
     for index in 0..curve.segments.len() {
         let (_, handle) = segment_handle_points(curve, index);
         let distance = distance_squared(handle, local_pointer);
-        if distance <= (HANDLE_HIT_RADIUS as i64 * HANDLE_HIT_RADIUS as i64) {
+        if distance <= radius_squared {
             match best {
                 Some((_, best_distance)) if distance >= best_distance => {}
                 _ => best = Some((index, distance)),
@@ -772,4 +920,9 @@ fn distance_squared(a: Point, b: Point) -> i64 {
     let dx = a.x as i64 - b.x as i64;
     let dy = a.y as i64 - b.y as i64;
     dx * dx + dy * dy
+}
+
+fn drag_threshold_crossed(start_pointer: Point, current_pointer: Point, threshold_px: i32) -> bool {
+    let threshold = threshold_px.max(0) as i64;
+    distance_squared(start_pointer, current_pointer) >= threshold * threshold
 }

@@ -11,9 +11,8 @@ use toybox::clack_plugin::prelude::ClapId;
 use toybox::clap::params::{ParamBuilder, ParamSpec};
 
 use crate::curve::{
-    curve_table_to_editable, default_editable_curve, default_sidechain_curve,
-    editable_curve_to_table, CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN,
-    MAX_EDITABLE_NODES,
+    curve_table_to_editable, default_editable_curve, editable_curve_to_table, CurveNode,
+    CurveSegment, EditableCurve, CURVE_TABLE_LEN, MAX_EDITABLE_NODES,
 };
 
 /// Parameter id for dry/wet blend.
@@ -333,8 +332,8 @@ pub struct PumpParams {
 impl PumpParams {
     /// Create params with production defaults and default curve.
     pub fn new() -> Self {
-        let default_curve = default_sidechain_curve();
-        let editable_curve = curve_table_to_editable(&default_curve);
+        let editable_curve = default_editable_curve();
+        let default_curve = editable_curve_to_table(&editable_curve);
         Self {
             mix: AtomicF32::new(DEFAULT_MIX),
             depth: AtomicF32::new(DEFAULT_DEPTH),
@@ -743,5 +742,22 @@ mod tests {
         let editable = restored.editable_curve_snapshot();
         assert!(editable.nodes.len() >= 2);
         assert_eq!(editable.segments.len(), editable.nodes.len() - 1);
+    }
+
+    #[test]
+    fn default_curve_is_simple_after_reset() {
+        let params = PumpParams::new();
+        let curve = params.editable_curve_snapshot();
+        assert_eq!(curve.nodes.len(), 4);
+        assert_eq!(curve.segments.len(), 3);
+
+        params.set_editable_curve(&EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 1.0 }, CurveNode { x: 1.0, y: 0.0 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+        });
+        params.reset_curve_to_default();
+        let reset_curve = params.editable_curve_snapshot();
+        assert_eq!(reset_curve.nodes.len(), 4);
+        assert_eq!(reset_curve.segments.len(), 3);
     }
 }

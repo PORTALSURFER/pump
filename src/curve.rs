@@ -83,7 +83,20 @@ pub fn default_sidechain_curve() -> [f32; CURVE_TABLE_LEN] {
 
 /// Build the default editable curve used by the spline GUI.
 pub fn default_editable_curve() -> EditableCurve {
-    curve_table_to_editable(&default_sidechain_curve())
+    EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 1.0 },
+            CurveNode { x: 0.08, y: 0.08 },
+            CurveNode { x: 0.32, y: 0.52 },
+            CurveNode { x: 1.0, y: 1.0 },
+        ],
+        segments: vec![
+            CurveSegment { tension: -0.35 },
+            CurveSegment { tension: 0.45 },
+            CurveSegment { tension: -0.1 },
+        ],
+    }
+    .normalized()
 }
 
 /// Sample the curve table with linear interpolation at a normalized phase.
@@ -366,6 +379,13 @@ mod tests {
         let table = editable_curve_to_table(&curve);
         assert!(table.iter().all(|sample| sample.is_finite()));
         assert!(table.iter().all(|sample| (0.0..=1.0).contains(sample)));
+    }
+
+    #[test]
+    fn default_editable_curve_uses_simple_node_count() {
+        let curve = default_editable_curve();
+        assert_eq!(curve.nodes.len(), 4);
+        assert_eq!(curve.segments.len(), 3);
     }
 
     #[test]
