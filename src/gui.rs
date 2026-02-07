@@ -185,8 +185,6 @@ impl PumpGui {
         automation_queue: Arc<AutomationQueue>,
         param_requester: Option<HostParamRequester>,
     ) -> Result<(), PluginError> {
-        self.window
-            .set_aspect_ratio(Some(WINDOW_WIDTH as f32 / WINDOW_HEIGHT as f32));
         let state = GuiState::new(
             Arc::clone(params),
             Arc::clone(status),
@@ -1418,7 +1416,7 @@ mod tests {
     use std::sync::Arc;
     use toybox::clap::automation::AutomationQueue;
     use toybox::clap::gui::InputState;
-    use toybox::gui::declarative::{measure_checked, Node};
+    use toybox::gui::declarative::{measure_checked, Node, RootScaleMode};
     use toybox::gui::{Point, Size};
 
     #[test]
@@ -1602,22 +1600,43 @@ mod tests {
     }
 
     #[test]
-    fn build_ui_tracks_host_window_size_one_to_one() {
+    fn build_ui_accepts_resize_sequences_with_uniform_fit_root_scaling() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
             Arc::new(AutomationQueue::default()),
             None,
         );
-        let mut input = InputState::default();
-        input.window_size = Size {
-            width: WINDOW_WIDTH + 200,
-            height: WINDOW_HEIGHT + 100,
-        };
-        let spec = state.build_ui(&input);
-        let measured = measure_checked(&spec).expect("measurement should succeed");
-        assert!(measured.width >= input.window_size.width);
-        assert!(measured.height >= input.window_size.height);
+        let input_sizes = [
+            Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            Size {
+                width: WINDOW_WIDTH + 87,
+                height: WINDOW_HEIGHT + 11,
+            },
+            Size {
+                width: WINDOW_WIDTH + 141,
+                height: WINDOW_HEIGHT + 27,
+            },
+        ];
+        for window_size in input_sizes {
+            let mut input = InputState::default();
+            input.window_size = window_size;
+            let spec = state.build_ui(&input);
+            let measured = measure_checked(&spec).expect("measurement should succeed");
+            assert!(measured.width >= WINDOW_WIDTH);
+            assert!(measured.height >= WINDOW_HEIGHT);
+            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
+            assert_eq!(
+                spec.root.design_size,
+                Some(Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                }),
+            );
+        }
     }
 
     #[test]
