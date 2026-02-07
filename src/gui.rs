@@ -10,7 +10,7 @@ use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
     button, column, dropdown, grid, knob, label, measure_checked, row, AbsoluteChild, AbsoluteSpec,
     DrawCommand, GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec,
-    ThemeTokens, TrackSize, UiAction, UiSpec,
+    RootScaleMode, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -58,22 +58,6 @@ const fn scale_f32(value: f32) -> f32 {
     value * UI_SCALE
 }
 
-fn zoom_u32(value: u32, zoom: f32) -> u32 {
-    ((value as f32 * zoom).round() as u32).max(1)
-}
-
-fn zoom_i32(value: i32, zoom: f32) -> i32 {
-    if value == 0 {
-        return 0;
-    }
-    let scaled = (value as f32 * zoom).round() as i32;
-    if scaled == 0 {
-        value.signum()
-    } else {
-        scaled
-    }
-}
-
 /// Default width for the plugin editor window.
 pub const WINDOW_WIDTH: u32 = scale_u32(700);
 /// Default height for the plugin editor window.
@@ -113,13 +97,6 @@ const fn fixed_box(width: u32, height: u32) -> LayoutBox {
     LayoutBox::fixed(width, height).max(width, height)
 }
 
-fn viewport_size(input: &InputState) -> Size {
-    Size {
-        width: input.window_size.width.max(1),
-        height: input.window_size.height.max(1),
-    }
-}
-
 /// Shared Pump color/style tokens derived from the canonical Patchbay theme.
 #[derive(Clone, Copy, Debug)]
 struct PumpTheme {
@@ -151,21 +128,9 @@ struct PumpTheme {
 
 impl PumpTheme {
     /// Return the canonical Pump GUI theme.
-    fn for_zoom(zoom: f32) -> Self {
+    fn main() -> Self {
         let palette = MainPalette::main();
-        let mut tokens = ThemeTokens::main();
-        let effective_zoom = zoom.max(0.25);
-        tokens.typography.text_scale =
-            ((tokens.typography.text_scale as f32 * effective_zoom).round() as u32).max(1);
-        tokens.controls.knob_diameter = zoom_u32(tokens.controls.knob_diameter, effective_zoom);
-        tokens.controls.slider_width = zoom_u32(tokens.controls.slider_width, effective_zoom);
-        tokens.controls.slider_height = zoom_u32(tokens.controls.slider_height, effective_zoom);
-        tokens.controls.toggle_width = zoom_u32(tokens.controls.toggle_width, effective_zoom);
-        tokens.controls.toggle_height = zoom_u32(tokens.controls.toggle_height, effective_zoom);
-        tokens.controls.button_width = zoom_u32(tokens.controls.button_width, effective_zoom);
-        tokens.controls.button_height = zoom_u32(tokens.controls.button_height, effective_zoom);
-        tokens.controls.dropdown_width = zoom_u32(tokens.controls.dropdown_width, effective_zoom);
-        tokens.controls.dropdown_height = zoom_u32(tokens.controls.dropdown_height, effective_zoom);
+        let tokens = ThemeTokens::main();
         Self {
             tokens,
             title_text: palette.accent_focus,
@@ -288,7 +253,6 @@ struct GuiRuntime {
     drag_mode: Option<CurveDragMode>,
     curve_hovered: bool,
     curve_local_pointer: Point,
-    curve_size: Size,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -322,10 +286,6 @@ impl GuiRuntime {
             drag_mode: None,
             curve_hovered: false,
             curve_local_pointer: Point { x: 0, y: 0 },
-            curve_size: Size {
-                width: CURVE_W,
-                height: CURVE_H,
-            },
         }
     }
 }
@@ -348,31 +308,27 @@ impl GuiState {
     }
 
     fn build_ui(&self, input: &InputState) -> UiSpec {
-        let viewport = viewport_size(input);
-        let content_w = viewport.width;
-        let content_h = viewport.height;
-        let zoom = (content_h as f32 / WINDOW_HEIGHT.max(1) as f32)
-            .min(content_w as f32 / WINDOW_WIDTH.max(1) as f32)
-            .max(0.25);
-        let theme = PumpTheme::for_zoom(zoom);
-        let header_h = zoom_u32(HEADER_SECTION_H, zoom).min(content_h);
-        let controls_h = zoom_u32(CONTROLS_SECTION_H, zoom).min(content_h.saturating_sub(header_h));
+        let _ = input;
+        let content_w = WINDOW_WIDTH;
+        let content_h = WINDOW_HEIGHT;
+        let theme = PumpTheme::main();
+        let header_h = HEADER_SECTION_H.min(content_h);
+        let controls_h = CONTROLS_SECTION_H.min(content_h.saturating_sub(header_h));
         let curve_h = content_h.saturating_sub(header_h + controls_h).max(1);
-        let dropdown_section_w = zoom_u32(DROPDOWN_SECTION_W, zoom).min(content_w).max(1);
+        let dropdown_section_w = DROPDOWN_SECTION_W.min(content_w).max(1);
         let knobs_section_w = content_w.saturating_sub(dropdown_section_w).max(1);
         let dropdown_control_w = dropdown_section_w
-            .saturating_sub(zoom_u32(scale_u32(8), zoom))
-            .max(zoom_u32(scale_u32(64), zoom));
-        let label_line_h = zoom_u32(LABEL_LINE_H, zoom);
-        let padding_x = zoom_i32(PADDING_X, zoom);
-        let spline_title_y = zoom_i32(SPLINE_TITLE_Y, zoom);
-        let spline_tip_y = curve_h as i32 - label_line_h as i32 - zoom_i32(scale_i32(4), zoom);
-        let subtitle_label_w = content_w.saturating_sub(
-            (padding_x.max(0) as u32).saturating_add(zoom_u32(scale_u32(72), zoom)),
-        );
+            .saturating_sub(scale_u32(8))
+            .max(scale_u32(64));
+        let label_line_h = LABEL_LINE_H;
+        let padding_x = PADDING_X;
+        let spline_title_y = SPLINE_TITLE_Y;
+        let spline_tip_y = curve_h as i32 - label_line_h as i32 - scale_i32(4);
+        let subtitle_label_w =
+            content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(scale_u32(72)));
         let subtitle_label_w = subtitle_label_w.max(1);
         let tip_label_w =
-            content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(zoom_u32(8, zoom)));
+            content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(scale_u32(8)));
         let tip_label_w = tip_label_w.max(1);
 
         let curve_size = Size {
@@ -384,7 +340,7 @@ impl GuiState {
                 (
                     runtime.selected_node,
                     runtime.curve_hovered,
-                    scale_point_to_design(runtime.curve_local_pointer, runtime.curve_size),
+                    runtime.curve_local_pointer,
                 )
             } else {
                 (None, false, Point { x: 0, y: 0 })
@@ -433,10 +389,6 @@ impl GuiState {
             preview_node,
             &theme,
         );
-        if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.curve_size = curve_size;
-        }
-
         let spline_controls = vec![
             AbsoluteChild::new(
                 Point { x: 0, y: 0 },
@@ -470,11 +422,11 @@ impl GuiState {
                 },
                 label("PUMP")
                     .text_color(theme.title_text)
-                    .layout(fixed_box(zoom_u32(TITLE_LABEL_W, zoom), label_line_h)),
+                    .layout(fixed_box(TITLE_LABEL_W, label_line_h)),
             ),
             AbsoluteChild::new(
                 Point {
-                    x: padding_x + zoom_i32(scale_i32(72), zoom),
+                    x: padding_x + scale_i32(72),
                     y: spline_title_y,
                 },
                 label("Spline Beat-Synced Ducking")
@@ -542,7 +494,7 @@ impl GuiState {
                 .text_color(theme.hint_text)
                 .layout(fixed_box(dropdown_control_w, label_line_h)),
         ])
-        .gap(zoom_i32(scale_i32(4), zoom))
+        .gap(scale_i32(4))
         .pad_all(0)
         .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
@@ -567,7 +519,12 @@ impl GuiState {
             RootFrameSpec::new(ROOT_KEY, content)
                 .padding(0)
                 .tokens(theme.tokens)
-                .layout(LayoutBox::fixed(content_w, content_h)),
+                .layout(LayoutBox::fixed(content_w, content_h))
+                .design_size(Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                })
+                .scale_mode(RootScaleMode::UniformFit),
         )
     }
 
@@ -665,9 +622,6 @@ impl GuiState {
             return;
         };
 
-        let curve_size = runtime.curve_size;
-        let local_pointer = scale_point_to_design(local_pointer, curve_size);
-        let raw_local_pointer = scale_point_to_design(raw_local_pointer, curve_size);
         let normalized_pointer = node_from_local(local_pointer);
         let raw_normalized_pointer = node_from_local(raw_local_pointer);
 
@@ -1138,14 +1092,6 @@ fn node_from_local(local: Point) -> CurveNode {
     let x = (local.x as f32 / CURVE_W.max(1) as f32).clamp(0.0, 1.0);
     let y = (1.0 - (local.y as f32 / CURVE_H.max(1) as f32)).clamp(0.0, 1.0);
     CurveNode { x, y }
-}
-
-fn scale_point_to_design(point: Point, curve_size: Size) -> Point {
-    let width = curve_size.width.max(1) as i64;
-    let height = curve_size.height.max(1) as i64;
-    let x = (point.x as i64 * CURVE_W.max(1) as i64 / width) as i32;
-    let y = (point.y as i64 * CURVE_H.max(1) as i64 / height) as i32;
-    Point { x, y }
 }
 
 fn scale_point_from_design(point: Point, curve_size: Size) -> Point {
