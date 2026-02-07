@@ -60,6 +60,7 @@ const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const HANDLE_DRAW_RADIUS: i32 = 4;
 const HANDLE_HIT_RADIUS: i32 = 8;
+const NODE_DELETE_HIT_RADIUS: i32 = 14;
 const NODE_INSERT_GUARD_RADIUS: i32 = 12;
 const HANDLE_INSERT_GUARD_RADIUS: i32 = 11;
 const CURVE_DRAG_START_THRESHOLD_PX: i32 = 2;
@@ -548,19 +549,21 @@ impl GuiState {
             }
             RegionInteractionKind::SecondaryClicked => {
                 let mut editable = self.params.editable_curve_snapshot();
-                if let Some(index) = find_node_hit(&editable, local_pointer) {
-                    if index > 0 && index + 1 < editable.nodes.len() {
-                        editable.nodes.remove(index);
-                        let remove_segment = index
-                            .saturating_sub(1)
-                            .min(editable.segments.len().saturating_sub(1));
-                        if !editable.segments.is_empty() {
-                            editable.segments.remove(remove_segment);
-                        }
-                        runtime.selected_node = None;
-                        runtime.drag_mode = None;
-                        self.params.set_editable_curve(&editable);
+                if let Some(index) = find_nearest_interior_node_within(
+                    &editable,
+                    local_pointer,
+                    NODE_DELETE_HIT_RADIUS,
+                ) {
+                    editable.nodes.remove(index);
+                    let remove_segment = index
+                        .saturating_sub(1)
+                        .min(editable.segments.len().saturating_sub(1));
+                    if !editable.segments.is_empty() {
+                        editable.segments.remove(remove_segment);
                     }
+                    runtime.selected_node = None;
+                    runtime.drag_mode = None;
+                    self.params.set_editable_curve(&editable);
                 }
             }
             RegionInteractionKind::DoubleClicked => {}
@@ -670,6 +673,14 @@ impl GuiState {
                 thickness: 1,
                 color: stroke_color,
             });
+            if hovered {
+                commands.push(DrawCommand::StrokeCircle {
+                    center: handle_point,
+                    radius: HANDLE_DRAW_RADIUS + 2,
+                    thickness: 1,
+                    color: Color::rgb(235, 244, 255),
+                });
+            }
         }
 
         for (index, node) in editable_curve.nodes.iter().copied().enumerate() {
@@ -692,7 +703,11 @@ impl GuiState {
             };
             commands.push(DrawCommand::FillCircle {
                 center,
-                radius: NODE_DRAW_RADIUS,
+                radius: if selected || hovered {
+                    NODE_DRAW_RADIUS + 1
+                } else {
+                    NODE_DRAW_RADIUS
+                },
                 color: fill_color,
             });
             commands.push(DrawCommand::StrokeCircle {
@@ -701,6 +716,18 @@ impl GuiState {
                 thickness: 1,
                 color: stroke_color,
             });
+            if selected || hovered {
+                commands.push(DrawCommand::StrokeCircle {
+                    center,
+                    radius: NODE_DRAW_RADIUS + 3,
+                    thickness: 1,
+                    color: if selected {
+                        Color::rgb(255, 236, 196)
+                    } else {
+                        Color::rgb(210, 232, 255)
+                    },
+                });
+            }
         }
 
         let phase = self.status.phase();
@@ -925,4 +952,84 @@ fn distance_squared(a: Point, b: Point) -> i64 {
 fn drag_threshold_crossed(start_pointer: Point, current_pointer: Point, threshold_px: i32) -> bool {
     let threshold = threshold_px.max(0) as i64;
     distance_squared(start_pointer, current_pointer) >= threshold * threshold
+}
+
+fn find_nearest_interior_node_within(
+    curve: &EditableCurve,
+    local_pointer: Point,
+    radius: i32,
+) -> Option<usize> {
+    if curve.nodes.len() <= 2 {
+        return None;
+    }
+
+    let mut best: Option<(usize, i64)> = None;
+    let radius_squared = radius.max(0) as i64 * radius.max(0) as i64;
+    let last_index = curve.nodes.len() - 1;
+    for (index, node) in curve.nodes.iter().copied().enumerate() {
+        if index == 0 || index == last_index {
+            continue;
+        }
+
+        let distance = distance_squared(local_from_node(node), local_pointer);
+        if distance <= radius_squared {
+            match best {
+                Some((_, best_distance)) if distance >= best_distance => {}
+                _ => best = Some((index, distance)),
+            }
+        }
+    }
+
+    best.map(|(index, _)| index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_nearest_interior_node_within, local_from_node};
+    use crate::curve::{CurveNode, CurveSegment, EditableCurve};
+    use toybox::gui::Point;
+
+    #[test]
+    fn delete_hit_ignores_endpoints_and_targets_interior_nodes() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.3, y: 0.4 },
+                CurveNode { x: 0.6, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        };
+
+        let near_start = local_from_node(curve.nodes[0]);
+        assert_eq!(
+            find_nearest_interior_node_within(&curve, near_start, 16),
+            None
+        );
+
+        let near_middle = local_from_node(curve.nodes[1]);
+        assert_eq!(
+            find_nearest_interior_node_within(&curve, near_middle, 16),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn delete_hit_returns_none_outside_radius() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.5, y: 0.2 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
+        };
+
+        let far_away = Point { x: 0, y: 0 };
+        assert_eq!(find_nearest_interior_node_within(&curve, far_away, 2), None);
+    }
 }
