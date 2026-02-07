@@ -458,6 +458,7 @@ impl GuiState {
 
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; 4])
+                .rows(vec![TrackSize::Fr(1)])
                 .gap(0)
                 .justify_start(),
             vec![
