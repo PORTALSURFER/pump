@@ -499,7 +499,10 @@ impl<'a> PluginGuiImpl for PumpMainThread<'a> {
 
     fn get_size(&mut self) -> Option<clack_extensions::gui::GuiSize> {
         if let Some((width, height)) = self.gui.last_size() {
-            return Some(clack_extensions::gui::GuiSize { width, height });
+            return Some(clamp_uniform_gui_size(clack_extensions::gui::GuiSize {
+                width,
+                height,
+            }));
         }
         let (width, height) = crate::gui::preferred_window_size();
         Some(clack_extensions::gui::GuiSize { width, height })
