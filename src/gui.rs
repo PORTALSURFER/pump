@@ -14,7 +14,10 @@ use toybox::gui::declarative::{
 use toybox::gui::{Color, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
-use crate::curve::{points_to_curve, FreehandPoint, CURVE_TABLE_LEN};
+use crate::curve::{
+    sample_editable_curve, CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN,
+    MAX_EDITABLE_NODES, MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
+};
 use crate::params::{
     sync_division_label, sync_division_labels, PumpParams, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB,
     MAX_PHASE_OFFSET, MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET,
@@ -53,6 +56,12 @@ const KNOB_X: [i32; 4] = [
 ];
 const DROPDOWN_X: i32 = PADDING_X + CONTROL_STEP * 4;
 const DROPDOWN_W: u32 = 132;
+const NODE_DRAW_RADIUS: i32 = 4;
+const NODE_HIT_RADIUS: i32 = 8;
+const HANDLE_DRAW_RADIUS: i32 = 4;
+const HANDLE_HIT_RADIUS: i32 = 8;
+const HANDLE_TENSION_PIXEL_SCALE: f32 = 28.0;
+const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
 /// Host-window wrapper for the Pump editor.
 #[derive(Default)]
@@ -123,16 +132,28 @@ struct GuiState {
 
 struct GuiRuntime {
     last_pointer: Point,
-    drawing_curve: bool,
-    stroke_points: Vec<FreehandPoint>,
+    selected_node: Option<usize>,
+    drag_mode: Option<CurveDragMode>,
+}
+
+#[derive(Copy, Clone, Debug)]
+enum CurveDragMode {
+    MoveNode {
+        index: usize,
+    },
+    AdjustSegment {
+        index: usize,
+        start_tension: f32,
+        start_pointer_y: i32,
+    },
 }
 
 impl GuiRuntime {
     fn new() -> Self {
         Self {
             last_pointer: Point { x: 0, y: 0 },
-            drawing_curve: false,
-            stroke_points: Vec::with_capacity(1024),
+            selected_node: None,
+            drag_mode: None,
         }
     }
 }
@@ -155,9 +176,12 @@ impl GuiState {
     }
 
     fn build_ui(&self, input: &InputState) -> UiSpec {
-        if let Ok(mut runtime) = self.runtime.lock() {
+        let selected_node = if let Ok(mut runtime) = self.runtime.lock() {
             runtime.last_pointer = input.pointer_pos;
-        }
+            runtime.selected_node
+        } else {
+            None
+        };
 
         let mix = self.params.mix();
         let depth = self.params.depth();
@@ -166,7 +190,8 @@ impl GuiState {
         let division = self.params.sync_division();
 
         let curve = self.params.curve_snapshot();
-        let draw_commands = self.build_curve_draw_commands(&curve);
+        let editable_curve = self.params.editable_curve_snapshot();
+        let draw_commands = self.build_curve_draw_commands(&curve, &editable_curve, selected_node);
 
         let controls = vec![
             AbsoluteChild::new(
@@ -181,7 +206,7 @@ impl GuiState {
                     x: PADDING_X + 72,
                     y: TITLE_Y,
                 },
-                label("Freehand Beat-Synced Ducking").text_color(Color::rgb(168, 176, 192)),
+                label("Spline Beat-Synced Ducking").text_color(Color::rgb(168, 176, 192)),
             ),
             AbsoluteChild::new(
                 Point {
@@ -302,6 +327,10 @@ impl GuiState {
             UiAction::DropdownSelected { key, index } => self.reduce_dropdown(key.as_str(), index),
             UiAction::ButtonPressed { key } if key == RESET_KEY => {
                 self.params.reset_curve_to_default();
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.selected_node = None;
+                    runtime.drag_mode = None;
+                }
             }
             UiAction::RegionInteracted { key, kind } if key == CURVE_KEY => {
                 self.reduce_curve_interaction(kind)
@@ -347,37 +376,94 @@ impl GuiState {
             return;
         };
 
-        let point = point_from_pointer(runtime.last_pointer);
+        let local_pointer = local_from_pointer(runtime.last_pointer);
+        let normalized_pointer = node_from_local(local_pointer);
 
         match kind {
             RegionInteractionKind::Pressed => {
-                runtime.drawing_curve = true;
-                runtime.stroke_points.clear();
-                runtime.stroke_points.push(point);
+                let mut editable = self.params.editable_curve_snapshot();
+                if let Some(index) = find_node_hit(&editable, local_pointer) {
+                    runtime.selected_node = Some(index);
+                    runtime.drag_mode = Some(CurveDragMode::MoveNode { index });
+                    return;
+                }
+
+                if let Some(index) = find_segment_handle_hit(&editable, local_pointer) {
+                    let start_tension = editable
+                        .segments
+                        .get(index)
+                        .copied()
+                        .unwrap_or(CurveSegment { tension: 0.0 })
+                        .tension;
+                    runtime.drag_mode = Some(CurveDragMode::AdjustSegment {
+                        index,
+                        start_tension,
+                        start_pointer_y: local_pointer.y,
+                    });
+                    return;
+                }
+
+                let inserted_index = insert_node(&mut editable, normalized_pointer);
+                runtime.selected_node = Some(inserted_index);
+                runtime.drag_mode = Some(CurveDragMode::MoveNode {
+                    index: inserted_index,
+                });
+                self.params.set_editable_curve(&editable);
             }
             RegionInteractionKind::Dragged => {
-                if runtime.drawing_curve {
-                    runtime.stroke_points.push(point);
+                if let Some(drag_mode) = runtime.drag_mode {
+                    let mut editable = self.params.editable_curve_snapshot();
+                    match drag_mode {
+                        CurveDragMode::MoveNode { index } => {
+                            move_node(&mut editable, index, normalized_pointer);
+                            runtime.selected_node = Some(index);
+                        }
+                        CurveDragMode::AdjustSegment {
+                            index,
+                            start_tension,
+                            start_pointer_y,
+                        } => {
+                            if let Some(segment) = editable.segments.get_mut(index) {
+                                let delta = (start_pointer_y - local_pointer.y) as f32
+                                    / HANDLE_TENSION_PIXEL_SCALE;
+                                segment.tension = (start_tension + delta)
+                                    .clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
+                            }
+                        }
+                    }
+                    self.params.set_editable_curve(&editable);
                 }
             }
             RegionInteractionKind::Released => {
-                if runtime.drawing_curve {
-                    runtime.stroke_points.push(point);
-                    let fallback = self.params.curve_snapshot();
-                    let curve = points_to_curve(&runtime.stroke_points, &fallback);
-                    self.params.set_curve(&curve);
+                runtime.drag_mode = None;
+            }
+            RegionInteractionKind::SecondaryClicked => {
+                let mut editable = self.params.editable_curve_snapshot();
+                if let Some(index) = find_node_hit(&editable, local_pointer) {
+                    if index > 0 && index + 1 < editable.nodes.len() {
+                        editable.nodes.remove(index);
+                        let remove_segment = index
+                            .saturating_sub(1)
+                            .min(editable.segments.len().saturating_sub(1));
+                        if !editable.segments.is_empty() {
+                            editable.segments.remove(remove_segment);
+                        }
+                        runtime.selected_node = None;
+                        runtime.drag_mode = None;
+                        self.params.set_editable_curve(&editable);
+                    }
                 }
-                runtime.drawing_curve = false;
             }
-            RegionInteractionKind::DoubleClicked | RegionInteractionKind::SecondaryClicked => {
-                self.params.reset_curve_to_default();
-                runtime.drawing_curve = false;
-                runtime.stroke_points.clear();
-            }
+            RegionInteractionKind::DoubleClicked => {}
         }
     }
 
-    fn build_curve_draw_commands(&self, curve: &[f32; CURVE_TABLE_LEN]) -> Vec<DrawCommand> {
+    fn build_curve_draw_commands(
+        &self,
+        curve: &[f32; CURVE_TABLE_LEN],
+        editable_curve: &EditableCurve,
+        selected_node: Option<usize>,
+    ) -> Vec<DrawCommand> {
         let rect = Rect {
             origin: Point { x: 0, y: 0 },
             size: Size {
@@ -437,6 +523,50 @@ impl GuiState {
                 });
             }
             prev = Some(point);
+        }
+
+        for segment_index in 0..editable_curve.segments.len() {
+            let (base_point, handle_point) = segment_handle_points(editable_curve, segment_index);
+            commands.push(DrawCommand::Line {
+                start: base_point,
+                end: handle_point,
+                color: Color::rgb(86, 98, 122),
+            });
+            commands.push(DrawCommand::FillCircle {
+                center: handle_point,
+                radius: HANDLE_DRAW_RADIUS,
+                color: Color::rgb(129, 146, 176),
+            });
+            commands.push(DrawCommand::StrokeCircle {
+                center: handle_point,
+                radius: HANDLE_DRAW_RADIUS,
+                thickness: 1,
+                color: Color::rgb(193, 205, 228),
+            });
+        }
+
+        for (index, node) in editable_curve.nodes.iter().copied().enumerate() {
+            let center = local_from_node(node);
+            let selected = selected_node == Some(index);
+            commands.push(DrawCommand::FillCircle {
+                center,
+                radius: NODE_DRAW_RADIUS,
+                color: if selected {
+                    Color::rgb(255, 206, 118)
+                } else {
+                    Color::rgb(230, 240, 255)
+                },
+            });
+            commands.push(DrawCommand::StrokeCircle {
+                center,
+                radius: NODE_DRAW_RADIUS,
+                thickness: 1,
+                color: if selected {
+                    Color::rgb(255, 242, 206)
+                } else {
+                    Color::rgb(116, 129, 148)
+                },
+            });
         }
 
         let phase = self.status.phase();
@@ -506,10 +636,140 @@ impl GuiState {
     }
 }
 
-fn point_from_pointer(pointer: Point) -> FreehandPoint {
-    let local_x = (pointer.x - CURVE_X) as f32;
-    let local_y = (pointer.y - CURVE_Y) as f32;
-    let x = (local_x / CURVE_W.max(1) as f32).clamp(0.0, 1.0);
-    let y = (1.0 - (local_y / CURVE_H.max(1) as f32)).clamp(0.0, 1.0);
-    FreehandPoint { x, y }
+fn local_from_pointer(pointer: Point) -> Point {
+    let x = (pointer.x - CURVE_X).clamp(0, CURVE_W.saturating_sub(1) as i32);
+    let y = (pointer.y - CURVE_Y).clamp(0, CURVE_H.saturating_sub(1) as i32);
+    Point { x, y }
+}
+
+fn local_from_node(node: CurveNode) -> Point {
+    let x = (node.x.clamp(0.0, 1.0) * (CURVE_W as f32 - 1.0)).round() as i32;
+    let y = ((1.0 - node.y.clamp(0.0, 1.0)) * (CURVE_H as f32 - 1.0)).round() as i32;
+    Point { x, y }
+}
+
+fn node_from_local(local: Point) -> CurveNode {
+    let x = (local.x as f32 / CURVE_W.max(1) as f32).clamp(0.0, 1.0);
+    let y = (1.0 - (local.y as f32 / CURVE_H.max(1) as f32)).clamp(0.0, 1.0);
+    CurveNode { x, y }
+}
+
+fn find_node_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
+    let mut best: Option<(usize, i64)> = None;
+    for (index, node) in curve.nodes.iter().copied().enumerate() {
+        let center = local_from_node(node);
+        let distance = distance_squared(center, local_pointer);
+        if distance <= (NODE_HIT_RADIUS as i64 * NODE_HIT_RADIUS as i64) {
+            match best {
+                Some((_, best_distance)) if distance >= best_distance => {}
+                _ => best = Some((index, distance)),
+            }
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+fn find_segment_handle_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
+    let mut best: Option<(usize, i64)> = None;
+    for index in 0..curve.segments.len() {
+        let (_, handle) = segment_handle_points(curve, index);
+        let distance = distance_squared(handle, local_pointer);
+        if distance <= (HANDLE_HIT_RADIUS as i64 * HANDLE_HIT_RADIUS as i64) {
+            match best {
+                Some((_, best_distance)) if distance >= best_distance => {}
+                _ => best = Some((index, distance)),
+            }
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+fn segment_handle_points(curve: &EditableCurve, index: usize) -> (Point, Point) {
+    let left = curve.nodes[index];
+    let right = curve.nodes[(index + 1).min(curve.nodes.len() - 1)];
+    let mid_x = (left.x + right.x) * 0.5;
+    let mid_y = sample_editable_curve(curve, mid_x);
+    let base = local_from_node(CurveNode { x: mid_x, y: mid_y });
+    let tension = curve
+        .segments
+        .get(index)
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let handle = Point {
+        x: base.x,
+        y: (base.y as f32 - tension * HANDLE_TENSION_PIXEL_SCALE).round() as i32,
+    };
+    (base, handle)
+}
+
+fn insert_node(curve: &mut EditableCurve, node: CurveNode) -> usize {
+    if curve.nodes.len() >= MAX_EDITABLE_NODES {
+        return find_nearest_node(curve, local_from_node(node)).unwrap_or(0);
+    }
+
+    let mut insert_at = curve.nodes.partition_point(|existing| existing.x < node.x);
+    insert_at = insert_at.clamp(1, curve.nodes.len().saturating_sub(1));
+
+    let left_limit = curve.nodes[insert_at - 1].x + NODE_X_MIN_SPACING;
+    let right_limit = curve.nodes[insert_at].x - NODE_X_MIN_SPACING;
+    if left_limit >= right_limit {
+        return insert_at.saturating_sub(1);
+    }
+
+    let x = node.x.clamp(left_limit, right_limit);
+    let y = node.y.clamp(0.0, 1.0);
+    curve.nodes.insert(insert_at, CurveNode { x, y });
+
+    let inherited = curve
+        .segments
+        .get(insert_at.saturating_sub(1))
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 });
+    curve
+        .segments
+        .insert(insert_at.saturating_sub(1), inherited);
+    insert_at
+}
+
+fn move_node(curve: &mut EditableCurve, index: usize, target: CurveNode) {
+    if index >= curve.nodes.len() {
+        return;
+    }
+
+    let y = target.y.clamp(0.0, 1.0);
+    let last_index = curve.nodes.len() - 1;
+    if index == 0 {
+        curve.nodes[0].x = 0.0;
+        curve.nodes[0].y = y;
+        return;
+    }
+    if index == last_index {
+        curve.nodes[last_index].x = 1.0;
+        curve.nodes[last_index].y = y;
+        return;
+    }
+
+    let min_x = curve.nodes[index - 1].x + NODE_X_MIN_SPACING;
+    let max_x = curve.nodes[index + 1].x - NODE_X_MIN_SPACING;
+    curve.nodes[index].x = target.x.clamp(min_x, max_x);
+    curve.nodes[index].y = y;
+}
+
+fn find_nearest_node(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
+    let mut best: Option<(usize, i64)> = None;
+    for (index, node) in curve.nodes.iter().copied().enumerate() {
+        let distance = distance_squared(local_from_node(node), local_pointer);
+        match best {
+            Some((_, best_distance)) if distance >= best_distance => {}
+            _ => best = Some((index, distance)),
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+fn distance_squared(a: Point, b: Point) -> i64 {
+    let dx = a.x as i64 - b.x as i64;
+    let dy = a.y as i64 - b.y as i64;
+    dx * dx + dy * dy
 }
