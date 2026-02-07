@@ -27,41 +27,16 @@ use crate::params::{
 };
 use crate::{GuiStatus, HostParamRequester};
 
-const UI_SCALE: f32 = 0.6;
-
-const fn scale_u32(value: u32) -> u32 {
-    let scaled = (value as f32 * UI_SCALE + 0.5) as u32;
-    if scaled == 0 {
-        1
-    } else {
-        scaled
-    }
-}
-
-const fn scale_i32(value: i32) -> i32 {
-    if value == 0 {
-        return 0;
-    }
-    let scaled = if value > 0 {
-        (value as f32 * UI_SCALE + 0.5) as i32
-    } else {
-        (value as f32 * UI_SCALE - 0.5) as i32
-    };
-    if scaled == 0 {
-        value.signum()
-    } else {
-        scaled
-    }
-}
-
-const fn scale_f32(value: f32) -> f32 {
-    value * UI_SCALE
-}
-
-/// Default width for the plugin editor window.
-pub const WINDOW_WIDTH: u32 = scale_u32(700);
-/// Default height for the plugin editor window.
-pub const WINDOW_HEIGHT: u32 = scale_u32(430);
+/// Default logical width for the Pump design canvas.
+///
+/// Patchbay owns runtime scaling and resize policy; Pump only publishes this
+/// baseline logical size.
+pub const WINDOW_WIDTH: u32 = 700;
+/// Default logical height for the Pump design canvas.
+///
+/// Patchbay owns runtime scaling and resize policy; Pump only publishes this
+/// baseline logical size.
+pub const WINDOW_HEIGHT: u32 = 430;
 
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
@@ -72,25 +47,25 @@ const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 
-const PADDING_X: i32 = scale_i32(18);
-const HEADER_SECTION_H: u32 = scale_u32(34);
-const CONTROLS_SECTION_H: u32 = scale_u32(170);
+const PADDING_X: i32 = 18;
+const HEADER_SECTION_H: u32 = 34;
+const CONTROLS_SECTION_H: u32 = 170;
 const SPLINE_SECTION_H: u32 = WINDOW_HEIGHT - HEADER_SECTION_H - CONTROLS_SECTION_H;
-const SPLINE_TITLE_Y: i32 = scale_i32(4);
+const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = SPLINE_SECTION_H;
-const DROPDOWN_W: u32 = scale_u32(132);
-const DROPDOWN_SECTION_W: u32 = DROPDOWN_W + scale_u32(20);
-const TITLE_LABEL_W: u32 = scale_u32(64);
+const DROPDOWN_W: u32 = 132;
+const DROPDOWN_SECTION_W: u32 = DROPDOWN_W + 20;
+const TITLE_LABEL_W: u32 = 64;
 const LABEL_LINE_H: u32 = 16;
-const NODE_DRAW_RADIUS: i32 = scale_i32(4);
-const NODE_HIT_RADIUS: i32 = scale_i32(8);
-const SEGMENT_NEAR_HIT_RADIUS: i32 = scale_i32(16);
-const SEGMENT_DIRECT_HIT_RADIUS: i32 = scale_i32(6);
-const NODE_INSERT_GUARD_RADIUS: i32 = scale_i32(12);
-const CURVE_DRAG_START_THRESHOLD_PX: i32 = scale_i32(2);
-const CURVE_TENSION_PIXEL_SCALE: f32 = scale_f32(120.0);
-const NODE_PUSH_THROUGH_PX: i32 = scale_i32(10);
+const NODE_DRAW_RADIUS: i32 = 4;
+const NODE_HIT_RADIUS: i32 = 8;
+const SEGMENT_NEAR_HIT_RADIUS: i32 = 16;
+const SEGMENT_DIRECT_HIT_RADIUS: i32 = 6;
+const NODE_INSERT_GUARD_RADIUS: i32 = 12;
+const CURVE_DRAG_START_THRESHOLD_PX: i32 = 2;
+const CURVE_TENSION_PIXEL_SCALE: f32 = 120.0;
+const NODE_PUSH_THROUGH_PX: i32 = 10;
 const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
 const fn fixed_box(width: u32, height: u32) -> LayoutBox {
@@ -315,18 +290,15 @@ impl GuiState {
         let curve_h = content_h.saturating_sub(header_h + controls_h).max(1);
         let dropdown_section_w = DROPDOWN_SECTION_W.min(content_w).max(1);
         let knobs_section_w = content_w.saturating_sub(dropdown_section_w).max(1);
-        let dropdown_control_w = dropdown_section_w
-            .saturating_sub(scale_u32(8))
-            .max(scale_u32(64));
+        let dropdown_control_w = dropdown_section_w.saturating_sub(8).max(64);
         let label_line_h = LABEL_LINE_H;
         let padding_x = PADDING_X;
         let spline_title_y = SPLINE_TITLE_Y;
-        let spline_tip_y = curve_h as i32 - label_line_h as i32 - scale_i32(4);
+        let spline_tip_y = curve_h as i32 - label_line_h as i32 - 4;
         let subtitle_label_w =
-            content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(scale_u32(72)));
+            content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(72));
         let subtitle_label_w = subtitle_label_w.max(1);
-        let tip_label_w =
-            content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(scale_u32(8)));
+        let tip_label_w = content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(8));
         let tip_label_w = tip_label_w.max(1);
 
         let curve_size = Size {
@@ -424,7 +396,7 @@ impl GuiState {
             ),
             AbsoluteChild::new(
                 Point {
-                    x: padding_x + scale_i32(72),
+                    x: padding_x + 72,
                     y: spline_title_y,
                 },
                 label("Spline Beat-Synced Ducking")
@@ -482,17 +454,17 @@ impl GuiState {
             )
             .control_size(Size {
                 width: dropdown_control_w,
-                height: scale_u32(24),
+                height: 24,
             }),
             button(RESET_KEY, "Reset Curve").control_size(Size {
                 width: dropdown_control_w,
-                height: scale_u32(24),
+                height: 24,
             }),
             label(format!("Cycle: {}", sync_division_label(division)))
                 .text_color(theme.hint_text)
                 .layout(fixed_box(dropdown_control_w, label_line_h)),
         ])
-        .gap(scale_i32(4))
+        .gap(4)
         .pad_all(0)
         .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
@@ -876,7 +848,7 @@ impl GuiState {
         });
         commands.push(DrawCommand::StrokeRect {
             rect,
-            thickness: scale_u32(1),
+            thickness: 1,
             color: theme.curve_border,
         });
 
@@ -938,11 +910,11 @@ impl GuiState {
                     commands.push(DrawCommand::Line {
                         start: Point {
                             x: prev.x,
-                            y: prev.y + scale_i32(1),
+                            y: prev.y + 1,
                         },
                         end: Point {
                             x: point.x,
-                            y: point.y + scale_i32(1),
+                            y: point.y + 1,
                         },
                         color: theme.curve_line_highlight_glow,
                     });
@@ -961,7 +933,7 @@ impl GuiState {
             commands.push(DrawCommand::StrokeCircle {
                 center,
                 radius: NODE_DRAW_RADIUS + 2,
-                thickness: scale_i32(1),
+                thickness: 1,
                 color: theme.preview_stroke,
             });
         }
@@ -996,14 +968,14 @@ impl GuiState {
             commands.push(DrawCommand::StrokeCircle {
                 center,
                 radius: NODE_DRAW_RADIUS,
-                thickness: scale_i32(1),
+                thickness: 1,
                 color: stroke_color,
             });
             if selected || hovered {
                 commands.push(DrawCommand::StrokeCircle {
                     center,
                     radius: NODE_DRAW_RADIUS + 3,
-                    thickness: scale_i32(1),
+                    thickness: 1,
                     color: if selected {
                         theme.node_selected_ring
                     } else {
@@ -1030,17 +1002,17 @@ impl GuiState {
         let reduction = (1.0 - self.status.gain().clamp(0.0, 1.0)).clamp(0.0, 1.0);
         let meter_rect = Rect {
             origin: Point {
-                x: curve_size.width as i32 - scale_i32(12),
-                y: scale_i32(10),
+                x: curve_size.width as i32 - 12,
+                y: 10,
             },
             size: Size {
-                width: scale_u32(6),
-                height: curve_size.height.saturating_sub(scale_u32(20)),
+                width: 6,
+                height: curve_size.height.saturating_sub(20),
             },
         };
         commands.push(DrawCommand::StrokeRect {
             rect: meter_rect,
-            thickness: scale_u32(1),
+            thickness: 1,
             color: theme.meter_outline,
         });
         let fill_height = ((meter_rect.size.height as f32) * reduction).round() as u32;
@@ -1048,11 +1020,11 @@ impl GuiState {
             commands.push(DrawCommand::FillRect {
                 rect: Rect {
                     origin: Point {
-                        x: meter_rect.origin.x + scale_i32(1),
+                        x: meter_rect.origin.x + 1,
                         y: meter_rect.origin.y + meter_rect.size.height as i32 - fill_height as i32,
                     },
                     size: Size {
-                        width: meter_rect.size.width.saturating_sub(scale_u32(2)),
+                        width: meter_rect.size.width.saturating_sub(2),
                         height: fill_height,
                     },
                 },

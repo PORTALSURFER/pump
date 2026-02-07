@@ -499,10 +499,7 @@ impl<'a> PluginGuiImpl for PumpMainThread<'a> {
 
     fn get_size(&mut self) -> Option<clack_extensions::gui::GuiSize> {
         if let Some((width, height)) = self.gui.last_size() {
-            return Some(clamp_uniform_gui_size(clack_extensions::gui::GuiSize {
-                width,
-                height,
-            }));
+            return Some(clack_extensions::gui::GuiSize { width, height });
         }
         let (width, height) = crate::gui::preferred_window_size();
         Some(clack_extensions::gui::GuiSize { width, height })
@@ -516,11 +513,11 @@ impl<'a> PluginGuiImpl for PumpMainThread<'a> {
         &mut self,
         size: clack_extensions::gui::GuiSize,
     ) -> Option<clack_extensions::gui::GuiSize> {
-        Some(clamp_uniform_gui_size(size))
+        Some(size)
     }
 
     fn set_size(&mut self, size: clack_extensions::gui::GuiSize) -> Result<(), PluginError> {
-        let _ = clamp_uniform_gui_size(size);
+        let _ = size;
         Ok(())
     }
 
@@ -549,73 +546,14 @@ impl<'a> PluginGuiImpl for PumpMainThread<'a> {
     }
 }
 
-/// Enforce uniform editor scaling from the preferred base size.
-fn clamp_uniform_gui_size(size: clack_extensions::gui::GuiSize) -> clack_extensions::gui::GuiSize {
-    let (base_width, base_height) = crate::gui::preferred_window_size();
-    let min_width = base_width.max(1);
-    let min_height = base_height.max(1);
-    let requested_width = size.width.max(min_width);
-    let requested_height = size.height.max(min_height);
-
-    let width_scale = requested_width as f32 / min_width as f32;
-    let height_scale = requested_height as f32 / min_height as f32;
-    if width_scale >= height_scale {
-        let width = requested_width;
-        let height = ((width as f32) * min_height as f32 / min_width as f32).round() as u32;
-        clack_extensions::gui::GuiSize {
-            width: width.max(min_width),
-            height: height.max(min_height),
-        }
-    } else {
-        let height = requested_height;
-        let width = ((height as f32) * min_width as f32 / min_height as f32).round() as u32;
-        clack_extensions::gui::GuiSize {
-            width: width.max(min_width),
-            height: height.max(min_height),
-        }
-    }
-}
-
 toybox::clap_plugin_entry!(PumpPlugin);
 
 #[cfg(test)]
 mod tests {
-    use super::clamp_uniform_gui_size;
     use crate::dsp::db_to_linear;
-    use toybox::clack_extensions;
 
     #[test]
     fn db_to_linear_matches_unity_at_zero_db() {
         assert!((db_to_linear(0.0) - 1.0).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn clamp_uniform_gui_size_preserves_aspect_ratio_when_width_drives() {
-        let (base_w, base_h) = crate::gui::preferred_window_size();
-        let adjusted = clamp_uniform_gui_size(clack_extensions::gui::GuiSize {
-            width: 1000,
-            height: 300,
-        });
-        assert_eq!(adjusted.width, 1000);
-        let lhs = adjusted.width as u64 * base_h as u64;
-        let rhs = adjusted.height as u64 * base_w as u64;
-        assert!((lhs as i64 - rhs as i64).abs() <= base_w.max(base_h) as i64);
-        assert!(adjusted.width >= base_w);
-        assert!(adjusted.height >= base_h);
-    }
-
-    #[test]
-    fn clamp_uniform_gui_size_preserves_aspect_ratio_when_height_drives() {
-        let (base_w, base_h) = crate::gui::preferred_window_size();
-        let adjusted = clamp_uniform_gui_size(clack_extensions::gui::GuiSize {
-            width: 700,
-            height: 900,
-        });
-        assert_eq!(adjusted.height, 900);
-        let lhs = adjusted.width as u64 * base_h as u64;
-        let rhs = adjusted.height as u64 * base_w as u64;
-        assert!((lhs as i64 - rhs as i64).abs() <= base_w.max(base_h) as i64);
-        assert!(adjusted.width >= base_w);
-        assert!(adjusted.height >= base_h);
     }
 }
