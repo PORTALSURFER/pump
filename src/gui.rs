@@ -461,6 +461,7 @@ impl GuiState {
         )
         .pad_all(0)
         .background(theme.panel_background)
+        .outline(theme.panel_background)
         .layout(LayoutBox::fixed(content_w, header_h));
 
         let spline_section = panel(
@@ -471,6 +472,7 @@ impl GuiState {
         )
         .pad_all(0)
         .background(theme.panel_background)
+        .outline(theme.panel_background)
         .layout(LayoutBox::fixed(content_w, curve_h));
 
         let knobs_grid = grid(
@@ -503,6 +505,7 @@ impl GuiState {
         let knobs_section = panel(KNOBS_SECTION_KEY, knobs_grid)
             .pad_all(0)
             .background(theme.panel_background)
+            .outline(theme.panel_background)
             .layout(LayoutBox::fixed(knobs_section_w, controls_h));
 
         let dropdown_section_content = column(vec![
@@ -531,6 +534,7 @@ impl GuiState {
         let dropdown_section = panel(DROPDOWN_SECTION_KEY, dropdown_section_content)
             .pad_all(0)
             .background(theme.panel_background)
+            .outline(theme.panel_background)
             .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
         let controls_row = row(vec![knobs_section, dropdown_section])
@@ -543,6 +547,7 @@ impl GuiState {
         let controls_section = panel(CONTROLS_SECTION_KEY, controls_row)
             .pad_all(0)
             .background(theme.panel_background)
+            .outline(theme.panel_background)
             .layout(LayoutBox::fixed(content_w, controls_h));
 
         let content = column(vec![header_section, spline_section, controls_section])
