@@ -520,9 +520,7 @@ impl<'a> PluginGuiImpl for PumpMainThread<'a> {
     }
 
     fn set_size(&mut self, size: clack_extensions::gui::GuiSize) -> Result<(), PluginError> {
-        let clamped = clamp_uniform_gui_size(size);
-        self.gui
-            .request_resize(clamped.width.max(1), clamped.height.max(1));
+        let _ = clamp_uniform_gui_size(size);
         Ok(())
     }
 
