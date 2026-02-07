@@ -10,9 +10,9 @@ use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
     button, column, dropdown, grid, knob, label, measure_checked, panel, row, AbsoluteChild,
     AbsoluteSpec, DrawCommand, GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec,
-    RootFrameSpec, TrackSize, UiAction, UiSpec,
+    RootFrameSpec, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
-use toybox::gui::{Color, Point, Rect, Size};
+use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
 use crate::curve::{
@@ -106,6 +106,72 @@ const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
 const fn fixed_box(width: u32, height: u32) -> LayoutBox {
     LayoutBox::fixed(width, height).max(width, height)
+}
+
+/// Shared Pump color/style tokens derived from the canonical Patchbay theme.
+#[derive(Clone, Copy, Debug)]
+struct PumpTheme {
+    tokens: ThemeTokens,
+    panel_background: Color,
+    panel_outline: Color,
+    title_text: Color,
+    subtitle_text: Color,
+    hint_text: Color,
+    curve_bg: Color,
+    curve_border: Color,
+    curve_grid_vertical: Color,
+    curve_grid_horizontal: Color,
+    curve_line: Color,
+    curve_line_highlight: Color,
+    curve_line_highlight_glow: Color,
+    preview_fill: Color,
+    preview_stroke: Color,
+    node_fill: Color,
+    node_hover_fill: Color,
+    node_selected_fill: Color,
+    node_stroke: Color,
+    node_hover_stroke: Color,
+    node_selected_stroke: Color,
+    node_hover_ring: Color,
+    node_selected_ring: Color,
+    playhead: Color,
+    meter_outline: Color,
+    meter_fill: Color,
+}
+
+impl PumpTheme {
+    /// Return the canonical Pump GUI theme.
+    fn main() -> Self {
+        let palette = MainPalette::main();
+        Self {
+            tokens: ThemeTokens::main(),
+            panel_background: palette.background_secondary,
+            panel_outline: palette.ui_secondary,
+            title_text: palette.accent_focus,
+            subtitle_text: palette.syntax_emphasis,
+            hint_text: palette.text_muted,
+            curve_bg: palette.background_primary,
+            curve_border: palette.ui_secondary,
+            curve_grid_vertical: palette.background_secondary,
+            curve_grid_horizontal: palette.ui_secondary,
+            curve_line: palette.syntax_emphasis,
+            curve_line_highlight: palette.accent_focus,
+            curve_line_highlight_glow: palette.text_primary,
+            preview_fill: palette.literals,
+            preview_stroke: palette.identifiers,
+            node_fill: palette.text_primary,
+            node_hover_fill: palette.identifiers,
+            node_selected_fill: palette.accent_focus,
+            node_stroke: palette.ui_secondary,
+            node_hover_stroke: palette.syntax_emphasis,
+            node_selected_stroke: palette.text_primary,
+            node_hover_ring: palette.syntax_emphasis,
+            node_selected_ring: palette.accent_focus,
+            playhead: palette.accent_focus,
+            meter_outline: palette.ui_secondary,
+            meter_fill: palette.literals,
+        }
+    }
 }
 
 /// Host-window wrapper for the Pump editor.
@@ -254,6 +320,7 @@ impl GuiState {
     }
 
     fn build_ui(&self, input: &InputState) -> UiSpec {
+        let theme = PumpTheme::main();
         let (selected_node, curve_hovered, curve_local_pointer) =
             if let Ok(runtime) = self.runtime.lock() {
                 (
@@ -305,6 +372,7 @@ impl GuiState {
             hovered_node,
             hovered_segment,
             preview_node,
+            &theme,
         );
 
         let spline_controls = vec![
@@ -314,7 +382,7 @@ impl GuiState {
                     y: SPLINE_TITLE_Y,
                 },
                 label("PUMP")
-                    .text_color(Color::rgb(242, 244, 248))
+                    .text_color(theme.title_text)
                     .layout(fixed_box(TITLE_LABEL_W, LABEL_LINE_H)),
             ),
             AbsoluteChild::new(
@@ -323,7 +391,7 @@ impl GuiState {
                     y: SPLINE_TITLE_Y,
                 },
                 label("Spline Beat-Synced Ducking")
-                    .text_color(Color::rgb(168, 176, 192))
+                    .text_color(theme.subtitle_text)
                     .layout(fixed_box(SUBTITLE_LABEL_W, LABEL_LINE_H)),
             ),
             AbsoluteChild::new(
@@ -348,7 +416,7 @@ impl GuiState {
                     y: SPLINE_TIP_Y,
                 },
                 label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
-                    .text_color(Color::rgb(132, 142, 160))
+                    .text_color(theme.hint_text)
                     .layout(fixed_box(TIP_LABEL_W, LABEL_LINE_H)),
             ),
         ];
@@ -361,8 +429,8 @@ impl GuiState {
             ),
         )
         .pad_all(0)
-        .background(Color::rgb(22, 26, 34))
-        .outline(Color::rgb(62, 69, 84))
+        .background(theme.panel_background)
+        .outline(theme.panel_outline)
         .layout(LayoutBox::fixed(WINDOW_WIDTH, SPLINE_SECTION_H));
 
         let knobs_grid = grid(
@@ -394,8 +462,8 @@ impl GuiState {
 
         let knobs_section = panel(KNOBS_SECTION_KEY, knobs_grid)
             .pad_all(0)
-            .background(Color::rgb(22, 26, 34))
-            .outline(Color::rgb(62, 69, 84))
+            .background(theme.panel_background)
+            .outline(theme.panel_outline)
             .layout(LayoutBox::fixed(KNOBS_SECTION_W, BOTTOM_SECTION_H));
 
         let dropdown_section_content = column(vec![
@@ -414,7 +482,7 @@ impl GuiState {
                 height: scale_u32(24),
             }),
             label(format!("Cycle: {}", sync_division_label(division)))
-                .text_color(Color::rgb(173, 182, 198))
+                .text_color(theme.hint_text)
                 .layout(fixed_box(CYCLE_LABEL_W, LABEL_LINE_H)),
         ])
         .gap(scale_i32(4))
@@ -423,8 +491,8 @@ impl GuiState {
 
         let dropdown_section = panel(DROPDOWN_SECTION_KEY, dropdown_section_content)
             .pad_all(0)
-            .background(Color::rgb(22, 26, 34))
-            .outline(Color::rgb(62, 69, 84))
+            .background(theme.panel_background)
+            .outline(theme.panel_outline)
             .layout(LayoutBox::fixed(DROPDOWN_SECTION_W, BOTTOM_SECTION_H));
 
         let bottom_row = row(vec![knobs_section, dropdown_section])
@@ -441,14 +509,15 @@ impl GuiState {
 
         let root_content = panel("pump-main", content)
             .pad_all(0)
-            .background(Color::rgb(22, 26, 34))
-            .outline(Color::rgb(62, 69, 84))
+            .background(theme.panel_background)
+            .outline(theme.panel_outline)
             .layout(LayoutBox::fixed(WINDOW_WIDTH, CONTENT_H));
 
         UiSpec::new(
             RootFrameSpec::new(ROOT_KEY, root_content)
                 .title("pump")
                 .padding(0)
+                .tokens(theme.tokens)
                 .layout(LayoutBox::fixed(WINDOW_WIDTH, WINDOW_HEIGHT)),
         )
     }
@@ -777,6 +846,7 @@ impl GuiState {
         hovered_node: Option<usize>,
         hovered_segment: Option<usize>,
         preview_node: Option<CurveNode>,
+        theme: &PumpTheme,
     ) -> Vec<DrawCommand> {
         let rect = Rect {
             origin: Point { x: 0, y: 0 },
@@ -789,12 +859,12 @@ impl GuiState {
         let mut commands = Vec::with_capacity(1024);
         commands.push(DrawCommand::FillRect {
             rect,
-            color: Color::rgb(15, 18, 24),
+            color: theme.curve_bg,
         });
         commands.push(DrawCommand::StrokeRect {
             rect,
             thickness: scale_u32(1),
-            color: Color::rgb(58, 65, 80),
+            color: theme.curve_border,
         });
 
         for step in 1..16 {
@@ -805,7 +875,7 @@ impl GuiState {
                     x,
                     y: CURVE_H as i32 - 1,
                 },
-                color: Color::rgb(33, 39, 50),
+                color: theme.curve_grid_vertical,
             });
         }
 
@@ -817,7 +887,7 @@ impl GuiState {
                     x: CURVE_W as i32 - 1,
                     y,
                 },
-                color: Color::rgb(30, 36, 46),
+                color: theme.curve_grid_horizontal,
             });
         }
 
@@ -835,9 +905,9 @@ impl GuiState {
             });
             let highlight = preview_node.is_none() && hovered_segment == Some(segment_index);
             let line_color = if highlight {
-                Color::rgb(190, 230, 255)
+                theme.curve_line_highlight
             } else {
-                Color::rgb(134, 206, 255)
+                theme.curve_line
             };
             for step in 1..=steps {
                 let t = step as f32 / steps as f32;
@@ -861,7 +931,7 @@ impl GuiState {
                             x: point.x,
                             y: point.y + scale_i32(1),
                         },
-                        color: Color::rgb(226, 245, 255),
+                        color: theme.curve_line_highlight_glow,
                     });
                 }
                 prev = point;
@@ -873,13 +943,13 @@ impl GuiState {
             commands.push(DrawCommand::FillCircle {
                 center,
                 radius: NODE_DRAW_RADIUS + 1,
-                color: Color::rgb(170, 244, 193),
+                color: theme.preview_fill,
             });
             commands.push(DrawCommand::StrokeCircle {
                 center,
                 radius: NODE_DRAW_RADIUS + 2,
                 thickness: scale_i32(1),
-                color: Color::rgb(224, 255, 236),
+                color: theme.preview_stroke,
             });
         }
 
@@ -888,18 +958,18 @@ impl GuiState {
             let selected = selected_node == Some(index);
             let hovered = hovered_node == Some(index);
             let fill_color = if selected {
-                Color::rgb(255, 206, 118)
+                theme.node_selected_fill
             } else if hovered {
-                Color::rgb(187, 223, 255)
+                theme.node_hover_fill
             } else {
-                Color::rgb(230, 240, 255)
+                theme.node_fill
             };
             let stroke_color = if selected {
-                Color::rgb(255, 242, 206)
+                theme.node_selected_stroke
             } else if hovered {
-                Color::rgb(220, 236, 255)
+                theme.node_hover_stroke
             } else {
-                Color::rgb(116, 129, 148)
+                theme.node_stroke
             };
             commands.push(DrawCommand::FillCircle {
                 center,
@@ -922,9 +992,9 @@ impl GuiState {
                     radius: NODE_DRAW_RADIUS + 3,
                     thickness: scale_i32(1),
                     color: if selected {
-                        Color::rgb(255, 236, 196)
+                        theme.node_selected_ring
                     } else {
-                        Color::rgb(210, 232, 255)
+                        theme.node_hover_ring
                     },
                 });
             }
@@ -941,7 +1011,7 @@ impl GuiState {
                 x: playhead_x,
                 y: CURVE_H as i32 - 1,
             },
-            color: Color::rgb(245, 192, 118),
+            color: theme.playhead,
         });
 
         let reduction = (1.0 - self.status.gain().clamp(0.0, 1.0)).clamp(0.0, 1.0);
@@ -958,7 +1028,7 @@ impl GuiState {
         commands.push(DrawCommand::StrokeRect {
             rect: meter_rect,
             thickness: scale_u32(1),
-            color: Color::rgb(71, 79, 96),
+            color: theme.meter_outline,
         });
         let fill_height = ((meter_rect.size.height as f32) * reduction).round() as u32;
         if fill_height > 0 {
@@ -973,7 +1043,7 @@ impl GuiState {
                         height: fill_height,
                     },
                 },
-                color: Color::rgb(255, 120, 88),
+                color: theme.meter_fill,
             });
         }
 
