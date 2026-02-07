@@ -8,9 +8,9 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
-    button, column, dropdown, grid, knob, label, row, AbsoluteChild, AbsoluteSpec, DrawCommand,
-    GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec, RootScaleMode,
-    ThemeTokens, TrackSize, UiAction, UiSpec,
+    button, column, dropdown, grid, knob, label, panel, row, AbsoluteChild, AbsoluteSpec,
+    DrawCommand, GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec,
+    RootScaleMode, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -132,6 +132,9 @@ struct PumpTheme {
     title_text: Color,
     subtitle_text: Color,
     hint_text: Color,
+    header_bg: Color,
+    controls_knobs_bg: Color,
+    controls_dropdown_bg: Color,
     curve_bg: Color,
     curve_border: Color,
     curve_grid_vertical: Color,
@@ -161,13 +164,16 @@ impl PumpTheme {
         let tokens = ThemeTokens::main();
         Self {
             tokens,
-            title_text: palette.accent_focus,
-            subtitle_text: palette.syntax_emphasis,
-            hint_text: palette.text_muted,
-            curve_bg: palette.background_primary,
-            curve_border: palette.ui_secondary,
-            curve_grid_vertical: palette.background_secondary,
-            curve_grid_horizontal: palette.ui_secondary,
+            title_text: Color::rgb(25, 25, 25),
+            subtitle_text: Color::rgb(34, 34, 34),
+            hint_text: Color::rgb(24, 24, 24),
+            header_bg: Color::rgb(255, 128, 38),
+            controls_knobs_bg: Color::rgb(28, 160, 214),
+            controls_dropdown_bg: Color::rgb(70, 74, 196),
+            curve_bg: Color::rgb(255, 242, 0),
+            curve_border: Color::rgb(22, 22, 22),
+            curve_grid_vertical: Color::rgb(225, 215, 0),
+            curve_grid_horizontal: Color::rgb(216, 206, 0),
             curve_line: palette.syntax_emphasis,
             curve_line_highlight: palette.accent_focus,
             curve_line_highlight_glow: palette.text_primary,
@@ -470,15 +476,27 @@ impl GuiState {
             ),
         ];
 
-        let header_section = Node::Absolute(
+        let header_content = Node::Absolute(
             AbsoluteSpec::new(header_controls).layout(LayoutBox::fixed(content_w, header_h)),
         )
         .layout(LayoutBox::fixed(content_w, header_h));
 
-        let spline_section = Node::Absolute(
+        let spline_content = Node::Absolute(
             AbsoluteSpec::new(spline_controls).layout(LayoutBox::fixed(content_w, curve_h)),
         )
         .layout(LayoutBox::fixed(content_w, curve_h));
+
+        let header_section = panel("header", header_content)
+            .background(theme.header_bg)
+            .outline(theme.header_bg)
+            .pad_all(0)
+            .layout(LayoutBox::fixed(content_w, header_h));
+
+        let spline_section = panel("spline", spline_content)
+            .background(theme.curve_bg)
+            .outline(theme.curve_border)
+            .pad_all(0)
+            .layout(LayoutBox::fixed(content_w, curve_h));
 
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; 4])
@@ -508,7 +526,11 @@ impl GuiState {
         )
         .layout(LayoutBox::fill());
 
-        let knobs_section = knobs_grid.layout(LayoutBox::fixed(knobs_section_w, controls_h));
+        let knobs_section = panel("knobs", knobs_grid.layout(LayoutBox::fill()))
+            .background(theme.controls_knobs_bg)
+            .outline(theme.controls_knobs_bg)
+            .pad_all(8)
+            .layout(LayoutBox::fixed(knobs_section_w, controls_h));
 
         let dropdown_section_content = column(vec![
             dropdown(
@@ -526,21 +548,27 @@ impl GuiState {
                 height: 24,
             }),
             label(format!("Cycle: {}", sync_division_label(division)))
-                .text_color(theme.hint_text)
+                .text_color(Color::rgb(245, 245, 245))
                 .layout(fixed_box(dropdown_control_w, label_line_h)),
         ])
         .gap(4)
         .pad_all(0)
         .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
-        let dropdown_section =
-            dropdown_section_content.layout(LayoutBox::fixed(dropdown_section_w, controls_h));
+        let dropdown_section = panel(
+            "dropdown",
+            dropdown_section_content.layout(LayoutBox::fill()),
+        )
+        .background(theme.controls_dropdown_bg)
+        .outline(theme.controls_dropdown_bg)
+        .pad_all(8)
+        .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
         let controls_row = row(vec![knobs_section, dropdown_section])
             .gap(0)
             .pad_all(0)
             .justify_start()
-            .align_start()
+            .align_stretch()
             .layout(LayoutBox::fixed(content_w, controls_h));
 
         let controls_section = controls_row.layout(LayoutBox::fixed(content_w, controls_h));
@@ -1698,9 +1726,15 @@ mod tests {
             other => panic!("expected root content column, got {other:?}"),
         };
         assert_eq!(root_column.children.len(), 3);
-        assert!(matches!(root_column.children[0], Node::Absolute(_)));
-        assert!(matches!(root_column.children[1], Node::Absolute(_)));
-        assert!(matches!(root_column.children[2], Node::Row(_)));
+        assert!(matches!(root_column.children[0], Node::Panel(_)));
+        assert!(matches!(root_column.children[1], Node::Panel(_)));
+        let controls_row = match &root_column.children[2] {
+            Node::Row(row) => row,
+            other => panic!("expected controls row, got {other:?}"),
+        };
+        assert_eq!(controls_row.children.len(), 2);
+        assert!(matches!(controls_row.children[0], Node::Panel(_)));
+        assert!(matches!(controls_row.children[1], Node::Panel(_)));
     }
 
     fn find_curve_region_node(node: &Node) -> Option<&toybox::gui::declarative::RegionSpec> {
