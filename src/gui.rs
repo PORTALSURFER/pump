@@ -58,6 +58,22 @@ const fn scale_f32(value: f32) -> f32 {
     value * UI_SCALE
 }
 
+fn zoom_u32(value: u32, zoom: f32) -> u32 {
+    ((value as f32 * zoom).round() as u32).max(1)
+}
+
+fn zoom_i32(value: i32, zoom: f32) -> i32 {
+    if value == 0 {
+        return 0;
+    }
+    let scaled = (value as f32 * zoom).round() as i32;
+    if scaled == 0 {
+        value.signum()
+    } else {
+        scaled
+    }
+}
+
 /// Default width for the plugin editor window.
 pub const WINDOW_WIDTH: u32 = scale_u32(700);
 /// Default height for the plugin editor window.
@@ -135,20 +151,21 @@ struct PumpTheme {
 
 impl PumpTheme {
     /// Return the canonical Pump GUI theme.
-    fn main() -> Self {
+    fn for_zoom(zoom: f32) -> Self {
         let palette = MainPalette::main();
         let mut tokens = ThemeTokens::main();
-        // Keep declarative control metrics in the same scaled coordinate space
-        // as Pump's section/layout constants.
-        tokens.typography.text_scale = 2;
-        tokens.controls.slider_width = scale_u32(tokens.controls.slider_width);
-        tokens.controls.slider_height = scale_u32(tokens.controls.slider_height);
-        tokens.controls.toggle_width = scale_u32(tokens.controls.toggle_width);
-        tokens.controls.toggle_height = scale_u32(tokens.controls.toggle_height);
-        tokens.controls.button_width = scale_u32(tokens.controls.button_width);
-        tokens.controls.button_height = scale_u32(tokens.controls.button_height);
-        tokens.controls.dropdown_width = scale_u32(tokens.controls.dropdown_width);
-        tokens.controls.dropdown_height = scale_u32(tokens.controls.dropdown_height);
+        let effective_zoom = zoom.max(0.25);
+        tokens.typography.text_scale =
+            ((tokens.typography.text_scale as f32 * effective_zoom).round() as u32).max(1);
+        tokens.controls.knob_diameter = zoom_u32(tokens.controls.knob_diameter, effective_zoom);
+        tokens.controls.slider_width = zoom_u32(tokens.controls.slider_width, effective_zoom);
+        tokens.controls.slider_height = zoom_u32(tokens.controls.slider_height, effective_zoom);
+        tokens.controls.toggle_width = zoom_u32(tokens.controls.toggle_width, effective_zoom);
+        tokens.controls.toggle_height = zoom_u32(tokens.controls.toggle_height, effective_zoom);
+        tokens.controls.button_width = zoom_u32(tokens.controls.button_width, effective_zoom);
+        tokens.controls.button_height = zoom_u32(tokens.controls.button_height, effective_zoom);
+        tokens.controls.dropdown_width = zoom_u32(tokens.controls.dropdown_width, effective_zoom);
+        tokens.controls.dropdown_height = zoom_u32(tokens.controls.dropdown_height, effective_zoom);
         Self {
             tokens,
             title_text: palette.accent_focus,
@@ -331,23 +348,31 @@ impl GuiState {
     }
 
     fn build_ui(&self, input: &InputState) -> UiSpec {
-        let theme = PumpTheme::main();
         let viewport = viewport_size(input);
         let content_w = viewport.width;
         let content_h = viewport.height;
-        let header_h = HEADER_SECTION_H.min(content_h);
-        let controls_h = CONTROLS_SECTION_H.min(content_h.saturating_sub(header_h));
+        let zoom = (content_h as f32 / WINDOW_HEIGHT.max(1) as f32)
+            .min(content_w as f32 / WINDOW_WIDTH.max(1) as f32)
+            .max(0.25);
+        let theme = PumpTheme::for_zoom(zoom);
+        let header_h = zoom_u32(HEADER_SECTION_H, zoom).min(content_h);
+        let controls_h = zoom_u32(CONTROLS_SECTION_H, zoom).min(content_h.saturating_sub(header_h));
         let curve_h = content_h.saturating_sub(header_h + controls_h).max(1);
-        let dropdown_section_w = DROPDOWN_SECTION_W.min(content_w).max(1);
+        let dropdown_section_w = zoom_u32(DROPDOWN_SECTION_W, zoom).min(content_w).max(1);
         let knobs_section_w = content_w.saturating_sub(dropdown_section_w).max(1);
         let dropdown_control_w = dropdown_section_w
-            .saturating_sub(scale_u32(8))
-            .max(scale_u32(64));
-        let spline_tip_y = curve_h as i32 - LABEL_LINE_H as i32 - scale_i32(4);
-        let subtitle_label_w =
-            content_w.saturating_sub((PADDING_X.max(0) as u32).saturating_add(scale_u32(72)));
+            .saturating_sub(zoom_u32(scale_u32(8), zoom))
+            .max(zoom_u32(scale_u32(64), zoom));
+        let label_line_h = zoom_u32(LABEL_LINE_H, zoom);
+        let padding_x = zoom_i32(PADDING_X, zoom);
+        let spline_title_y = zoom_i32(SPLINE_TITLE_Y, zoom);
+        let spline_tip_y = curve_h as i32 - label_line_h as i32 - zoom_i32(scale_i32(4), zoom);
+        let subtitle_label_w = content_w.saturating_sub(
+            (padding_x.max(0) as u32).saturating_add(zoom_u32(scale_u32(72), zoom)),
+        );
         let subtitle_label_w = subtitle_label_w.max(1);
-        let tip_label_w = content_w.saturating_sub((PADDING_X.max(0) as u32).saturating_add(8));
+        let tip_label_w =
+            content_w.saturating_sub((padding_x.max(0) as u32).saturating_add(zoom_u32(8, zoom)));
         let tip_label_w = tip_label_w.max(1);
 
         let curve_size = Size {
@@ -428,33 +453,33 @@ impl GuiState {
             ),
             AbsoluteChild::new(
                 Point {
-                    x: PADDING_X,
+                    x: padding_x,
                     y: spline_tip_y,
                 },
                 label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
                     .text_color(theme.hint_text)
-                    .layout(fixed_box(tip_label_w, LABEL_LINE_H)),
+                    .layout(fixed_box(tip_label_w, label_line_h)),
             ),
         ];
 
         let header_controls = vec![
             AbsoluteChild::new(
                 Point {
-                    x: PADDING_X,
-                    y: SPLINE_TITLE_Y,
+                    x: padding_x,
+                    y: spline_title_y,
                 },
                 label("PUMP")
                     .text_color(theme.title_text)
-                    .layout(fixed_box(TITLE_LABEL_W, LABEL_LINE_H)),
+                    .layout(fixed_box(zoom_u32(TITLE_LABEL_W, zoom), label_line_h)),
             ),
             AbsoluteChild::new(
                 Point {
-                    x: PADDING_X + scale_i32(72),
-                    y: SPLINE_TITLE_Y,
+                    x: padding_x + zoom_i32(scale_i32(72), zoom),
+                    y: spline_title_y,
                 },
                 label("Spline Beat-Synced Ducking")
                     .text_color(theme.subtitle_text)
-                    .layout(fixed_box(subtitle_label_w, LABEL_LINE_H)),
+                    .layout(fixed_box(subtitle_label_w, label_line_h)),
             ),
         ];
 
@@ -515,9 +540,9 @@ impl GuiState {
             }),
             label(format!("Cycle: {}", sync_division_label(division)))
                 .text_color(theme.hint_text)
-                .layout(fixed_box(dropdown_control_w, LABEL_LINE_H)),
+                .layout(fixed_box(dropdown_control_w, label_line_h)),
         ])
-        .gap(scale_i32(4))
+        .gap(zoom_i32(scale_i32(4), zoom))
         .pad_all(0)
         .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
