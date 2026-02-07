@@ -559,7 +559,14 @@ impl GuiState {
     }
 
     fn measured_open_size(&self) -> (u32, u32) {
-        let spec = self.build_ui(&InputState::default());
+        let baseline_input = InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        };
+        let spec = self.build_ui(&baseline_input);
         match measure_checked(&spec) {
             Ok(size) => (size.width.max(1), size.height.max(1)),
             Err(_) => (WINDOW_WIDTH, WINDOW_HEIGHT),
