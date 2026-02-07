@@ -8,9 +8,9 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
-    button, column, dropdown, grid, knob, label, panel, row, AbsoluteChild, AbsoluteSpec,
-    DrawCommand, GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec,
-    ThemeTokens, TrackSize, UiAction, UiSpec,
+    button, column, column_sections, dropdown, grid, knob, label, panel, root_frame_sized,
+    row_sections, weighted, AbsoluteChild, AbsoluteSpec, DrawCommand, GridTemplate, LayoutBox,
+    Node, RegionInteractionKind, RegionSpec, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -48,14 +48,18 @@ const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 
 const PADDING_X: i32 = 18;
-const HEADER_RATIO_PERCENT: u32 = 7;
-const CONTROLS_RATIO_PERCENT: u32 = 30;
-const KNOBS_RATIO_PERCENT: u32 = 70;
-const HEADER_MIN_HEIGHT: u32 = 16;
-const CONTROLS_MIN_HEIGHT: u32 = 64;
+const HEADER_SECTION_WEIGHT: u16 = 7;
+const CURVE_SECTION_WEIGHT: u16 = 63;
+const CONTROLS_SECTION_WEIGHT: u16 = 30;
+const ROOT_SECTION_WEIGHT_SUM: u32 =
+    HEADER_SECTION_WEIGHT as u32 + CURVE_SECTION_WEIGHT as u32 + CONTROLS_SECTION_WEIGHT as u32;
+const KNOBS_SECTION_WEIGHT: u16 = 70;
+const DROPDOWN_SECTION_WEIGHT: u16 = 30;
+const CONTROLS_SECTION_WEIGHT_SUM: u32 =
+    KNOBS_SECTION_WEIGHT as u32 + DROPDOWN_SECTION_WEIGHT as u32;
 const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
-const CURVE_H: u32 = resolve_section_heights(WINDOW_HEIGHT).1;
+const CURVE_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).1;
 const TITLE_LABEL_W: u32 = 64;
 const LABEL_LINE_H: u32 = 16;
 const NODE_DRAW_RADIUS: i32 = 4;
@@ -80,43 +84,21 @@ const fn u32_max(left: u32, right: u32) -> u32 {
     }
 }
 
-const fn u32_min(left: u32, right: u32) -> u32 {
-    if left < right {
-        left
-    } else {
-        right
-    }
-}
-
-const fn resolve_section_heights(total_height: u32) -> (u32, u32, u32) {
+const fn resolve_vertical_section_heights(total_height: u32) -> (u32, u32, u32) {
     let clamped_total = u32_max(total_height, 1);
-    let header_h = u32_min(
-        u32_max(
-            clamped_total.saturating_mul(HEADER_RATIO_PERCENT) / 100,
-            HEADER_MIN_HEIGHT,
-        ),
-        clamped_total.saturating_sub(1),
-    );
-
-    let remaining = u32_max(clamped_total.saturating_sub(header_h), 1);
-
-    let mut controls_h = u32_min(
-        u32_max(
-            clamped_total.saturating_mul(CONTROLS_RATIO_PERCENT) / 100,
-            CONTROLS_MIN_HEIGHT,
-        ),
-        remaining.saturating_sub(1),
-    );
-    if controls_h >= remaining {
-        controls_h = remaining.saturating_sub(1);
-    }
-    let curve_h = u32_max(remaining.saturating_sub(controls_h), 1);
+    let header_h =
+        clamped_total.saturating_mul(HEADER_SECTION_WEIGHT as u32) / ROOT_SECTION_WEIGHT_SUM;
+    let controls_h =
+        clamped_total.saturating_mul(CONTROLS_SECTION_WEIGHT as u32) / ROOT_SECTION_WEIGHT_SUM;
+    let consumed = header_h.saturating_add(controls_h);
+    let curve_h = clamped_total.saturating_sub(consumed);
     (header_h, curve_h, controls_h)
 }
 
-const fn resolve_bottom_section_widths(total_width: u32) -> (u32, u32) {
+const fn resolve_controls_section_widths(total_width: u32) -> (u32, u32) {
     let clamped_total = u32_max(total_width, 1);
-    let mut knobs_w = clamped_total.saturating_mul(KNOBS_RATIO_PERCENT) / 100;
+    let mut knobs_w =
+        clamped_total.saturating_mul(KNOBS_SECTION_WEIGHT as u32) / CONTROLS_SECTION_WEIGHT_SUM;
     if knobs_w >= clamped_total {
         knobs_w = clamped_total.saturating_sub(1);
     }
@@ -356,8 +338,8 @@ impl GuiState {
         let content_w = input.window_size.width.max(WINDOW_WIDTH);
         let content_h = input.window_size.height.max(WINDOW_HEIGHT);
         let theme = PumpTheme::main();
-        let (header_h, curve_h, controls_h) = resolve_section_heights(content_h);
-        let (knobs_section_w, dropdown_section_w) = resolve_bottom_section_widths(content_w);
+        let (_header_h, curve_h, _controls_h) = resolve_vertical_section_heights(content_h);
+        let (_knobs_section_w, dropdown_section_w) = resolve_controls_section_widths(content_w);
         let dropdown_control_w = dropdown_section_w.saturating_sub(8).max(64);
         let label_line_h = LABEL_LINE_H;
         let padding_x = PADDING_X;
@@ -474,25 +456,20 @@ impl GuiState {
             ),
         ];
 
-        let header_content = Node::Absolute(
-            AbsoluteSpec::new(header_controls).layout(LayoutBox::fixed(content_w, header_h)),
-        )
-        .layout(LayoutBox::fixed(content_w, header_h));
+        let header_content =
+            Node::Absolute(AbsoluteSpec::new(header_controls).layout(LayoutBox::fill()))
+                .layout(LayoutBox::fill());
 
-        let spline_content = Node::Absolute(
-            AbsoluteSpec::new(spline_controls).layout(LayoutBox::fixed(content_w, curve_h)),
-        )
-        .layout(LayoutBox::fixed(content_w, curve_h));
+        let spline_content =
+            Node::Absolute(AbsoluteSpec::new(spline_controls).layout(LayoutBox::fill()))
+                .layout(LayoutBox::fill());
 
-        let header_section = panel("header", header_content)
-            .pad_all(0)
-            .layout(LayoutBox::fixed(content_w, header_h));
+        let header_section = panel("header", header_content).pad_all(0);
 
         let spline_section = panel("spline", spline_content)
             .background(theme.curve_bg)
             .outline(theme.curve_border)
-            .pad_all(0)
-            .layout(LayoutBox::fixed(content_w, curve_h));
+            .pad_all(0);
 
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; 4])
@@ -522,9 +499,7 @@ impl GuiState {
         )
         .layout(LayoutBox::fill());
 
-        let knobs_section = panel("knobs", knobs_grid.layout(LayoutBox::fill()))
-            .pad_all(8)
-            .layout(LayoutBox::fixed(knobs_section_w, controls_h));
+        let knobs_section = panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_all(8);
 
         let dropdown_section_content = column(vec![
             dropdown(
@@ -547,36 +522,39 @@ impl GuiState {
         ])
         .gap(4)
         .pad_all(0)
-        .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
+        .layout(LayoutBox::fill());
 
         let dropdown_section = panel(
             "dropdown",
             dropdown_section_content.layout(LayoutBox::fill()),
         )
-        .pad_all(8)
-        .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
+        .pad_all(8);
 
-        let controls_row = row(vec![knobs_section, dropdown_section])
-            .gap(0)
-            .pad_all(0)
-            .justify_start()
-            .align_stretch()
-            .layout(LayoutBox::fixed(content_w, controls_h));
+        let controls_row = row_sections(vec![
+            weighted(knobs_section, KNOBS_SECTION_WEIGHT),
+            weighted(dropdown_section, DROPDOWN_SECTION_WEIGHT),
+        ]);
 
-        let controls_section = panel("controls", controls_row)
-            .pad_all(0)
-            .layout(LayoutBox::fixed(content_w, controls_h));
+        let controls_section = panel("controls", controls_row).pad_all(0);
 
-        let content = column(vec![header_section, spline_section, controls_section])
-            .gap(0)
-            .pad_all(0)
-            .layout(LayoutBox::fixed(content_w, content_h));
+        let content = column_sections(vec![
+            weighted(header_section, HEADER_SECTION_WEIGHT),
+            weighted(spline_section, CURVE_SECTION_WEIGHT),
+            weighted(controls_section, CONTROLS_SECTION_WEIGHT),
+        ]);
 
         UiSpec::new(
-            RootFrameSpec::new(ROOT_KEY, content)
-                .padding(0)
-                .tokens(theme.tokens)
-                .layout(LayoutBox::fixed(content_w, content_h)),
+            root_frame_sized(
+                ROOT_KEY,
+                content,
+                Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                },
+                input.window_size,
+            )
+            .padding(0)
+            .tokens(theme.tokens),
         )
     }
 
@@ -1463,8 +1441,8 @@ mod tests {
     use super::{
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
-        preview_node_on_curve, resolve_bottom_section_widths, resolve_section_heights, GuiState,
-        CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
+        preview_node_on_curve, resolve_controls_section_widths, resolve_vertical_section_heights,
+        GuiState, CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -1643,7 +1621,7 @@ mod tests {
 
     #[test]
     fn section_height_split_matches_expected_ratios() {
-        let (header_h, curve_h, controls_h) = resolve_section_heights(WINDOW_HEIGHT);
+        let (header_h, curve_h, controls_h) = resolve_vertical_section_heights(WINDOW_HEIGHT);
         assert_eq!(header_h, 18);
         assert_eq!(curve_h, 163);
         assert_eq!(controls_h, 77);
@@ -1652,7 +1630,7 @@ mod tests {
 
     #[test]
     fn bottom_row_split_matches_expected_ratio() {
-        let (knobs_w, dropdown_w) = resolve_bottom_section_widths(WINDOW_WIDTH);
+        let (knobs_w, dropdown_w) = resolve_controls_section_widths(WINDOW_WIDTH);
         assert_eq!(knobs_w, 294);
         assert_eq!(dropdown_w, 126);
         assert_eq!(knobs_w + dropdown_w, WINDOW_WIDTH);
