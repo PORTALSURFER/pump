@@ -131,9 +131,6 @@ struct PumpTheme {
     title_text: Color,
     subtitle_text: Color,
     hint_text: Color,
-    header_bg: Color,
-    controls_knobs_bg: Color,
-    controls_dropdown_bg: Color,
     curve_bg: Color,
     curve_border: Color,
     curve_grid_vertical: Color,
@@ -163,16 +160,13 @@ impl PumpTheme {
         let tokens = ThemeTokens::main();
         Self {
             tokens,
-            title_text: Color::rgb(25, 25, 25),
-            subtitle_text: Color::rgb(34, 34, 34),
-            hint_text: Color::rgb(24, 24, 24),
-            header_bg: Color::rgb(255, 128, 38),
-            controls_knobs_bg: Color::rgb(28, 160, 214),
-            controls_dropdown_bg: Color::rgb(70, 74, 196),
-            curve_bg: Color::rgb(255, 242, 0),
-            curve_border: Color::rgb(22, 22, 22),
-            curve_grid_vertical: Color::rgb(225, 215, 0),
-            curve_grid_horizontal: Color::rgb(216, 206, 0),
+            title_text: palette.accent_focus,
+            subtitle_text: palette.syntax_emphasis,
+            hint_text: palette.text_muted,
+            curve_bg: palette.background_primary,
+            curve_border: palette.ui_secondary,
+            curve_grid_vertical: palette.background_secondary,
+            curve_grid_horizontal: palette.ui_secondary,
             curve_line: palette.syntax_emphasis,
             curve_line_highlight: palette.accent_focus,
             curve_line_highlight_glow: palette.text_primary,
@@ -486,8 +480,6 @@ impl GuiState {
         .layout(LayoutBox::fixed(content_w, curve_h));
 
         let header_section = panel("header", header_content)
-            .background(theme.header_bg)
-            .outline(theme.header_bg)
             .pad_all(0)
             .layout(LayoutBox::fixed(content_w, header_h));
 
@@ -526,8 +518,6 @@ impl GuiState {
         .layout(LayoutBox::fill());
 
         let knobs_section = panel("knobs", knobs_grid.layout(LayoutBox::fill()))
-            .background(theme.controls_knobs_bg)
-            .outline(theme.controls_knobs_bg)
             .pad_all(8)
             .layout(LayoutBox::fixed(knobs_section_w, controls_h));
 
@@ -547,7 +537,7 @@ impl GuiState {
                 height: 24,
             }),
             label(format!("Cycle: {}", sync_division_label(division)))
-                .text_color(Color::rgb(245, 245, 245))
+                .text_color(theme.hint_text)
                 .layout(fixed_box(dropdown_control_w, label_line_h)),
         ])
         .gap(4)
@@ -558,8 +548,6 @@ impl GuiState {
             "dropdown",
             dropdown_section_content.layout(LayoutBox::fill()),
         )
-        .background(theme.controls_dropdown_bg)
-        .outline(theme.controls_dropdown_bg)
         .pad_all(8)
         .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
@@ -570,7 +558,9 @@ impl GuiState {
             .align_stretch()
             .layout(LayoutBox::fixed(content_w, controls_h));
 
-        let controls_section = controls_row.layout(LayoutBox::fixed(content_w, controls_h));
+        let controls_section = panel("controls", controls_row)
+            .pad_all(0)
+            .layout(LayoutBox::fixed(content_w, controls_h));
 
         let content = column(vec![header_section, spline_section, controls_section])
             .gap(0)
@@ -1727,9 +1717,13 @@ mod tests {
         assert_eq!(root_column.children.len(), 3);
         assert!(matches!(root_column.children[0], Node::Panel(_)));
         assert!(matches!(root_column.children[1], Node::Panel(_)));
-        let controls_row = match &root_column.children[2] {
+        let controls_panel = match &root_column.children[2] {
+            Node::Panel(panel) => panel,
+            other => panic!("expected controls panel, got {other:?}"),
+        };
+        let controls_row = match controls_panel.content.as_ref() {
             Node::Row(row) => row,
-            other => panic!("expected controls row, got {other:?}"),
+            other => panic!("expected controls row in panel, got {other:?}"),
         };
         assert_eq!(controls_row.children.len(), 2);
         assert!(matches!(controls_row.children[0], Node::Panel(_)));
