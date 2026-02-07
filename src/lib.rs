@@ -506,19 +506,23 @@ impl<'a> PluginGuiImpl for PumpMainThread<'a> {
     }
 
     fn can_resize(&mut self) -> bool {
-        false
+        true
     }
 
     fn adjust_size(
         &mut self,
         size: clack_extensions::gui::GuiSize,
     ) -> Option<clack_extensions::gui::GuiSize> {
-        let _ = size;
-        None
+        let (min_width, min_height) = crate::gui::preferred_window_size();
+        Some(clack_extensions::gui::GuiSize {
+            width: size.width.max(min_width),
+            height: size.height.max(min_height),
+        })
     }
 
     fn set_size(&mut self, size: clack_extensions::gui::GuiSize) -> Result<(), PluginError> {
-        let _ = size;
+        self.gui
+            .request_resize(size.width.max(1), size.height.max(1));
         Ok(())
     }
 
