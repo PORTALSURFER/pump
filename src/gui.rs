@@ -9,8 +9,9 @@ use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
     button, column, column_sections, dropdown, grid, knob, label, panel, root_frame_sized,
-    row_sections, weighted, AbsoluteChild, AbsoluteSpec, DrawCommand, GridTemplate, LayoutBox,
-    Node, RegionInteractionKind, RegionSpec, ThemeTokens, TrackSize, UiAction, UiSpec,
+    row_sections, weighted, weighted_section_lengths, AbsoluteChild, AbsoluteSpec, DrawCommand,
+    GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, ThemeTokens, TrackSize,
+    UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -55,8 +56,6 @@ const ROOT_SECTION_WEIGHT_SUM: u32 =
     HEADER_SECTION_WEIGHT as u32 + CURVE_SECTION_WEIGHT as u32 + CONTROLS_SECTION_WEIGHT as u32;
 const KNOBS_SECTION_WEIGHT: u16 = 70;
 const DROPDOWN_SECTION_WEIGHT: u16 = 30;
-const CONTROLS_SECTION_WEIGHT_SUM: u32 =
-    KNOBS_SECTION_WEIGHT as u32 + DROPDOWN_SECTION_WEIGHT as u32;
 const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).1;
@@ -95,15 +94,31 @@ const fn resolve_vertical_section_heights(total_height: u32) -> (u32, u32, u32) 
     (header_h, curve_h, controls_h)
 }
 
-const fn resolve_controls_section_widths(total_width: u32) -> (u32, u32) {
-    let clamped_total = u32_max(total_width, 1);
-    let mut knobs_w =
-        clamped_total.saturating_mul(KNOBS_SECTION_WEIGHT as u32) / CONTROLS_SECTION_WEIGHT_SUM;
-    if knobs_w >= clamped_total {
-        knobs_w = clamped_total.saturating_sub(1);
-    }
-    let dropdown_w = u32_max(clamped_total.saturating_sub(knobs_w), 1);
-    (knobs_w, dropdown_w)
+fn resolve_runtime_vertical_section_heights(total_height: u32) -> (u32, u32, u32) {
+    let heights = weighted_section_lengths(
+        total_height.max(1),
+        &[
+            HEADER_SECTION_WEIGHT,
+            CURVE_SECTION_WEIGHT,
+            CONTROLS_SECTION_WEIGHT,
+        ],
+    );
+    (
+        heights.first().copied().unwrap_or(1),
+        heights.get(1).copied().unwrap_or(1),
+        heights.get(2).copied().unwrap_or(1),
+    )
+}
+
+fn resolve_runtime_controls_section_widths(total_width: u32) -> (u32, u32) {
+    let widths = weighted_section_lengths(
+        total_width.max(1),
+        &[KNOBS_SECTION_WEIGHT, DROPDOWN_SECTION_WEIGHT],
+    );
+    (
+        widths.first().copied().unwrap_or(1),
+        widths.get(1).copied().unwrap_or(1),
+    )
 }
 
 /// Shared Pump color/style tokens derived from the canonical Patchbay theme.
@@ -338,8 +353,9 @@ impl GuiState {
         let content_w = input.window_size.width.max(WINDOW_WIDTH);
         let content_h = input.window_size.height.max(WINDOW_HEIGHT);
         let theme = PumpTheme::main();
-        let (_header_h, curve_h, _controls_h) = resolve_vertical_section_heights(content_h);
-        let (_knobs_section_w, dropdown_section_w) = resolve_controls_section_widths(content_w);
+        let (_header_h, curve_h, _controls_h) = resolve_runtime_vertical_section_heights(content_h);
+        let (_knobs_section_w, dropdown_section_w) =
+            resolve_runtime_controls_section_widths(content_w);
         let dropdown_control_w = dropdown_section_w.saturating_sub(8).max(64);
         let label_line_h = LABEL_LINE_H;
         let padding_x = PADDING_X;
@@ -1441,8 +1457,9 @@ mod tests {
     use super::{
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
-        preview_node_on_curve, resolve_controls_section_widths, resolve_vertical_section_heights,
-        GuiState, CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
+        preview_node_on_curve, resolve_runtime_controls_section_widths,
+        resolve_runtime_vertical_section_heights, resolve_vertical_section_heights, GuiState,
+        CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -1630,10 +1647,19 @@ mod tests {
 
     #[test]
     fn bottom_row_split_matches_expected_ratio() {
-        let (knobs_w, dropdown_w) = resolve_controls_section_widths(WINDOW_WIDTH);
+        let (knobs_w, dropdown_w) = resolve_runtime_controls_section_widths(WINDOW_WIDTH);
         assert_eq!(knobs_w, 294);
         assert_eq!(dropdown_w, 126);
         assert_eq!(knobs_w + dropdown_w, WINDOW_WIDTH);
+    }
+
+    #[test]
+    fn runtime_section_splits_consume_full_parent_extent() {
+        let (header_h, curve_h, controls_h) = resolve_runtime_vertical_section_heights(259);
+        assert_eq!(header_h + curve_h + controls_h, 259);
+
+        let (knobs_w, dropdown_w) = resolve_runtime_controls_section_widths(799);
+        assert_eq!(knobs_w + dropdown_w, 799);
     }
 
     #[test]
