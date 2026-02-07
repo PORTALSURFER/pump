@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use toybox::clack_extensions::gui::Window;
+use toybox::clack_extensions::gui::{GuiSize, Window};
 use toybox::clack_plugin::plugin::PluginError;
 use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
@@ -181,6 +181,21 @@ impl PumpGui {
     /// Request a logical resize from the GUI thread.
     pub fn request_resize(&self, width: u32, height: u32) {
         self.window.request_resize(width, height);
+    }
+
+    /// Return true when host-driven resizing is enabled.
+    pub fn host_resize_enabled(&self) -> bool {
+        self.window.host_resize_enabled()
+    }
+
+    /// Normalize a host-provided size using Toybox Patchbay constraints.
+    pub fn normalize_host_size(&self, size: GuiSize) -> GuiSize {
+        self.window.normalize_host_size(size)
+    }
+
+    /// Apply a host-provided size using Toybox's canonical resize behavior.
+    pub fn apply_host_size(&self, size: GuiSize) {
+        self.window.apply_host_size(size);
     }
 
     /// Close editor if it is open.

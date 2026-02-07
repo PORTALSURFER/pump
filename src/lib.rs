@@ -506,19 +506,18 @@ impl<'a> PluginGuiImpl for PumpMainThread<'a> {
     }
 
     fn can_resize(&mut self) -> bool {
-        true
+        self.gui.host_resize_enabled()
     }
 
     fn adjust_size(
         &mut self,
         size: clack_extensions::gui::GuiSize,
     ) -> Option<clack_extensions::gui::GuiSize> {
-        Some(size)
+        Some(self.gui.normalize_host_size(size))
     }
 
     fn set_size(&mut self, size: clack_extensions::gui::GuiSize) -> Result<(), PluginError> {
-        self.gui
-            .request_resize(size.width.max(1), size.height.max(1));
+        self.gui.apply_host_size(size);
         Ok(())
     }
 
