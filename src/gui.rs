@@ -26,10 +26,41 @@ use crate::params::{
 };
 use crate::{GuiStatus, HostParamRequester};
 
+const UI_SCALE: f32 = 0.6;
+
+const fn scale_u32(value: u32) -> u32 {
+    let scaled = (value as f32 * UI_SCALE + 0.5) as u32;
+    if scaled == 0 {
+        1
+    } else {
+        scaled
+    }
+}
+
+const fn scale_i32(value: i32) -> i32 {
+    if value == 0 {
+        return 0;
+    }
+    let scaled = if value > 0 {
+        (value as f32 * UI_SCALE + 0.5) as i32
+    } else {
+        (value as f32 * UI_SCALE - 0.5) as i32
+    };
+    if scaled == 0 {
+        value.signum()
+    } else {
+        scaled
+    }
+}
+
+const fn scale_f32(value: f32) -> f32 {
+    value * UI_SCALE
+}
+
 /// Default width for the plugin editor window.
-pub const WINDOW_WIDTH: u32 = 700;
+pub const WINDOW_WIDTH: u32 = scale_u32(700);
 /// Default height for the plugin editor window.
-pub const WINDOW_HEIGHT: u32 = 430;
+pub const WINDOW_HEIGHT: u32 = scale_u32(430);
 
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
@@ -40,14 +71,14 @@ const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 
-const PADDING_X: i32 = 18;
-const TITLE_Y: i32 = 14;
+const PADDING_X: i32 = scale_i32(18);
+const TITLE_Y: i32 = scale_i32(14);
 const CURVE_X: i32 = PADDING_X;
-const CURVE_Y: i32 = 44;
-const CURVE_W: u32 = 664;
-const CURVE_H: u32 = 222;
-const CONTROL_Y: i32 = 290;
-const CONTROL_STEP: i32 = 156;
+const CURVE_Y: i32 = scale_i32(44);
+const CURVE_W: u32 = scale_u32(664);
+const CURVE_H: u32 = scale_u32(222);
+const CONTROL_Y: i32 = scale_i32(290);
+const CONTROL_STEP: i32 = scale_i32(156);
 const KNOB_X: [i32; 4] = [
     PADDING_X,
     PADDING_X + CONTROL_STEP,
@@ -55,15 +86,15 @@ const KNOB_X: [i32; 4] = [
     PADDING_X + CONTROL_STEP * 3,
 ];
 const DROPDOWN_X: i32 = PADDING_X + CONTROL_STEP * 4;
-const DROPDOWN_W: u32 = 132;
-const NODE_DRAW_RADIUS: i32 = 4;
-const NODE_HIT_RADIUS: i32 = 8;
-const SEGMENT_NEAR_HIT_RADIUS: i32 = 16;
-const SEGMENT_DIRECT_HIT_RADIUS: i32 = 6;
-const NODE_INSERT_GUARD_RADIUS: i32 = 12;
-const CURVE_DRAG_START_THRESHOLD_PX: i32 = 2;
-const CURVE_TENSION_PIXEL_SCALE: f32 = 120.0;
-const NODE_PUSH_THROUGH_PX: i32 = 10;
+const DROPDOWN_W: u32 = scale_u32(132);
+const NODE_DRAW_RADIUS: i32 = scale_i32(4);
+const NODE_HIT_RADIUS: i32 = scale_i32(8);
+const SEGMENT_NEAR_HIT_RADIUS: i32 = scale_i32(16);
+const SEGMENT_DIRECT_HIT_RADIUS: i32 = scale_i32(6);
+const NODE_INSERT_GUARD_RADIUS: i32 = scale_i32(12);
+const CURVE_DRAG_START_THRESHOLD_PX: i32 = scale_i32(2);
+const CURVE_TENSION_PIXEL_SCALE: f32 = scale_f32(120.0);
+const NODE_PUSH_THROUGH_PX: i32 = scale_i32(10);
 const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
 /// Host-window wrapper for the Pump editor.
@@ -256,7 +287,7 @@ impl GuiState {
             ),
             AbsoluteChild::new(
                 Point {
-                    x: PADDING_X + 72,
+                    x: PADDING_X + scale_i32(72),
                     y: TITLE_Y,
                 },
                 label("Spline Beat-Synced Ducking").text_color(Color::rgb(168, 176, 192)),
@@ -322,7 +353,7 @@ impl GuiState {
             AbsoluteChild::new(
                 Point {
                     x: DROPDOWN_X,
-                    y: CONTROL_Y + 12,
+                    y: CONTROL_Y + scale_i32(12),
                 },
                 dropdown(
                     DIVISION_KEY,
@@ -332,23 +363,23 @@ impl GuiState {
                 )
                 .control_size(Size {
                     width: DROPDOWN_W,
-                    height: 24,
+                    height: scale_u32(24),
                 }),
             ),
             AbsoluteChild::new(
                 Point {
                     x: DROPDOWN_X,
-                    y: CONTROL_Y + 56,
+                    y: CONTROL_Y + scale_i32(56),
                 },
                 button(RESET_KEY, "Reset Curve").control_size(Size {
                     width: DROPDOWN_W,
-                    height: 24,
+                    height: scale_u32(24),
                 }),
             ),
             AbsoluteChild::new(
                 Point {
                     x: DROPDOWN_X,
-                    y: CONTROL_Y + 88,
+                    y: CONTROL_Y + scale_i32(88),
                 },
                 label(format!("Cycle: {}", sync_division_label(division)))
                     .text_color(Color::rgb(173, 182, 198)),
@@ -356,7 +387,7 @@ impl GuiState {
             AbsoluteChild::new(
                 Point {
                     x: CURVE_X,
-                    y: CURVE_Y + CURVE_H as i32 + 6,
+                    y: CURVE_Y + CURVE_H as i32 + scale_i32(6),
                 },
                 label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
                     .text_color(Color::rgb(132, 142, 160)),
@@ -714,7 +745,7 @@ impl GuiState {
         });
         commands.push(DrawCommand::StrokeRect {
             rect,
-            thickness: 1,
+            thickness: scale_u32(1),
             color: Color::rgb(58, 65, 80),
         });
 
@@ -776,11 +807,11 @@ impl GuiState {
                     commands.push(DrawCommand::Line {
                         start: Point {
                             x: prev.x,
-                            y: prev.y + 1,
+                            y: prev.y + scale_i32(1),
                         },
                         end: Point {
                             x: point.x,
-                            y: point.y + 1,
+                            y: point.y + scale_i32(1),
                         },
                         color: Color::rgb(226, 245, 255),
                     });
@@ -799,7 +830,7 @@ impl GuiState {
             commands.push(DrawCommand::StrokeCircle {
                 center,
                 radius: NODE_DRAW_RADIUS + 2,
-                thickness: 1,
+                thickness: scale_i32(1),
                 color: Color::rgb(224, 255, 236),
             });
         }
@@ -834,14 +865,14 @@ impl GuiState {
             commands.push(DrawCommand::StrokeCircle {
                 center,
                 radius: NODE_DRAW_RADIUS,
-                thickness: 1,
+                thickness: scale_i32(1),
                 color: stroke_color,
             });
             if selected || hovered {
                 commands.push(DrawCommand::StrokeCircle {
                     center,
                     radius: NODE_DRAW_RADIUS + 3,
-                    thickness: 1,
+                    thickness: scale_i32(1),
                     color: if selected {
                         Color::rgb(255, 236, 196)
                     } else {
@@ -868,17 +899,17 @@ impl GuiState {
         let reduction = (1.0 - self.status.gain().clamp(0.0, 1.0)).clamp(0.0, 1.0);
         let meter_rect = Rect {
             origin: Point {
-                x: CURVE_W as i32 - 12,
-                y: 10,
+                x: CURVE_W as i32 - scale_i32(12),
+                y: scale_i32(10),
             },
             size: Size {
-                width: 6,
-                height: CURVE_H - 20,
+                width: scale_u32(6),
+                height: CURVE_H.saturating_sub(scale_u32(20)),
             },
         };
         commands.push(DrawCommand::StrokeRect {
             rect: meter_rect,
-            thickness: 1,
+            thickness: scale_u32(1),
             color: Color::rgb(71, 79, 96),
         });
         let fill_height = ((meter_rect.size.height as f32) * reduction).round() as u32;
@@ -886,11 +917,11 @@ impl GuiState {
             commands.push(DrawCommand::FillRect {
                 rect: Rect {
                     origin: Point {
-                        x: meter_rect.origin.x + 1,
+                        x: meter_rect.origin.x + scale_i32(1),
                         y: meter_rect.origin.y + meter_rect.size.height as i32 - fill_height as i32,
                     },
                     size: Size {
-                        width: meter_rect.size.width.saturating_sub(2),
+                        width: meter_rect.size.width.saturating_sub(scale_u32(2)),
                         height: fill_height,
                     },
                 },
