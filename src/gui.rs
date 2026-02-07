@@ -8,9 +8,9 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
-    button, column, dropdown, grid, knob, label, measure_checked, panel, row, AbsoluteChild,
-    AbsoluteSpec, DrawCommand, GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec,
-    RootFrameSpec, ThemeTokens, TrackSize, UiAction, UiSpec,
+    button, column, dropdown, grid, knob, label, measure_checked, row, AbsoluteChild, AbsoluteSpec,
+    DrawCommand, GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec,
+    ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -65,8 +65,6 @@ pub const WINDOW_HEIGHT: u32 = scale_u32(430);
 
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
-const KNOBS_SECTION_KEY: &str = "pump-knobs-section";
-const DROPDOWN_SECTION_KEY: &str = "pump-dropdown-section";
 const MIX_KEY: &str = "mix";
 const DEPTH_KEY: &str = "depth";
 const PHASE_KEY: &str = "phase";
@@ -487,10 +485,7 @@ impl GuiState {
         )
         .layout(LayoutBox::fill());
 
-        let knobs_section = panel(KNOBS_SECTION_KEY, knobs_grid)
-            .pad_all(0)
-            .background(theme.panel_background)
-            .layout(LayoutBox::fixed(knobs_section_w, controls_h));
+        let knobs_section = knobs_grid.layout(LayoutBox::fixed(knobs_section_w, controls_h));
 
         let dropdown_section_content = column(vec![
             dropdown(
@@ -515,10 +510,8 @@ impl GuiState {
         .pad_all(0)
         .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
-        let dropdown_section = panel(DROPDOWN_SECTION_KEY, dropdown_section_content)
-            .pad_all(0)
-            .background(theme.panel_background)
-            .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
+        let dropdown_section =
+            dropdown_section_content.layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
         let controls_row = row(vec![knobs_section, dropdown_section])
             .gap(0)
