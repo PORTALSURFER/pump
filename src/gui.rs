@@ -56,7 +56,6 @@ const CONTROLS_MIN_HEIGHT: u32 = 64;
 const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_section_heights(WINDOW_HEIGHT).1;
-const SPLINE_SECTION_H: u32 = CURVE_H;
 const TITLE_LABEL_W: u32 = 64;
 const LABEL_LINE_H: u32 = 16;
 const NODE_DRAW_RADIUS: i32 = 4;
@@ -1464,7 +1463,7 @@ mod tests {
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
         preview_node_on_curve, resolve_bottom_section_widths, resolve_section_heights, GuiState,
-        CURVE_KEY, SPLINE_SECTION_H, WINDOW_HEIGHT, WINDOW_WIDTH,
+        CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -1669,7 +1668,7 @@ mod tests {
         let spec = state.build_ui(&InputState::default());
         let region = find_curve_region_node(&spec.root.content).expect("curve region should exist");
         assert_eq!(region.size.width, WINDOW_WIDTH);
-        assert_eq!(region.size.height, SPLINE_SECTION_H);
+        assert_eq!(region.size.height, CURVE_H);
     }
 
     #[test]
