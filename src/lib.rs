@@ -5,9 +5,8 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use toybox::clack_extensions;
 use toybox::clack_extensions::audio_ports::*;
-use toybox::clack_extensions::gui::{GuiApiType, GuiConfiguration, PluginGui, PluginGuiImpl};
+use toybox::clack_extensions::gui::{PluginGui, PluginGuiImpl};
 use toybox::clack_extensions::params::*;
 use toybox::clack_extensions::state::{PluginState, PluginStateImpl};
 use toybox::clack_plugin;
@@ -474,62 +473,18 @@ fn bits_to_f32(value: u32) -> f32 {
 }
 
 impl<'a> PluginGuiImpl for PumpMainThread<'a> {
-    fn is_api_supported(&mut self, configuration: GuiConfiguration) -> bool {
-        configuration.api_type
-            == GuiApiType::default_for_current_platform().expect("Unsupported platform")
-            && !configuration.is_floating
-    }
-
-    fn get_preferred_api(&'_ mut self) -> Option<GuiConfiguration<'_>> {
-        Some(GuiConfiguration {
-            api_type: GuiApiType::default_for_current_platform().expect("Unsupported platform"),
-            is_floating: false,
-        })
-    }
-
-    fn create(&mut self, _configuration: GuiConfiguration) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    fn destroy(&mut self) {}
-
-    fn set_scale(&mut self, _scale: f64) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    fn get_size(&mut self) -> Option<clack_extensions::gui::GuiSize> {
-        if let Some((width, height)) = self.gui.last_size() {
-            return Some(clack_extensions::gui::GuiSize { width, height });
+    toybox::patchbay_clap_gui_callbacks!(
+        gui = gui,
+        preferred_size = crate::gui::preferred_window_size,
+        show = |plugin: &mut Self| {
+            plugin.gui.open(
+                &plugin.shared.params,
+                &plugin.shared.status,
+                plugin.shared.automation_queue.clone(),
+                host_param_requester(plugin.host),
+            )
         }
-        let (width, height) = crate::gui::preferred_window_size();
-        Some(clack_extensions::gui::GuiSize { width, height })
-    }
-
-    toybox::patchbay_clap_resize_callbacks!(gui);
-
-    fn set_parent(&mut self, window: clack_extensions::gui::Window) -> Result<(), PluginError> {
-        self.gui.set_parent(window);
-        Ok(())
-    }
-
-    fn set_transient(&mut self, _window: clack_extensions::gui::Window) -> Result<(), PluginError> {
-        Ok(())
-    }
-
-    fn show(&mut self) -> Result<(), PluginError> {
-        self.gui.open(
-            &self.shared.params,
-            &self.shared.status,
-            self.shared.automation_queue.clone(),
-            host_param_requester(self.host),
-        )?;
-        Ok(())
-    }
-
-    fn hide(&mut self) -> Result<(), PluginError> {
-        self.gui.close();
-        Ok(())
-    }
+    );
 }
 
 toybox::clap_plugin_entry!(PumpPlugin);
