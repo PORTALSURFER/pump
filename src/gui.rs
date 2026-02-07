@@ -137,8 +137,20 @@ impl PumpTheme {
     /// Return the canonical Pump GUI theme.
     fn main() -> Self {
         let palette = MainPalette::main();
+        let mut tokens = ThemeTokens::main();
+        // Keep declarative control metrics in the same scaled coordinate space
+        // as Pump's section/layout constants.
+        tokens.controls.knob_diameter = scale_u32(tokens.controls.knob_diameter);
+        tokens.controls.slider_width = scale_u32(tokens.controls.slider_width);
+        tokens.controls.slider_height = scale_u32(tokens.controls.slider_height);
+        tokens.controls.toggle_width = scale_u32(tokens.controls.toggle_width);
+        tokens.controls.toggle_height = scale_u32(tokens.controls.toggle_height);
+        tokens.controls.button_width = scale_u32(tokens.controls.button_width);
+        tokens.controls.button_height = scale_u32(tokens.controls.button_height);
+        tokens.controls.dropdown_width = scale_u32(tokens.controls.dropdown_width);
+        tokens.controls.dropdown_height = scale_u32(tokens.controls.dropdown_height);
         Self {
-            tokens: ThemeTokens::main(),
+            tokens,
             title_text: palette.accent_focus,
             subtitle_text: palette.syntax_emphasis,
             hint_text: palette.text_muted,
