@@ -152,39 +152,7 @@ fn sample_segment(curve: &EditableCurve, segment_index: usize, x: f32) -> f32 {
             .tension,
     );
 
-    let left_slope = node_slope(curve, segment_index);
-    let right_slope = node_slope(curve, segment_index + 1);
-
-    hermite(
-        left.y,
-        right.y,
-        left_slope * span,
-        right_slope * span,
-        shaped_local,
-    )
-    .clamp(0.0, 1.0)
-}
-
-fn node_slope(curve: &EditableCurve, index: usize) -> f32 {
-    if curve.nodes.len() < 2 {
-        return 0.0;
-    }
-
-    if index == 0 {
-        let right = curve.nodes[1];
-        let left = curve.nodes[0];
-        return (right.y - left.y) / (right.x - left.x).max(1.0e-6);
-    }
-
-    if index >= curve.nodes.len() - 1 {
-        let right = curve.nodes[curve.nodes.len() - 1];
-        let left = curve.nodes[curve.nodes.len() - 2];
-        return (right.y - left.y) / (right.x - left.x).max(1.0e-6);
-    }
-
-    let left = curve.nodes[index - 1];
-    let right = curve.nodes[index + 1];
-    (right.y - left.y) / (right.x - left.x).max(1.0e-6)
+    lerp(left.y, right.y, shaped_local).clamp(0.0, 1.0)
 }
 
 fn shape_with_tension(value: f32, tension: f32) -> f32 {
@@ -195,15 +163,6 @@ fn shape_with_tension(value: f32, tension: f32) -> f32 {
     } else {
         1.0 - (1.0 - v).powf(1.0 + (-t) * 3.0)
     }
-}
-
-fn hermite(p0: f32, p1: f32, m0: f32, m1: f32, t: f32) -> f32 {
-    let t2 = t * t;
-    let t3 = t2 * t;
-    (2.0 * t3 - 3.0 * t2 + 1.0) * p0
-        + (t3 - 2.0 * t2 + t) * m0
-        + (-2.0 * t3 + 3.0 * t2) * p1
-        + (t3 - t2) * m1
 }
 
 fn normalize_nodes(nodes: &[CurveNode]) -> Vec<CurveNode> {
@@ -265,6 +224,9 @@ fn normalize_nodes(nodes: &[CurveNode]) -> Vec<CurveNode> {
         }
     }
     deduped[0].x = 0.0;
+
+    // Looping continuity: start and end nodes represent the same wrapped point.
+    deduped[last].y = deduped[0].y;
 
     deduped
 }
@@ -397,5 +359,21 @@ mod tests {
         }
         .normalized();
         assert!(curve.nodes.len() <= MAX_EDITABLE_NODES);
+    }
+
+    #[test]
+    fn normalized_curve_couples_wrapped_endpoints() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.9 },
+                CurveNode { x: 0.5, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.1 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
+        }
+        .normalized();
+
+        let last_index = curve.nodes.len() - 1;
+        assert!((curve.nodes[last_index].y - curve.nodes[0].y).abs() <= f32::EPSILON);
     }
 }
