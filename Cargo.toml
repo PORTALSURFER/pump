@@ -11,6 +11,3 @@ crate-type = ["cdylib"]
 
 [dependencies]
 toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "883b6d2d3d0d87bcb9adbb15e7d2c2bb8416220d", features = ["gui", "vst3"] }
-
-[patch."https://github.com/PORTALSURFER/toybox.git"]
-toybox = { path = "../toybox" }
