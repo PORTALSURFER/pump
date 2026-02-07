@@ -141,7 +141,6 @@ impl PumpTheme {
         // Keep declarative control metrics in the same scaled coordinate space
         // as Pump's section/layout constants.
         tokens.typography.text_scale = 2;
-        tokens.controls.knob_diameter = scale_u32(80);
         tokens.controls.slider_width = scale_u32(tokens.controls.slider_width);
         tokens.controls.slider_height = scale_u32(tokens.controls.slider_height);
         tokens.controls.toggle_width = scale_u32(tokens.controls.toggle_width);
