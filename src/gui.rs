@@ -8,9 +8,9 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
-    button, dropdown, knob, label, measure_checked, panel, AbsoluteChild, AbsoluteSpec,
-    DrawCommand, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec, UiAction,
-    UiSpec,
+    button, column, dropdown, grid, knob, label, measure_checked, panel, row, AbsoluteChild,
+    AbsoluteSpec, DrawCommand, GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec,
+    RootFrameSpec, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -65,6 +65,9 @@ pub const WINDOW_HEIGHT: u32 = scale_u32(430);
 
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
+const SPLINE_SECTION_KEY: &str = "pump-spline-section";
+const KNOBS_SECTION_KEY: &str = "pump-knobs-section";
+const DROPDOWN_SECTION_KEY: &str = "pump-dropdown-section";
 const MIX_KEY: &str = "mix";
 const DEPTH_KEY: &str = "depth";
 const PHASE_KEY: &str = "phase";
@@ -73,21 +76,19 @@ const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 
 const PADDING_X: i32 = scale_i32(18);
-const TITLE_Y: i32 = scale_i32(14);
-const CURVE_X: i32 = PADDING_X;
-const CURVE_Y: i32 = scale_i32(44);
+const ROOT_HEADER_H: u32 = 20;
+const CONTENT_H: u32 = WINDOW_HEIGHT - ROOT_HEADER_H;
+const SPLINE_TITLE_Y: i32 = scale_i32(4);
+const SPLINE_CURVE_X: i32 = PADDING_X;
+const SPLINE_CURVE_Y: i32 = scale_i32(24);
 const CURVE_W: u32 = scale_u32(664);
-const CURVE_H: u32 = scale_u32(222);
-const CONTROL_Y: i32 = scale_i32(290);
-const CONTROL_STEP: i32 = scale_i32(156);
-const KNOB_X: [i32; 4] = [
-    PADDING_X,
-    PADDING_X + CONTROL_STEP,
-    PADDING_X + CONTROL_STEP * 2,
-    PADDING_X + CONTROL_STEP * 3,
-];
-const DROPDOWN_X: i32 = PADDING_X + CONTROL_STEP * 4;
+const CURVE_H: u32 = scale_u32(200);
+const SPLINE_TIP_Y: i32 = SPLINE_CURVE_Y + CURVE_H as i32 + scale_i32(4);
+const SPLINE_SECTION_H: u32 = (SPLINE_TIP_Y + LABEL_LINE_H as i32 + scale_i32(6)) as u32;
+const BOTTOM_SECTION_H: u32 = CONTENT_H - SPLINE_SECTION_H;
 const DROPDOWN_W: u32 = scale_u32(132);
+const DROPDOWN_SECTION_W: u32 = DROPDOWN_W + scale_u32(20);
+const KNOBS_SECTION_W: u32 = WINDOW_WIDTH - DROPDOWN_SECTION_W;
 const TITLE_LABEL_W: u32 = scale_u32(64);
 const SUBTITLE_LABEL_W: u32 = CURVE_W.saturating_sub(scale_u32(72));
 const TIP_LABEL_W: u32 = CURVE_W;
@@ -306,11 +307,11 @@ impl GuiState {
             preview_node,
         );
 
-        let controls = vec![
+        let spline_controls = vec![
             AbsoluteChild::new(
                 Point {
                     x: PADDING_X,
-                    y: TITLE_Y,
+                    y: SPLINE_TITLE_Y,
                 },
                 label("PUMP")
                     .text_color(Color::rgb(242, 244, 248))
@@ -319,7 +320,7 @@ impl GuiState {
             AbsoluteChild::new(
                 Point {
                     x: PADDING_X + scale_i32(72),
-                    y: TITLE_Y,
+                    y: SPLINE_TITLE_Y,
                 },
                 label("Spline Beat-Synced Ducking")
                     .text_color(Color::rgb(168, 176, 192))
@@ -327,8 +328,8 @@ impl GuiState {
             ),
             AbsoluteChild::new(
                 Point {
-                    x: CURVE_X,
-                    y: CURVE_Y,
+                    x: SPLINE_CURVE_X,
+                    y: SPLINE_CURVE_Y,
                 },
                 Node::Region(
                     RegionSpec::new(
@@ -343,85 +344,8 @@ impl GuiState {
             ),
             AbsoluteChild::new(
                 Point {
-                    x: KNOB_X[0],
-                    y: CONTROL_Y,
-                },
-                knob(MIX_KEY, "Mix", mix, (MIN_MIX, MAX_MIX))
-                    .value_label(format!("{:.0}%", mix * 100.0)),
-            ),
-            AbsoluteChild::new(
-                Point {
-                    x: KNOB_X[1],
-                    y: CONTROL_Y,
-                },
-                knob(DEPTH_KEY, "Depth", depth, (MIN_DEPTH, MAX_DEPTH))
-                    .value_label(format!("{:.0}%", depth * 100.0)),
-            ),
-            AbsoluteChild::new(
-                Point {
-                    x: KNOB_X[2],
-                    y: CONTROL_Y,
-                },
-                knob(
-                    PHASE_KEY,
-                    "Phase",
-                    phase_offset,
-                    (MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
-                )
-                .value_label(format!("{:.0}%", phase_offset * 100.0)),
-            ),
-            AbsoluteChild::new(
-                Point {
-                    x: KNOB_X[3],
-                    y: CONTROL_Y,
-                },
-                knob(
-                    OUTPUT_KEY,
-                    "Output",
-                    output_gain_db,
-                    (MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
-                )
-                .value_label(format!("{output_gain_db:+.1} dB")),
-            ),
-            AbsoluteChild::new(
-                Point {
-                    x: DROPDOWN_X,
-                    y: CONTROL_Y + scale_i32(12),
-                },
-                dropdown(
-                    DIVISION_KEY,
-                    "Division",
-                    sync_division_labels(),
-                    division.min(MAX_SYNC_DIVISION as usize),
-                )
-                .control_size(Size {
-                    width: DROPDOWN_W,
-                    height: scale_u32(24),
-                }),
-            ),
-            AbsoluteChild::new(
-                Point {
-                    x: DROPDOWN_X,
-                    y: CONTROL_Y + scale_i32(56),
-                },
-                button(RESET_KEY, "Reset Curve").control_size(Size {
-                    width: DROPDOWN_W,
-                    height: scale_u32(24),
-                }),
-            ),
-            AbsoluteChild::new(
-                Point {
-                    x: DROPDOWN_X,
-                    y: CONTROL_Y + scale_i32(88),
-                },
-                label(format!("Cycle: {}", sync_division_label(division)))
-                    .text_color(Color::rgb(173, 182, 198))
-                    .layout(fixed_box(CYCLE_LABEL_W, LABEL_LINE_H)),
-            ),
-            AbsoluteChild::new(
-                Point {
-                    x: CURVE_X,
-                    y: CURVE_Y + CURVE_H as i32 + scale_i32(6),
+                    x: SPLINE_CURVE_X,
+                    y: SPLINE_TIP_Y,
                 },
                 label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
                     .text_color(Color::rgb(132, 142, 160))
@@ -429,22 +353,103 @@ impl GuiState {
             ),
         ];
 
-        let content = Node::Absolute(
-            AbsoluteSpec::new(controls).layout(LayoutBox::fixed(WINDOW_WIDTH, WINDOW_HEIGHT)),
-        );
+        let spline_section = panel(
+            SPLINE_SECTION_KEY,
+            Node::Absolute(
+                AbsoluteSpec::new(spline_controls)
+                    .layout(LayoutBox::fixed(WINDOW_WIDTH, SPLINE_SECTION_H)),
+            ),
+        )
+        .pad_all(0)
+        .background(Color::rgb(22, 26, 34))
+        .outline(Color::rgb(62, 69, 84))
+        .layout(LayoutBox::fixed(WINDOW_WIDTH, SPLINE_SECTION_H));
+
+        let knobs_grid = grid(
+            GridTemplate::new(vec![TrackSize::Auto; 4])
+                .gap(0)
+                .justify_start(),
+            vec![
+                knob(MIX_KEY, "Mix", mix, (MIN_MIX, MAX_MIX))
+                    .value_label(format!("{:.0}%", mix * 100.0)),
+                knob(DEPTH_KEY, "Depth", depth, (MIN_DEPTH, MAX_DEPTH))
+                    .value_label(format!("{:.0}%", depth * 100.0)),
+                knob(
+                    PHASE_KEY,
+                    "Phase",
+                    phase_offset,
+                    (MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
+                )
+                .value_label(format!("{:.0}%", phase_offset * 100.0)),
+                knob(
+                    OUTPUT_KEY,
+                    "Output",
+                    output_gain_db,
+                    (MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
+                )
+                .value_label(format!("{output_gain_db:+.1} dB")),
+            ],
+        )
+        .layout(LayoutBox::fixed(KNOBS_SECTION_W, BOTTOM_SECTION_H));
+
+        let knobs_section = panel(KNOBS_SECTION_KEY, knobs_grid)
+            .pad_all(0)
+            .background(Color::rgb(22, 26, 34))
+            .outline(Color::rgb(62, 69, 84))
+            .layout(LayoutBox::fixed(KNOBS_SECTION_W, BOTTOM_SECTION_H));
+
+        let dropdown_section_content = column(vec![
+            dropdown(
+                DIVISION_KEY,
+                "Division",
+                sync_division_labels(),
+                division.min(MAX_SYNC_DIVISION as usize),
+            )
+            .control_size(Size {
+                width: DROPDOWN_W,
+                height: scale_u32(24),
+            }),
+            button(RESET_KEY, "Reset Curve").control_size(Size {
+                width: DROPDOWN_W,
+                height: scale_u32(24),
+            }),
+            label(format!("Cycle: {}", sync_division_label(division)))
+                .text_color(Color::rgb(173, 182, 198))
+                .layout(fixed_box(CYCLE_LABEL_W, LABEL_LINE_H)),
+        ])
+        .gap(scale_i32(4))
+        .pad_all(0)
+        .layout(LayoutBox::fixed(DROPDOWN_SECTION_W, BOTTOM_SECTION_H));
+
+        let dropdown_section = panel(DROPDOWN_SECTION_KEY, dropdown_section_content)
+            .pad_all(0)
+            .background(Color::rgb(22, 26, 34))
+            .outline(Color::rgb(62, 69, 84))
+            .layout(LayoutBox::fixed(DROPDOWN_SECTION_W, BOTTOM_SECTION_H));
+
+        let bottom_row = row(vec![knobs_section, dropdown_section])
+            .gap(0)
+            .pad_all(0)
+            .justify_start()
+            .align_start()
+            .layout(LayoutBox::fixed(WINDOW_WIDTH, BOTTOM_SECTION_H));
+
+        let content = column(vec![spline_section, bottom_row])
+            .gap(0)
+            .pad_all(0)
+            .layout(LayoutBox::fixed(WINDOW_WIDTH, CONTENT_H));
+
+        let root_content = panel("pump-main", content)
+            .pad_all(0)
+            .background(Color::rgb(22, 26, 34))
+            .outline(Color::rgb(62, 69, 84))
+            .layout(LayoutBox::fixed(WINDOW_WIDTH, CONTENT_H));
 
         UiSpec::new(
-            RootFrameSpec::new(
-                ROOT_KEY,
-                panel("pump-main", content)
-                    .pad_all(0)
-                    .background(Color::rgb(22, 26, 34))
-                    .outline(Color::rgb(62, 69, 84))
-                    .layout(LayoutBox::fixed(WINDOW_WIDTH, WINDOW_HEIGHT)),
-            )
-            .title("pump")
-            .padding(0)
-            .layout(LayoutBox::fixed(WINDOW_WIDTH, WINDOW_HEIGHT)),
+            RootFrameSpec::new(ROOT_KEY, root_content)
+                .title("pump")
+                .padding(0)
+                .layout(LayoutBox::fixed(WINDOW_WIDTH, WINDOW_HEIGHT)),
         )
     }
 
