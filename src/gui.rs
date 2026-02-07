@@ -10,7 +10,7 @@ use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
     button, column, dropdown, grid, knob, label, panel, row, AbsoluteChild, AbsoluteSpec,
     DrawCommand, GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec,
-    RootScaleMode, ThemeTokens, TrackSize, UiAction, UiSpec,
+    ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -293,6 +293,7 @@ struct GuiRuntime {
     drag_mode: Option<CurveDragMode>,
     curve_hovered: bool,
     curve_local_pointer: Point,
+    curve_size: Size,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -326,6 +327,10 @@ impl GuiRuntime {
             drag_mode: None,
             curve_hovered: false,
             curve_local_pointer: Point { x: 0, y: 0 },
+            curve_size: Size {
+                width: CURVE_W,
+                height: CURVE_H,
+            },
         }
     }
 }
@@ -348,9 +353,8 @@ impl GuiState {
     }
 
     fn build_ui(&self, input: &InputState) -> UiSpec {
-        let _ = input;
-        let content_w = WINDOW_WIDTH;
-        let content_h = WINDOW_HEIGHT;
+        let content_w = input.window_size.width.max(WINDOW_WIDTH);
+        let content_h = input.window_size.height.max(WINDOW_HEIGHT);
         let theme = PumpTheme::main();
         let (header_h, curve_h, controls_h) = resolve_section_heights(content_h);
         let (knobs_section_w, dropdown_section_w) = resolve_bottom_section_widths(content_w);
@@ -370,7 +374,8 @@ impl GuiState {
             height: curve_h,
         };
         let (selected_node, curve_hovered, curve_local_pointer) =
-            if let Ok(runtime) = self.runtime.lock() {
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.curve_size = curve_size;
                 (
                     runtime.selected_node,
                     runtime.curve_hovered,
@@ -571,12 +576,7 @@ impl GuiState {
             RootFrameSpec::new(ROOT_KEY, content)
                 .padding(0)
                 .tokens(theme.tokens)
-                .layout(LayoutBox::fixed(content_w, content_h))
-                .design_size(Size {
-                    width: WINDOW_WIDTH,
-                    height: WINDOW_HEIGHT,
-                })
-                .scale_mode(RootScaleMode::UniformFit),
+                .layout(LayoutBox::fixed(content_w, content_h)),
         )
     }
 
@@ -603,7 +603,8 @@ impl GuiState {
             } if key == CURVE_KEY => {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.curve_hovered = hovered;
-                    runtime.curve_local_pointer = local_pointer;
+                    runtime.curve_local_pointer =
+                        scale_point_to_design(local_pointer, runtime.curve_size);
                 }
             }
             UiAction::RegionHover { .. } => {}
@@ -664,6 +665,8 @@ impl GuiState {
             return;
         };
 
+        let local_pointer = scale_point_to_design(local_pointer, runtime.curve_size);
+        let raw_local_pointer = scale_point_to_design(raw_local_pointer, runtime.curve_size);
         let normalized_pointer = node_from_local(local_pointer);
         let raw_normalized_pointer = node_from_local(raw_local_pointer);
 
@@ -1141,6 +1144,14 @@ fn scale_point_from_design(point: Point, curve_size: Size) -> Point {
     let height = curve_size.height.max(1) as i64;
     let x = (point.x as i64 * width / CURVE_W.max(1) as i64) as i32;
     let y = (point.y as i64 * height / CURVE_H.max(1) as i64) as i32;
+    Point { x, y }
+}
+
+fn scale_point_to_design(point: Point, curve_size: Size) -> Point {
+    let width = curve_size.width.max(1) as i64;
+    let height = curve_size.height.max(1) as i64;
+    let x = (point.x as i64 * CURVE_W.max(1) as i64 / width) as i32;
+    let y = (point.y as i64 * CURVE_H.max(1) as i64 / height) as i32;
     Point { x, y }
 }
 
@@ -1662,7 +1673,7 @@ mod tests {
     }
 
     #[test]
-    fn build_ui_accepts_resize_sequences_with_uniform_fit_root_scaling() {
+    fn build_ui_accepts_resize_sequences_with_window_sized_root_layout() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -1688,16 +1699,10 @@ mod tests {
             input.window_size = window_size;
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
-            assert!(measured.width >= WINDOW_WIDTH);
-            assert!(measured.height >= WINDOW_HEIGHT);
-            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
-            assert_eq!(
-                spec.root.design_size,
-                Some(Size {
-                    width: WINDOW_WIDTH,
-                    height: WINDOW_HEIGHT,
-                }),
-            );
+            assert!(measured.width >= window_size.width.max(WINDOW_WIDTH));
+            assert!(measured.height >= window_size.height.max(WINDOW_HEIGHT));
+            assert_eq!(spec.root.scale_mode, RootScaleMode::None);
+            assert_eq!(spec.root.design_size, None);
         }
     }
 
