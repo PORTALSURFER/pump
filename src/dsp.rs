@@ -149,12 +149,12 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{db_to_linear, DspSettings, PumpEngine};
-    use crate::curve::default_sidechain_curve;
+    use crate::curve::{default_editable_curve, editable_curve_to_table};
     use crate::sync::TransportState;
 
     #[test]
     fn gain_mapping_stays_finite_for_extremes() {
-        let curve = default_sidechain_curve();
+        let curve = editable_curve_to_table(&default_editable_curve());
         let mut engine = PumpEngine::new(48_000.0, curve);
 
         let settings = DspSettings {

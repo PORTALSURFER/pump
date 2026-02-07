@@ -57,30 +57,6 @@ impl EditableCurve {
     }
 }
 
-/// Build the default sidechain-style curve used on plugin initialization.
-///
-/// The shape performs a fast initial dip followed by a smooth recovery.
-pub fn default_sidechain_curve() -> [f32; CURVE_TABLE_LEN] {
-    let mut curve = [1.0_f32; CURVE_TABLE_LEN];
-    let attack_end = 0.06_f32;
-    let floor = 0.05_f32;
-
-    for (index, sample) in curve.iter_mut().enumerate() {
-        let phase = index as f32 / (CURVE_TABLE_LEN - 1) as f32;
-        *sample = if phase < attack_end {
-            let t = phase / attack_end;
-            1.0 + (floor - 1.0) * t
-        } else {
-            let t = ((phase - attack_end) / (1.0 - attack_end)).clamp(0.0, 1.0);
-            let eased = t.powf(1.8);
-            floor + (1.0 - floor) * eased
-        }
-        .clamp(0.0, 1.0);
-    }
-
-    curve
-}
-
 /// Build the default editable curve used by the spline GUI.
 pub fn default_editable_curve() -> EditableCurve {
     EditableCurve {
@@ -330,14 +306,14 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        curve_table_to_editable, default_editable_curve, default_sidechain_curve,
-        editable_curve_to_table, sample_curve, sample_editable_curve, CurveNode, CurveSegment,
-        EditableCurve, CURVE_TABLE_LEN, MAX_EDITABLE_NODES,
+        curve_table_to_editable, default_editable_curve, editable_curve_to_table, sample_curve,
+        sample_editable_curve, CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN,
+        MAX_EDITABLE_NODES,
     };
 
     #[test]
     fn default_curve_stays_bounded() {
-        let curve = default_sidechain_curve();
+        let curve = editable_curve_to_table(&default_editable_curve());
         assert!(curve.iter().all(|value| (0.0..=1.0).contains(value)));
     }
 
@@ -390,7 +366,7 @@ mod tests {
 
     #[test]
     fn legacy_curve_roundtrips_into_editable_domain() {
-        let table = default_sidechain_curve();
+        let table = editable_curve_to_table(&default_editable_curve());
         let editable = curve_table_to_editable(&table);
         let rebuilt = editable_curve_to_table(&editable);
         assert!(rebuilt.iter().all(|sample| sample.is_finite()));
