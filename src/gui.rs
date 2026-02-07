@@ -8,9 +8,9 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, InputState};
 use toybox::gui::declarative::{
-    button, column, dropdown, grid, knob, label, measure_checked, row, AbsoluteChild, AbsoluteSpec,
-    DrawCommand, GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec,
-    RootScaleMode, ThemeTokens, TrackSize, UiAction, UiSpec,
+    button, column, dropdown, grid, knob, label, row, AbsoluteChild, AbsoluteSpec, DrawCommand,
+    GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, RootFrameSpec, RootScaleMode,
+    ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -31,20 +31,12 @@ use crate::{GuiStatus, HostParamRequester};
 ///
 /// Patchbay owns runtime scaling and resize policy; Pump only publishes this
 /// baseline logical size.
-pub const WINDOW_WIDTH: u32 = 700;
+pub const WINDOW_WIDTH: u32 = 420;
 /// Default logical height for the Pump design canvas.
 ///
 /// Patchbay owns runtime scaling and resize policy; Pump only publishes this
 /// baseline logical size.
-pub const WINDOW_HEIGHT: u32 = 430;
-
-/// Default host-open width for the Pump window.
-///
-/// Pump keeps its design canvas at `WINDOW_WIDTH x WINDOW_HEIGHT`, but opens
-/// at a smaller baseline host size so Patchbay scales the full design uniformly.
-const DEFAULT_OPEN_WIDTH: u32 = WINDOW_WIDTH * 3 / 5;
-/// Default host-open height for the Pump window.
-const DEFAULT_OPEN_HEIGHT: u32 = WINDOW_HEIGHT * 3 / 5;
+pub const WINDOW_HEIGHT: u32 = 258;
 
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
@@ -56,14 +48,15 @@ const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 
 const PADDING_X: i32 = 18;
-const HEADER_SECTION_H: u32 = 34;
-const CONTROLS_SECTION_H: u32 = 170;
-const SPLINE_SECTION_H: u32 = WINDOW_HEIGHT - HEADER_SECTION_H - CONTROLS_SECTION_H;
+const HEADER_RATIO_PERCENT: u32 = 7;
+const CONTROLS_RATIO_PERCENT: u32 = 30;
+const KNOBS_RATIO_PERCENT: u32 = 70;
+const HEADER_MIN_HEIGHT: u32 = 16;
+const CONTROLS_MIN_HEIGHT: u32 = 64;
 const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
-const CURVE_H: u32 = SPLINE_SECTION_H;
-const DROPDOWN_W: u32 = 132;
-const DROPDOWN_SECTION_W: u32 = DROPDOWN_W + 20;
+const CURVE_H: u32 = resolve_section_heights(WINDOW_HEIGHT).1;
+const SPLINE_SECTION_H: u32 = CURVE_H;
 const TITLE_LABEL_W: u32 = 64;
 const LABEL_LINE_H: u32 = 16;
 const NODE_DRAW_RADIUS: i32 = 4;
@@ -78,6 +71,58 @@ const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
 const fn fixed_box(width: u32, height: u32) -> LayoutBox {
     LayoutBox::fixed(width, height).max(width, height)
+}
+
+const fn u32_max(left: u32, right: u32) -> u32 {
+    if left > right {
+        left
+    } else {
+        right
+    }
+}
+
+const fn u32_min(left: u32, right: u32) -> u32 {
+    if left < right {
+        left
+    } else {
+        right
+    }
+}
+
+const fn resolve_section_heights(total_height: u32) -> (u32, u32, u32) {
+    let clamped_total = u32_max(total_height, 1);
+    let header_h = u32_min(
+        u32_max(
+            clamped_total.saturating_mul(HEADER_RATIO_PERCENT) / 100,
+            HEADER_MIN_HEIGHT,
+        ),
+        clamped_total.saturating_sub(1),
+    );
+
+    let remaining = u32_max(clamped_total.saturating_sub(header_h), 1);
+
+    let mut controls_h = u32_min(
+        u32_max(
+            clamped_total.saturating_mul(CONTROLS_RATIO_PERCENT) / 100,
+            CONTROLS_MIN_HEIGHT,
+        ),
+        remaining.saturating_sub(1),
+    );
+    if controls_h >= remaining {
+        controls_h = remaining.saturating_sub(1);
+    }
+    let curve_h = u32_max(remaining.saturating_sub(controls_h), 1);
+    (header_h, curve_h, controls_h)
+}
+
+const fn resolve_bottom_section_widths(total_width: u32) -> (u32, u32) {
+    let clamped_total = u32_max(total_width, 1);
+    let mut knobs_w = clamped_total.saturating_mul(KNOBS_RATIO_PERCENT) / 100;
+    if knobs_w >= clamped_total {
+        knobs_w = clamped_total.saturating_sub(1);
+    }
+    let dropdown_w = u32_max(clamped_total.saturating_sub(knobs_w), 1);
+    (knobs_w, dropdown_w)
 }
 
 /// Shared Pump color/style tokens derived from the canonical Patchbay theme.
@@ -308,11 +353,8 @@ impl GuiState {
         let content_w = WINDOW_WIDTH;
         let content_h = WINDOW_HEIGHT;
         let theme = PumpTheme::main();
-        let header_h = HEADER_SECTION_H.min(content_h);
-        let controls_h = CONTROLS_SECTION_H.min(content_h.saturating_sub(header_h));
-        let curve_h = content_h.saturating_sub(header_h + controls_h).max(1);
-        let dropdown_section_w = DROPDOWN_SECTION_W.min(content_w).max(1);
-        let knobs_section_w = content_w.saturating_sub(dropdown_section_w).max(1);
+        let (header_h, curve_h, controls_h) = resolve_section_heights(content_h);
+        let (knobs_section_w, dropdown_section_w) = resolve_bottom_section_widths(content_w);
         let dropdown_control_w = dropdown_section_w.saturating_sub(8).max(64);
         let label_line_h = LABEL_LINE_H;
         let padding_x = PADDING_X;
@@ -522,21 +564,8 @@ impl GuiState {
     }
 
     fn measured_open_size(&self) -> (u32, u32) {
-        let baseline_input = InputState {
-            window_size: Size {
-                width: WINDOW_WIDTH,
-                height: WINDOW_HEIGHT,
-            },
-            ..InputState::default()
-        };
-        let spec = self.build_ui(&baseline_input);
-        match measure_checked(&spec) {
-            Ok(size) => (
-                (size.width.saturating_mul(3) / 5).max(1),
-                (size.height.saturating_mul(3) / 5).max(1),
-            ),
-            Err(_) => (DEFAULT_OPEN_WIDTH, DEFAULT_OPEN_HEIGHT),
-        }
+        // Open at baseline design size so initial rendering is true 1:1.
+        (WINDOW_WIDTH, WINDOW_HEIGHT)
     }
 
     fn reduce_action(&mut self, action: UiAction) {
@@ -1406,8 +1435,8 @@ mod tests {
     use super::{
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
-        preview_node_on_curve, GuiState, CURVE_KEY, DEFAULT_OPEN_HEIGHT, DEFAULT_OPEN_WIDTH,
-        SPLINE_SECTION_H, WINDOW_HEIGHT, WINDOW_WIDTH,
+        preview_node_on_curve, resolve_bottom_section_widths, resolve_section_heights, GuiState,
+        CURVE_KEY, SPLINE_SECTION_H, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -1564,8 +1593,8 @@ mod tests {
             None,
         );
         let (width, height) = state.measured_open_size();
-        assert_eq!(width, DEFAULT_OPEN_WIDTH);
-        assert_eq!(height, DEFAULT_OPEN_HEIGHT);
+        assert_eq!(width, WINDOW_WIDTH);
+        assert_eq!(height, WINDOW_HEIGHT);
     }
 
     #[test]
@@ -1580,8 +1609,25 @@ mod tests {
         let (measured_width, measured_height) = state.measured_open_size();
         assert_eq!(preferred_width, measured_width);
         assert_eq!(preferred_height, measured_height);
-        assert_eq!(preferred_width, DEFAULT_OPEN_WIDTH);
-        assert_eq!(preferred_height, DEFAULT_OPEN_HEIGHT);
+        assert_eq!(preferred_width, WINDOW_WIDTH);
+        assert_eq!(preferred_height, WINDOW_HEIGHT);
+    }
+
+    #[test]
+    fn section_height_split_matches_expected_ratios() {
+        let (header_h, curve_h, controls_h) = resolve_section_heights(WINDOW_HEIGHT);
+        assert_eq!(header_h, 18);
+        assert_eq!(curve_h, 163);
+        assert_eq!(controls_h, 77);
+        assert_eq!(header_h + curve_h + controls_h, WINDOW_HEIGHT);
+    }
+
+    #[test]
+    fn bottom_row_split_matches_expected_ratio() {
+        let (knobs_w, dropdown_w) = resolve_bottom_section_widths(WINDOW_WIDTH);
+        assert_eq!(knobs_w, 294);
+        assert_eq!(dropdown_w, 126);
+        assert_eq!(knobs_w + dropdown_w, WINDOW_WIDTH);
     }
 
     #[test]
