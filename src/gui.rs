@@ -64,8 +64,10 @@ pub const WINDOW_WIDTH: u32 = scale_u32(700);
 pub const WINDOW_HEIGHT: u32 = scale_u32(430);
 
 const ROOT_KEY: &str = "pump-root";
+const HEADER_SECTION_KEY: &str = "pump-header-section";
 const CURVE_KEY: &str = "curve";
 const SPLINE_SECTION_KEY: &str = "pump-spline-section";
+const CONTROLS_SECTION_KEY: &str = "pump-controls-section";
 const KNOBS_SECTION_KEY: &str = "pump-knobs-section";
 const DROPDOWN_SECTION_KEY: &str = "pump-dropdown-section";
 const MIX_KEY: &str = "mix";
@@ -76,16 +78,15 @@ const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 
 const PADDING_X: i32 = scale_i32(18);
-const SPLINE_SECTION_H: u32 = scale_u32(260);
-const BOTTOM_SECTION_H: u32 = scale_u32(170);
-const CONTENT_H: u32 = SPLINE_SECTION_H + BOTTOM_SECTION_H;
+const HEADER_SECTION_H: u32 = scale_u32(34);
+const CONTROLS_SECTION_H: u32 = scale_u32(170);
+const SPLINE_SECTION_H: u32 = WINDOW_HEIGHT - HEADER_SECTION_H - CONTROLS_SECTION_H;
 const SPLINE_TITLE_Y: i32 = scale_i32(4);
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = SPLINE_SECTION_H;
 const DROPDOWN_W: u32 = scale_u32(132);
 const DROPDOWN_SECTION_W: u32 = DROPDOWN_W + scale_u32(20);
 const TITLE_LABEL_W: u32 = scale_u32(64);
-const CYCLE_LABEL_W: u32 = DROPDOWN_W;
 const LABEL_LINE_H: u32 = 16;
 const NODE_DRAW_RADIUS: i32 = scale_i32(4);
 const NODE_HIT_RADIUS: i32 = scale_i32(8);
@@ -103,8 +104,8 @@ const fn fixed_box(width: u32, height: u32) -> LayoutBox {
 
 fn viewport_size(input: &InputState) -> Size {
     Size {
-        width: input.window_size.width.max(WINDOW_WIDTH),
-        height: input.window_size.height.max(WINDOW_HEIGHT),
+        width: input.window_size.width.max(1),
+        height: input.window_size.height.max(1),
     }
 }
 
@@ -113,7 +114,6 @@ fn viewport_size(input: &InputState) -> Size {
 struct PumpTheme {
     tokens: ThemeTokens,
     panel_background: Color,
-    panel_outline: Color,
     title_text: Color,
     subtitle_text: Color,
     hint_text: Color,
@@ -146,7 +146,6 @@ impl PumpTheme {
         Self {
             tokens: ThemeTokens::main(),
             panel_background: palette.background_secondary,
-            panel_outline: palette.ui_secondary,
             title_text: palette.accent_focus,
             subtitle_text: palette.syntax_emphasis,
             hint_text: palette.text_muted,
@@ -331,8 +330,14 @@ impl GuiState {
         let viewport = viewport_size(input);
         let content_w = viewport.width;
         let content_h = viewport.height;
-        let curve_h = SPLINE_SECTION_H.saturating_add(content_h.saturating_sub(CONTENT_H));
-        let bottom_h = BOTTOM_SECTION_H;
+        let header_h = HEADER_SECTION_H.min(content_h);
+        let controls_h = CONTROLS_SECTION_H.min(content_h.saturating_sub(header_h));
+        let curve_h = content_h.saturating_sub(header_h + controls_h).max(1);
+        let dropdown_section_w = DROPDOWN_SECTION_W.min(content_w).max(1);
+        let knobs_section_w = content_w.saturating_sub(dropdown_section_w).max(1);
+        let dropdown_control_w = dropdown_section_w
+            .saturating_sub(scale_u32(8))
+            .max(scale_u32(64));
         let spline_tip_y = curve_h as i32 - LABEL_LINE_H as i32 - scale_i32(4);
         let subtitle_label_w =
             content_w.saturating_sub((PADDING_X.max(0) as u32).saturating_add(scale_u32(72)));
@@ -419,6 +424,18 @@ impl GuiState {
             AbsoluteChild::new(
                 Point {
                     x: PADDING_X,
+                    y: spline_tip_y,
+                },
+                label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
+                    .text_color(theme.hint_text)
+                    .layout(fixed_box(tip_label_w, LABEL_LINE_H)),
+            ),
+        ];
+
+        let header_controls = vec![
+            AbsoluteChild::new(
+                Point {
+                    x: PADDING_X,
                     y: SPLINE_TITLE_Y,
                 },
                 label("PUMP")
@@ -434,16 +451,17 @@ impl GuiState {
                     .text_color(theme.subtitle_text)
                     .layout(fixed_box(subtitle_label_w, LABEL_LINE_H)),
             ),
-            AbsoluteChild::new(
-                Point {
-                    x: PADDING_X,
-                    y: spline_tip_y,
-                },
-                label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
-                    .text_color(theme.hint_text)
-                    .layout(fixed_box(tip_label_w, LABEL_LINE_H)),
-            ),
         ];
+
+        let header_section = panel(
+            HEADER_SECTION_KEY,
+            Node::Absolute(
+                AbsoluteSpec::new(header_controls).layout(LayoutBox::fixed(content_w, header_h)),
+            ),
+        )
+        .pad_all(0)
+        .background(theme.panel_background)
+        .layout(LayoutBox::fixed(content_w, header_h));
 
         let spline_section = panel(
             SPLINE_SECTION_KEY,
@@ -453,7 +471,6 @@ impl GuiState {
         )
         .pad_all(0)
         .background(theme.panel_background)
-        .outline(theme.panel_outline)
         .layout(LayoutBox::fixed(content_w, curve_h));
 
         let knobs_grid = grid(
@@ -486,8 +503,7 @@ impl GuiState {
         let knobs_section = panel(KNOBS_SECTION_KEY, knobs_grid)
             .pad_all(0)
             .background(theme.panel_background)
-            .outline(theme.panel_outline)
-            .layout(LayoutBox::auto().fill_width().fixed_height(bottom_h));
+            .layout(LayoutBox::fixed(knobs_section_w, controls_h));
 
         let dropdown_section_content = column(vec![
             dropdown(
@@ -497,48 +513,45 @@ impl GuiState {
                 division.min(MAX_SYNC_DIVISION as usize),
             )
             .control_size(Size {
-                width: DROPDOWN_W,
+                width: dropdown_control_w,
                 height: scale_u32(24),
             }),
             button(RESET_KEY, "Reset Curve").control_size(Size {
-                width: DROPDOWN_W,
+                width: dropdown_control_w,
                 height: scale_u32(24),
             }),
             label(format!("Cycle: {}", sync_division_label(division)))
                 .text_color(theme.hint_text)
-                .layout(fixed_box(CYCLE_LABEL_W, LABEL_LINE_H)),
+                .layout(fixed_box(dropdown_control_w, LABEL_LINE_H)),
         ])
         .gap(scale_i32(4))
         .pad_all(0)
-        .layout(LayoutBox::fixed(DROPDOWN_SECTION_W, bottom_h));
+        .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
         let dropdown_section = panel(DROPDOWN_SECTION_KEY, dropdown_section_content)
             .pad_all(0)
             .background(theme.panel_background)
-            .outline(theme.panel_outline)
-            .layout(LayoutBox::fixed(DROPDOWN_SECTION_W, bottom_h));
+            .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
-        let bottom_row = row(vec![knobs_section, dropdown_section])
+        let controls_row = row(vec![knobs_section, dropdown_section])
             .gap(0)
             .pad_all(0)
             .justify_start()
             .align_start()
-            .layout(LayoutBox::fixed(content_w, bottom_h));
+            .layout(LayoutBox::fixed(content_w, controls_h));
 
-        let content = column(vec![spline_section, bottom_row])
+        let controls_section = panel(CONTROLS_SECTION_KEY, controls_row)
+            .pad_all(0)
+            .background(theme.panel_background)
+            .layout(LayoutBox::fixed(content_w, controls_h));
+
+        let content = column(vec![header_section, spline_section, controls_section])
             .gap(0)
             .pad_all(0)
             .layout(LayoutBox::fixed(content_w, content_h));
 
-        let root_content = panel("pump-main", content)
-            .pad_all(0)
-            .background(theme.panel_background)
-            .outline(theme.panel_outline)
-            .layout(LayoutBox::fixed(content_w, content_h));
-
         UiSpec::new(
-            RootFrameSpec::new(ROOT_KEY, root_content)
-                .title("pump")
+            RootFrameSpec::new(ROOT_KEY, content)
                 .padding(0)
                 .tokens(theme.tokens)
                 .layout(LayoutBox::fixed(content_w, content_h)),
@@ -1589,7 +1602,7 @@ mod tests {
         );
         let (width, height) = state.measured_open_size();
         assert!(width >= WINDOW_WIDTH);
-        assert!(height > WINDOW_HEIGHT);
+        assert!(height >= WINDOW_HEIGHT);
     }
 
     #[test]
@@ -1605,7 +1618,7 @@ mod tests {
         assert_eq!(preferred_width, measured_width);
         assert_eq!(preferred_height, measured_height);
         assert!(preferred_width >= WINDOW_WIDTH);
-        assert!(preferred_height > WINDOW_HEIGHT);
+        assert!(preferred_height >= WINDOW_HEIGHT);
     }
 
     #[test]
@@ -1641,6 +1654,34 @@ mod tests {
         assert!(measured.height >= input.window_size.height);
     }
 
+    #[test]
+    fn build_ui_root_content_is_three_section_column() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let spec = state.build_ui(&InputState::default());
+        let root_column = match spec.root.content.as_ref() {
+            Node::Column(column) => column,
+            other => panic!("expected root content column, got {other:?}"),
+        };
+        assert_eq!(root_column.children.len(), 3);
+        assert!(contains_panel_key(
+            &root_column.children[0],
+            HEADER_SECTION_KEY
+        ));
+        assert!(contains_panel_key(
+            &root_column.children[1],
+            SPLINE_SECTION_KEY
+        ));
+        assert!(contains_panel_key(
+            &root_column.children[2],
+            CONTROLS_SECTION_KEY
+        ));
+    }
+
     fn find_curve_region_node(node: &Node) -> Option<&toybox::gui::declarative::RegionSpec> {
         match node {
             Node::Region(region) if region.key == CURVE_KEY => Some(region),
@@ -1662,6 +1703,33 @@ mod tests {
             | Node::Button(_)
             | Node::Dropdown(_)
             | Node::Indicator(_) => None,
+        }
+    }
+
+    fn contains_panel_key(node: &Node, key: &str) -> bool {
+        match node {
+            Node::Panel(panel) => panel.key == key || contains_panel_key(&panel.content, key),
+            Node::Row(flex) | Node::Column(flex) => flex
+                .children
+                .iter()
+                .any(|child| contains_panel_key(child, key)),
+            Node::Grid(grid) => grid
+                .children
+                .iter()
+                .any(|child| contains_panel_key(child, key)),
+            Node::Absolute(absolute) => absolute
+                .children
+                .iter()
+                .any(|child| contains_panel_key(&child.node, key)),
+            Node::Label(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::Region(_)
+            | Node::Indicator(_) => false,
         }
     }
 }
