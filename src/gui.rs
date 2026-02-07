@@ -188,9 +188,9 @@ impl PumpGui {
         self.window.host_resize_enabled()
     }
 
-    /// Normalize a host-provided size using Toybox Patchbay constraints.
-    pub fn normalize_host_size(&self, size: GuiSize) -> GuiSize {
-        self.window.normalize_host_size(size)
+    /// Resolve host-adjusted size according to the configured resize policy.
+    pub fn adjust_host_size(&self, size: GuiSize) -> Option<GuiSize> {
+        self.window.adjust_host_size(size)
     }
 
     /// Apply a host-provided size using Toybox's canonical resize behavior.
