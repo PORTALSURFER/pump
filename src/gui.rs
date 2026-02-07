@@ -615,7 +615,7 @@ impl GuiState {
                             }
                             dragging = true;
                             if let Some(segment) = editable.segments.get_mut(index) {
-                                let delta = (local_pointer.x - start_pointer.x) as f32
+                                let delta = (start_pointer.y - local_pointer.y) as f32
                                     / CURVE_TENSION_PIXEL_SCALE;
                                 segment.tension = (start_tension + delta)
                                     .clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
