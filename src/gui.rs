@@ -406,8 +406,11 @@ impl GuiState {
                 key,
                 kind,
                 local_pointer,
+                raw_local_pointer,
                 alt_down,
-            } if key == CURVE_KEY => self.reduce_curve_interaction(kind, local_pointer, alt_down),
+            } if key == CURVE_KEY => {
+                self.reduce_curve_interaction(kind, local_pointer, raw_local_pointer, alt_down)
+            }
             UiAction::RegionInteracted { .. } => {}
             _ => {}
         }
@@ -449,6 +452,7 @@ impl GuiState {
         &mut self,
         kind: RegionInteractionKind,
         local_pointer: Point,
+        raw_local_pointer: Point,
         alt_down: bool,
     ) {
         let Ok(mut runtime) = self.runtime.lock() else {
@@ -456,6 +460,7 @@ impl GuiState {
         };
 
         let normalized_pointer = node_from_local(local_pointer);
+        let raw_normalized_pointer = node_from_local(raw_local_pointer);
 
         match kind {
             RegionInteractionKind::Pressed => {
@@ -563,7 +568,7 @@ impl GuiState {
                             let moved_index = move_node_with_push_through(
                                 &mut editable,
                                 index,
-                                normalized_pointer,
+                                raw_normalized_pointer,
                                 NODE_PUSH_THROUGH_PX,
                             );
                             runtime.selected_node = Some(moved_index);
@@ -593,9 +598,9 @@ impl GuiState {
                                 return;
                             }
                             dragging = true;
-                            let delta_x = (local_pointer.x - start_pointer.x) as f32
+                            let delta_x = (raw_local_pointer.x - start_pointer.x) as f32
                                 / (CURVE_W.max(2) - 1) as f32;
-                            let delta_y = (start_pointer.y - local_pointer.y) as f32
+                            let delta_y = (start_pointer.y - raw_local_pointer.y) as f32
                                 / (CURVE_H.max(2) - 1) as f32;
                             move_segment_translated(
                                 &mut editable,
@@ -635,7 +640,7 @@ impl GuiState {
                             }
                             dragging = true;
                             if let Some(segment) = editable.segments.get_mut(index) {
-                                let delta = (start_pointer.y - local_pointer.y) as f32
+                                let delta = (raw_local_pointer.y - start_pointer.y) as f32
                                     / CURVE_TENSION_PIXEL_SCALE;
                                 segment.tension = (start_tension + delta)
                                     .clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
