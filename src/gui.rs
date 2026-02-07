@@ -108,7 +108,6 @@ fn viewport_size(input: &InputState) -> Size {
 #[derive(Clone, Copy, Debug)]
 struct PumpTheme {
     tokens: ThemeTokens,
-    panel_background: Color,
     title_text: Color,
     subtitle_text: Color,
     hint_text: Color,
@@ -140,7 +139,6 @@ impl PumpTheme {
         let palette = MainPalette::main();
         Self {
             tokens: ThemeTokens::main(),
-            panel_background: palette.background_secondary,
             title_text: palette.accent_focus,
             subtitle_text: palette.syntax_emphasis,
             hint_text: palette.text_muted,
