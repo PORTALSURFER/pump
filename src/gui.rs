@@ -60,7 +60,6 @@ const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const SEGMENT_NEAR_HIT_RADIUS: i32 = 16;
 const SEGMENT_DIRECT_HIT_RADIUS: i32 = 6;
-const NODE_DELETE_HIT_RADIUS: i32 = 14;
 const NODE_INSERT_GUARD_RADIUS: i32 = 12;
 const CURVE_DRAG_START_THRESHOLD_PX: i32 = 2;
 const CURVE_TENSION_PIXEL_SCALE: f32 = 120.0;
@@ -359,7 +358,7 @@ impl GuiState {
                     x: CURVE_X,
                     y: CURVE_Y + CURVE_H as i32 + 6,
                 },
-                label("Tip: direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
+                label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
                     .text_color(Color::rgb(132, 142, 160)),
             ),
         ];
@@ -672,13 +671,10 @@ impl GuiState {
             RegionInteractionKind::Released => {
                 runtime.drag_mode = None;
             }
-            RegionInteractionKind::SecondaryClicked => {
+            RegionInteractionKind::SecondaryClicked => {}
+            RegionInteractionKind::DoubleClicked => {
                 let mut editable = self.params.editable_curve_snapshot();
-                if let Some(index) = find_nearest_interior_node_within(
-                    &editable,
-                    local_pointer,
-                    NODE_DELETE_HIT_RADIUS,
-                ) {
+                if let Some(index) = find_deletable_node_hit(&editable, local_pointer) {
                     editable.nodes.remove(index);
                     let remove_segment = index
                         .saturating_sub(1)
@@ -692,7 +688,6 @@ impl GuiState {
                     self.params.set_editable_curve(&editable);
                 }
             }
-            RegionInteractionKind::DoubleClicked => {}
         }
     }
 
@@ -1230,39 +1225,18 @@ fn drag_threshold_crossed(start_pointer: Point, current_pointer: Point, threshol
     distance_squared(start_pointer, current_pointer) >= threshold * threshold
 }
 
-fn find_nearest_interior_node_within(
-    curve: &EditableCurve,
-    local_pointer: Point,
-    radius: i32,
-) -> Option<usize> {
-    if curve.nodes.len() <= 2 {
+fn find_deletable_node_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
+    let index = find_node_hit(curve, local_pointer)?;
+    if index == 0 || index + 1 == curve.nodes.len() {
         return None;
     }
-
-    let mut best: Option<(usize, i64)> = None;
-    let radius_squared = radius.max(0) as i64 * radius.max(0) as i64;
-    let last_index = curve.nodes.len() - 1;
-    for (index, node) in curve.nodes.iter().copied().enumerate() {
-        if index == 0 || index == last_index {
-            continue;
-        }
-
-        let distance = distance_squared(local_from_node(node), local_pointer);
-        if distance <= radius_squared {
-            match best {
-                Some((_, best_distance)) if distance >= best_distance => {}
-                _ => best = Some((index, distance)),
-            }
-        }
-    }
-
-    best.map(|(index, _)| index)
+    Some(index)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        find_nearest_interior_node_within, find_segment_line_hit_within, local_from_node,
+        find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preview_node_on_curve,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
@@ -1285,20 +1259,14 @@ mod tests {
         };
 
         let near_start = local_from_node(curve.nodes[0]);
-        assert_eq!(
-            find_nearest_interior_node_within(&curve, near_start, 16),
-            None
-        );
+        assert_eq!(find_deletable_node_hit(&curve, near_start), None);
 
         let near_middle = local_from_node(curve.nodes[1]);
-        assert_eq!(
-            find_nearest_interior_node_within(&curve, near_middle, 16),
-            Some(1)
-        );
+        assert_eq!(find_deletable_node_hit(&curve, near_middle), Some(1));
     }
 
     #[test]
-    fn delete_hit_returns_none_outside_radius() {
+    fn delete_hit_returns_none_outside_node_hit_radius() {
         let curve = EditableCurve {
             nodes: vec![
                 CurveNode { x: 0.0, y: 1.0 },
@@ -1309,7 +1277,7 @@ mod tests {
         };
 
         let far_away = Point { x: 0, y: 0 };
-        assert_eq!(find_nearest_interior_node_within(&curve, far_away, 2), None);
+        assert_eq!(find_deletable_node_hit(&curve, far_away), None);
     }
 
     #[test]
