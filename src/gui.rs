@@ -31,12 +31,12 @@ use crate::{GuiStatus, HostParamRequester};
 ///
 /// Patchbay owns runtime scaling and resize policy; Pump only publishes this
 /// baseline logical size.
-pub const WINDOW_WIDTH: u32 = 700;
+pub const WINDOW_WIDTH: u32 = 420;
 /// Default logical height for the Pump design canvas.
 ///
 /// Patchbay owns runtime scaling and resize policy; Pump only publishes this
 /// baseline logical size.
-pub const WINDOW_HEIGHT: u32 = 430;
+pub const WINDOW_HEIGHT: u32 = 258;
 
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
