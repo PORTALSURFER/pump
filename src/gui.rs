@@ -490,7 +490,6 @@ impl GuiState {
         let knobs_section = panel(KNOBS_SECTION_KEY, knobs_grid)
             .pad_all(0)
             .background(theme.panel_background)
-            .header_height(0)
             .layout(LayoutBox::fixed(knobs_section_w, controls_h));
 
         let dropdown_section_content = column(vec![
@@ -519,7 +518,6 @@ impl GuiState {
         let dropdown_section = panel(DROPDOWN_SECTION_KEY, dropdown_section_content)
             .pad_all(0)
             .background(theme.panel_background)
-            .header_height(0)
             .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
         let controls_row = row(vec![knobs_section, dropdown_section])
