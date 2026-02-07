@@ -501,10 +501,8 @@ impl<'a> PluginGuiImpl for PumpMainThread<'a> {
         if let Some((width, height)) = self.gui.last_size() {
             return Some(clack_extensions::gui::GuiSize { width, height });
         }
-        Some(clack_extensions::gui::GuiSize {
-            width: crate::gui::WINDOW_WIDTH,
-            height: crate::gui::WINDOW_HEIGHT,
-        })
+        let (width, height) = crate::gui::preferred_window_size();
+        Some(clack_extensions::gui::GuiSize { width, height })
     }
 
     fn can_resize(&mut self) -> bool {

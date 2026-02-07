@@ -16,7 +16,7 @@ use toybox::vst3::prelude::Steinberg::*;
 use toybox::vst3::prelude::*;
 
 use crate::dsp::{DspSettings, PumpEngine};
-use crate::gui::{PumpGui, WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::gui::{preferred_window_size, PumpGui};
 use crate::params::{
     decode_state_payload, encode_state_payload, sync_division_index_from_text, sync_division_label,
     PumpParams, DEFAULT_DEPTH, DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET,
@@ -660,8 +660,10 @@ impl IEditControllerTrait for PumpVst3Controller {
         }
 
         let adapter = PumpVst3GuiAdapter::new(self.params.clone());
-        let Some(view) = ComWrapper::new(HostedVst3View::new(adapter, WINDOW_WIDTH, WINDOW_HEIGHT))
-            .to_com_ptr::<IPlugView>()
+        let (default_width, default_height) = preferred_window_size();
+        let Some(view) =
+            ComWrapper::new(HostedVst3View::new(adapter, default_width, default_height))
+                .to_com_ptr::<IPlugView>()
         else {
             return ptr::null_mut();
         };
@@ -812,15 +814,16 @@ mod tests {
 
     #[test]
     fn view_enforces_minimum_size() {
+        let (preferred_width, preferred_height) = preferred_window_size();
         let view = HostedVst3View::new(
             PumpVst3GuiAdapter::new(Arc::new(PumpParams::new())),
-            WINDOW_WIDTH,
-            WINDOW_HEIGHT,
+            preferred_width,
+            preferred_height,
         );
         let mut rect = view_rect(10, 10);
         let result = unsafe { view.checkSizeConstraint(&mut rect) };
         assert_eq!(result, kResultOk);
-        assert!(rect.right - rect.left >= WINDOW_WIDTH as i32);
-        assert!(rect.bottom - rect.top >= WINDOW_HEIGHT as i32);
+        assert!(rect.right - rect.left >= preferred_width as i32);
+        assert!(rect.bottom - rect.top >= preferred_height as i32);
     }
 }

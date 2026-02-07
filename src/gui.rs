@@ -1,6 +1,6 @@
 //! Declarative curve-editor GUI for Pump.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use toybox::clack_extensions::gui::Window;
 use toybox::clack_plugin::plugin::PluginError;
@@ -164,6 +164,24 @@ impl PumpGui {
     pub fn last_size(&self) -> Option<(u32, u32)> {
         self.window.last_size()
     }
+}
+
+/// Return the preferred logical Pump window size measured from declarative layout.
+///
+/// Hosts may query a plugin view size before the GUI is opened. This helper
+/// provides a stable measured fallback so host-side parent windows are large
+/// enough for the current declarative content on first attach.
+pub(crate) fn preferred_window_size() -> (u32, u32) {
+    static PREFERRED_SIZE: OnceLock<(u32, u32)> = OnceLock::new();
+    *PREFERRED_SIZE.get_or_init(|| {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        state.measured_open_size()
+    })
 }
 
 struct GuiState {
@@ -1293,8 +1311,8 @@ fn find_deletable_node_hit(curve: &EditableCurve, local_pointer: Point) -> Optio
 mod tests {
     use super::{
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
-        move_node_with_push_through, move_segment_translated, preview_node_on_curve, GuiState,
-        WINDOW_HEIGHT, WINDOW_WIDTH,
+        move_node_with_push_through, move_segment_translated, preferred_window_size,
+        preview_node_on_curve, GuiState, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -1451,5 +1469,21 @@ mod tests {
         let (width, height) = state.measured_open_size();
         assert!(width >= WINDOW_WIDTH);
         assert!(height >= WINDOW_HEIGHT);
+    }
+
+    #[test]
+    fn preferred_window_size_tracks_measured_layout() {
+        let (preferred_width, preferred_height) = preferred_window_size();
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let (measured_width, measured_height) = state.measured_open_size();
+        assert_eq!(preferred_width, measured_width);
+        assert_eq!(preferred_height, measured_height);
+        assert!(preferred_width >= WINDOW_WIDTH);
+        assert!(preferred_height >= WINDOW_HEIGHT);
     }
 }
