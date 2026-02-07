@@ -64,10 +64,7 @@ pub const WINDOW_WIDTH: u32 = scale_u32(700);
 pub const WINDOW_HEIGHT: u32 = scale_u32(430);
 
 const ROOT_KEY: &str = "pump-root";
-const HEADER_SECTION_KEY: &str = "pump-header-section";
 const CURVE_KEY: &str = "curve";
-const SPLINE_SECTION_KEY: &str = "pump-spline-section";
-const CONTROLS_SECTION_KEY: &str = "pump-controls-section";
 const KNOBS_SECTION_KEY: &str = "pump-knobs-section";
 const DROPDOWN_SECTION_KEY: &str = "pump-dropdown-section";
 const MIX_KEY: &str = "mix";
@@ -453,26 +450,14 @@ impl GuiState {
             ),
         ];
 
-        let header_section = panel(
-            HEADER_SECTION_KEY,
-            Node::Absolute(
-                AbsoluteSpec::new(header_controls).layout(LayoutBox::fixed(content_w, header_h)),
-            ),
+        let header_section = Node::Absolute(
+            AbsoluteSpec::new(header_controls).layout(LayoutBox::fixed(content_w, header_h)),
         )
-        .pad_all(0)
-        .background(theme.panel_background)
-        .outline(theme.panel_background)
         .layout(LayoutBox::fixed(content_w, header_h));
 
-        let spline_section = panel(
-            SPLINE_SECTION_KEY,
-            Node::Absolute(
-                AbsoluteSpec::new(spline_controls).layout(LayoutBox::fixed(content_w, curve_h)),
-            ),
+        let spline_section = Node::Absolute(
+            AbsoluteSpec::new(spline_controls).layout(LayoutBox::fixed(content_w, curve_h)),
         )
-        .pad_all(0)
-        .background(theme.panel_background)
-        .outline(theme.panel_background)
         .layout(LayoutBox::fixed(content_w, curve_h));
 
         let knobs_grid = grid(
@@ -505,7 +490,7 @@ impl GuiState {
         let knobs_section = panel(KNOBS_SECTION_KEY, knobs_grid)
             .pad_all(0)
             .background(theme.panel_background)
-            .outline(theme.panel_background)
+            .header_height(0)
             .layout(LayoutBox::fixed(knobs_section_w, controls_h));
 
         let dropdown_section_content = column(vec![
@@ -534,7 +519,7 @@ impl GuiState {
         let dropdown_section = panel(DROPDOWN_SECTION_KEY, dropdown_section_content)
             .pad_all(0)
             .background(theme.panel_background)
-            .outline(theme.panel_background)
+            .header_height(0)
             .layout(LayoutBox::fixed(dropdown_section_w, controls_h));
 
         let controls_row = row(vec![knobs_section, dropdown_section])
@@ -544,11 +529,7 @@ impl GuiState {
             .align_start()
             .layout(LayoutBox::fixed(content_w, controls_h));
 
-        let controls_section = panel(CONTROLS_SECTION_KEY, controls_row)
-            .pad_all(0)
-            .background(theme.panel_background)
-            .outline(theme.panel_background)
-            .layout(LayoutBox::fixed(content_w, controls_h));
+        let controls_section = controls_row.layout(LayoutBox::fixed(content_w, controls_h));
 
         let content = column(vec![header_section, spline_section, controls_section])
             .gap(0)
@@ -1680,18 +1661,9 @@ mod tests {
             other => panic!("expected root content column, got {other:?}"),
         };
         assert_eq!(root_column.children.len(), 3);
-        assert!(contains_panel_key(
-            &root_column.children[0],
-            HEADER_SECTION_KEY
-        ));
-        assert!(contains_panel_key(
-            &root_column.children[1],
-            SPLINE_SECTION_KEY
-        ));
-        assert!(contains_panel_key(
-            &root_column.children[2],
-            CONTROLS_SECTION_KEY
-        ));
+        assert!(matches!(root_column.children[0], Node::Absolute(_)));
+        assert!(matches!(root_column.children[1], Node::Absolute(_)));
+        assert!(matches!(root_column.children[2], Node::Row(_)));
     }
 
     fn find_curve_region_node(node: &Node) -> Option<&toybox::gui::declarative::RegionSpec> {
@@ -1715,33 +1687,6 @@ mod tests {
             | Node::Button(_)
             | Node::Dropdown(_)
             | Node::Indicator(_) => None,
-        }
-    }
-
-    fn contains_panel_key(node: &Node, key: &str) -> bool {
-        match node {
-            Node::Panel(panel) => panel.key == key || contains_panel_key(&panel.content, key),
-            Node::Row(flex) | Node::Column(flex) => flex
-                .children
-                .iter()
-                .any(|child| contains_panel_key(child, key)),
-            Node::Grid(grid) => grid
-                .children
-                .iter()
-                .any(|child| contains_panel_key(child, key)),
-            Node::Absolute(absolute) => absolute
-                .children
-                .iter()
-                .any(|child| contains_panel_key(&child.node, key)),
-            Node::Label(_)
-            | Node::Spacer(_)
-            | Node::Knob(_)
-            | Node::Slider(_)
-            | Node::Toggle(_)
-            | Node::Button(_)
-            | Node::Dropdown(_)
-            | Node::Region(_)
-            | Node::Indicator(_) => false,
         }
     }
 }
