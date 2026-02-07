@@ -199,6 +199,8 @@ impl PumpGui {
         automation_queue: Arc<AutomationQueue>,
         param_requester: Option<HostParamRequester>,
     ) -> Result<(), PluginError> {
+        self.window
+            .set_aspect_ratio(Some(WINDOW_WIDTH as f32 / WINDOW_HEIGHT as f32));
         let state = GuiState::new(
             Arc::clone(params),
             Arc::clone(status),
