@@ -1693,24 +1693,24 @@ mod tests {
             None,
         );
         let spec = state.build_ui(&InputState::default());
-        let root_column = match spec.root.content.as_ref() {
-            Node::Column(column) => column,
-            other => panic!("expected root content column, got {other:?}"),
+        let root_grid = match spec.root.content.as_ref() {
+            Node::Grid(grid) => grid,
+            other => panic!("expected root content grid, got {other:?}"),
         };
-        assert_eq!(root_column.children.len(), 3);
-        assert!(matches!(root_column.children[0], Node::Panel(_)));
-        assert!(matches!(root_column.children[1], Node::Panel(_)));
-        let controls_panel = match &root_column.children[2] {
+        assert_eq!(root_grid.children.len(), 3);
+        assert!(matches!(root_grid.children[0], Node::Panel(_)));
+        assert!(matches!(root_grid.children[1], Node::Panel(_)));
+        let controls_panel = match &root_grid.children[2] {
             Node::Panel(panel) => panel,
             other => panic!("expected controls panel, got {other:?}"),
         };
-        let controls_row = match controls_panel.content.as_ref() {
-            Node::Row(row) => row,
-            other => panic!("expected controls row in panel, got {other:?}"),
+        let controls_grid = match controls_panel.content.as_ref() {
+            Node::Grid(grid) => grid,
+            other => panic!("expected controls grid in panel, got {other:?}"),
         };
-        assert_eq!(controls_row.children.len(), 2);
-        assert!(matches!(controls_row.children[0], Node::Panel(_)));
-        assert!(matches!(controls_row.children[1], Node::Panel(_)));
+        assert_eq!(controls_grid.children.len(), 2);
+        assert!(matches!(controls_grid.children[0], Node::Panel(_)));
+        assert!(matches!(controls_grid.children[1], Node::Panel(_)));
     }
 
     fn find_curve_region_node(node: &Node) -> Option<&toybox::gui::declarative::RegionSpec> {
