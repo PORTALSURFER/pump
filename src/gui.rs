@@ -140,7 +140,6 @@ fn scale_and_distribute(total: u32, base: &[u32], base_span: u32) -> Vec<u32> {
         rem_order.push((index, scaled - floor));
     }
 
-    let mut rem_order = rem_order;
     rem_order.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     if rem_order.is_empty() {
         return distributed;
@@ -435,11 +434,9 @@ impl PumpGui {
             param_requester,
         );
         let open_size = state.measured_open_size();
-        let on_init: Box<dyn FnMut(&mut GuiState) + Send> = Box::new(|_state: &mut GuiState| {});
-        let build: Box<dyn FnMut(&InputState, &GuiState) -> UiSpec + Send> =
-            Box::new(|input: &InputState, state: &GuiState| state.build_ui(input));
-        let reduce: Box<dyn FnMut(&mut GuiState, UiAction) + Send> =
-            Box::new(|state: &mut GuiState, action: UiAction| state.reduce_action(action));
+        let on_init = Box::new(|_state: &mut GuiState| {});
+        let build = Box::new(|input: &InputState, state: &GuiState| state.build_ui(input));
+        let reduce = Box::new(|state: &mut GuiState, action: UiAction| state.reduce_action(action));
 
         self.window.open_parented_with(GuiOpenRequest::<GuiState, _, _, _>::new(
             "pump".to_string(),
@@ -1248,12 +1245,9 @@ impl GuiState {
                             move_segment_translated(
                                 &mut editable,
                                 index,
-                                start_left_x,
-                                start_right_x,
-                                start_left_y,
-                                start_right_y,
-                                delta_x,
-                                delta_y,
+                                (start_left_x, start_left_y),
+                                (start_right_x, start_right_y),
+                                (delta_x, delta_y),
                             );
                             drag_mode = CurveDragMode::MoveSegment {
                                 index,
@@ -1858,13 +1852,13 @@ fn move_node_with_push_through_for_size(
 fn move_segment_translated(
     curve: &mut EditableCurve,
     segment_index: usize,
-    start_left_x: f32,
-    start_right_x: f32,
-    start_left_y: f32,
-    start_right_y: f32,
-    delta_x: f32,
-    delta_y: f32,
+    start_left: (f32, f32),
+    start_right: (f32, f32),
+    delta: (f32, f32),
 ) {
+    let (start_left_x, start_left_y) = start_left;
+    let (start_right_x, start_right_y) = start_right;
+    let (delta_x, delta_y) = delta;
     if curve.nodes.len() < 2 || segment_index >= curve.nodes.len() - 1 {
         return;
     }
@@ -2274,7 +2268,7 @@ mod tests {
                 CurveSegment { tension: 0.0 },
             ],
         };
-        move_segment_translated(&mut curve, 1, 0.3, 0.6, 0.5, 0.5, 0.1, 0.1);
+        move_segment_translated(&mut curve, 1, (0.3, 0.5), (0.6, 0.5), (0.1, 0.1));
         assert!((curve.nodes[1].x - 0.4).abs() < 1.0e-6);
         assert!((curve.nodes[2].x - 0.7).abs() < 1.0e-6);
         assert!((curve.nodes[1].y - 0.6).abs() < 1.0e-6);
@@ -2377,8 +2371,10 @@ mod tests {
             },
         ];
         for window_size in input_sizes {
-            let mut input = InputState::default();
-            input.window_size = window_size;
+            let input = InputState {
+                window_size,
+                ..InputState::default()
+            };
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
             assert_eq!(measured.width, WINDOW_WIDTH);

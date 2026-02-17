@@ -211,7 +211,7 @@ impl IComponentTrait for PumpVst3Processor {
         bus.channelCount = 2;
         copy_wstring(label, &mut bus.name);
         bus.busType = BusTypes_::kMain as BusType;
-        bus.flags = BusInfo_::BusFlags_::kDefaultActive as u32;
+        bus.flags = BusInfo_::BusFlags_::kDefaultActive;
 
         kResultOk
     }
@@ -484,7 +484,7 @@ impl IEditControllerTrait for PumpVst3Controller {
                 info.stepCount = 0;
                 info.defaultNormalizedValue = to_normalized(PARAM_MIX_ID, DEFAULT_MIX as f64);
                 info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
+                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk
             }
             1 => {
@@ -495,7 +495,7 @@ impl IEditControllerTrait for PumpVst3Controller {
                 info.stepCount = 0;
                 info.defaultNormalizedValue = to_normalized(PARAM_DEPTH_ID, DEFAULT_DEPTH as f64);
                 info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
+                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk
             }
             2 => {
@@ -507,7 +507,7 @@ impl IEditControllerTrait for PumpVst3Controller {
                 info.defaultNormalizedValue =
                     to_normalized(PARAM_PHASE_OFFSET_ID, DEFAULT_PHASE_OFFSET as f64);
                 info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
+                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk
             }
             3 => {
@@ -519,7 +519,7 @@ impl IEditControllerTrait for PumpVst3Controller {
                 info.defaultNormalizedValue =
                     to_normalized(PARAM_OUTPUT_GAIN_ID, DEFAULT_OUTPUT_GAIN_DB as f64);
                 info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
+                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk
             }
             4 => {
@@ -531,7 +531,7 @@ impl IEditControllerTrait for PumpVst3Controller {
                 info.defaultNormalizedValue =
                     to_normalized(PARAM_SYNC_DIVISION_ID, DEFAULT_SYNC_DIVISION_INDEX as f64);
                 info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
+                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk
             }
             _ => kInvalidArgument,

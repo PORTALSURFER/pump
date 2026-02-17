@@ -1,6 +1,6 @@
 //! Pump: freehand beat-synced gain shaping for sidechain-style ducking.
 
-#![warn(clippy::missing_docs_in_private_items, missing_docs)]
+#![warn(missing_docs)]
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -297,8 +297,8 @@ impl PumpAudioProcessor<'_> {
         settings: DspSettings,
         transport: TransportState,
     ) {
-        let (left_input, mut left_output, left_in_place) = split_channel(left_pair);
-        let (right_input, mut right_output, right_in_place) = split_channel(right_pair);
+        let (left_input, left_output, left_in_place) = split_channel(left_pair);
+        let (right_input, right_output, right_in_place) = split_channel(right_pair);
 
         let frames = min_len(&[
             left_input.as_ref().map(|buf| buf.len()),
@@ -362,10 +362,10 @@ impl PumpAudioProcessor<'_> {
 
         self.shared.status.update(last_phase, last_gain);
 
-        if let Some(out_left) = left_output.as_deref_mut() {
+        if let Some(out_left) = left_output {
             out_left[..frames].copy_from_slice(&self.scratch_left[..frames]);
         }
-        if let Some(out_right) = right_output.as_deref_mut() {
+        if let Some(out_right) = right_output {
             out_right[..frames].copy_from_slice(&self.scratch_right[..frames]);
         }
     }
@@ -432,6 +432,7 @@ fn bits_to_f32(value: u32) -> f32 {
     f32::from_ne_bytes(value.to_ne_bytes())
 }
 
+#[allow(clippy::question_mark)]
 impl<'a> PluginGuiImpl for PumpMainThread<'a> {
     toybox::patchbay_clap_gui_callbacks!(
         gui = gui,
