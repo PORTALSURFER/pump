@@ -211,14 +211,16 @@ impl IComponentTrait for PumpVst3Processor {
         bus.channelCount = 2;
         copy_wstring(label, &mut bus.name);
         bus.busType = BusTypes_::kMain as BusType;
-        #[cfg(windows)]
-        {
-            bus.flags = BusInfo_::BusFlags_::kDefaultActive as u32;
-        }
-        #[cfg(not(windows))]
-        {
-            bus.flags = BusInfo_::BusFlags_::kDefaultActive;
-        }
+        bus.flags = {
+            #[cfg(windows)]
+            {
+                BusInfo_::BusFlags_::kDefaultActive as u32
+            }
+            #[cfg(not(windows))]
+            {
+                BusInfo_::BusFlags_::kDefaultActive
+            }
+        };
 
         kResultOk
     }
