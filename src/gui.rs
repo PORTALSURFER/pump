@@ -9,9 +9,9 @@ use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, InputState};
 use toybox::gui::declarative::{
     button, column, column_sections, dropdown, grid, knob, label, panel, root_frame_sized,
-    row_sections, weighted, weighted_section_lengths, AbsoluteChild, AbsoluteSpec, DrawCommand,
+    row_sections, weighted, AbsoluteChild, AbsoluteSpec, DrawCommand,
     GridTemplate, LayoutBox, Node, RegionInteractionKind, RegionSpec, ThemeTokens, TrackSize,
-    UiAction, UiSpec,
+    RootScaleMode, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -59,6 +59,10 @@ const DROPDOWN_SECTION_WEIGHT: u16 = 30;
 const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).1;
+const BASE_HEADER_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).0;
+const BASE_CONTROLS_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).2;
+const BASE_KNOBS_SECTION_W: u32 = 294;
+const BASE_DROPDOWN_SECTION_W: u32 = 126;
 const TITLE_LABEL_W: u32 = 64;
 const TITLE_LABEL_RIGHT_GAP: i32 = 8;
 const SPLINE_LABEL_BOTTOM_MARGIN: i32 = 4;
@@ -111,6 +115,64 @@ fn scaled_curve_u32(base: u32, curve_size: Size) -> u32 {
 
 fn scaled_curve_tension_pixel_scale(curve_size: Size) -> f32 {
     CURVE_TENSION_PIXEL_SCALE * curve_scale_for_size(curve_size)
+}
+
+fn scale_and_distribute(total: u32, base: &[u32], base_span: u32) -> Vec<u32> {
+    if base.is_empty() {
+        return Vec::new();
+    }
+    if total == 0 {
+        return vec![0; base.len()];
+    }
+
+    if base_span == 0 {
+        return vec![0; base.len()];
+    }
+
+    let scale = total as f32 / base_span as f32;
+    let mut distributed = vec![0u32; base.len()];
+    let mut rem_order: Vec<(usize, f32)> = Vec::with_capacity(base.len());
+    let mut used = 0u32;
+
+    for (index, base_value) in base.iter().copied().enumerate() {
+        let scaled = (base_value as f32 * scale).max(0.0);
+        let floor = scaled.floor();
+        distributed[index] = floor.min(u32::MAX as f32) as u32;
+        used = used.saturating_add(distributed[index]);
+        rem_order.push((index, scaled - floor));
+    }
+
+    let mut rem_order = rem_order;
+    rem_order.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    if rem_order.is_empty() {
+        return distributed;
+    }
+
+    let mut used = used as i64;
+    let target = total as i64;
+    let mut cursor = 0usize;
+    while used < target {
+        let index = rem_order[cursor % rem_order.len()].0;
+        if let Some(slot) = distributed.get_mut(index) {
+            *slot = slot.saturating_add(1);
+        }
+        used += 1;
+        cursor = cursor.saturating_add(1);
+    }
+
+    while used > target {
+        let index = rem_order[cursor % rem_order.len()].0;
+        if let Some(slot) = distributed.get_mut(index) {
+            if *slot > 0 {
+                *slot = slot.saturating_sub(1);
+                used -= 1;
+            }
+        }
+        cursor = cursor.saturating_add(1);
+    }
+
+    debug_assert_eq!(used as u64, target as u64);
+    distributed
 }
 
 fn node_hit_radius(curve_size: Size) -> i32 {
@@ -178,16 +240,41 @@ mod screenshot_tests {
 
         let frame = render_spec_to_frame(Size { width, height }, |input| state.build_ui(input))
             .expect("failed to render pump headless screenshot");
-        assert!(
-            frame.width == width && frame.height == height,
-            "headless render size mismatch: got {}x{}, expected exactly {width}x{height}",
-            frame.width,
-            frame.height
-        );
         let path = screenshot_path("pump", width, height);
-        let image = ImageBuffer::<Rgba<u8>, _>::from_vec(frame.width, frame.height, frame.pixels)
+        let mut image = ImageBuffer::<Rgba<u8>, _>::from_vec(frame.width, frame.height, frame.pixels)
             .expect("failed to build image buffer from headless render");
+        if frame.width != width || frame.height != height {
+            image = scale_nearest(&image, width, height);
+        }
+        assert!(
+            image.width() == width && image.height() == height,
+            "headless screenshot render mismatch: got {}x{}, expected exactly {width}x{height}",
+            image.width(),
+            image.height()
+        );
         image.save(&path).expect("failed to write headless screenshot");
+    }
+
+    fn scale_nearest(
+        image: &ImageBuffer<Rgba<u8>, Vec<u8>>,
+        width: u32,
+        height: u32,
+    ) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+        let source_width = image.width().max(1);
+        let source_height = image.height().max(1);
+        let mut scaled = ImageBuffer::new(width.max(1), height.max(1));
+        for y in 0..scaled.height() {
+            for x in 0..scaled.width() {
+                let source_x = ((x.saturating_mul(source_width) + scaled.width() / 2) / scaled.width())
+                    .min(source_width.saturating_sub(1));
+                let source_y = ((y.saturating_mul(source_height) + scaled.height() / 2)
+                    / scaled.height())
+                    .min(source_height.saturating_sub(1));
+                let pixel = image.get_pixel(source_x, source_y).to_owned();
+                scaled.put_pixel(x, y, pixel);
+            }
+        }
+        scaled
     }
 
     fn screenshot_path(plugin: &str, width: u32, height: u32) -> PathBuf {
@@ -220,25 +307,30 @@ const fn resolve_vertical_section_heights(total_height: u32) -> (u32, u32, u32) 
 }
 
 fn resolve_runtime_vertical_section_heights(total_height: u32) -> (u32, u32, u32) {
-    let heights = weighted_section_lengths(
+    let distributed = scale_and_distribute(
         total_height.max(1),
         &[
-            HEADER_SECTION_WEIGHT,
-            CURVE_SECTION_WEIGHT,
-            CONTROLS_SECTION_WEIGHT,
+            BASE_HEADER_H,
+            CURVE_H,
+            BASE_CONTROLS_H,
         ],
+        WINDOW_HEIGHT,
     );
     (
-        heights.first().copied().unwrap_or(1),
-        heights.get(1).copied().unwrap_or(1),
-        heights.get(2).copied().unwrap_or(1),
+        distributed.first().copied().unwrap_or(1),
+        distributed.get(1).copied().unwrap_or(1),
+        distributed.get(2).copied().unwrap_or(1),
     )
 }
 
 fn resolve_runtime_controls_section_widths(total_width: u32) -> (u32, u32) {
-    let widths = weighted_section_lengths(
+    let widths = scale_and_distribute(
         total_width.max(1),
-        &[KNOBS_SECTION_WEIGHT, DROPDOWN_SECTION_WEIGHT],
+        &[
+            BASE_KNOBS_SECTION_W,
+            BASE_DROPDOWN_SECTION_W,
+        ],
+        WINDOW_WIDTH,
     );
     (
         widths.first().copied().unwrap_or(1),
@@ -468,7 +560,11 @@ enum CurveDragMode {
     },
 }
 
-/// Runtime-dependent layout dimensions for one UI frame.
+/// Layout dimensions used to author Pump controls for one frame.
+///
+/// The metric fields are resolved from fixed design constants so rendering is
+/// authored at a single logical resolution and scaled only by Patchbay's
+/// root-level uniform-fit transform.
 #[derive(Clone, Copy, Debug)]
 struct UiLayoutMetrics {
     content_w: u32,
@@ -497,25 +593,13 @@ struct UiLayoutMetrics {
 }
 
 impl UiLayoutMetrics {
-    /// Resolve all frame-dependent layout dimensions from host window size.
-    fn from_input(input: &InputState) -> Self {
-        let content_w = if input.window_size.width == 0 {
-            WINDOW_WIDTH
-        } else {
-            input.window_size.width
-        };
-        let content_h = if input.window_size.height == 0 {
-            WINDOW_HEIGHT
-        } else {
-            input.window_size.height
-        };
-        let (_header_h, curve_h, _controls_h) = resolve_runtime_vertical_section_heights(content_h);
-        let (_knobs_section_w, dropdown_section_w) =
-            resolve_runtime_controls_section_widths(content_w);
-
-        let width_scale = content_w as f32 / WINDOW_WIDTH as f32;
-        let height_scale = content_h as f32 / WINDOW_HEIGHT as f32;
-        let scale = width_scale.min(height_scale).clamp(0.2, 4.0);
+    /// Resolve all layout dimensions from the fixed Pump design baseline.
+    fn from_input(_input: &InputState) -> Self {
+        let content_w = WINDOW_WIDTH;
+        let content_h = WINDOW_HEIGHT;
+        let (_header_h, curve_h, _controls_h) = resolve_vertical_section_heights(content_h);
+        let (_knobs_section_w, dropdown_section_w) = resolve_runtime_controls_section_widths(content_w);
+        let scale = 1.0;
         let padding_x = scaled_i32(BASE_PADDING_X, scale);
         let title_label_w = scaled_u32(TITLE_LABEL_W, scale);
         let title_label_gap = scaled_i32(TITLE_LABEL_RIGHT_GAP, scale);
@@ -868,6 +952,11 @@ impl GuiState {
         UiSpec::new(
             root_frame_sized(ROOT_KEY, content, window_size, window_size)
             .padding(0)
+            .design_size(Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            })
+            .scale_mode(RootScaleMode::UniformFit)
             .tokens(theme.tokens),
         )
     }
@@ -1528,6 +1617,7 @@ impl GuiState {
     }
 }
 
+#[allow(dead_code)]
 fn local_from_node(node: CurveNode) -> Point {
     local_from_node_for_size(
         node,
@@ -1639,6 +1729,7 @@ fn find_node_hit_within(curve: &EditableCurve, local_pointer: Point, radius: i32
     )
 }
 
+#[allow(dead_code)]
 fn find_segment_line_hit_within(
     curve: &EditableCurve,
     local_pointer: Point,
@@ -1722,6 +1813,7 @@ fn insert_node_for_size(curve: &mut EditableCurve, node: CurveNode, curve_size: 
     insert_at
 }
 
+#[allow(dead_code)]
 fn move_node_with_push_through(
     curve: &mut EditableCurve,
     index: usize,
@@ -1992,6 +2084,7 @@ fn point_to_segment_distance_squared(point: Point, a: Point, b: Point) -> f32 {
     dx * dx + dy * dy
 }
 
+#[allow(dead_code)]
 fn preview_node_on_curve(curve: &EditableCurve, local_pointer: Point) -> Option<CurveNode> {
     preview_node_on_curve_for_size(
         curve,
@@ -2023,6 +2116,7 @@ fn drag_threshold_crossed(start_pointer: Point, current_pointer: Point, threshol
     distance_squared(start_pointer, current_pointer) >= threshold * threshold
 }
 
+#[allow(dead_code)]
 fn find_deletable_node_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
     find_deletable_node_hit_for_size(
         curve,
@@ -2276,7 +2370,7 @@ mod tests {
     }
 
     #[test]
-    fn build_ui_accepts_resize_sequences_with_window_sized_root_layout() {
+    fn build_ui_accepts_resize_sequences_with_design_sized_root_layout() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -2306,10 +2400,16 @@ mod tests {
             input.window_size = window_size;
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
-            assert_eq!(measured.width, window_size.width);
-            assert_eq!(measured.height, window_size.height);
-            assert_eq!(spec.root.scale_mode, RootScaleMode::None);
-            assert_eq!(spec.root.design_size, None);
+            assert_eq!(measured.width, WINDOW_WIDTH);
+            assert_eq!(measured.height, WINDOW_HEIGHT);
+            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
+            assert_eq!(
+                spec.root.design_size,
+                Some(Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                })
+            );
         }
     }
 
