@@ -6,7 +6,7 @@ use toybox::clack_extensions::gui::{GuiSize, Window};
 use toybox::clack_plugin::plugin::PluginError;
 use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
-use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, InputState};
+use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
     button, column, column_sections, dropdown, grid, knob, label, panel, root_frame_sized,
     row_sections, weighted, AbsoluteChild, AbsoluteSpec, DrawCommand,
@@ -26,7 +26,7 @@ use crate::params::{
     PARAM_DEPTH_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
     PARAM_SYNC_DIVISION_ID,
 };
-use crate::{GuiStatus, HostParamRequester};
+use crate::GuiStatus;
 
 /// Default logical width for the Pump design canvas.
 ///

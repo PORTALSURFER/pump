@@ -1,6 +1,6 @@
 //! Pump: freehand beat-synced gain shaping for sidechain-style ducking.
 
-#![deny(clippy::missing_docs_in_private_items, missing_docs, warnings)]
+#![warn(clippy::missing_docs_in_private_items, missing_docs)]
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -14,7 +14,9 @@ use toybox::clack_plugin::events::event_types::{TransportEvent, TransportFlags};
 use toybox::clack_plugin::prelude::*;
 use toybox::clack_plugin::stream::{InputStream, OutputStream};
 use toybox::clap::automation::{AutomationEvent, AutomationQueue};
+use toybox::clap::gui::host_param_requester;
 use toybox::clap::prelude::apply_param_events;
+use toybox::clap::process::{min_len, split_channel};
 use toybox::clap::state::{read_versioned_payload, write_versioned_payload};
 
 use crate::dsp::{DspSettings, PumpEngine};
@@ -95,28 +97,6 @@ pub struct PumpShared {
 }
 
 impl PluginShared<'_> for PumpShared {}
-
-/// GUI-safe host parameter flush requester.
-#[derive(Clone, Copy)]
-pub(crate) struct HostParamRequester {
-    host: HostSharedHandle<'static>,
-    params: HostParams,
-}
-
-impl HostParamRequester {
-    /// Ask host to call flush and collect queued automation events.
-    pub fn request_flush(self) {
-        self.params.request_flush(&self.host);
-    }
-}
-
-/// Build a GUI host requester from a CLAP host handle.
-pub(crate) fn host_param_requester(host: HostSharedHandle<'_>) -> Option<HostParamRequester> {
-    let params = host.get_extension::<HostParams>()?;
-    let host =
-        unsafe { std::mem::transmute::<HostSharedHandle<'_>, HostSharedHandle<'static>>(host) };
-    Some(HostParamRequester { host, params })
-}
 
 /// Main-thread state for parameters, GUI, and state I/O.
 pub struct PumpMainThread<'a> {
@@ -417,26 +397,6 @@ fn transport_state_from_transport(transport: Option<TransportEvent>) -> Transpor
         },
         None => TransportState::default(),
     }
-}
-
-fn split_channel<'a>(
-    pair: ChannelPair<'a, f32>,
-) -> (Option<&'a [f32]>, Option<&'a mut [f32]>, bool) {
-    match pair {
-        ChannelPair::InputOnly(input) => (Some(input), None, false),
-        ChannelPair::OutputOnly(output) => (None, Some(output), false),
-        ChannelPair::InputOutput(input, output) => (Some(input), Some(output), false),
-        ChannelPair::InPlace(output) => (None, Some(output), true),
-    }
-}
-
-fn min_len(lengths: &[Option<usize>]) -> Option<usize> {
-    lengths
-        .iter()
-        .copied()
-        .flatten()
-        .min()
-        .filter(|len| *len > 0)
 }
 
 /// Shared GUI telemetry values updated by the audio thread.

@@ -6,9 +6,8 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use std::ffi::{c_void, CStr};
-use std::ptr;
 use std::slice;
-use std::str::FromStr;
+use std::ptr;
 use std::sync::{Arc, Mutex};
 
 use toybox::clap::automation::AutomationQueue;
@@ -104,24 +103,6 @@ fn apply_plain_param(params: &PumpParams, param_id: ParamID, plain: f64) {
 fn apply_normalized_param(params: &PumpParams, param_id: ParamID, normalized: f64) {
     let plain = from_normalized(param_id, normalized);
     apply_plain_param(params, param_id, plain);
-}
-
-unsafe fn parse_tchar_f64(text: *mut TChar) -> Option<f64> {
-    if text.is_null() {
-        return None;
-    }
-
-    let length = unsafe { tchar_len(text as *const TChar) };
-    let utf16 = unsafe { slice::from_raw_parts(text.cast::<u16>(), length) };
-    let parsed = String::from_utf16(utf16).ok()?;
-    f64::from_str(
-        parsed
-            .trim()
-            .trim_end_matches('%')
-            .trim_end_matches("dB")
-            .trim(),
-    )
-    .ok()
 }
 
 struct PumpVst3Runtime {
