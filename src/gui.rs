@@ -2126,8 +2126,8 @@ mod tests {
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
         preview_node_on_curve, resolve_runtime_controls_section_widths,
-        resolve_vertical_section_heights, GuiState,
-        CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
+        resolve_vertical_section_heights, GuiState, CURVE_H, CURVE_KEY, CURVE_W, WINDOW_HEIGHT,
+        WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -2434,6 +2434,75 @@ mod tests {
                     height: WINDOW_HEIGHT,
                 })
             );
+        }
+    }
+
+    #[test]
+    fn build_ui_handles_host_resize_jitter_without_layout_regressions() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let jitter_sizes = [
+            Size {
+                width: 1,
+                height: 1,
+            },
+            Size {
+                width: 640,
+                height: 360,
+            },
+            Size {
+                width: 2,
+                height: 3,
+            },
+            Size {
+                width: 1024,
+                height: 256,
+            },
+            Size {
+                width: 3,
+                height: 2,
+            },
+            Size {
+                width: 700,
+                height: 700,
+            },
+            Size {
+                width: 1,
+                height: 1,
+            },
+            Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+        ];
+
+        for input_size in jitter_sizes {
+            let input = InputState {
+                window_size: input_size,
+                ..InputState::default()
+            };
+            let spec = state.build_ui(&input);
+            let measured = measure_checked(&spec).expect("measurement should succeed");
+
+            assert_eq!(measured.width, WINDOW_WIDTH);
+            assert_eq!(measured.height, WINDOW_HEIGHT);
+            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
+            assert_eq!(
+                spec.root.design_size,
+                Some(Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                })
+            );
+
+            let curve_region = find_curve_region_node(&spec.root.content)
+                .expect("curve region should exist for all measured sizes");
+            assert_eq!(curve_region.size.width, CURVE_W);
+            assert_eq!(curve_region.size.height, CURVE_H);
         }
     }
 
