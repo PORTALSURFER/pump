@@ -96,6 +96,7 @@ mod screenshot_tests {
             (WINDOW_WIDTH, WINDOW_HEIGHT),
             (WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2),
             (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2),
+            (WINDOW_WIDTH * 3, WINDOW_HEIGHT * 3),
         ];
 
         for &(width, height) in &sizes {
@@ -395,8 +396,16 @@ struct UiLayoutMetrics {
 impl UiLayoutMetrics {
     /// Resolve all frame-dependent layout dimensions from host window size.
     fn from_input(input: &InputState) -> Self {
-        let content_w = input.window_size.width.max(WINDOW_WIDTH);
-        let content_h = input.window_size.height.max(WINDOW_HEIGHT);
+        let content_w = if input.window_size.width == 0 {
+            WINDOW_WIDTH
+        } else {
+            input.window_size.width
+        };
+        let content_h = if input.window_size.height == 0 {
+            WINDOW_HEIGHT
+        } else {
+            input.window_size.height
+        };
         let (_header_h, curve_h, _controls_h) = resolve_runtime_vertical_section_heights(content_h);
         let (_knobs_section_w, dropdown_section_w) =
             resolve_runtime_controls_section_widths(content_w);
@@ -683,19 +692,12 @@ impl GuiState {
 
     /// Build the root UI spec for the current frame dimensions and content tree.
     fn build_root_spec(&self, metrics: UiLayoutMetrics, theme: PumpTheme, content: Node) -> UiSpec {
+        let window_size = Size {
+            width: metrics.content_w,
+            height: metrics.content_h,
+        };
         UiSpec::new(
-            root_frame_sized(
-                ROOT_KEY,
-                content,
-                Size {
-                    width: WINDOW_WIDTH,
-                    height: WINDOW_HEIGHT,
-                },
-                Size {
-                    width: metrics.content_w,
-                    height: metrics.content_h,
-                },
-            )
+            root_frame_sized(ROOT_KEY, content, window_size, window_size)
             .padding(0)
             .tokens(theme.tokens),
         )
@@ -1853,12 +1855,12 @@ mod tests {
                 height: WINDOW_HEIGHT,
             },
             Size {
-                width: WINDOW_WIDTH + 87,
-                height: WINDOW_HEIGHT + 11,
+                width: WINDOW_WIDTH / 2,
+                height: WINDOW_HEIGHT / 2,
             },
             Size {
-                width: WINDOW_WIDTH + 141,
-                height: WINDOW_HEIGHT + 27,
+                width: WINDOW_WIDTH * 2,
+                height: WINDOW_HEIGHT * 2,
             },
         ];
         for window_size in input_sizes {
@@ -1866,8 +1868,8 @@ mod tests {
             input.window_size = window_size;
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
-            assert!(measured.width >= window_size.width.max(WINDOW_WIDTH));
-            assert!(measured.height >= window_size.height.max(WINDOW_HEIGHT));
+            assert_eq!(measured.width, window_size.width);
+            assert_eq!(measured.height, window_size.height);
             assert_eq!(spec.root.scale_mode, RootScaleMode::None);
             assert_eq!(spec.root.design_size, None);
         }
@@ -1961,6 +1963,7 @@ mod screenshot_tests {
             (WINDOW_WIDTH, WINDOW_HEIGHT),
             (WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2),
             (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2),
+            (WINDOW_WIDTH * 3, WINDOW_HEIGHT * 3),
         ];
 
         for &(width, height) in &sizes {
