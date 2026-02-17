@@ -59,8 +59,6 @@ const DROPDOWN_SECTION_WEIGHT: u16 = 30;
 const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).1;
-const BASE_HEADER_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).0;
-const BASE_CONTROLS_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).2;
 const BASE_KNOBS_SECTION_W: u32 = 294;
 const BASE_DROPDOWN_SECTION_W: u32 = 126;
 const TITLE_LABEL_W: u32 = 64;
@@ -304,23 +302,6 @@ const fn resolve_vertical_section_heights(total_height: u32) -> (u32, u32, u32) 
     let consumed = header_h.saturating_add(controls_h);
     let curve_h = clamped_total.saturating_sub(consumed);
     (header_h, curve_h, controls_h)
-}
-
-fn resolve_runtime_vertical_section_heights(total_height: u32) -> (u32, u32, u32) {
-    let distributed = scale_and_distribute(
-        total_height.max(1),
-        &[
-            BASE_HEADER_H,
-            CURVE_H,
-            BASE_CONTROLS_H,
-        ],
-        WINDOW_HEIGHT,
-    );
-    (
-        distributed.first().copied().unwrap_or(1),
-        distributed.get(1).copied().unwrap_or(1),
-        distributed.get(2).copied().unwrap_or(1),
-    )
 }
 
 fn resolve_runtime_controls_section_widths(total_width: u32) -> (u32, u32) {
@@ -2151,7 +2132,7 @@ mod tests {
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
         preview_node_on_curve, resolve_runtime_controls_section_widths,
-        resolve_runtime_vertical_section_heights, resolve_vertical_section_heights, GuiState,
+        resolve_vertical_section_heights, GuiState,
         CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
@@ -2348,7 +2329,7 @@ mod tests {
 
     #[test]
     fn runtime_section_splits_consume_full_parent_extent() {
-        let (header_h, curve_h, controls_h) = resolve_runtime_vertical_section_heights(259);
+        let (header_h, curve_h, controls_h) = resolve_vertical_section_heights(259);
         assert_eq!(header_h + curve_h + controls_h, 259);
 
         let (knobs_w, dropdown_w) = resolve_runtime_controls_section_widths(799);
