@@ -6,6 +6,7 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::RwLock;
 
+use toybox::dsp::AtomicF32;
 use toybox::clack_extensions::params::{ParamDisplayWriter, ParamInfoFlags, ParamInfoWriter};
 use toybox::clack_plugin::prelude::ClapId;
 use toybox::clap::params::{ParamBuilder, ParamSpec};
@@ -419,7 +420,9 @@ impl PumpParams {
     pub fn curve_value(&self, index: usize) -> f32 {
         self.curve
             .get(index)
-            .map(|sample| sample.load(Ordering::Acquire).clamp(0.0, 1.0))
+            .map(|sample: &AtomicF32| {
+                sample.load(Ordering::Acquire).clamp(0.0, 1.0)
+            })
             .unwrap_or(1.0)
     }
 
@@ -634,35 +637,6 @@ fn read_u32(cursor: &mut Cursor<&[u8]>) -> Option<u32> {
     let mut bytes = [0_u8; 4];
     std::io::Read::read_exact(cursor, &mut bytes).ok()?;
     Some(u32::from_le_bytes(bytes))
-}
-
-/// Atomic `f32` utility backed by `AtomicU32`.
-struct AtomicF32 {
-    value: AtomicU32,
-}
-
-impl AtomicF32 {
-    fn new(value: f32) -> Self {
-        Self {
-            value: AtomicU32::new(f32_to_bits(value)),
-        }
-    }
-
-    fn load(&self, ordering: Ordering) -> f32 {
-        bits_to_f32(self.value.load(ordering))
-    }
-
-    fn store(&self, value: f32, ordering: Ordering) {
-        self.value.store(f32_to_bits(value), ordering);
-    }
-}
-
-fn f32_to_bits(value: f32) -> u32 {
-    u32::from_ne_bytes(value.to_ne_bytes())
-}
-
-fn bits_to_f32(value: u32) -> f32 {
-    f32::from_ne_bytes(value.to_ne_bytes())
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! Real-time gain-envelope DSP for Pump.
 
 use crate::curve::{sample_curve, CURVE_TABLE_LEN};
-use crate::sync::{TransportClock, TransportState};
+use toybox::dsp::{TransportClock, TransportState};
 
 /// Control-rate settings snapshot consumed by the DSP engine.
 #[derive(Debug, Copy, Clone)]
@@ -150,7 +150,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 mod tests {
     use super::{db_to_linear, DspSettings, PumpEngine};
     use crate::curve::{default_editable_curve, editable_curve_to_table};
-    use crate::sync::TransportState;
+    use toybox::dsp::TransportState;
 
     #[test]
     fn gain_mapping_stays_finite_for_extremes() {

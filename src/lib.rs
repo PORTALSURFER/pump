@@ -2,19 +2,21 @@
 
 #![warn(missing_docs)]
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use toybox::dsp::AtomicF32;
+use toybox::dsp::TransportState;
 use toybox::clack_extensions::audio_ports::*;
 use toybox::clack_extensions::gui::{PluginGui, PluginGuiImpl};
 use toybox::clack_extensions::params::*;
 use toybox::clack_extensions::state::{PluginState, PluginStateImpl};
 use toybox::clack_plugin;
-use toybox::clack_plugin::events::event_types::{TransportEvent, TransportFlags};
 use toybox::clack_plugin::prelude::*;
 use toybox::clack_plugin::stream::{InputStream, OutputStream};
 use toybox::clap::automation::{AutomationEvent, AutomationQueue};
 use toybox::clap::gui::host_param_requester;
+use toybox::clap::transport::transport_state_from_transport;
 use toybox::clap::prelude::apply_param_events;
 use toybox::clap::process::{min_len, split_channel};
 use toybox::clap::state::{read_versioned_payload, write_versioned_payload};
@@ -25,13 +27,11 @@ use crate::params::{
     apply_param_event, decode_state_payload, encode_state_payload, get_param_value, param_count,
     text_to_value, value_to_text, write_param_info, PumpParams,
 };
-use crate::sync::TransportState;
 
 mod curve;
 mod dsp;
 mod gui;
 mod params;
-mod sync;
 mod vst3;
 
 /// Versioned state payload magic (`PUMP`).
@@ -380,56 +380,29 @@ impl PumpAudioProcessor<'_> {
     }
 }
 
-fn transport_state_from_transport(transport: Option<TransportEvent>) -> TransportState {
-    match transport {
-        Some(event) => TransportState {
-            tempo_bpm: if event.flags.contains(TransportFlags::HAS_TEMPO) {
-                event.tempo as f32
-            } else {
-                120.0
-            },
-            is_playing: event.flags.contains(TransportFlags::IS_PLAYING),
-            song_pos_beats: if event.flags.contains(TransportFlags::HAS_BEATS_TIMELINE) {
-                Some(event.song_pos_beats.to_float())
-            } else {
-                None
-            },
-        },
-        None => TransportState::default(),
-    }
-}
-
 /// Shared GUI telemetry values updated by the audio thread.
 #[derive(Default)]
 pub struct GuiStatus {
-    phase_bits: AtomicU32,
-    gain_bits: AtomicU32,
+    phase: AtomicF32,
+    gain: AtomicF32,
 }
 
 impl GuiStatus {
     /// Update telemetry from the latest processed frame.
     pub fn update(&self, phase: f32, gain: f32) {
-        self.phase_bits.store(f32_to_bits(phase), Ordering::Relaxed);
-        self.gain_bits.store(f32_to_bits(gain), Ordering::Relaxed);
+        self.phase.store(phase, Ordering::Relaxed);
+        self.gain.store(gain, Ordering::Relaxed);
     }
 
     /// Read latest phase value.
     pub fn phase(&self) -> f32 {
-        bits_to_f32(self.phase_bits.load(Ordering::Relaxed)).rem_euclid(1.0)
+        self.phase.load(Ordering::Relaxed).rem_euclid(1.0)
     }
 
     /// Read latest linear gain value.
     pub fn gain(&self) -> f32 {
-        bits_to_f32(self.gain_bits.load(Ordering::Relaxed)).max(0.0)
+        self.gain.load(Ordering::Relaxed).max(0.0)
     }
-}
-
-fn f32_to_bits(value: f32) -> u32 {
-    u32::from_ne_bytes(value.to_ne_bytes())
-}
-
-fn bits_to_f32(value: u32) -> f32 {
-    f32::from_ne_bytes(value.to_ne_bytes())
 }
 
 #[allow(clippy::question_mark)]

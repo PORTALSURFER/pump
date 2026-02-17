@@ -22,7 +22,7 @@ use crate::params::{
     DEFAULT_SYNC_DIVISION_INDEX, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET,
     MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET,
 };
-use crate::sync::TransportState;
+use toybox::dsp::TransportState;
 use crate::GuiStatus;
 
 const PLUGIN_NAME: &str = "pump";
