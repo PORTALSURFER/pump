@@ -6,7 +6,7 @@ use toybox::clack_extensions::gui::{GuiSize, Window};
 use toybox::clack_plugin::plugin::PluginError;
 use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
-use toybox::clap::gui::{GuiHostWindow, InputState};
+use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, InputState};
 use toybox::gui::declarative::{
     button, column, column_sections, dropdown, grid, knob, label, panel, root_frame_sized,
     row_sections, weighted, weighted_section_lengths, AbsoluteChild, AbsoluteSpec, DrawCommand,
@@ -216,15 +216,20 @@ impl PumpGui {
             param_requester,
         );
         let open_size = state.measured_open_size();
+        let on_init: Box<dyn FnMut(&mut GuiState) + Send> = Box::new(|_state: &mut GuiState| {});
+        let build: Box<dyn FnMut(&InputState, &GuiState) -> UiSpec + Send> =
+            Box::new(|input: &InputState, state: &GuiState| state.build_ui(input));
+        let reduce: Box<dyn FnMut(&mut GuiState, UiAction) + Send> =
+            Box::new(|state: &mut GuiState, action: UiAction| state.reduce_action(action));
 
-        self.window.open_parented(
+        self.window.open_parented_with(GuiOpenRequest::<GuiState, _, _, _>::new(
             "pump".to_string(),
             open_size,
             state,
-            |_state| {},
-            |input, state| state.build_ui(input),
-            |state, action| state.reduce_action(action),
-        )
+            on_init,
+            build,
+            reduce,
+        ))
     }
 
     /// Request a logical resize from the GUI thread.
