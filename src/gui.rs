@@ -48,7 +48,7 @@ const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 
-const PADDING_X: i32 = 18;
+const BASE_PADDING_X: i32 = 18;
 const HEADER_SECTION_WEIGHT: u16 = 7;
 const CURVE_SECTION_WEIGHT: u16 = 63;
 const CONTROLS_SECTION_WEIGHT: u16 = 30;
@@ -60,6 +60,15 @@ const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).1;
 const TITLE_LABEL_W: u32 = 64;
+const TITLE_LABEL_RIGHT_GAP: i32 = 8;
+const SPLINE_LABEL_BOTTOM_MARGIN: i32 = 4;
+const HEADER_CONTROL_PADDING: i32 = 8;
+const HEADER_CONTROL_GAP: i32 = 4;
+const METER_X_OFFSET: i32 = 12;
+const METER_Y_OFFSET: i32 = 10;
+const METER_WIDTH: i32 = 6;
+const METER_STROKE: i32 = 1;
+const BASE_CURVE_HINT_MARGIN_X: i32 = 8;
 const BASE_KNOB_DIAMETER: u32 = 32;
 const BASE_TEXT_SCALE: u32 = 2;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
@@ -76,6 +85,60 @@ const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
 const fn fixed_box(width: u32, height: u32) -> LayoutBox {
     LayoutBox::fixed(width, height).max(width, height)
+}
+
+fn scaled_i32(base: i32, scale_factor: f32) -> i32 {
+    (base as f32 * scale_factor).round().max(0.0) as i32
+}
+
+fn scaled_u32(base: u32, scale_factor: f32) -> u32 {
+    (base as f32 * scale_factor).round().max(1.0) as u32
+}
+
+fn curve_scale_for_size(curve_size: Size) -> f32 {
+    let width_scale = curve_size.width.max(1) as f32 / WINDOW_WIDTH as f32;
+    let height_scale = curve_size.height.max(1) as f32 / WINDOW_HEIGHT as f32;
+    width_scale.min(height_scale).clamp(0.2, 4.0)
+}
+
+fn scaled_curve_i32(base: i32, curve_size: Size) -> i32 {
+    (base as f32 * curve_scale_for_size(curve_size)).round().max(1.0) as i32
+}
+
+fn scaled_curve_u32(base: u32, curve_size: Size) -> u32 {
+    (base as f32 * curve_scale_for_size(curve_size)).round().max(1.0) as u32
+}
+
+fn scaled_curve_tension_pixel_scale(curve_size: Size) -> f32 {
+    CURVE_TENSION_PIXEL_SCALE * curve_scale_for_size(curve_size)
+}
+
+fn node_hit_radius(curve_size: Size) -> i32 {
+    scaled_curve_i32(NODE_HIT_RADIUS, curve_size)
+}
+
+fn segment_near_hit_radius(curve_size: Size) -> i32 {
+    scaled_curve_i32(SEGMENT_NEAR_HIT_RADIUS, curve_size)
+}
+
+fn segment_direct_hit_radius(curve_size: Size) -> i32 {
+    scaled_curve_i32(SEGMENT_DIRECT_HIT_RADIUS, curve_size)
+}
+
+fn node_insert_guard_radius(curve_size: Size) -> i32 {
+    scaled_curve_i32(NODE_INSERT_GUARD_RADIUS, curve_size)
+}
+
+fn curve_drag_threshold_px(curve_size: Size) -> i32 {
+    scaled_curve_i32(CURVE_DRAG_START_THRESHOLD_PX, curve_size)
+}
+
+fn node_push_through_threshold_px(curve_size: Size) -> i32 {
+    scaled_curve_i32(NODE_PUSH_THROUGH_PX, curve_size)
+}
+
+fn curve_tension_pixel_scale(curve_size: Size) -> f32 {
+    scaled_curve_tension_pixel_scale(curve_size)
 }
 
 #[cfg(all(test, not(target_os = "windows")))]
@@ -411,6 +474,17 @@ struct UiLayoutMetrics {
     content_w: u32,
     content_h: u32,
     curve_h: u32,
+    scale: f32,
+    padding_x: i32,
+    title_label_w: u32,
+    title_label_gap: i32,
+    spline_label_bottom_margin: i32,
+    controls_padding: i32,
+    controls_gap: i32,
+    meter_x_offset: i32,
+    meter_y_offset: i32,
+    meter_width: u32,
+    meter_stroke: u32,
     dropdown_control_w: u32,
     dropdown_control_h: u32,
     button_control_h: u32,
@@ -442,27 +516,52 @@ impl UiLayoutMetrics {
         let width_scale = content_w as f32 / WINDOW_WIDTH as f32;
         let height_scale = content_h as f32 / WINDOW_HEIGHT as f32;
         let scale = width_scale.min(height_scale).clamp(0.2, 4.0);
+        let padding_x = scaled_i32(BASE_PADDING_X, scale);
+        let title_label_w = scaled_u32(TITLE_LABEL_W, scale);
+        let title_label_gap = scaled_i32(TITLE_LABEL_RIGHT_GAP, scale);
+        let spline_label_bottom_margin = scaled_i32(SPLINE_LABEL_BOTTOM_MARGIN, scale);
+        let controls_padding = scaled_i32(HEADER_CONTROL_PADDING, scale);
+        let controls_gap = scaled_i32(HEADER_CONTROL_GAP, scale);
+        let curve_hint_right_padding = scaled_u32(BASE_CURVE_HINT_MARGIN_X.max(0) as u32, scale);
         let dropdown_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let button_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let text_scale = scaled_text_scale(scale);
         let knob_diameter = scaled_knob_diameter(scale);
         let label_line_h = scaled_line_height(text_scale);
-        let dropdown_control_w = dropdown_section_w.saturating_sub(8).max(1);
+        let panel_padding = controls_padding.max(0) as u32;
+        let dropdown_control_w = dropdown_section_w.saturating_sub(panel_padding).max(1);
+        let subtitle_label_x = padding_x
+            .saturating_add(title_label_w as i32)
+            .saturating_add(title_label_gap)
+            .max(0) as u32;
+        let subtitle_label_w = content_w.saturating_sub(subtitle_label_x).max(1);
 
-        let subtitle_label_w = content_w
-            .saturating_sub((PADDING_X.max(0) as u32).saturating_add(72))
-            .max(1);
         let tip_label_w = content_w
-            .saturating_sub((PADDING_X.max(0) as u32).saturating_add(8))
+            .saturating_sub((padding_x.max(0) as u32).saturating_add(curve_hint_right_padding))
             .max(1);
         let curve_size = Size {
             width: content_w,
             height: curve_h,
         };
+        let meter_x_offset = scaled_i32(METER_X_OFFSET, scale);
+        let meter_y_offset = scaled_i32(METER_Y_OFFSET, scale);
+        let meter_width = scaled_u32(METER_WIDTH.max(0) as u32, scale);
+        let meter_stroke = scaled_u32(METER_STROKE.max(0) as u32, scale);
         Self {
             content_w,
             content_h,
             curve_h,
+            scale,
+            padding_x,
+            title_label_w,
+            title_label_gap,
+            spline_label_bottom_margin,
+            controls_padding,
+            controls_gap,
+            meter_x_offset,
+            meter_y_offset,
+            meter_width,
+            meter_stroke,
             dropdown_control_w,
             dropdown_control_h,
             button_control_h,
@@ -554,20 +653,25 @@ impl GuiState {
 
     /// Build the top header section node.
     fn build_header_section(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
+        let title_y = scaled_i32(SPLINE_TITLE_Y, metrics.scale);
+        let subtitle_x = metrics
+            .padding_x
+            .saturating_add(metrics.title_label_w as i32)
+            .saturating_add(metrics.title_label_gap);
         let header_controls = vec![
             AbsoluteChild::new(
                 Point {
-                    x: PADDING_X,
-                    y: SPLINE_TITLE_Y,
+                    x: metrics.padding_x,
+                    y: title_y,
                 },
                 label("PUMP")
                     .text_color(theme.title_text)
-                    .layout(fixed_box(TITLE_LABEL_W, metrics.label_line_h)),
+                    .layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
             ),
             AbsoluteChild::new(
                 Point {
-                    x: PADDING_X + 72,
-                    y: SPLINE_TITLE_Y,
+                    x: subtitle_x,
+                    y: title_y,
                 },
                 label("Spline Beat-Synced Ducking")
                     .text_color(theme.subtitle_text)
@@ -587,7 +691,10 @@ impl GuiState {
         theme: PumpTheme,
         draw_commands: Vec<DrawCommand>,
     ) -> Node {
-        let spline_tip_y = metrics.curve_h.saturating_sub(metrics.label_line_h).saturating_sub(4) as i32;
+        let spline_tip_y = metrics
+            .curve_h
+            .saturating_sub(metrics.label_line_h)
+            .saturating_sub(metrics.spline_label_bottom_margin.max(0) as u32) as i32;
         let spline_controls = vec![
             AbsoluteChild::new(
                 Point { x: 0, y: 0 },
@@ -604,7 +711,7 @@ impl GuiState {
             ),
             AbsoluteChild::new(
                 Point {
-                    x: PADDING_X,
+                    x: metrics.padding_x,
                     y: spline_tip_y,
                 },
                 label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
@@ -656,7 +763,9 @@ impl GuiState {
         )
         .layout(LayoutBox::fill());
 
-        let knobs_section = panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_all(8);
+        let controls_padding = metrics.controls_padding.max(0);
+        let knobs_section =
+            panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_all(controls_padding);
         let dropdown_section_content = column(vec![
             dropdown(
                 DIVISION_KEY,
@@ -676,14 +785,14 @@ impl GuiState {
                 .text_color(theme.hint_text)
                 .layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
         ])
-        .gap(4)
+        .gap(metrics.controls_gap.max(0))
         .pad_all(0)
         .layout(LayoutBox::fill());
         let dropdown_section = panel(
             "dropdown",
             dropdown_section_content.layout(LayoutBox::fill()),
         )
-        .pad_all(8);
+        .pad_all(controls_padding);
 
         let controls_row = row_sections(vec![
             weighted(knobs_section, KNOBS_SECTION_WEIGHT),
@@ -707,7 +816,7 @@ impl GuiState {
                 find_node_hit_for_size(
                     editable_curve,
                     curve_local_pointer,
-                    NODE_HIT_RADIUS,
+                    node_hit_radius(curve_size),
                     curve_size,
                 )
             })
@@ -717,7 +826,7 @@ impl GuiState {
                 find_segment_line_hit_within_for_size(
                     editable_curve,
                     curve_local_pointer,
-                    SEGMENT_DIRECT_HIT_RADIUS,
+                    segment_direct_hit_radius(curve_size),
                     curve_size,
                 )
             })
@@ -737,7 +846,7 @@ impl GuiState {
                 find_segment_line_hit_within_for_size(
                     editable_curve,
                     curve_local_pointer,
-                    SEGMENT_NEAR_HIT_RADIUS,
+                    segment_near_hit_radius(curve_size),
                     curve_size,
                 )
             })
@@ -781,7 +890,12 @@ impl GuiState {
             input.alt_down,
             metrics.curve_size,
         );
-        self.build_curve_draw_commands(&editable_curve, metrics.curve_size, curve_state, &theme)
+        self.build_curve_draw_commands(
+            &editable_curve,
+            metrics,
+            curve_state,
+            &theme,
+        )
     }
 
     fn build_ui(&self, input: &InputState) -> UiSpec {
@@ -898,7 +1012,7 @@ impl GuiState {
                 if let Some(index) = find_node_hit_for_size(
                     &editable,
                     local_pointer,
-                    NODE_HIT_RADIUS,
+                    node_hit_radius(runtime.curve_size),
                     runtime.curve_size,
                 ) {
                     runtime.selected_node = Some(index);
@@ -910,11 +1024,11 @@ impl GuiState {
                     return;
                 }
 
-                if !alt_down
+                    if !alt_down
                     && find_segment_line_hit_within_for_size(
                         &editable,
                         local_pointer,
-                        SEGMENT_DIRECT_HIT_RADIUS,
+                        segment_direct_hit_radius(runtime.curve_size),
                         runtime.curve_size,
                     )
                     .is_some()
@@ -942,7 +1056,7 @@ impl GuiState {
                     find_segment_line_hit_within_for_size(
                         &editable,
                         local_pointer,
-                        SEGMENT_NEAR_HIT_RADIUS,
+                        segment_near_hit_radius(runtime.curve_size),
                         runtime.curve_size,
                     )
                 {
@@ -978,7 +1092,7 @@ impl GuiState {
                     find_node_hit_within_for_size(
                         &editable,
                         local_pointer,
-                        NODE_INSERT_GUARD_RADIUS,
+                        node_insert_guard_radius(runtime.curve_size),
                         runtime.curve_size,
                     )
                 {
@@ -1002,10 +1116,10 @@ impl GuiState {
                 self.params.set_editable_curve(&editable);
             }
             RegionInteractionKind::Dragged => {
-                if let Some(mut drag_mode) = runtime.drag_mode {
-                    let mut editable = self.params.editable_curve_snapshot();
-                    let mut curve_changed = false;
-                    match drag_mode {
+        if let Some(mut drag_mode) = runtime.drag_mode {
+            let mut editable = self.params.editable_curve_snapshot();
+            let mut curve_changed = false;
+            match drag_mode {
                         CurveDragMode::MoveNode {
                             index,
                             start_pointer,
@@ -1015,7 +1129,7 @@ impl GuiState {
                                 && !drag_threshold_crossed(
                                     start_pointer,
                                     local_pointer,
-                                    CURVE_DRAG_START_THRESHOLD_PX,
+                                    curve_drag_threshold_px(runtime.curve_size),
                                 )
                             {
                                 return;
@@ -1025,7 +1139,7 @@ impl GuiState {
                                 &mut editable,
                                 index,
                                 raw_normalized_pointer,
-                                NODE_PUSH_THROUGH_PX,
+                                node_push_through_threshold_px(runtime.curve_size),
                                 runtime.curve_size,
                             );
                             runtime.selected_node = Some(moved_index);
@@ -1049,7 +1163,7 @@ impl GuiState {
                                 && !drag_threshold_crossed(
                                     start_pointer,
                                     local_pointer,
-                                    CURVE_DRAG_START_THRESHOLD_PX,
+                                    curve_drag_threshold_px(runtime.curve_size),
                                 )
                             {
                                 return;
@@ -1092,7 +1206,7 @@ impl GuiState {
                                 && !drag_threshold_crossed(
                                     start_pointer,
                                     local_pointer,
-                                    CURVE_DRAG_START_THRESHOLD_PX,
+                                    curve_drag_threshold_px(runtime.curve_size),
                                 )
                             {
                                 return;
@@ -1100,7 +1214,7 @@ impl GuiState {
                             dragging = true;
                             if let Some(segment) = editable.segments.get_mut(index) {
                                 let delta = (raw_local_pointer.y - start_pointer.y) as f32
-                                    / CURVE_TENSION_PIXEL_SCALE;
+                                    / curve_tension_pixel_scale(runtime.curve_size);
                                 segment.tension = (start_tension + delta)
                                     .clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
                                 curve_changed = true;
@@ -1148,10 +1262,11 @@ impl GuiState {
     fn build_curve_draw_commands(
         &self,
         editable_curve: &EditableCurve,
-        curve_size: Size,
+        metrics: UiLayoutMetrics,
         state: CurveRenderState,
         theme: &PumpTheme,
     ) -> Vec<DrawCommand> {
+        let curve_size = metrics.curve_size;
         let rect = Rect {
             origin: Point { x: 0, y: 0 },
             size: Size {
@@ -1160,6 +1275,23 @@ impl GuiState {
             },
         };
         let to_canvas = |point: Point| scale_point_from_design(point, curve_size);
+        let border_stroke = scaled_curve_u32(METER_STROKE.max(0) as u32, curve_size);
+        let node_radius = scaled_curve_i32(NODE_DRAW_RADIUS, curve_size);
+        let node_hover_radius = scaled_curve_i32(NODE_DRAW_RADIUS + 1, curve_size);
+        let node_preview_radius = scaled_curve_i32(NODE_DRAW_RADIUS + 1, curve_size);
+        let node_preview_stroke_radius = scaled_curve_i32(NODE_DRAW_RADIUS + 2, curve_size);
+        let node_ring_radius = scaled_curve_i32(NODE_DRAW_RADIUS + 3, curve_size);
+        let node_stroke = scaled_curve_i32(METER_STROKE, curve_size);
+        let highlight_offset = scaled_curve_i32(1, curve_size);
+        let meter_x_offset = metrics.meter_x_offset.max(0);
+        let meter_y_offset = metrics.meter_y_offset.max(0);
+        let meter_width = metrics.meter_width.max(1);
+        let meter_width_i32 = i32::try_from(meter_width).unwrap_or(i32::MAX);
+        let meter_stroke_u32 = metrics.meter_stroke.max(1);
+        let meter_inner_width = metrics
+            .meter_width
+            .max(1)
+            .saturating_sub(meter_stroke_u32.saturating_mul(2));
 
         let mut commands = Vec::with_capacity(1024);
         commands.push(DrawCommand::FillRect {
@@ -1168,7 +1300,7 @@ impl GuiState {
         });
         commands.push(DrawCommand::StrokeRect {
             rect,
-            thickness: 1,
+            thickness: border_stroke,
             color: theme.curve_border,
         });
 
@@ -1251,11 +1383,11 @@ impl GuiState {
                     commands.push(DrawCommand::Line {
                         start: Point {
                             x: prev.x,
-                            y: prev.y + 1,
+                            y: prev.y + highlight_offset,
                         },
                         end: Point {
                             x: point.x,
-                            y: point.y + 1,
+                            y: point.y + highlight_offset,
                         },
                         color: theme.curve_line_highlight_glow,
                     });
@@ -1268,13 +1400,13 @@ impl GuiState {
             let center = to_canvas(local_from_node_for_size(preview, curve_size));
             commands.push(DrawCommand::FillCircle {
                 center,
-                radius: NODE_DRAW_RADIUS + 1,
+                radius: node_preview_radius,
                 color: theme.preview_fill,
             });
             commands.push(DrawCommand::StrokeCircle {
                 center,
-                radius: NODE_DRAW_RADIUS + 2,
-                thickness: 1,
+                radius: node_preview_stroke_radius,
+                thickness: node_stroke,
                 color: theme.preview_stroke,
             });
         }
@@ -1300,23 +1432,23 @@ impl GuiState {
             commands.push(DrawCommand::FillCircle {
                 center,
                 radius: if selected || hovered {
-                    NODE_DRAW_RADIUS + 1
+                    node_hover_radius
                 } else {
-                    NODE_DRAW_RADIUS
+                    node_radius
                 },
                 color: fill_color,
             });
             commands.push(DrawCommand::StrokeCircle {
                 center,
-                radius: NODE_DRAW_RADIUS,
-                thickness: 1,
+                radius: node_radius,
+                thickness: node_stroke,
                 color: stroke_color,
             });
             if selected || hovered {
                 commands.push(DrawCommand::StrokeCircle {
                     center,
-                    radius: NODE_DRAW_RADIUS + 3,
-                    thickness: 1,
+                    radius: node_ring_radius,
+                    thickness: node_stroke,
                     color: if selected {
                         theme.node_selected_ring
                     } else {
@@ -1343,17 +1475,19 @@ impl GuiState {
         let reduction = (1.0 - self.status.gain().clamp(0.0, 1.0)).clamp(0.0, 1.0);
         let meter_rect = Rect {
             origin: Point {
-                x: curve_size.width as i32 - 12,
-                y: 10,
+                x: curve_size.width as i32 - meter_x_offset - meter_width_i32,
+                y: meter_y_offset,
             },
             size: Size {
-                width: 6,
-                height: curve_size.height.saturating_sub(20),
+                width: meter_width,
+                height: curve_size
+                    .height
+                    .saturating_sub((meter_y_offset.saturating_mul(2)).max(0) as u32),
             },
         };
         commands.push(DrawCommand::StrokeRect {
             rect: meter_rect,
-            thickness: 1,
+            thickness: meter_stroke_u32,
             color: theme.meter_outline,
         });
         let fill_height = ((meter_rect.size.height as f32) * reduction).round() as u32;
@@ -1361,11 +1495,12 @@ impl GuiState {
             commands.push(DrawCommand::FillRect {
                 rect: Rect {
                     origin: Point {
-                        x: meter_rect.origin.x + 1,
+                        x: meter_rect.origin.x
+                            + i32::try_from(meter_stroke_u32).unwrap_or(i32::MAX),
                         y: meter_rect.origin.y + meter_rect.size.height as i32 - fill_height as i32,
                     },
                     size: Size {
-                        width: meter_rect.size.width.saturating_sub(2),
+                        width: meter_inner_width,
                         height: fill_height,
                     },
                 },
@@ -1450,7 +1585,10 @@ fn find_node_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
     find_node_hit_for_size(
         curve,
         local_pointer,
-        NODE_HIT_RADIUS,
+        node_hit_radius(Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        }),
         Size {
             width: CURVE_W,
             height: CURVE_H,
@@ -1901,7 +2039,12 @@ fn find_deletable_node_hit_for_size(
     local_pointer: Point,
     curve_size: Size,
 ) -> Option<usize> {
-    let index = find_node_hit_for_size(curve, local_pointer, NODE_HIT_RADIUS, curve_size)?;
+    let index = find_node_hit_for_size(
+        curve,
+        local_pointer,
+        node_hit_radius(curve_size),
+        curve_size,
+    )?;
     if index == 0 || index + 1 == curve.nodes.len() {
         return None;
     }
