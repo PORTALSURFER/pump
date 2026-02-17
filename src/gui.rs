@@ -60,7 +60,10 @@ const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).1;
 const TITLE_LABEL_W: u32 = 64;
-const LABEL_LINE_H: u32 = 16;
+const BASE_KNOB_DIAMETER: u32 = 32;
+const BASE_TEXT_SCALE: u32 = 2;
+const BASE_CONTROL_LINE_UNIT: u32 = 8;
+const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const SEGMENT_NEAR_HIT_RADIUS: i32 = 16;
@@ -113,8 +116,8 @@ mod screenshot_tests {
         let frame = render_spec_to_frame(Size { width, height }, |input| state.build_ui(input))
             .expect("failed to render pump headless screenshot");
         assert!(
-            frame.width >= width && frame.height >= height,
-            "headless render size mismatch: got {}x{}, expected at least {width}x{height}",
+            frame.width == width && frame.height == height,
+            "headless render size mismatch: got {}x{}, expected exactly {width}x{height}",
             frame.width,
             frame.height
         );
@@ -180,6 +183,23 @@ fn resolve_runtime_controls_section_widths(total_width: u32) -> (u32, u32) {
     )
 }
 
+fn scaled_text_scale(scale_factor: f32) -> u32 {
+    let scaled = (BASE_TEXT_SCALE as f32 * scale_factor).round();
+    scaled.max(1.0) as u32
+}
+
+fn scaled_line_height(text_scale: u32) -> u32 {
+    BASE_CONTROL_LINE_UNIT.saturating_mul(text_scale.max(1))
+}
+
+fn scaled_control_height(base_height: u32, scale_factor: f32) -> u32 {
+    (base_height as f32 * scale_factor).round().max(1.0) as u32
+}
+
+fn scaled_knob_diameter(scale_factor: f32) -> u32 {
+    (BASE_KNOB_DIAMETER as f32 * scale_factor).round().max(1.0) as u32
+}
+
 /// Shared Pump color/style tokens derived from the canonical Patchbay theme.
 #[derive(Clone, Copy, Debug)]
 struct PumpTheme {
@@ -211,9 +231,13 @@ struct PumpTheme {
 
 impl PumpTheme {
     /// Return the canonical Pump GUI theme.
-    fn main() -> Self {
+    fn main(metrics: UiLayoutMetrics) -> Self {
         let palette = MainPalette::main();
-        let tokens = ThemeTokens::main();
+        let mut tokens = ThemeTokens::main();
+        tokens.typography.text_scale = metrics.text_scale;
+        tokens.controls.knob_diameter = metrics.knob_diameter;
+        tokens.controls.dropdown_height = metrics.dropdown_control_h;
+        tokens.controls.button_height = metrics.button_control_h;
         Self {
             tokens,
             title_text: palette.accent_focus,
@@ -388,9 +412,14 @@ struct UiLayoutMetrics {
     content_h: u32,
     curve_h: u32,
     dropdown_control_w: u32,
+    dropdown_control_h: u32,
+    button_control_h: u32,
     subtitle_label_w: u32,
     tip_label_w: u32,
     curve_size: Size,
+    knob_diameter: u32,
+    text_scale: u32,
+    label_line_h: u32,
 }
 
 impl UiLayoutMetrics {
@@ -409,7 +438,17 @@ impl UiLayoutMetrics {
         let (_header_h, curve_h, _controls_h) = resolve_runtime_vertical_section_heights(content_h);
         let (_knobs_section_w, dropdown_section_w) =
             resolve_runtime_controls_section_widths(content_w);
-        let dropdown_control_w = dropdown_section_w.saturating_sub(8).max(64);
+
+        let width_scale = content_w as f32 / WINDOW_WIDTH as f32;
+        let height_scale = content_h as f32 / WINDOW_HEIGHT as f32;
+        let scale = width_scale.min(height_scale).clamp(0.2, 4.0);
+        let dropdown_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
+        let button_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
+        let text_scale = scaled_text_scale(scale);
+        let knob_diameter = scaled_knob_diameter(scale);
+        let label_line_h = scaled_line_height(text_scale);
+        let dropdown_control_w = dropdown_section_w.saturating_sub(8).max(1);
+
         let subtitle_label_w = content_w
             .saturating_sub((PADDING_X.max(0) as u32).saturating_add(72))
             .max(1);
@@ -425,9 +464,14 @@ impl UiLayoutMetrics {
             content_h,
             curve_h,
             dropdown_control_w,
+            dropdown_control_h,
+            button_control_h,
             subtitle_label_w,
             tip_label_w,
             curve_size,
+            knob_diameter,
+            text_scale,
+            label_line_h,
         }
     }
 }
@@ -518,7 +562,7 @@ impl GuiState {
                 },
                 label("PUMP")
                     .text_color(theme.title_text)
-                    .layout(fixed_box(TITLE_LABEL_W, LABEL_LINE_H)),
+                    .layout(fixed_box(TITLE_LABEL_W, metrics.label_line_h)),
             ),
             AbsoluteChild::new(
                 Point {
@@ -527,7 +571,7 @@ impl GuiState {
                 },
                 label("Spline Beat-Synced Ducking")
                     .text_color(theme.subtitle_text)
-                    .layout(fixed_box(metrics.subtitle_label_w, LABEL_LINE_H)),
+                    .layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
             ),
         ];
         let header_content =
@@ -543,7 +587,7 @@ impl GuiState {
         theme: PumpTheme,
         draw_commands: Vec<DrawCommand>,
     ) -> Node {
-        let spline_tip_y = metrics.curve_h as i32 - LABEL_LINE_H as i32 - 4;
+        let spline_tip_y = metrics.curve_h.saturating_sub(metrics.label_line_h).saturating_sub(4) as i32;
         let spline_controls = vec![
             AbsoluteChild::new(
                 Point { x: 0, y: 0 },
@@ -565,7 +609,7 @@ impl GuiState {
                 },
                 label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
                     .text_color(theme.hint_text)
-                    .layout(fixed_box(metrics.tip_label_w, LABEL_LINE_H)),
+                    .layout(fixed_box(metrics.tip_label_w, metrics.label_line_h)),
             ),
         ];
         let spline_content =
@@ -622,15 +666,15 @@ impl GuiState {
             )
             .control_size(Size {
                 width: metrics.dropdown_control_w,
-                height: 24,
+                height: metrics.dropdown_control_h,
             }),
             button(RESET_KEY, "Reset Curve").control_size(Size {
                 width: metrics.dropdown_control_w,
-                height: 24,
+                height: metrics.button_control_h,
             }),
             label(format!("Cycle: {}", sync_division_label(controls.division)))
                 .text_color(theme.hint_text)
-                .layout(fixed_box(metrics.dropdown_control_w, LABEL_LINE_H)),
+                .layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
         ])
         .gap(4)
         .pad_all(0)
@@ -656,29 +700,45 @@ impl GuiState {
         curve_hovered: bool,
         curve_local_pointer: Point,
         alt_down: bool,
+        curve_size: Size,
     ) -> CurveRenderState {
         let hovered_node = curve_hovered
-            .then(|| find_node_hit(editable_curve, curve_local_pointer))
+            .then(|| {
+                find_node_hit_for_size(
+                    editable_curve,
+                    curve_local_pointer,
+                    NODE_HIT_RADIUS,
+                    curve_size,
+                )
+            })
             .flatten();
         let direct_segment = curve_hovered
             .then(|| {
-                find_segment_line_hit_within(
+                find_segment_line_hit_within_for_size(
                     editable_curve,
                     curve_local_pointer,
                     SEGMENT_DIRECT_HIT_RADIUS,
+                    curve_size,
                 )
             })
             .flatten();
         let preview_node =
             (curve_hovered && !alt_down && hovered_node.is_none() && direct_segment.is_some())
-                .then(|| preview_node_on_curve(editable_curve, curve_local_pointer))
+                .then(|| {
+                    preview_node_on_curve_for_size(
+                        editable_curve,
+                        curve_local_pointer,
+                        curve_size,
+                    )
+                })
                 .flatten();
         let hovered_segment = (curve_hovered && preview_node.is_none())
             .then(|| {
-                find_segment_line_hit_within(
+                find_segment_line_hit_within_for_size(
                     editable_curve,
                     curve_local_pointer,
                     SEGMENT_NEAR_HIT_RADIUS,
+                    curve_size,
                 )
             })
             .flatten();
@@ -719,13 +779,14 @@ impl GuiState {
             curve_hovered,
             curve_local_pointer,
             input.alt_down,
+            metrics.curve_size,
         );
         self.build_curve_draw_commands(&editable_curve, metrics.curve_size, curve_state, &theme)
     }
 
     fn build_ui(&self, input: &InputState) -> UiSpec {
         let metrics = UiLayoutMetrics::from_input(input);
-        let theme = PumpTheme::main();
+        let theme = PumpTheme::main(metrics);
         let controls = self.snapshot_controls();
         let draw_commands = self.build_curve_commands_for_frame(input, metrics, theme);
 
@@ -828,13 +889,18 @@ impl GuiState {
 
         let local_pointer = scale_point_to_design(local_pointer, runtime.curve_size);
         let raw_local_pointer = scale_point_to_design(raw_local_pointer, runtime.curve_size);
-        let normalized_pointer = node_from_local(local_pointer);
-        let raw_normalized_pointer = node_from_local(raw_local_pointer);
+        let normalized_pointer = node_from_local_for_size(local_pointer, runtime.curve_size);
+        let raw_normalized_pointer = node_from_local_for_size(raw_local_pointer, runtime.curve_size);
 
         match kind {
             RegionInteractionKind::Pressed => {
                 let mut editable = self.params.editable_curve_snapshot();
-                if let Some(index) = find_node_hit(&editable, local_pointer) {
+                if let Some(index) = find_node_hit_for_size(
+                    &editable,
+                    local_pointer,
+                    NODE_HIT_RADIUS,
+                    runtime.curve_size,
+                ) {
                     runtime.selected_node = Some(index);
                     runtime.drag_mode = Some(CurveDragMode::MoveNode {
                         index,
@@ -845,16 +911,22 @@ impl GuiState {
                 }
 
                 if !alt_down
-                    && find_segment_line_hit_within(
+                    && find_segment_line_hit_within_for_size(
                         &editable,
                         local_pointer,
                         SEGMENT_DIRECT_HIT_RADIUS,
+                        runtime.curve_size,
                     )
                     .is_some()
                 {
-                    let preview_node = preview_node_on_curve(&editable, local_pointer)
+                    let preview_node = preview_node_on_curve_for_size(
+                        &editable,
+                        local_pointer,
+                        runtime.curve_size,
+                    )
                         .unwrap_or(normalized_pointer);
-                    let inserted_index = insert_node(&mut editable, preview_node);
+                    let inserted_index =
+                        insert_node_for_size(&mut editable, preview_node, runtime.curve_size);
                     runtime.selected_node = Some(inserted_index);
                     runtime.drag_mode = Some(CurveDragMode::MoveNode {
                         index: inserted_index,
@@ -867,7 +939,12 @@ impl GuiState {
                 }
 
                 if let Some(index) =
-                    find_segment_line_hit_within(&editable, local_pointer, SEGMENT_NEAR_HIT_RADIUS)
+                    find_segment_line_hit_within_for_size(
+                        &editable,
+                        local_pointer,
+                        SEGMENT_NEAR_HIT_RADIUS,
+                        runtime.curve_size,
+                    )
                 {
                     runtime.drag_mode = if alt_down {
                         let start_tension = editable
@@ -898,7 +975,12 @@ impl GuiState {
                 }
 
                 if let Some(index) =
-                    find_node_hit_within(&editable, local_pointer, NODE_INSERT_GUARD_RADIUS)
+                    find_node_hit_within_for_size(
+                        &editable,
+                        local_pointer,
+                        NODE_INSERT_GUARD_RADIUS,
+                        runtime.curve_size,
+                    )
                 {
                     runtime.selected_node = Some(index);
                     runtime.drag_mode = Some(CurveDragMode::MoveNode {
@@ -909,7 +991,7 @@ impl GuiState {
                     return;
                 }
 
-                let inserted_index = insert_node(&mut editable, normalized_pointer);
+                let inserted_index = insert_node_for_size(&mut editable, normalized_pointer, runtime.curve_size);
                 runtime.selected_node = Some(inserted_index);
                 runtime.drag_mode = Some(CurveDragMode::MoveNode {
                     index: inserted_index,
@@ -939,11 +1021,12 @@ impl GuiState {
                                 return;
                             }
                             dragging = true;
-                            let moved_index = move_node_with_push_through(
+                            let moved_index = move_node_with_push_through_for_size(
                                 &mut editable,
                                 index,
                                 raw_normalized_pointer,
                                 NODE_PUSH_THROUGH_PX,
+                                runtime.curve_size,
                             );
                             runtime.selected_node = Some(moved_index);
                             drag_mode = CurveDragMode::MoveNode {
@@ -972,10 +1055,12 @@ impl GuiState {
                                 return;
                             }
                             dragging = true;
+                            let curve_width = runtime.curve_size.width.max(2);
+                            let curve_height = runtime.curve_size.height.max(2);
                             let delta_x = (raw_local_pointer.x - start_pointer.x) as f32
-                                / (CURVE_W.max(2) - 1) as f32;
+                                / (curve_width - 1) as f32;
                             let delta_y = (start_pointer.y - raw_local_pointer.y) as f32
-                                / (CURVE_H.max(2) - 1) as f32;
+                                / (curve_height - 1) as f32;
                             move_segment_translated(
                                 &mut editable,
                                 index,
@@ -1041,7 +1126,9 @@ impl GuiState {
             RegionInteractionKind::SecondaryClicked => {}
             RegionInteractionKind::DoubleClicked => {
                 let mut editable = self.params.editable_curve_snapshot();
-                if let Some(index) = find_deletable_node_hit(&editable, local_pointer) {
+                if let Some(index) =
+                    find_deletable_node_hit_for_size(&editable, local_pointer, runtime.curve_size)
+                {
                     editable.nodes.remove(index);
                     let remove_segment = index
                         .saturating_sub(1)
@@ -1113,14 +1200,31 @@ impl GuiState {
             let left = editable_curve.nodes[segment_index];
             let right =
                 editable_curve.nodes[(segment_index + 1).min(editable_curve.nodes.len() - 1)];
-            let segment_width = ((right.x - left.x).abs() * (CURVE_W as f32 - 1.0))
-                .round()
-                .max(2.0) as i32;
+            let left_x = local_from_node_for_size(
+                CurveNode {
+                    x: left.x,
+                    y: 0.0,
+                },
+                curve_size,
+            )
+            .x;
+            let right_x = local_from_node_for_size(
+                CurveNode {
+                    x: right.x,
+                    y: 0.0,
+                },
+                curve_size,
+            )
+            .x;
+            let segment_width = (right_x - left_x).abs().max(2);
             let steps = segment_width.clamp(2, 96) as usize;
-            let mut prev = to_canvas(local_from_node(CurveNode {
-                x: left.x,
-                y: sample_editable_curve(editable_curve, left.x),
-            }));
+            let mut prev = to_canvas(local_from_node_for_size(
+                CurveNode {
+                    x: left.x,
+                    y: sample_editable_curve(editable_curve, left.x),
+                },
+                curve_size,
+            ));
             let highlight =
                 state.preview_node.is_none() && state.hovered_segment == Some(segment_index);
             let line_color = if highlight {
@@ -1131,10 +1235,13 @@ impl GuiState {
             for step in 1..=steps {
                 let t = step as f32 / steps as f32;
                 let x = left.x + (right.x - left.x) * t;
-                let point = to_canvas(local_from_node(CurveNode {
-                    x,
-                    y: sample_editable_curve(editable_curve, x),
-                }));
+                let point = to_canvas(local_from_node_for_size(
+                    CurveNode {
+                        x,
+                        y: sample_editable_curve(editable_curve, x),
+                    },
+                    curve_size,
+                ));
                 commands.push(DrawCommand::Line {
                     start: prev,
                     end: point,
@@ -1158,7 +1265,7 @@ impl GuiState {
         }
 
         if let Some(preview) = state.preview_node {
-            let center = to_canvas(local_from_node(preview));
+            let center = to_canvas(local_from_node_for_size(preview, curve_size));
             commands.push(DrawCommand::FillCircle {
                 center,
                 radius: NODE_DRAW_RADIUS + 1,
@@ -1173,7 +1280,7 @@ impl GuiState {
         }
 
         for (index, node) in editable_curve.nodes.iter().copied().enumerate() {
-            let center = to_canvas(local_from_node(node));
+            let center = to_canvas(local_from_node_for_size(node, curve_size));
             let selected = state.selected_node == Some(index);
             let hovered = state.hovered_node == Some(index);
             let fill_color = if selected {
@@ -1287,42 +1394,89 @@ impl GuiState {
 }
 
 fn local_from_node(node: CurveNode) -> Point {
-    let x = (node.x.clamp(0.0, 1.0) * (CURVE_W as f32 - 1.0)).round() as i32;
-    let y = ((1.0 - node.y.clamp(0.0, 1.0)) * (CURVE_H as f32 - 1.0)).round() as i32;
+    local_from_node_for_size(
+        node,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
+fn local_from_node_for_size(node: CurveNode, curve_size: Size) -> Point {
+    let width = curve_size.width.max(1) as f32 - 1.0;
+    let height = curve_size.height.max(1) as f32 - 1.0;
+    let x = (node.x.clamp(0.0, 1.0) * width).round() as i32;
+    let y = ((1.0 - node.y.clamp(0.0, 1.0)) * height).round() as i32;
     Point { x, y }
 }
 
+#[allow(dead_code)]
 fn node_from_local(local: Point) -> CurveNode {
-    let x = (local.x as f32 / CURVE_W.max(1) as f32).clamp(0.0, 1.0);
-    let y = (1.0 - (local.y as f32 / CURVE_H.max(1) as f32)).clamp(0.0, 1.0);
+    node_from_local_for_size(
+        local,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
+fn node_from_local_for_size(local: Point, curve_size: Size) -> CurveNode {
+    let width = (curve_size.width.max(1) as f32 - 1.0).max(1.0);
+    let height = (curve_size.height.max(1) as f32 - 1.0).max(1.0);
+    let x = (local.x as f32 / width).clamp(0.0, 1.0);
+    let y = (1.0 - (local.y as f32 / height)).clamp(0.0, 1.0);
     CurveNode { x, y }
 }
 
 fn scale_point_from_design(point: Point, curve_size: Size) -> Point {
-    let width = curve_size.width.max(1) as i64;
-    let height = curve_size.height.max(1) as i64;
-    let x = (point.x as i64 * width / CURVE_W.max(1) as i64) as i32;
-    let y = (point.y as i64 * height / CURVE_H.max(1) as i64) as i32;
-    Point { x, y }
+    Point {
+        x: point
+            .x
+            .clamp(0, curve_size.width.max(1) as i32 - 1),
+        y: point
+            .y
+            .clamp(0, curve_size.height.max(1) as i32 - 1),
+    }
 }
 
 fn scale_point_to_design(point: Point, curve_size: Size) -> Point {
-    let width = curve_size.width.max(1) as i64;
-    let height = curve_size.height.max(1) as i64;
-    let x = (point.x as i64 * CURVE_W.max(1) as i64 / width) as i32;
-    let y = (point.y as i64 * CURVE_H.max(1) as i64 / height) as i32;
-    Point { x, y }
+    scale_point_from_design(point, curve_size)
 }
 
+#[allow(dead_code)]
 fn find_node_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
-    find_node_hit_within(curve, local_pointer, NODE_HIT_RADIUS)
+    find_node_hit_for_size(
+        curve,
+        local_pointer,
+        NODE_HIT_RADIUS,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
 }
 
-fn find_node_hit_within(curve: &EditableCurve, local_pointer: Point, radius: i32) -> Option<usize> {
+fn find_node_hit_for_size(
+    curve: &EditableCurve,
+    local_pointer: Point,
+    radius: i32,
+    curve_size: Size,
+) -> Option<usize> {
+    find_node_hit_within_for_size(curve, local_pointer, radius, curve_size)
+}
+
+fn find_node_hit_within_for_size(
+    curve: &EditableCurve,
+    local_pointer: Point,
+    radius: i32,
+    curve_size: Size,
+) -> Option<usize> {
     let mut best: Option<(usize, i64)> = None;
     let radius_squared = radius.max(0) as i64 * radius.max(0) as i64;
     for (index, node) in curve.nodes.iter().copied().enumerate() {
-        let center = local_from_node(node);
+        let center = local_from_node_for_size(node, curve_size);
         let distance = distance_squared(center, local_pointer);
         if distance <= radius_squared {
             match best {
@@ -1334,15 +1488,46 @@ fn find_node_hit_within(curve: &EditableCurve, local_pointer: Point, radius: i32
     best.map(|(index, _)| index)
 }
 
+#[allow(dead_code)]
+fn find_node_hit_within(curve: &EditableCurve, local_pointer: Point, radius: i32) -> Option<usize> {
+    find_node_hit_within_for_size(
+        curve,
+        local_pointer,
+        radius,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
 fn find_segment_line_hit_within(
     curve: &EditableCurve,
     local_pointer: Point,
     radius: i32,
 ) -> Option<usize> {
+    find_segment_line_hit_within_for_size(
+        curve,
+        local_pointer,
+        radius,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
+fn find_segment_line_hit_within_for_size(
+    curve: &EditableCurve,
+    local_pointer: Point,
+    radius: i32,
+    curve_size: Size,
+) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
     let radius_squared = (radius.max(0) * radius.max(0)) as f32;
     for index in 0..curve.segments.len() {
-        let distance = segment_polyline_distance_squared(curve, index, local_pointer);
+        let distance =
+            segment_polyline_distance_squared_for_size(curve, index, local_pointer, curve_size);
         if distance <= radius_squared {
             match best {
                 Some((_, best_distance)) if distance >= best_distance => {}
@@ -1353,9 +1538,26 @@ fn find_segment_line_hit_within(
     best.map(|(index, _)| index)
 }
 
+#[allow(dead_code)]
 fn insert_node(curve: &mut EditableCurve, node: CurveNode) -> usize {
+    insert_node_for_size(
+        curve,
+        node,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
+fn insert_node_for_size(curve: &mut EditableCurve, node: CurveNode, curve_size: Size) -> usize {
     if curve.nodes.len() >= MAX_EDITABLE_NODES {
-        return find_nearest_node(curve, local_from_node(node)).unwrap_or(0);
+        return find_nearest_node_for_size(
+            curve,
+            local_from_node_for_size(node, curve_size),
+            curve_size,
+        )
+        .unwrap_or(0);
     }
 
     let mut insert_at = curve.nodes.partition_point(|existing| existing.x < node.x);
@@ -1388,6 +1590,25 @@ fn move_node_with_push_through(
     target: CurveNode,
     push_threshold_px: i32,
 ) -> usize {
+    move_node_with_push_through_for_size(
+        curve,
+        index,
+        target,
+        push_threshold_px,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
+fn move_node_with_push_through_for_size(
+    curve: &mut EditableCurve,
+    index: usize,
+    target: CurveNode,
+    push_threshold_px: i32,
+    curve_size: Size,
+) -> usize {
     if index >= curve.nodes.len() {
         return index;
     }
@@ -1404,7 +1625,7 @@ fn move_node_with_push_through(
     }
 
     let mut moved_index = index;
-    let threshold_x = push_threshold_px.max(0) as f32 / (CURVE_W.max(2) - 1) as f32;
+    let threshold_x = push_threshold_px.max(0) as f32 / (curve_size.width.max(2) - 1) as f32;
     while moved_index + 1 < curve.nodes.len().saturating_sub(1)
         && target.x > curve.nodes[moved_index + 1].x + threshold_x
     {
@@ -1522,10 +1743,26 @@ fn remove_interior_node(curve: &mut EditableCurve, remove_index: usize) {
     }
 }
 
+#[allow(dead_code)]
 fn find_nearest_node(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
+    find_nearest_node_for_size(
+        curve,
+        local_pointer,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
+fn find_nearest_node_for_size(
+    curve: &EditableCurve,
+    local_pointer: Point,
+    curve_size: Size,
+) -> Option<usize> {
     let mut best: Option<(usize, i64)> = None;
     for (index, node) in curve.nodes.iter().copied().enumerate() {
-        let distance = distance_squared(local_from_node(node), local_pointer);
+        let distance = distance_squared(local_from_node_for_size(node, curve_size), local_pointer);
         match best {
             Some((_, best_distance)) if distance >= best_distance => {}
             _ => best = Some((index, distance)),
@@ -1540,25 +1777,49 @@ fn distance_squared(a: Point, b: Point) -> i64 {
     dx * dx + dy * dy
 }
 
+#[allow(dead_code)]
 fn segment_polyline_distance_squared(curve: &EditableCurve, index: usize, point: Point) -> f32 {
+    segment_polyline_distance_squared_for_size(
+        curve,
+        index,
+        point,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
+fn segment_polyline_distance_squared_for_size(
+    curve: &EditableCurve,
+    index: usize,
+    point: Point,
+    curve_size: Size,
+) -> f32 {
     let left = curve.nodes[index];
     let right = curve.nodes[(index + 1).min(curve.nodes.len() - 1)];
-    let width = ((right.x - left.x).abs() * (CURVE_W as f32 - 1.0))
+    let width = ((right.x - left.x).abs() * (curve_size.width.max(1) as f32 - 1.0))
         .round()
         .max(2.0) as i32;
     let steps = width.clamp(2, 96) as usize;
-    let mut prev = local_from_node(CurveNode {
+    let mut prev = local_from_node_for_size(
+        CurveNode {
         x: left.x,
         y: sample_editable_curve(curve, left.x),
-    });
+        },
+        curve_size,
+    );
     let mut best = f32::MAX;
     for step in 1..=steps {
         let t = step as f32 / steps as f32;
         let x = left.x + (right.x - left.x) * t;
-        let current = local_from_node(CurveNode {
+        let current = local_from_node_for_size(
+            CurveNode {
             x,
             y: sample_editable_curve(curve, x),
-        });
+            },
+            curve_size,
+        );
         let distance = point_to_segment_distance_squared(point, prev, current);
         if distance < best {
             best = distance;
@@ -1594,10 +1855,25 @@ fn point_to_segment_distance_squared(point: Point, a: Point, b: Point) -> f32 {
 }
 
 fn preview_node_on_curve(curve: &EditableCurve, local_pointer: Point) -> Option<CurveNode> {
+    preview_node_on_curve_for_size(
+        curve,
+        local_pointer,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
+fn preview_node_on_curve_for_size(
+    curve: &EditableCurve,
+    local_pointer: Point,
+    curve_size: Size,
+) -> Option<CurveNode> {
     if curve.nodes.len() < 2 {
         return None;
     }
-    let x = node_from_local(local_pointer).x;
+    let x = node_from_local_for_size(local_pointer, curve_size).x;
     Some(CurveNode {
         x,
         y: sample_editable_curve(curve, x).clamp(0.0, 1.0),
@@ -1610,7 +1886,22 @@ fn drag_threshold_crossed(start_pointer: Point, current_pointer: Point, threshol
 }
 
 fn find_deletable_node_hit(curve: &EditableCurve, local_pointer: Point) -> Option<usize> {
-    let index = find_node_hit(curve, local_pointer)?;
+    find_deletable_node_hit_for_size(
+        curve,
+        local_pointer,
+        Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        },
+    )
+}
+
+fn find_deletable_node_hit_for_size(
+    curve: &EditableCurve,
+    local_pointer: Point,
+    curve_size: Size,
+) -> Option<usize> {
+    let index = find_node_hit_for_size(curve, local_pointer, NODE_HIT_RADIUS, curve_size)?;
     if index == 0 || index + 1 == curve.nodes.len() {
         return None;
     }
@@ -1995,8 +2286,8 @@ mod screenshot_tests {
         let (captured_width, captured_height) =
             capture_hwnd(hwnd, &path).expect("failed to capture screenshot");
         assert!(
-            captured_width >= width && captured_height >= height,
-            "captured image should match requested size"
+            captured_width == width && captured_height == height,
+            "captured image should be exactly {width}x{height}, got {captured_width}x{captured_height}"
         );
 
         gui.close();
