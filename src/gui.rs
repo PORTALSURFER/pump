@@ -94,9 +94,8 @@ mod screenshot_tests {
 
         let sizes = [
             (WINDOW_WIDTH, WINDOW_HEIGHT),
-            (WINDOW_WIDTH + 80, WINDOW_HEIGHT + 64),
-            (WINDOW_WIDTH + 120, WINDOW_HEIGHT + 96),
-            (WINDOW_WIDTH + 240, WINDOW_HEIGHT + 140),
+            (WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2),
+            (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2),
         ];
 
         for &(width, height) in &sizes {
@@ -1960,9 +1959,8 @@ mod screenshot_tests {
 
         let sizes = [
             (WINDOW_WIDTH, WINDOW_HEIGHT),
-            (WINDOW_WIDTH + 80, WINDOW_HEIGHT + 64),
-            (WINDOW_WIDTH + 120, WINDOW_HEIGHT + 96),
-            (WINDOW_WIDTH + 240, WINDOW_HEIGHT + 140),
+            (WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2),
+            (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2),
         ];
 
         for &(width, height) in &sizes {
