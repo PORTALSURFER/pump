@@ -98,6 +98,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "byteorder-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
+
+[[package]]
 name = "cc"
 version = "1.2.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -483,6 +489,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
+name = "image"
+version = "0.25.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6506c6c10786659413faa717ceebcb8f70731c0a60cbae39795fdf114519c1a"
+dependencies = [
+ "bytemuck",
+ "byteorder-lite",
+ "moxcms",
+ "num-traits",
+ "png 0.18.1",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -620,6 +639,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "moxcms"
+version = "0.7.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac9557c559cd6fc9867e122e20d2cbefc9ca29d80d027a8e39310920ed2f0a97"
+dependencies = [
+ "num-traits",
+ "pxfm",
+]
+
+[[package]]
 name = "mts-esp-rs"
 version = "0.1.0"
 source = "git+https://github.com/PORTALSURFER/mts-esp-rs?rev=d107a979e44c1b16dcc72dfd47cdd8dac77854ca#d107a979e44c1b16dcc72dfd47cdd8dac77854ca"
@@ -728,7 +757,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "patchbay-gui"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?branch=main#2c6514077675bbf8709ecf61cc1cbaf5c01c0ccb"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=e1461e8eee554151b3e8a2213888604f253823e9#e1461e8eee554151b3e8a2213888604f253823e9"
 dependencies = [
  "pollster",
  "raw-window-handle 0.5.2",
@@ -785,6 +814,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "png"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
+dependencies = [
+ "bitflags 2.10.0",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide",
+]
+
+[[package]]
 name = "pollster"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -830,7 +872,18 @@ checksum = "3eb8486b569e12e2c32ad3e204dbaba5e4b5b216e9367044f25f1dba42341773"
 name = "pump"
 version = "0.1.0"
 dependencies = [
+ "image",
  "toybox",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "pxfm"
+version = "0.1.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7186d3822593aa4393561d186d1393b3923e9d6163d3fbfd6e825e3e6cf3e6a8"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -1060,7 +1113,7 @@ dependencies = [
 [[package]]
 name = "toybox"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?branch=main#2c6514077675bbf8709ecf61cc1cbaf5c01c0ccb"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=e1461e8eee554151b3e8a2213888604f253823e9#e1461e8eee554151b3e8a2213888604f253823e9"
 dependencies = [
  "clack-common",
  "clack-extensions",
@@ -1075,12 +1128,12 @@ dependencies = [
 [[package]]
 name = "toybox-process-log"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?branch=main#2c6514077675bbf8709ecf61cc1cbaf5c01c0ccb"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=e1461e8eee554151b3e8a2213888604f253823e9#e1461e8eee554151b3e8a2213888604f253823e9"
 
 [[package]]
 name = "toybox-vst3-ffi"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?branch=main#2c6514077675bbf8709ecf61cc1cbaf5c01c0ccb"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=e1461e8eee554151b3e8a2213888604f253823e9#e1461e8eee554151b3e8a2213888604f253823e9"
 dependencies = [
  "vst3",
 ]
@@ -1107,7 +1160,7 @@ dependencies = [
  "futures-intrusive",
  "log",
  "peniko",
- "png",
+ "png 0.17.16",
  "skrifa",
  "static_assertions",
  "thiserror 2.0.18",

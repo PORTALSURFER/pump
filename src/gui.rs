@@ -75,6 +75,65 @@ const fn fixed_box(width: u32, height: u32) -> LayoutBox {
     LayoutBox::fixed(width, height).max(width, height)
 }
 
+#[cfg(all(test, not(target_os = "windows")))]
+mod screenshot_tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use image::{ImageBuffer, Rgba};
+    use toybox::gui::{render_spec_to_frame, Size};
+
+    use super::{AutomationQueue, GuiState, GuiStatus, PumpParams, WINDOW_HEIGHT, WINDOW_WIDTH};
+
+    #[test]
+    fn screenshot_renders_initial_ui() {
+        if std::env::var("TOYBOX_UI_SCREENSHOT").is_err() {
+            return;
+        }
+
+        let sizes = [
+            (WINDOW_WIDTH, WINDOW_HEIGHT),
+            (WINDOW_WIDTH + 80, WINDOW_HEIGHT + 64),
+            (WINDOW_WIDTH + 120, WINDOW_HEIGHT + 96),
+            (WINDOW_WIDTH + 240, WINDOW_HEIGHT + 140),
+        ];
+
+        for &(width, height) in &sizes {
+            render_and_capture_at_size(width, height);
+        }
+    }
+
+    fn render_and_capture_at_size(width: u32, height: u32) {
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        let queue = Arc::new(AutomationQueue::default());
+        let state = GuiState::new(params, status, queue, None);
+
+        let frame = render_spec_to_frame(Size { width, height }, |input| state.build_ui(input))
+            .expect("failed to render pump headless screenshot");
+        assert!(
+            frame.width >= width && frame.height >= height,
+            "headless render size mismatch: got {}x{}, expected at least {width}x{height}",
+            frame.width,
+            frame.height
+        );
+        let path = screenshot_path("pump", width, height);
+        let image = ImageBuffer::<Rgba<u8>, _>::from_vec(frame.width, frame.height, frame.pixels)
+            .expect("failed to build image buffer from headless render");
+        image.save(&path).expect("failed to write headless screenshot");
+    }
+
+    fn screenshot_path(plugin: &str, width: u32, height: u32) -> PathBuf {
+        let path = std::env::var_os("TOYBOX_UI_SCREENSHOT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("target/ui-screenshots"));
+        let path = path.join(plugin);
+        fs::create_dir_all(&path).expect("create screenshot directory");
+        path.join(format!("initial-ui-{width}x{height}.png"))
+    }
+}
+
 const fn u32_max(left: u32, right: u32) -> u32 {
     if left > right {
         left
@@ -1864,7 +1923,291 @@ mod tests {
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
-            | Node::Indicator(_) => None,
+                | Node::Indicator(_) => None,
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod screenshot_tests {
+    use std::ffi::c_void;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use crate::GuiStatus;
+    use image::{ImageBuffer, Rgba};
+    use raw_window_handle::{RawWindowHandle, Win32WindowHandle};
+    use windows::Win32::Foundation::{HMENU, HINSTANCE, HWND};
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetClientRect, GetDIBits, GetWindowDC, HGDIOBJ,
+        Rect, ReleaseDC, SelectObject, SRCCOPY,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, ShowWindow, SW_SHOW, UpdateWindow, WS_OVERLAPPEDWINDOW,
+    };
+    use windows::core::w;
+
+    use super::{AutomationQueue, PumpGui, PumpParams, WINDOW_HEIGHT, WINDOW_WIDTH};
+
+    #[test]
+    fn screenshot_renders_initial_ui() {
+        if std::env::var("TOYBOX_UI_SCREENSHOT").is_err() {
+            return;
+        }
+
+        let sizes = [
+            (WINDOW_WIDTH, WINDOW_HEIGHT),
+            (WINDOW_WIDTH + 80, WINDOW_HEIGHT + 64),
+            (WINDOW_WIDTH + 120, WINDOW_HEIGHT + 96),
+            (WINDOW_WIDTH + 240, WINDOW_HEIGHT + 140),
+        ];
+
+        for &(width, height) in &sizes {
+            render_and_capture_at_size(width, height);
+        }
+    }
+
+    fn render_and_capture_at_size(width: u32, height: u32) {
+        let mut gui = PumpGui::default();
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        let host = parent_window(width, height);
+        let queue = Arc::new(AutomationQueue::default());
+
+        gui.set_parent_raw(host.raw_handle());
+        gui.open(&params, &status, queue, None).expect("open should succeed");
+        let hwnd = wait_for_window_handle(&gui);
+        wait_for_any_logical_size(&gui);
+        gui.request_resize(width, height);
+        wait_for_logical_size(&gui, (width, height));
+
+        std::thread::sleep(Duration::from_millis(75));
+
+        let path = screenshot_path("pump", width, height);
+        let (captured_width, captured_height) =
+            capture_hwnd(hwnd, &path).expect("failed to capture screenshot");
+        assert!(
+            captured_width >= width && captured_height >= height,
+            "captured image should match requested size"
+        );
+
+        gui.close();
+        assert!(path.exists());
+    }
+
+    fn parent_window(width: u32, height: u32) -> ScreenshotParentWindow {
+        ScreenshotParentWindow::new(width, height)
+    }
+
+    fn wait_for_any_logical_size(gui: &PumpGui) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            if let Some(size) = gui.last_size() {
+                if size.0 > 0 && size.1 > 0 {
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("plugin GUI never reported any logical size");
+    }
+
+    fn wait_for_logical_size(gui: &PumpGui, min_size: (u32, u32)) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            if let Some((width, height)) = gui.last_size() {
+                if width >= min_size.0 && height >= min_size.1 {
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!(
+            "plugin GUI never reached logical size >= {min_size:?}, last size={:?}",
+            gui.last_size()
+        );
+    }
+
+    fn wait_for_window_handle(gui: &PumpGui) -> HWND {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            if let Some(handle) = gui.handle() {
+                if handle.is_valid() {
+                    return handle.hwnd();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("plugin GUI handle did not become available");
+    }
+
+    fn screenshot_path(plugin: &str, width: u32, height: u32) -> PathBuf {
+        let path = std::env::var_os("TOYBOX_UI_SCREENSHOT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("target/ui-screenshots"));
+        let path = path.join(plugin);
+        fs::create_dir_all(&path).expect("create screenshot directory");
+        path.join(format!("initial-ui-{width}x{height}.png"))
+    }
+
+    fn capture_hwnd(hwnd: HWND, out: &PathBuf) -> Result<(u32, u32), String> {
+        let mut client = Rect::default();
+        unsafe {
+            GetClientRect(hwnd, &mut client).map_err(|err| format!("GetClientRect failed: {err}"))?;
+        };
+
+        let width = u32::try_from(client.right.saturating_sub(client.left))
+            .map_err(|_| "invalid client width".to_string())?;
+        let height = u32::try_from(client.bottom.saturating_sub(client.top))
+            .map_err(|_| "invalid client height".to_string())?;
+
+        if width == 0 || height == 0 {
+            return Err("screenshot target has empty geometry".into());
+        }
+
+        let source_dc = unsafe { GetWindowDC(hwnd) };
+        if source_dc.is_invalid() {
+            return Err("GetWindowDC returned invalid DC".into());
+        }
+
+        let memory_dc = unsafe { CreateCompatibleDC(source_dc) };
+        if memory_dc.is_invalid() {
+            unsafe {
+                let _ = ReleaseDC(hwnd, source_dc);
+            }
+            return Err("CreateCompatibleDC returned invalid DC".into());
+        }
+
+        let bitmap = unsafe { CreateCompatibleBitmap(source_dc, width as i32, height as i32) };
+        if bitmap.is_invalid() {
+            unsafe {
+                let _ = DeleteDC(memory_dc);
+                let _ = ReleaseDC(hwnd, source_dc);
+            }
+            return Err("CreateCompatibleBitmap returned invalid bitmap".into());
+        }
+
+        let old_object = unsafe { SelectObject(memory_dc, HGDIOBJ::from(bitmap)) };
+        let bitblt_ok = unsafe {
+            BitBlt(memory_dc, 0, 0, width as i32, height as i32, source_dc, 0, 0, SRCCOPY).is_ok()
+        };
+        if !bitblt_ok {
+            unsafe {
+                let _ = SelectObject(memory_dc, old_object);
+                let _ = DeleteObject(bitmap.into());
+                let _ = DeleteDC(memory_dc);
+                let _ = ReleaseDC(hwnd, source_dc);
+            }
+            return Err("BitBlt failed".into());
+        }
+
+        let mut bitmap_info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            bmiColors: [Default::default(); 1],
+        };
+
+        let pixel_len = usize::try_from(width)
+            .ok()
+            .and_then(|w| usize::try_from(height).ok().map(|h| w.saturating_mul(h).saturating_mul(4)))
+            .ok_or_else(|| "invalid pixel dimensions".to_string())?;
+        let mut pixels = vec![0_u8; pixel_len];
+
+        let got = unsafe {
+            GetDIBits(
+                memory_dc,
+                bitmap,
+                0,
+                height,
+                Some(pixels.as_mut_ptr().cast()),
+                &mut bitmap_info,
+                DIB_RGB_COLORS,
+            )
+        };
+
+        unsafe {
+            let _ = SelectObject(memory_dc, old_object);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(memory_dc);
+            let _ = ReleaseDC(hwnd, source_dc);
+        }
+
+        if got == 0 {
+            return Err("GetDIBits returned no rows".into());
+        }
+
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+
+        let image = ImageBuffer::<Rgba<u8>, _>::from_vec(width, height, pixels)
+            .ok_or_else(|| "failed to build image buffer".to_string())?;
+        image.save(out).map_err(|err| err.to_string())?;
+        Ok((width, height))
+    }
+
+    struct ScreenshotParentWindow {
+        hwnd: HWND,
+    }
+
+    impl ScreenshotParentWindow {
+        fn new(width: u32, height: u32) -> Self {
+            let hwnd = unsafe {
+                CreateWindowExW(
+                    Default::default(),
+                    w!("STATIC"),
+                    w!("toybox-screenshot-host"),
+                    WS_OVERLAPPEDWINDOW,
+                    0,
+                    0,
+                    width as i32,
+                    height as i32,
+                    HWND::default(),
+                    HMENU::default(),
+                    HINSTANCE::default(),
+                    None,
+                )
+            };
+
+            if hwnd.0 == 0 {
+                panic!("CreateWindowExW failed");
+            }
+
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+                let _ = UpdateWindow(hwnd);
+            }
+
+            Self { hwnd }
+        }
+
+        fn raw_handle(&self) -> RawWindowHandle {
+            let mut handle = Win32WindowHandle::empty();
+            handle.hwnd = self.hwnd.0 as *mut c_void;
+            handle.hinstance = HINSTANCE::default().0 as *mut c_void;
+            RawWindowHandle::Win32(handle)
+        }
+    }
+
+    impl Drop for ScreenshotParentWindow {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DestroyWindow(self.hwnd);
+            }
         }
     }
 }
