@@ -662,7 +662,10 @@ impl IEditControllerTrait for PumpVst3Controller {
         let adapter = PumpVst3GuiAdapter::new(self.params.clone());
         let (default_width, default_height) = preferred_window_size();
         let Some(view) =
-            ComWrapper::new(HostedVst3View::new(adapter, default_width, default_height))
+            ComWrapper::new(
+                HostedVst3View::new(adapter, default_width, default_height)
+                    .preserve_aspect_ratio(false),
+            )
                 .to_com_ptr::<IPlugView>()
         else {
             return ptr::null_mut();
