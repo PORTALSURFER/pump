@@ -2391,6 +2391,53 @@ mod tests {
     }
 
     #[test]
+    fn build_ui_handles_tiny_window_sizes_without_measurement_errors() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let tiny_sizes = [
+            Size {
+                width: 1,
+                height: 1,
+            },
+            Size {
+                width: 2,
+                height: 3,
+            },
+            Size {
+                width: 3,
+                height: 2,
+            },
+            Size {
+                width: 8,
+                height: 8,
+            },
+        ];
+
+        for input_size in tiny_sizes {
+            let input = InputState {
+                window_size: input_size,
+                ..InputState::default()
+            };
+            let spec = state.build_ui(&input);
+            let measured = measure_checked(&spec).expect("measurement should succeed");
+            assert_eq!(measured.width, WINDOW_WIDTH);
+            assert_eq!(measured.height, WINDOW_HEIGHT);
+            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
+            assert_eq!(
+                spec.root.design_size,
+                Some(Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                })
+            );
+        }
+    }
+
+    #[test]
     fn build_ui_root_content_is_three_section_column() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
