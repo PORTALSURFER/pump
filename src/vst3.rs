@@ -185,6 +185,7 @@ impl IComponentTrait for PumpVst3Processor {
         }
     }
 
+    #[allow(clippy::unnecessary_cast)]
     unsafe fn getBusInfo(
         &self,
         media_type: MediaType,
@@ -218,7 +219,7 @@ impl IComponentTrait for PumpVst3Processor {
             }
             #[cfg(not(windows))]
             {
-                BusInfo_::BusFlags_::kDefaultActive
+                BusInfo_::BusFlags_::kDefaultActive as u32
             }
         };
 
