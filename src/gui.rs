@@ -1855,6 +1855,10 @@ mod tests {
                 height: WINDOW_HEIGHT,
             },
             Size {
+                width: WINDOW_WIDTH * 3,
+                height: WINDOW_HEIGHT * 3,
+            },
+            Size {
                 width: WINDOW_WIDTH / 2,
                 height: WINDOW_HEIGHT / 2,
             },
