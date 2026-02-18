@@ -69,7 +69,7 @@ const METER_X_OFFSET: i32 = 12;
 const METER_Y_OFFSET: i32 = 10;
 const METER_WIDTH: i32 = 6;
 const METER_STROKE: i32 = 1;
-const BASE_KNOB_DIAMETER: u32 = 32;
+const BASE_KNOB_DIAMETER: u32 = 48;
 const BASE_TEXT_SCALE: u32 = 2;
 const KNOBS_PER_ROW: usize = 4;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
@@ -724,6 +724,7 @@ impl GuiState {
         theme: PumpTheme,
         controls: ControlSnapshot,
     ) -> Node {
+        let knob_label_text_scale = (metrics.text_scale / 2).max(1);
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; KNOBS_PER_ROW])
                 .rows(vec![TrackSize::Auto])
@@ -731,23 +732,27 @@ impl GuiState {
                 .justify_start(),
             vec![
                 knob(MIX_KEY, "Mix", controls.mix, (MIN_MIX, MAX_MIX))
-                    .value_label(format!("{:.0}%", controls.mix * 100.0)),
+                    .value_label(format!("{:.0}%", controls.mix * 100.0))
+                    .text_scale(knob_label_text_scale),
                 knob(DEPTH_KEY, "Depth", controls.depth, (MIN_DEPTH, MAX_DEPTH))
-                    .value_label(format!("{:.0}%", controls.depth * 100.0)),
+                    .value_label(format!("{:.0}%", controls.depth * 100.0))
+                    .text_scale(knob_label_text_scale),
                 knob(
                     PHASE_KEY,
                     "Phase",
                     controls.phase_offset,
                     (MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
                 )
-                .value_label(format!("{:.0}%", controls.phase_offset * 100.0)),
+                .value_label(format!("{:.0}%", controls.phase_offset * 100.0))
+                .text_scale(knob_label_text_scale),
                 knob(
                     OUTPUT_KEY,
                     "Output",
                     controls.output_gain_db,
                     (MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
                 )
-                .value_label(format!("{:+.1} dB", controls.output_gain_db)),
+                .value_label(format!("{:+.1} dB", controls.output_gain_db))
+                .text_scale(knob_label_text_scale),
             ],
         )
         .layout(LayoutBox::fill());
