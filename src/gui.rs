@@ -733,10 +733,12 @@ impl GuiState {
             vec![
                 knob(MIX_KEY, "Mix", controls.mix, (MIN_MIX, MAX_MIX))
                     .value_label(format!("{:.0}%", controls.mix * 100.0))
-                    .text_scale(knob_label_text_scale),
+                    .text_scale(knob_label_text_scale)
+                    .layout(LayoutBox::auto()),
                 knob(DEPTH_KEY, "Depth", controls.depth, (MIN_DEPTH, MAX_DEPTH))
                     .value_label(format!("{:.0}%", controls.depth * 100.0))
-                    .text_scale(knob_label_text_scale),
+                    .text_scale(knob_label_text_scale)
+                    .layout(LayoutBox::auto()),
                 knob(
                     PHASE_KEY,
                     "Phase",
@@ -744,7 +746,8 @@ impl GuiState {
                     (MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
                 )
                 .value_label(format!("{:.0}%", controls.phase_offset * 100.0))
-                .text_scale(knob_label_text_scale),
+                .text_scale(knob_label_text_scale)
+                .layout(LayoutBox::auto()),
                 knob(
                     OUTPUT_KEY,
                     "Output",
@@ -752,7 +755,8 @@ impl GuiState {
                     (MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
                 )
                 .value_label(format!("{:+.1} dB", controls.output_gain_db))
-                .text_scale(knob_label_text_scale),
+                .text_scale(knob_label_text_scale)
+                .layout(LayoutBox::auto()),
             ],
         )
         .layout(LayoutBox::fill());
@@ -2029,8 +2033,8 @@ mod tests {
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
         preview_node_on_curve, resolve_runtime_controls_section_widths,
-        resolve_vertical_section_heights, GuiState, CURVE_H, CURVE_KEY, CURVE_W, WINDOW_HEIGHT,
-        WINDOW_WIDTH,
+        resolve_vertical_section_heights, GuiState, UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W,
+        WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -2039,7 +2043,7 @@ mod tests {
     use toybox::clap::automation::AutomationQueue;
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{measure_checked, Node, RootScaleMode};
-    use toybox::gui::{Point, Size};
+    use toybox::gui::{render_spec_to_frame, MainPalette, Point, Size};
 
     #[test]
     fn delete_hit_ignores_endpoints_and_targets_interior_nodes() {
@@ -2438,6 +2442,69 @@ mod tests {
         assert!(matches!(controls_grid.children[1], Node::Panel(_)));
     }
 
+    #[test]
+    fn pump_knob_block_top_borders_tile_without_horizontal_gaps() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let frame = render_spec_to_frame(
+            Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            |input| state.build_ui(input),
+        )
+        .expect("pump frame should render");
+
+        let (header_h, curve_h, _) = resolve_vertical_section_heights(WINDOW_HEIGHT);
+        let controls_top = header_h.saturating_add(curve_h);
+        let metrics = UiLayoutMetrics::from_input(&InputState::default());
+        let base_row = controls_top
+            .saturating_add(metrics.controls_padding.max(0) as u32)
+            .min(frame.height.saturating_sub(1));
+        let (knobs_w, _) = resolve_runtime_controls_section_widths(WINDOW_WIDTH);
+        let border = MainPalette::main().text_primary;
+
+        let end_row = base_row
+            .saturating_add(4)
+            .min(frame.height.saturating_sub(1));
+        let mut best_runs: Vec<(u32, u32)> = Vec::new();
+        let mut best_coverage = 0u32;
+        for y in base_row..=end_row {
+            let runs = color_runs_on_row(
+                &frame.pixels,
+                frame.width,
+                y,
+                0,
+                knobs_w.saturating_sub(1),
+                border,
+            );
+            let coverage = runs
+                .iter()
+                .map(|(start, end)| end.saturating_sub(*start).saturating_add(1))
+                .sum::<u32>();
+            if coverage > best_coverage {
+                best_coverage = coverage;
+                best_runs = runs;
+            }
+        }
+
+        let significant_runs: Vec<(u32, u32)> = best_runs
+            .into_iter()
+            .filter(|(start, end)| end.saturating_sub(*start).saturating_add(1) >= 8)
+            .collect();
+
+        assert_eq!(
+            significant_runs.len(),
+            1,
+            "expected one contiguous knob-border run in pump knob section, got {:?}",
+            significant_runs
+        );
+    }
+
     fn find_curve_region_node(node: &Node) -> Option<&toybox::gui::declarative::RegionSpec> {
         match node {
             Node::Region(region) if region.key == CURVE_KEY => Some(region),
@@ -2460,6 +2527,44 @@ mod tests {
             | Node::Dropdown(_)
             | Node::Indicator(_) => None,
         }
+    }
+
+    fn color_runs_on_row(
+        pixels: &[u8],
+        frame_width: u32,
+        y: u32,
+        x_start: u32,
+        x_end: u32,
+        color: toybox::gui::Color,
+    ) -> Vec<(u32, u32)> {
+        if frame_width == 0 || pixels.is_empty() || x_start > x_end {
+            return Vec::new();
+        }
+        let mut runs = Vec::new();
+        let mut active_start: Option<u32> = None;
+        for x in x_start..=x_end {
+            let idx =
+                ((y.saturating_mul(frame_width).saturating_add(x)).saturating_mul(4)) as usize;
+            if idx + 3 >= pixels.len() {
+                break;
+            }
+            let matches = pixels[idx] == color.r
+                && pixels[idx + 1] == color.g
+                && pixels[idx + 2] == color.b
+                && pixels[idx + 3] != 0;
+            match (active_start, matches) {
+                (None, true) => active_start = Some(x),
+                (Some(start), false) => {
+                    runs.push((start, x.saturating_sub(1)));
+                    active_start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(start) = active_start {
+            runs.push((start, x_end));
+        }
+        runs
     }
 }
 
