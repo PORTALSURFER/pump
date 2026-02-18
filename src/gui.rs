@@ -63,14 +63,12 @@ const BASE_KNOBS_SECTION_W: u32 = 294;
 const BASE_DROPDOWN_SECTION_W: u32 = 126;
 const TITLE_LABEL_W: u32 = 64;
 const TITLE_LABEL_RIGHT_GAP: i32 = 8;
-const SPLINE_LABEL_BOTTOM_MARGIN: i32 = 4;
 const HEADER_CONTROL_PADDING: i32 = 8;
 const HEADER_CONTROL_GAP: i32 = 4;
 const METER_X_OFFSET: i32 = 12;
 const METER_Y_OFFSET: i32 = 10;
 const METER_WIDTH: i32 = 6;
 const METER_STROKE: i32 = 1;
-const BASE_CURVE_HINT_MARGIN_X: i32 = 8;
 const BASE_KNOB_DIAMETER: u32 = 32;
 const BASE_TEXT_SCALE: u32 = 2;
 const KNOBS_PER_ROW: usize = 4;
@@ -504,7 +502,6 @@ struct UiLayoutMetrics {
     padding_x: i32,
     title_label_w: u32,
     title_label_gap: i32,
-    spline_label_bottom_margin: i32,
     controls_padding: i32,
     controls_gap: i32,
     meter_x_offset: i32,
@@ -515,7 +512,6 @@ struct UiLayoutMetrics {
     dropdown_control_h: u32,
     button_control_h: u32,
     subtitle_label_w: u32,
-    tip_label_w: u32,
     curve_size: Size,
     knob_diameter: u32,
     text_scale: u32,
@@ -534,10 +530,8 @@ impl UiLayoutMetrics {
         let padding_x = scaled_i32(BASE_PADDING_X, scale);
         let title_label_w = scaled_u32(TITLE_LABEL_W, scale);
         let title_label_gap = scaled_i32(TITLE_LABEL_RIGHT_GAP, scale);
-        let spline_label_bottom_margin = scaled_i32(SPLINE_LABEL_BOTTOM_MARGIN, scale);
         let controls_padding = scaled_i32(HEADER_CONTROL_PADDING, scale);
         let controls_gap = scaled_i32(HEADER_CONTROL_GAP, scale);
-        let curve_hint_right_padding = scaled_u32(BASE_CURVE_HINT_MARGIN_X.max(0) as u32, scale);
         let dropdown_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let button_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let text_scale = scaled_text_scale(scale);
@@ -551,10 +545,6 @@ impl UiLayoutMetrics {
             .saturating_add(title_label_gap)
             .max(0) as u32;
         let subtitle_label_w = content_w.saturating_sub(subtitle_label_x).max(1);
-
-        let tip_label_w = content_w
-            .saturating_sub((padding_x.max(0) as u32).saturating_add(curve_hint_right_padding))
-            .max(1);
         let curve_size = Size {
             width: content_w,
             height: curve_h,
@@ -571,7 +561,6 @@ impl UiLayoutMetrics {
             padding_x,
             title_label_w,
             title_label_gap,
-            spline_label_bottom_margin,
             controls_padding,
             controls_gap,
             meter_x_offset,
@@ -582,7 +571,6 @@ impl UiLayoutMetrics {
             dropdown_control_h,
             button_control_h,
             subtitle_label_w,
-            tip_label_w,
             curve_size,
             knob_diameter,
             text_scale,
@@ -707,35 +695,19 @@ impl GuiState {
         theme: PumpTheme,
         draw_commands: Vec<DrawCommand>,
     ) -> Node {
-        let spline_tip_y = metrics
-            .curve_h
-            .saturating_sub(metrics.label_line_h)
-            .saturating_sub(metrics.spline_label_bottom_margin.max(0) as u32)
-            as i32;
-        let spline_controls = vec![
-            AbsoluteChild::new(
-                Point { x: 0, y: 0 },
-                Node::Region(
-                    RegionSpec::new(
-                        CURVE_KEY,
-                        Size {
-                            width: metrics.content_w,
-                            height: metrics.curve_h,
-                        },
-                    )
-                    .draw_commands(draw_commands),
-                ),
+        let spline_controls = vec![AbsoluteChild::new(
+            Point { x: 0, y: 0 },
+            Node::Region(
+                RegionSpec::new(
+                    CURVE_KEY,
+                    Size {
+                        width: metrics.content_w,
+                        height: metrics.curve_h,
+                    },
+                )
+                .draw_commands(draw_commands),
             ),
-            AbsoluteChild::new(
-                Point {
-                    x: metrics.padding_x,
-                    y: spline_tip_y,
-                },
-                label("Tip: double-click node deletes; direct-curve click adds node; near drag moves line; Alt+drag adjusts curve.")
-                    .text_color(theme.hint_text)
-                    .layout(fixed_box(metrics.tip_label_w, metrics.label_line_h)),
-            ),
-        ];
+        )];
         let spline_content =
             Node::Absolute(AbsoluteSpec::new(spline_controls).layout(LayoutBox::fill()))
                 .layout(LayoutBox::fill());
