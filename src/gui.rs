@@ -753,8 +753,8 @@ impl GuiState {
         controls: ControlSnapshot,
     ) -> Node {
         let knobs_grid = grid(
-            GridTemplate::new(vec![TrackSize::Fr(1); KNOBS_PER_ROW])
-                .rows(vec![TrackSize::Fr(1)])
+            GridTemplate::new(vec![TrackSize::Auto; KNOBS_PER_ROW])
+                .rows(vec![TrackSize::Auto])
                 .gap(0)
                 .justify_start(),
             vec![
