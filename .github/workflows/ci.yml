@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run checks (default features)
+        shell: bash
+        run: bash scripts/ci.sh
+
+      - name: Render UI screenshots (if supported)
+        shell: bash
+        run: bash scripts/ci.sh --screenshots
+
+      - name: Build screenshot manifest (optional)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! compgen -G "target/ui-screenshots/*/initial-ui-*.png" >/dev/null; then
+            exit 0
+          fi
+          python3 - <<'PY'
+          import glob
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          root = Path("target/ui-screenshots")
+          files = sorted(Path(p) for p in glob.glob(str(root / "*" / "initial-ui-*.png")))
+          out = []
+          for path in files:
+            data = path.read_bytes()
+            out.append({
+              "path": str(path.relative_to(root)).replace(os.sep, "/"),
+              "sha256": hashlib.sha256(data).hexdigest(),
+              "bytes": len(data),
+            })
+          manifest = {"root": str(root).replace(os.sep, "/"), "files": out}
+          (root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload UI screenshots (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: target/ui-screenshots
+          if-no-files-found: ignore
+
+      - name: Lint VST3 feature (SDK optional)
+        if: ${{ vars.VST3_SDK_DIR != '' }}
+        env:
+          VST3_SDK_DIR: ${{ vars.VST3_SDK_DIR }}
+        shell: bash
+        run: bash scripts/ci.sh --vst3

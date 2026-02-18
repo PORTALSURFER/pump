@@ -6,10 +6,10 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::RwLock;
 
-use toybox::dsp::AtomicF32;
 use toybox::clack_extensions::params::{ParamDisplayWriter, ParamInfoFlags, ParamInfoWriter};
 use toybox::clack_plugin::prelude::ClapId;
 use toybox::clap::params::{ParamBuilder, ParamSpec};
+use toybox::dsp::AtomicF32;
 
 use crate::curve::{
     curve_table_to_editable, default_editable_curve, editable_curve_to_table, CurveNode,
@@ -420,9 +420,7 @@ impl PumpParams {
     pub fn curve_value(&self, index: usize) -> f32 {
         self.curve
             .get(index)
-            .map(|sample: &AtomicF32| {
-                sample.load(Ordering::Acquire).clamp(0.0, 1.0)
-            })
+            .map(|sample: &AtomicF32| sample.load(Ordering::Acquire).clamp(0.0, 1.0))
             .unwrap_or(1.0)
     }
 

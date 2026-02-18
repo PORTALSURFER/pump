@@ -5,8 +5,6 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use toybox::dsp::AtomicF32;
-use toybox::dsp::TransportState;
 use toybox::clack_extensions::audio_ports::*;
 use toybox::clack_extensions::gui::{PluginGui, PluginGuiImpl};
 use toybox::clack_extensions::params::*;
@@ -16,10 +14,12 @@ use toybox::clack_plugin::prelude::*;
 use toybox::clack_plugin::stream::{InputStream, OutputStream};
 use toybox::clap::automation::{AutomationEvent, AutomationQueue};
 use toybox::clap::gui::host_param_requester;
-use toybox::clap::transport::transport_state_from_transport;
 use toybox::clap::prelude::apply_param_events;
 use toybox::clap::process::{min_len, split_channel};
 use toybox::clap::state::{read_versioned_payload, write_versioned_payload};
+use toybox::clap::transport::transport_state_from_transport;
+use toybox::dsp::AtomicF32;
+use toybox::dsp::TransportState;
 
 use crate::dsp::{DspSettings, PumpEngine};
 use crate::gui::PumpGui;
@@ -32,6 +32,7 @@ mod curve;
 mod dsp;
 mod gui;
 mod params;
+#[cfg(feature = "vst3")]
 mod vst3;
 
 /// Versioned state payload magic (`PUMP`).

@@ -200,87 +200,30 @@ fn curve_tension_pixel_scale(curve_size: Size) -> f32 {
     scaled_curve_tension_pixel_scale(curve_size)
 }
 
-#[cfg(all(test, not(target_os = "windows")))]
+#[cfg(all(test, feature = "screenshot-test", not(target_os = "windows")))]
 mod screenshot_tests {
-    use std::fs;
-    use std::path::PathBuf;
     use std::sync::Arc;
 
-    use image::{ImageBuffer, Rgba};
-    use toybox::gui::{render_spec_to_frame, Size};
+    use toybox::gui::{Size, screenshot_harness};
 
     use super::{AutomationQueue, GuiState, GuiStatus, PumpParams, WINDOW_HEIGHT, WINDOW_WIDTH};
 
     #[test]
     fn screenshot_renders_initial_ui() {
-        if std::env::var("TOYBOX_UI_SCREENSHOT").is_err() {
-            return;
-        }
-
-        let sizes = [
-            (WINDOW_WIDTH, WINDOW_HEIGHT),
-            (WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2),
-            (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2),
-            (WINDOW_WIDTH * 3, WINDOW_HEIGHT * 3),
-        ];
-
-        for &(width, height) in &sizes {
-            render_and_capture_at_size(width, height);
-        }
-    }
-
-    fn render_and_capture_at_size(width: u32, height: u32) {
         let params = Arc::new(PumpParams::new());
         let status = Arc::new(GuiStatus::default());
         let queue = Arc::new(AutomationQueue::default());
         let state = GuiState::new(params, status, queue, None);
 
-        let frame = render_spec_to_frame(Size { width, height }, |input| state.build_ui(input))
-            .expect("failed to render pump headless screenshot");
-        let path = screenshot_path("pump", width, height);
-        let mut image = ImageBuffer::<Rgba<u8>, _>::from_vec(frame.width, frame.height, frame.pixels)
-            .expect("failed to build image buffer from headless render");
-        if frame.width != width || frame.height != height {
-            image = scale_nearest(&image, width, height);
-        }
-        assert!(
-            image.width() == width && image.height() == height,
-            "headless screenshot render mismatch: got {}x{}, expected exactly {width}x{height}",
-            image.width(),
-            image.height()
-        );
-        image.save(&path).expect("failed to write headless screenshot");
-    }
-
-    fn scale_nearest(
-        image: &ImageBuffer<Rgba<u8>, Vec<u8>>,
-        width: u32,
-        height: u32,
-    ) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
-        let source_width = image.width().max(1);
-        let source_height = image.height().max(1);
-        let mut scaled = ImageBuffer::new(width.max(1), height.max(1));
-        for y in 0..scaled.height() {
-            for x in 0..scaled.width() {
-                let source_x = ((x.saturating_mul(source_width) + scaled.width() / 2) / scaled.width())
-                    .min(source_width.saturating_sub(1));
-                let source_y = ((y.saturating_mul(source_height) + scaled.height() / 2)
-                    / scaled.height())
-                    .min(source_height.saturating_sub(1));
-                let pixel = image.get_pixel(source_x, source_y).to_owned();
-                scaled.put_pixel(x, y, pixel);
-            }
-        }
-        scaled
-    }
-
-    fn screenshot_path(plugin: &str, width: u32, height: u32) -> PathBuf {
-        let path = std::env::var_os("TOYBOX_UI_SCREENSHOT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("target/ui-screenshots"));
-        let path = path.join(plugin);
-        fs::create_dir_all(&path).expect("create screenshot directory");
-        path.join(format!("initial-ui-{width}x{height}.png"))
+        screenshot_harness::capture_initial_ui_screenshots_if_enabled(
+            env!("CARGO_PKG_NAME"),
+            Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            |input| state.build_ui(input),
+        )
+        .expect("failed to capture pump headless screenshots");
     }
 }
 
@@ -449,6 +392,7 @@ impl PumpGui {
     }
 
     /// Request a logical resize from the GUI thread.
+    #[cfg(any(feature = "vst3", windows))]
     pub fn request_resize(&self, width: u32, height: u32) {
         self.window.request_resize(width, height);
     }
@@ -2560,17 +2504,16 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(all(test, feature = "screenshot-test", target_os = "windows"))]
 mod screenshot_tests {
     use std::ffi::c_void;
-    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use crate::GuiStatus;
-    use image::{ImageBuffer, Rgba};
     use raw_window_handle::{RawWindowHandle, Win32WindowHandle};
+    use toybox::gui::screenshot_harness;
     use windows::Win32::Foundation::{HMENU, HINSTANCE, HWND};
     use windows::Win32::Graphics::Gdi::{
         BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
@@ -2586,19 +2529,16 @@ mod screenshot_tests {
 
     #[test]
     fn screenshot_renders_initial_ui() {
-        if std::env::var("TOYBOX_UI_SCREENSHOT").is_err() {
+        if !screenshot_harness::screenshots_enabled() {
             return;
         }
 
-        let sizes = [
-            (WINDOW_WIDTH, WINDOW_HEIGHT),
-            (WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2),
-            (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2),
-            (WINDOW_WIDTH * 3, WINDOW_HEIGHT * 3),
-        ];
-
-        for &(width, height) in &sizes {
-            render_and_capture_at_size(width, height);
+        let sizes = screenshot_harness::default_screenshot_sizes(toybox::gui::Size {
+            width: WINDOW_WIDTH,
+            height: WINDOW_HEIGHT,
+        });
+        for size in sizes {
+            render_and_capture_at_size(size.width, size.height);
         }
     }
 
@@ -2618,7 +2558,7 @@ mod screenshot_tests {
 
         std::thread::sleep(Duration::from_millis(75));
 
-        let path = screenshot_path("pump", width, height);
+        let path = screenshot_path(env!("CARGO_PKG_NAME"), width, height);
         let (captured_width, captured_height) =
             capture_hwnd(hwnd, &path).expect("failed to capture screenshot");
         assert!(
@@ -2677,12 +2617,8 @@ mod screenshot_tests {
     }
 
     fn screenshot_path(plugin: &str, width: u32, height: u32) -> PathBuf {
-        let path = std::env::var_os("TOYBOX_UI_SCREENSHOT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("target/ui-screenshots"));
-        let path = path.join(plugin);
-        fs::create_dir_all(&path).expect("create screenshot directory");
-        path.join(format!("initial-ui-{width}x{height}.png"))
+        screenshot_harness::screenshot_output_path(plugin, width, height)
+            .expect("resolve screenshot path")
     }
 
     fn capture_hwnd(hwnd: HWND, out: &PathBuf) -> Result<(u32, u32), String> {
@@ -2786,9 +2722,7 @@ mod screenshot_tests {
             pixel.swap(0, 2);
         }
 
-        let image = ImageBuffer::<Rgba<u8>, _>::from_vec(width, height, pixels)
-            .ok_or_else(|| "failed to build image buffer".to_string())?;
-        image.save(out).map_err(|err| err.to_string())?;
+        screenshot_harness::write_png_rgba8(out, width, height, pixels)?;
         Ok((width, height))
     }
 

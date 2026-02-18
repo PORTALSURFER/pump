@@ -6,8 +6,8 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use std::ffi::{c_void, CStr};
-use std::slice;
 use std::ptr;
+use std::slice;
 use std::sync::{Arc, Mutex};
 
 use toybox::clap::automation::AutomationQueue;
@@ -22,8 +22,8 @@ use crate::params::{
     DEFAULT_SYNC_DIVISION_INDEX, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET,
     MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET,
 };
-use toybox::dsp::TransportState;
 use crate::GuiStatus;
+use toybox::dsp::TransportState;
 
 const PLUGIN_NAME: &str = "pump";
 const PROCESSOR_CID: TUID = uid(0xE5A9A79F, 0xC4A94392, 0x97A8A8AA, 0xA9A90B3C);
@@ -653,9 +653,7 @@ impl IEditControllerTrait for PumpVst3Controller {
         let adapter = PumpVst3GuiAdapter::new(self.params.clone());
         let (default_width, default_height) = preferred_window_size();
         let Some(view) =
-            ComWrapper::new(
-                HostedVst3View::new(adapter, default_width, default_height),
-            )
+            ComWrapper::new(HostedVst3View::new(adapter, default_width, default_height))
                 .to_com_ptr::<IPlugView>()
         else {
             return ptr::null_mut();
