@@ -72,7 +72,6 @@ const METER_WIDTH: i32 = 6;
 const METER_STROKE: i32 = 1;
 const BASE_CURVE_HINT_MARGIN_X: i32 = 8;
 const BASE_KNOB_DIAMETER: u32 = 32;
-const KNOB_LABEL_HORIZONTAL_SLACK: u32 = 48;
 const BASE_TEXT_SCALE: u32 = 2;
 const KNOBS_PER_ROW: usize = 4;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
@@ -542,9 +541,7 @@ impl UiLayoutMetrics {
         let dropdown_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let button_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let text_scale = scaled_text_scale(scale);
-        let knob_track_width = knobs_section_w
-            .saturating_div(KNOBS_PER_ROW as u32)
-            .saturating_sub(KNOB_LABEL_HORIZONTAL_SLACK);
+        let knob_track_width = knobs_section_w.saturating_div(KNOBS_PER_ROW as u32);
         let knob_diameter = scaled_knob_diameter(scale).min(knob_track_width.max(1));
         let label_line_h = scaled_line_height(text_scale);
         let panel_padding = controls_padding.max(0) as u32;
