@@ -761,9 +761,7 @@ impl GuiState {
         )
         .layout(LayoutBox::fill());
 
-        let controls_padding = metrics.controls_padding.max(0);
-        let knobs_section =
-            panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_xy(0, controls_padding);
+        let knobs_section = panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_all(0);
         let dropdown_section_content = column(vec![
             dropdown(
                 DIVISION_KEY,
@@ -790,7 +788,7 @@ impl GuiState {
             "dropdown",
             dropdown_section_content.layout(LayoutBox::fill()),
         )
-        .pad_all(controls_padding);
+        .pad_all(0);
 
         let controls_row = row_sections(vec![
             weighted(knobs_section, KNOBS_SECTION_WEIGHT),
