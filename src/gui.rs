@@ -72,7 +72,9 @@ const METER_WIDTH: i32 = 6;
 const METER_STROKE: i32 = 1;
 const BASE_CURVE_HINT_MARGIN_X: i32 = 8;
 const BASE_KNOB_DIAMETER: u32 = 32;
+const KNOB_LABEL_HORIZONTAL_SLACK: u32 = 48;
 const BASE_TEXT_SCALE: u32 = 2;
+const KNOBS_PER_ROW: usize = 4;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const NODE_DRAW_RADIUS: i32 = 4;
@@ -527,7 +529,7 @@ impl UiLayoutMetrics {
         let content_w = WINDOW_WIDTH;
         let content_h = WINDOW_HEIGHT;
         let (_header_h, curve_h, _controls_h) = resolve_vertical_section_heights(content_h);
-        let (_knobs_section_w, dropdown_section_w) =
+        let (knobs_section_w, dropdown_section_w) =
             resolve_runtime_controls_section_widths(content_w);
         let scale = 1.0;
         let padding_x = scaled_i32(BASE_PADDING_X, scale);
@@ -540,7 +542,10 @@ impl UiLayoutMetrics {
         let dropdown_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let button_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let text_scale = scaled_text_scale(scale);
-        let knob_diameter = scaled_knob_diameter(scale);
+        let knob_track_width = knobs_section_w
+            .saturating_div(KNOBS_PER_ROW as u32)
+            .saturating_sub(KNOB_LABEL_HORIZONTAL_SLACK);
+        let knob_diameter = scaled_knob_diameter(scale).min(knob_track_width.max(1));
         let label_line_h = scaled_line_height(text_scale);
         let panel_padding = controls_padding.max(0) as u32;
         let dropdown_control_w = dropdown_section_w.saturating_sub(panel_padding).max(1);
@@ -751,7 +756,7 @@ impl GuiState {
         controls: ControlSnapshot,
     ) -> Node {
         let knobs_grid = grid(
-            GridTemplate::new(vec![TrackSize::Auto; 4])
+            GridTemplate::new(vec![TrackSize::Fr(1); KNOBS_PER_ROW])
                 .rows(vec![TrackSize::Fr(1)])
                 .gap(0)
                 .justify_start(),
@@ -780,7 +785,7 @@ impl GuiState {
 
         let controls_padding = metrics.controls_padding.max(0);
         let knobs_section =
-            panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_all(controls_padding);
+            panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_xy(0, controls_padding);
         let dropdown_section_content = column(vec![
             dropdown(
                 DIVISION_KEY,
