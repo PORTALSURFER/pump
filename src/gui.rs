@@ -9,7 +9,7 @@ use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
     button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, knob, panel,
-    root_frame_sized, row_slots, surface, switch_layout, textbox, weighted_slot,
+    root_frame_sized, row_slots, stack, surface, switch_layout, textbox, weighted_slot,
     weighted_slot_lengths, when_width_ge, GridTemplate, LayoutBox, Node, OverflowPolicy,
     RegionInteractionKind, RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens, TrackSize,
     UiAction, UiSpec,
@@ -435,6 +435,7 @@ struct UiLayoutMetrics {
     button_control_h: u32,
     subtitle_label_w: u32,
     curve_size: Size,
+    knob_track_w: u32,
     knob_diameter: u32,
     text_scale: u32,
     label_line_h: u32,
@@ -456,6 +457,7 @@ impl UiLayoutMetrics {
         let text_scale = BASE_TEXT_SCALE.max(1);
         let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
         let knob_diameter = BASE_KNOB_DIAMETER.min(knob_track_width.max(1));
+        let knob_track_w = knob_track_width.max(1);
         let label_line_h = scaled_line_height(text_scale);
         let dropdown_control_w = dropdown_slot_w.max(1);
         let subtitle_label_x = padding_x
@@ -487,6 +489,7 @@ impl UiLayoutMetrics {
             button_control_h,
             subtitle_label_w,
             curve_size,
+            knob_track_w,
             knob_diameter,
             text_scale,
             label_line_h,
@@ -652,27 +655,67 @@ impl GuiState {
         theme: PumpTheme,
         controls: ControlSnapshot,
     ) -> Node {
+        let knob_cell = |key: &'static str,
+                         label: &'static str,
+                         value: f32,
+                         range: (f32, f32),
+                         value_text: String| {
+            let title = Node::align_box(
+                textbox(label)
+                    .text_color(theme.subtitle_text)
+                    .widget_layout(fixed_box(metrics.knob_track_w, metrics.label_line_h)),
+            )
+            .slot_align(SlotAlign::Center, SlotAlign::Start)
+            .fill();
+            let value_label = Node::align_box(
+                textbox(value_text)
+                    .text_color(theme.hint_text)
+                    .widget_layout(fixed_box(metrics.knob_track_w, metrics.label_line_h)),
+            )
+            .slot_align(SlotAlign::Center, SlotAlign::End)
+            .fill();
+            stack(vec![
+                knob(key, value, range).widget_layout(LayoutBox::auto()),
+                title,
+                value_label,
+            ])
+            .fill()
+            .container_overflow(OverflowPolicy::Compress)
+        };
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; KNOBS_PER_ROW])
                 .rows(vec![TrackSize::Auto])
                 .gap(0)
                 .justify_start(),
             vec![
-                knob(MIX_KEY, controls.mix, (MIN_MIX, MAX_MIX)).widget_layout(LayoutBox::auto()),
-                knob(DEPTH_KEY, controls.depth, (MIN_DEPTH, MAX_DEPTH))
-                    .widget_layout(LayoutBox::auto()),
-                knob(
+                knob_cell(
+                    MIX_KEY,
+                    "Mix",
+                    controls.mix,
+                    (MIN_MIX, MAX_MIX),
+                    format!("{:.0}%", controls.mix * 100.0),
+                ),
+                knob_cell(
+                    DEPTH_KEY,
+                    "Depth",
+                    controls.depth,
+                    (MIN_DEPTH, MAX_DEPTH),
+                    format!("{:.0}%", controls.depth * 100.0),
+                ),
+                knob_cell(
                     PHASE_KEY,
+                    "Phase",
                     controls.phase_offset,
                     (MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
-                )
-                .widget_layout(LayoutBox::auto()),
-                knob(
+                    format!("{:.0}%", controls.phase_offset * 100.0),
+                ),
+                knob_cell(
                     OUTPUT_KEY,
+                    "Output",
                     controls.output_gain_db,
                     (MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
-                )
-                .widget_layout(LayoutBox::auto()),
+                    format!("{:+.0}dB", controls.output_gain_db),
+                ),
             ],
         )
         .fill()
@@ -680,6 +723,9 @@ impl GuiState {
 
         let knobs_slot = panel("knobs", knobs_grid.fill()).pad_all(0);
         let dropdown_slot_content = column(vec![
+            textbox("Division")
+                .text_color(theme.subtitle_text)
+                .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
             dropdown(
                 DIVISION_KEY,
                 MAX_SYNC_DIVISION as usize + 1,
@@ -689,6 +735,9 @@ impl GuiState {
                 width: metrics.dropdown_control_w,
                 height: metrics.dropdown_control_h,
             }),
+            textbox("Reset Curve")
+                .text_color(theme.subtitle_text)
+                .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
             button(RESET_KEY).control_size(Size {
                 width: metrics.dropdown_control_w,
                 height: metrics.button_control_h,
@@ -2597,6 +2646,33 @@ mod tests {
     }
 
     #[test]
+    fn build_ui_includes_textboxes_for_control_captions() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
+        let mut texts = Vec::new();
+        collect_textbox_texts(spec.root.content(), &mut texts);
+
+        for expected in ["Mix", "Depth", "Phase", "Output", "Division", "Reset Curve"] {
+            assert!(
+                texts.iter().any(|text| text == expected),
+                "expected textbox caption `{expected}` in {:?}",
+                texts
+            );
+        }
+    }
+
+    #[test]
     fn header_switch_selects_compact_and_wide_variants_by_root_width() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
@@ -2718,7 +2794,7 @@ mod tests {
 
         let significant_runs: Vec<(u32, u32)> = best_runs
             .into_iter()
-            .filter(|(start, end)| end.saturating_sub(*start).saturating_add(1) >= 8)
+            .filter(|(start, end)| end.saturating_sub(*start).saturating_add(1) >= 12)
             .collect();
 
         assert_eq!(
@@ -2759,6 +2835,57 @@ mod tests {
             | Node::Dropdown(_)
             | Node::Indicator(_)
             | Node::Absolute(_) => None,
+        }
+    }
+
+    fn collect_textbox_texts(node: &Node, texts: &mut Vec<String>) {
+        match node {
+            Node::Slot(slot) => collect_textbox_texts(slot.child(), texts),
+            Node::Panel(panel) => collect_textbox_texts(panel.content(), texts),
+            Node::PaddingBox(padding_box) => collect_textbox_texts(padding_box.content(), texts),
+            Node::AlignBox(align_box) => collect_textbox_texts(align_box.content(), texts),
+            Node::AspectBox(aspect_box) => collect_textbox_texts(aspect_box.content(), texts),
+            Node::Row(flex) | Node::Column(flex) => {
+                for child in flex.children() {
+                    collect_textbox_texts(child, texts);
+                }
+            }
+            Node::Grid(grid) => {
+                for child in grid.children() {
+                    collect_textbox_texts(child, texts);
+                }
+            }
+            Node::Absolute(absolute) => {
+                for child in absolute.children() {
+                    collect_textbox_texts(child.node(), texts);
+                }
+            }
+            Node::Stack(stack) => {
+                for child in stack.children() {
+                    collect_textbox_texts(child, texts);
+                }
+            }
+            Node::ScrollView(scroll_view) => collect_textbox_texts(scroll_view.content(), texts),
+            Node::Wrap(wrap) => {
+                for child in wrap.children() {
+                    collect_textbox_texts(child, texts);
+                }
+            }
+            Node::SwitchLayout(switch_layout) => {
+                for case_entry in switch_layout.cases() {
+                    collect_textbox_texts(case_entry.child(), texts);
+                }
+                collect_textbox_texts(switch_layout.fallback(), texts);
+            }
+            Node::TextBox(text_box) => texts.push(text_box.text.clone()),
+            Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::Region(_)
+            | Node::Indicator(_) => {}
         }
     }
 
