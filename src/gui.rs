@@ -600,7 +600,7 @@ impl GuiState {
                     "header-title",
                     label("PUMP")
                         .text_color(theme.title_text)
-                        .layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
+                        .widget_layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
                 )
                 .pad_xy(metrics.padding_x.max(0), 0),
                 18,
@@ -610,7 +610,7 @@ impl GuiState {
                     "header-subtitle",
                     label("Spline Beat-Synced Ducking")
                         .text_color(theme.subtitle_text)
-                        .layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
+                        .widget_layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
                 )
                 .pad_xy(0, 0),
             ),
@@ -633,7 +633,7 @@ impl GuiState {
             },
             draw_commands,
         )
-        .layout(LayoutBox::fill());
+        .fill();
         panel("spline", spline_content)
             .background(theme.curve_bg)
             .outline(theme.curve_border)
@@ -657,11 +657,11 @@ impl GuiState {
                 knob(MIX_KEY, "Mix", controls.mix, (MIN_MIX, MAX_MIX))
                     .value_label(format!("{:.0}%", controls.mix * 100.0))
                     .text_scale(knob_label_text_scale)
-                    .layout(LayoutBox::auto()),
+                    .widget_layout(LayoutBox::auto()),
                 knob(DEPTH_KEY, "Depth", controls.depth, (MIN_DEPTH, MAX_DEPTH))
                     .value_label(format!("{:.0}%", controls.depth * 100.0))
                     .text_scale(knob_label_text_scale)
-                    .layout(LayoutBox::auto()),
+                    .widget_layout(LayoutBox::auto()),
                 knob(
                     PHASE_KEY,
                     "Phase",
@@ -670,7 +670,7 @@ impl GuiState {
                 )
                 .value_label(format!("{:.0}%", controls.phase_offset * 100.0))
                 .text_scale(knob_label_text_scale)
-                .layout(LayoutBox::auto()),
+                .widget_layout(LayoutBox::auto()),
                 knob(
                     OUTPUT_KEY,
                     "Output",
@@ -679,12 +679,12 @@ impl GuiState {
                 )
                 .value_label(format!("{:+.1} dB", controls.output_gain_db))
                 .text_scale(knob_label_text_scale)
-                .layout(LayoutBox::auto()),
+                .widget_layout(LayoutBox::auto()),
             ],
         )
-        .layout(LayoutBox::fill());
+        .fill();
 
-        let knobs_slot = panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_all(0);
+        let knobs_slot = panel("knobs", knobs_grid.fill()).pad_all(0);
         let dropdown_slot_content = column(vec![
             dropdown(
                 DIVISION_KEY,
@@ -702,13 +702,12 @@ impl GuiState {
             }),
             label(format!("Cycle: {}", sync_division_label(controls.division)))
                 .text_color(theme.hint_text)
-                .layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
+                .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
         ])
         .gap(metrics.controls_gap.max(0))
         .pad_all(0)
-        .layout(LayoutBox::fill());
-        let dropdown_slot =
-            panel("dropdown", dropdown_slot_content.layout(LayoutBox::fill())).pad_all(0);
+        .fill();
+        let dropdown_slot = panel("dropdown", dropdown_slot_content.fill()).pad_all(0);
 
         let controls_row = row_slots(vec![
             weighted_slot(knobs_slot, KNOBS_SECTION_WEIGHT),
@@ -1961,7 +1960,9 @@ mod tests {
     use toybox::clack_extensions::gui::GuiSize;
     use toybox::clap::automation::AutomationQueue;
     use toybox::clap::gui::InputState;
-    use toybox::gui::declarative::{measure_checked, Node, PanelSpec, RootScaleMode};
+    use toybox::gui::declarative::{
+        measure_checked, ContainerLayout, ContainerLength, Node, PanelSpec, RootScaleMode, UiSpec,
+    };
     use toybox::gui::{render_spec_to_frame, MainPalette, Point, Size};
 
     fn expect_slot_child<'a>(node: &'a Node, label: &str) -> &'a Node {
@@ -1983,6 +1984,86 @@ mod tests {
             Node::Panel(panel) => panel,
             other => panic!("expected {label} panel (or row wrapper), got {other:?}"),
         }
+    }
+
+    fn assert_container_layout_host_derived(layout: ContainerLayout) {
+        assert!(matches!(
+            layout.width,
+            ContainerLength::Auto | ContainerLength::Fill(_)
+        ));
+        assert!(matches!(
+            layout.height,
+            ContainerLength::Auto | ContainerLength::Fill(_)
+        ));
+    }
+
+    fn assert_slot_tree_node(node: &Node) {
+        match node {
+            Node::Slot(slot) => {
+                let child = slot.child();
+                assert!(
+                    !matches!(child, Node::Slot(_)),
+                    "slot child must not be another slot"
+                );
+                assert_slot_tree_node(child);
+            }
+            Node::Panel(panel) => {
+                assert_container_layout_host_derived(panel.container_layout());
+                assert!(matches!(panel.content(), Node::Slot(_)));
+                assert_slot_tree_node(panel.content());
+            }
+            Node::Row(row) => {
+                assert_container_layout_host_derived(row.container_layout());
+                for child in row.children() {
+                    assert!(matches!(child, Node::Slot(_)));
+                    assert_slot_tree_node(child);
+                }
+            }
+            Node::Column(column) => {
+                assert_container_layout_host_derived(column.container_layout());
+                for child in column.children() {
+                    assert!(matches!(child, Node::Slot(_)));
+                    assert_slot_tree_node(child);
+                }
+            }
+            Node::Grid(grid) => {
+                assert_container_layout_host_derived(grid.container_layout());
+                for child in grid.children() {
+                    assert!(matches!(child, Node::Slot(_)));
+                    assert_slot_tree_node(child);
+                }
+            }
+            Node::Absolute(absolute) => {
+                assert_container_layout_host_derived(absolute.container_layout());
+                for child in absolute.children() {
+                    assert!(matches!(child.node(), Node::Slot(_)));
+                    assert_slot_tree_node(child.node());
+                }
+            }
+            Node::Label(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::Region(_)
+            | Node::Indicator(_) => {}
+        }
+    }
+
+    fn assert_emitted_slot_tree_invariants(spec: &UiSpec) {
+        let root = spec.root.content();
+        assert!(matches!(root, Node::Slot(_)));
+        let root_child = expect_slot_child(root, "root");
+        assert!(
+            matches!(
+                root_child,
+                Node::Panel(_) | Node::Row(_) | Node::Column(_) | Node::Grid(_) | Node::Absolute(_)
+            ),
+            "root slot child must be a container"
+        );
+        assert_slot_tree_node(root_child);
     }
 
     #[test]
@@ -2409,6 +2490,39 @@ mod tests {
         assert_eq!(controls_grid.children().len(), 2);
         let _knobs_panel = expect_slot_panel(&controls_grid.children()[0], "knobs");
         let _dropdown_panel = expect_slot_panel(&controls_grid.children()[1], "dropdowns");
+    }
+
+    #[test]
+    fn emitted_ui_spec_passes_strict_slot_validation() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let sizes = [
+            Size {
+                width: 1,
+                height: 1,
+            },
+            Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            Size {
+                width: WINDOW_WIDTH * 2,
+                height: WINDOW_HEIGHT * 2,
+            },
+        ];
+
+        for size in sizes {
+            let spec = state.build_ui(&InputState {
+                window_size: size,
+                ..InputState::default()
+            });
+            measure_checked(&spec).expect("emitted tree must pass strict declarative validation");
+            assert_emitted_slot_tree_invariants(&spec);
+        }
     }
 
     #[test]

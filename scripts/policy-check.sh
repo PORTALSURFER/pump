@@ -155,4 +155,12 @@ if [ -n "${source_files}" ]; then
   fi
 fi
 
+# Declarative tree invariant check must remain covered by plugin tests so
+# `scripts/ci.sh` hard-fails if tree-shape guarantees regress.
+if git ls-files --error-unmatch src/gui.rs >/dev/null 2>&1; then
+  if ! grep -q 'fn emitted_ui_spec_passes_strict_slot_validation' src/gui.rs; then
+    fail "src/gui.rs must include emitted_ui_spec_passes_strict_slot_validation to guard strict root->slot->container/widget invariants"
+  fi
+fi
+
 echo "[policy] ok"
