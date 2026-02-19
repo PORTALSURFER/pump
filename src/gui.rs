@@ -2117,7 +2117,7 @@ mod tests {
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{sync_division_label, PumpParams};
-    use crate::GuiStatus;
+    use crate::{GuiStatus, GuiTransportTelemetry};
     use std::sync::Arc;
     use toybox::clack_extensions::gui::GuiSize;
     use toybox::clap::automation::AutomationQueue;
@@ -2513,9 +2513,13 @@ mod tests {
         status.update(
             phase,
             1.0,
-            is_playing,
-            has_host_beats_timeline,
-            phase.rem_euclid(1.0),
+            GuiTransportTelemetry {
+                is_playing,
+                has_host_beats_timeline,
+                beat_phase: phase.rem_euclid(1.0),
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
         );
         let state = GuiState::new(
             Arc::clone(&params),
@@ -3008,19 +3012,49 @@ mod tests {
             ..InputState::default()
         };
 
-        status.update(0.0, 1.0, true, true, 0.05);
+        status.update(
+            0.0,
+            1.0,
+            GuiTransportTelemetry {
+                is_playing: true,
+                has_host_beats_timeline: true,
+                beat_phase: 0.05,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
         let lit_spec = state.build_ui(&input);
         let lit = find_first_indicator_active(lit_spec.root.content())
             .expect("header transport indicator should exist");
         assert!(lit, "indicator should blink on at beat onset");
 
-        status.update(0.0, 1.0, true, true, 0.5);
+        status.update(
+            0.0,
+            1.0,
+            GuiTransportTelemetry {
+                is_playing: true,
+                has_host_beats_timeline: true,
+                beat_phase: 0.5,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
         let dim_spec = state.build_ui(&input);
         let dim = find_first_indicator_active(dim_spec.root.content())
             .expect("header transport indicator should exist");
         assert!(!dim, "indicator should be off between beat flashes");
 
-        status.update(0.0, 1.0, true, false, 0.05);
+        status.update(
+            0.0,
+            1.0,
+            GuiTransportTelemetry {
+                is_playing: true,
+                has_host_beats_timeline: false,
+                beat_phase: 0.05,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
         let no_timeline_spec = state.build_ui(&input);
         let no_timeline = find_first_indicator_active(no_timeline_spec.root.content())
             .expect("header transport indicator should exist");
