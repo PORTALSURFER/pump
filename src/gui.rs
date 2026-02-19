@@ -10,8 +10,8 @@ use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, Input
 use toybox::gui::declarative::{
     button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, knob, label, panel,
     row_slots, surface, weighted_slot, weighted_slot_lengths, GridTemplate, LayoutBox, Node,
-    RegionInteractionKind, RootFrameSpec, RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens,
-    TrackSize, UiAction, UiSpec,
+    OverflowPolicy, RegionInteractionKind, RootFrameSpec, RootScaleMode, SlotAlign, SurfaceCommand,
+    ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -614,7 +614,8 @@ impl GuiState {
                 )
                 .pad_xy(0, 0),
             ),
-        ]);
+        ])
+        .container_overflow(OverflowPolicy::Compress);
         panel("header", header_content).pad_all(0)
     }
 
@@ -682,7 +683,8 @@ impl GuiState {
                 .widget_layout(LayoutBox::auto()),
             ],
         )
-        .fill();
+        .fill()
+        .container_overflow(OverflowPolicy::Compress);
 
         let knobs_slot = panel("knobs", knobs_grid.fill()).pad_all(0);
         let dropdown_slot_content = column(vec![
@@ -706,14 +708,16 @@ impl GuiState {
         ])
         .gap(metrics.controls_gap.max(0))
         .pad_all(0)
-        .fill();
+        .fill()
+        .container_overflow(OverflowPolicy::Compress);
         let dropdown_slot = panel("dropdown", dropdown_slot_content.fill()).pad_all(0);
 
         let controls_row = row_slots(vec![
             weighted_slot(knobs_slot, KNOBS_SECTION_WEIGHT),
             weighted_slot(dropdown_slot, DROPDOWN_SECTION_WEIGHT)
                 .align(SlotAlign::End, SlotAlign::Start),
-        ]);
+        ])
+        .container_overflow(OverflowPolicy::Compress);
         panel("controls", controls_row).pad_all(0)
     }
 
@@ -824,7 +828,8 @@ impl GuiState {
             weighted_slot(header_slot, HEADER_SECTION_WEIGHT),
             weighted_slot(spline_slot, CURVE_SECTION_WEIGHT),
             weighted_slot(controls_slot, CONTROLS_SECTION_WEIGHT),
-        ]);
+        ])
+        .container_overflow(OverflowPolicy::Compress);
         self.build_root_spec(metrics, theme, content)
     }
 
