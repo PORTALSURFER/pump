@@ -138,6 +138,34 @@ fn curve_tension_pixel_scale(curve_size: Size) -> f32 {
     scaled_curve_tension_pixel_scale(curve_size)
 }
 
+/// Return the internal tension-sign multiplier that produces visual upward bend.
+///
+/// Rising segments require negative tension for upward bend while falling
+/// segments require positive tension, so drag logic must compensate by segment.
+fn segment_upward_tension_sign(curve: &EditableCurve, segment_index: usize) -> f32 {
+    let left = curve.nodes.get(segment_index).copied();
+    let right = curve.nodes.get(segment_index + 1).copied();
+    match (left, right) {
+        (Some(left_node), Some(right_node)) if right_node.y > left_node.y => -1.0,
+        _ => 1.0,
+    }
+}
+
+/// Convert vertical drag delta into internal segment tension delta.
+///
+/// Dragging upward (smaller `y`) always returns a positive visual bend amount.
+fn tension_delta_from_drag_for_segment(
+    curve: &EditableCurve,
+    segment_index: usize,
+    start_pointer: Point,
+    raw_local_pointer: Point,
+    curve_size: Size,
+) -> f32 {
+    let drag_units =
+        (start_pointer.y - raw_local_pointer.y) as f32 / curve_tension_pixel_scale(curve_size);
+    drag_units * segment_upward_tension_sign(curve, segment_index)
+}
+
 #[cfg(all(test, feature = "screenshot-test", not(target_os = "windows")))]
 mod screenshot_tests {
     use std::sync::Arc;
@@ -1168,9 +1196,14 @@ impl GuiState {
                                 return;
                             }
                             dragging = true;
+                            let delta = tension_delta_from_drag_for_segment(
+                                &editable,
+                                index,
+                                start_pointer,
+                                raw_local_pointer,
+                                runtime.curve_size,
+                            );
                             if let Some(segment) = editable.segments.get_mut(index) {
-                                let delta = (raw_local_pointer.y - start_pointer.y) as f32
-                                    / curve_tension_pixel_scale(runtime.curve_size);
                                 segment.tension = (start_tension + delta)
                                     .clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
                                 curve_changed = true;
@@ -2009,9 +2042,10 @@ mod tests {
         constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
         local_from_node, move_node_with_push_through, move_segment_translated,
         preferred_window_size, preview_node_on_curve, resolve_runtime_controls_slot_widths,
-        resolve_vertical_slot_heights, CurveRenderState, GuiState, PumpTheme, UiLayoutMetrics,
-        CURVE_H, CURVE_KEY, DIVISION_KEY, HEADER_SWITCH_WIDE_MIN_WIDTH, WINDOW_HEIGHT,
-        WINDOW_WIDTH,
+        resolve_vertical_slot_heights, segment_upward_tension_sign,
+        tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
+        UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_SWITCH_WIDE_MIN_WIDTH,
+        WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -2328,6 +2362,77 @@ mod tests {
         assert!((curve.nodes[2].x - 0.7).abs() < 1.0e-6);
         assert!((curve.nodes[1].y - 0.6).abs() < 1.0e-6);
         assert!((curve.nodes[2].y - 0.6).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn upward_bend_sign_tracks_segment_direction() {
+        let rising = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.2 }, CurveNode { x: 1.0, y: 0.8 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+        };
+        let falling = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.8 }, CurveNode { x: 1.0, y: 0.2 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+        };
+
+        assert_eq!(segment_upward_tension_sign(&rising, 0), -1.0);
+        assert_eq!(segment_upward_tension_sign(&falling, 0), 1.0);
+    }
+
+    #[test]
+    fn upward_drag_bends_rising_segment_upward() {
+        let mut curve = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.2 }, CurveNode { x: 1.0, y: 0.8 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+        };
+        let baseline_mid = sample_editable_curve(&curve, 0.5);
+        let delta = tension_delta_from_drag_for_segment(
+            &curve,
+            0,
+            Point { x: 0, y: 80 },
+            Point { x: 0, y: 40 },
+            Size {
+                width: CURVE_W,
+                height: CURVE_H,
+            },
+        );
+        curve.segments[0].tension = (curve.segments[0].tension + delta).clamp(
+            crate::curve::MIN_SEGMENT_TENSION,
+            crate::curve::MAX_SEGMENT_TENSION,
+        );
+        let dragged_mid = sample_editable_curve(&curve, 0.5);
+        assert!(
+            dragged_mid > baseline_mid,
+            "upward drag should move midpoint up for rising segment"
+        );
+    }
+
+    #[test]
+    fn upward_drag_bends_falling_segment_upward() {
+        let mut curve = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.8 }, CurveNode { x: 1.0, y: 0.2 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+        };
+        let baseline_mid = sample_editable_curve(&curve, 0.5);
+        let delta = tension_delta_from_drag_for_segment(
+            &curve,
+            0,
+            Point { x: 0, y: 80 },
+            Point { x: 0, y: 40 },
+            Size {
+                width: CURVE_W,
+                height: CURVE_H,
+            },
+        );
+        curve.segments[0].tension = (curve.segments[0].tension + delta).clamp(
+            crate::curve::MIN_SEGMENT_TENSION,
+            crate::curve::MAX_SEGMENT_TENSION,
+        );
+        let dragged_mid = sample_editable_curve(&curve, 0.5);
+        assert!(
+            dragged_mid > baseline_mid,
+            "upward drag should move midpoint up for falling segment"
+        );
     }
 
     fn curve_draw_commands_with_transport(
