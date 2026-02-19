@@ -8,10 +8,10 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
-    button, column, column_sections, dropdown, fill_section, fraction, grid, knob, label, panel,
-    root_frame_sized, row_sections, surface, weighted, GridTemplate, LayoutBox, Node,
-    RegionInteractionKind, RootScaleMode, SectionAlign, SurfaceCommand, ThemeTokens, TrackSize,
-    UiAction, UiSpec,
+    button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, knob, label, panel,
+    root_frame_sized, row_slots, surface, weighted_slot, weighted_slot_lengths, GridTemplate,
+    LayoutBox, Node, RegionInteractionKind, RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens,
+    TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -59,11 +59,8 @@ const DROPDOWN_SECTION_WEIGHT: u16 = 30;
 const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).1;
-const BASE_KNOBS_SECTION_W: u32 = 294;
-const BASE_DROPDOWN_SECTION_W: u32 = 126;
 const TITLE_LABEL_W: u32 = 64;
 const TITLE_LABEL_RIGHT_GAP: i32 = 8;
-const HEADER_CONTROL_PADDING: i32 = 8;
 const HEADER_CONTROL_GAP: i32 = 4;
 const METER_X_OFFSET: i32 = 12;
 const METER_Y_OFFSET: i32 = 10;
@@ -116,68 +113,6 @@ fn scaled_curve_u32(base: u32, curve_size: Size) -> u32 {
 
 fn scaled_curve_tension_pixel_scale(curve_size: Size) -> f32 {
     CURVE_TENSION_PIXEL_SCALE * curve_scale_for_size(curve_size)
-}
-
-fn scale_and_distribute(total: u32, base: &[u32], base_span: u32) -> Vec<u32> {
-    if base.is_empty() {
-        return Vec::new();
-    }
-    if total == 0 {
-        return vec![0; base.len()];
-    }
-
-    if base_span == 0 {
-        return vec![0; base.len()];
-    }
-
-    let scale = total as f32 / base_span as f32;
-    let mut distributed = vec![0u32; base.len()];
-    let mut rem_order: Vec<(usize, f32)> = Vec::with_capacity(base.len());
-    let mut used = 0u32;
-
-    for (index, base_value) in base.iter().copied().enumerate() {
-        let scaled = (base_value as f32 * scale).max(0.0);
-        let floor = scaled.floor();
-        distributed[index] = floor.min(u32::MAX as f32) as u32;
-        used = used.saturating_add(distributed[index]);
-        rem_order.push((index, scaled - floor));
-    }
-
-    rem_order.sort_by(|left, right| {
-        right
-            .1
-            .total_cmp(&left.1)
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    if rem_order.is_empty() {
-        return distributed;
-    }
-
-    let mut used = used as i64;
-    let target = total as i64;
-    let mut cursor = 0usize;
-    while used < target {
-        let index = rem_order[cursor % rem_order.len()].0;
-        if let Some(slot) = distributed.get_mut(index) {
-            *slot = slot.saturating_add(1);
-        }
-        used += 1;
-        cursor = cursor.saturating_add(1);
-    }
-
-    while used > target {
-        let index = rem_order[cursor % rem_order.len()].0;
-        if let Some(slot) = distributed.get_mut(index) {
-            if *slot > 0 {
-                *slot = slot.saturating_sub(1);
-                used -= 1;
-            }
-        }
-        cursor = cursor.saturating_add(1);
-    }
-
-    debug_assert_eq!(used as u64, target as u64);
-    distributed
 }
 
 fn node_hit_radius(curve_size: Size) -> i32 {
@@ -255,10 +190,9 @@ const fn resolve_vertical_section_heights(total_height: u32) -> (u32, u32, u32) 
 }
 
 fn resolve_runtime_controls_section_widths(total_width: u32) -> (u32, u32) {
-    let widths = scale_and_distribute(
+    let widths = weighted_slot_lengths(
         total_width.max(1),
-        &[BASE_KNOBS_SECTION_W, BASE_DROPDOWN_SECTION_W],
-        WINDOW_WIDTH,
+        &[KNOBS_SECTION_WEIGHT, DROPDOWN_SECTION_WEIGHT],
     );
     (
         widths.first().copied().unwrap_or(1),
@@ -517,10 +451,10 @@ struct UiLayoutMetrics {
 }
 
 impl UiLayoutMetrics {
-    /// Resolve all layout dimensions from the fixed Pump design baseline.
-    fn from_input(_input: &InputState) -> Self {
-        let content_w = WINDOW_WIDTH;
-        let content_h = WINDOW_HEIGHT;
+    /// Resolve all layout dimensions from the current host window size.
+    fn from_input(input: &InputState) -> Self {
+        let content_w = input.window_size.width.max(WINDOW_WIDTH);
+        let content_h = input.window_size.height.max(WINDOW_HEIGHT);
         let (_header_h, curve_h, _controls_h) = resolve_vertical_section_heights(content_h);
         let (knobs_section_w, dropdown_section_w) =
             resolve_runtime_controls_section_widths(content_w);
@@ -528,7 +462,6 @@ impl UiLayoutMetrics {
         let padding_x = scaled_i32(BASE_PADDING_X, scale);
         let title_label_w = scaled_u32(TITLE_LABEL_W, scale);
         let title_label_gap = scaled_i32(TITLE_LABEL_RIGHT_GAP, scale);
-        let controls_padding = scaled_i32(HEADER_CONTROL_PADDING, scale);
         let controls_gap = scaled_i32(HEADER_CONTROL_GAP, scale);
         let dropdown_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let button_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
@@ -536,8 +469,7 @@ impl UiLayoutMetrics {
         let knob_track_width = knobs_section_w.saturating_div(KNOBS_PER_ROW as u32);
         let knob_diameter = scaled_knob_diameter(scale).min(knob_track_width.max(1));
         let label_line_h = scaled_line_height(text_scale);
-        let panel_padding = controls_padding.max(0) as u32;
-        let dropdown_control_w = dropdown_section_w.saturating_sub(panel_padding).max(1);
+        let dropdown_control_w = dropdown_section_w.max(1);
         let subtitle_label_x = padding_x
             .saturating_add(title_label_w as i32)
             .saturating_add(title_label_gap)
@@ -654,8 +586,8 @@ impl GuiState {
     /// Build the top header section node.
     fn build_header_section(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
         let _title_y = scaled_i32(SPLINE_TITLE_Y, metrics.scale);
-        let header_content = row_sections(vec![
-            fraction(
+        let header_content = row_slots(vec![
+            fraction_slot(
                 panel(
                     "header-title",
                     label("PUMP")
@@ -665,7 +597,7 @@ impl GuiState {
                 .pad_xy(metrics.padding_x.max(0), 0),
                 18,
             ),
-            fill_section(
+            fill_slot(
                 panel(
                     "header-subtitle",
                     label("Spline Beat-Synced Ducking")
@@ -773,10 +705,10 @@ impl GuiState {
         )
         .pad_all(0);
 
-        let controls_row = row_sections(vec![
-            weighted(knobs_section, KNOBS_SECTION_WEIGHT),
-            weighted(dropdown_section, DROPDOWN_SECTION_WEIGHT)
-                .align(SectionAlign::End, SectionAlign::Start),
+        let controls_row = row_slots(vec![
+            weighted_slot(knobs_section, KNOBS_SECTION_WEIGHT),
+            weighted_slot(dropdown_section, DROPDOWN_SECTION_WEIGHT)
+                .align(SlotAlign::End, SlotAlign::Start),
         ]);
         panel("controls", controls_row).pad_all(0)
     }
@@ -841,14 +773,14 @@ impl GuiState {
             width: metrics.content_w,
             height: metrics.content_h,
         };
+        let min_size = Size {
+            width: WINDOW_WIDTH,
+            height: WINDOW_HEIGHT,
+        };
         UiSpec::new(
-            root_frame_sized(ROOT_KEY, content, window_size, window_size)
+            root_frame_sized(ROOT_KEY, content, min_size, window_size)
                 .padding(0)
-                .design_size(Size {
-                    width: WINDOW_WIDTH,
-                    height: WINDOW_HEIGHT,
-                })
-                .scale_mode(RootScaleMode::UniformFit)
+                .scale_mode(RootScaleMode::None)
                 .tokens(theme.tokens),
         )
     }
@@ -884,10 +816,10 @@ impl GuiState {
         let spline_section = self.build_spline_section(metrics, theme, draw_commands);
         let controls_section = self.build_controls_section(metrics, theme, controls);
 
-        let content = column_sections(vec![
-            weighted(header_section, HEADER_SECTION_WEIGHT),
-            weighted(spline_section, CURVE_SECTION_WEIGHT),
-            weighted(controls_section, CONTROLS_SECTION_WEIGHT),
+        let content = column_slots(vec![
+            weighted_slot(header_section, HEADER_SECTION_WEIGHT),
+            weighted_slot(spline_section, CURVE_SECTION_WEIGHT),
+            weighted_slot(controls_section, CONTROLS_SECTION_WEIGHT),
         ]);
         self.build_root_spec(metrics, theme, content)
     }
@@ -2015,7 +1947,7 @@ mod tests {
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
         preview_node_on_curve, resolve_runtime_controls_section_widths,
-        resolve_vertical_section_heights, GuiState, CURVE_H, CURVE_KEY, CURVE_W, WINDOW_HEIGHT,
+        resolve_vertical_section_heights, GuiState, CURVE_H, CURVE_KEY, WINDOW_HEIGHT,
         WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
@@ -2027,11 +1959,20 @@ mod tests {
     use toybox::gui::declarative::{measure_checked, Node, PanelSpec, RootScaleMode};
     use toybox::gui::{render_spec_to_frame, MainPalette, Point, Size};
 
-    fn expect_section_panel<'a>(node: &'a Node, label: &str) -> &'a PanelSpec {
+    fn expect_slot_child<'a>(node: &'a Node, label: &str) -> &'a Node {
         match node {
+            Node::Slot(slot) => slot.child.as_ref(),
+            other => panic!("expected {label} slot wrapper, got {other:?}"),
+        }
+    }
+
+    fn expect_section_panel<'a>(node: &'a Node, label: &str) -> &'a PanelSpec {
+        match expect_slot_child(node, label) {
             Node::Row(row) => match row.children.as_slice() {
-                [Node::Panel(panel)] => panel,
-                [other] => panic!("expected {label} row to wrap panel, got {other:?}"),
+                [child] => match expect_slot_child(child, label) {
+                    Node::Panel(panel) => panel,
+                    other => panic!("expected {label} row to wrap panel, got {other:?}"),
+                },
                 _ => panic!("expected {label} row to contain exactly one child"),
             },
             Node::Panel(panel) => panel,
@@ -2280,14 +2221,8 @@ mod tests {
             let measured = measure_checked(&spec).expect("measurement should succeed");
             assert!(measured.width >= WINDOW_WIDTH);
             assert!(measured.height >= WINDOW_HEIGHT);
-            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
-            assert_eq!(
-                spec.root.design_size,
-                Some(Size {
-                    width: WINDOW_WIDTH,
-                    height: WINDOW_HEIGHT,
-                })
-            );
+            assert_eq!(spec.root.scale_mode, RootScaleMode::None);
+            assert_eq!(spec.root.design_size, None);
         }
     }
 
@@ -2327,14 +2262,8 @@ mod tests {
             let measured = measure_checked(&spec).expect("measurement should succeed");
             assert!(measured.width >= WINDOW_WIDTH);
             assert!(measured.height >= WINDOW_HEIGHT);
-            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
-            assert_eq!(
-                spec.root.design_size,
-                Some(Size {
-                    width: WINDOW_WIDTH,
-                    height: WINDOW_HEIGHT,
-                })
-            );
+            assert_eq!(spec.root.scale_mode, RootScaleMode::None);
+            assert_eq!(spec.root.design_size, None);
         }
     }
 
@@ -2391,19 +2320,16 @@ mod tests {
 
             assert!(measured.width >= WINDOW_WIDTH);
             assert!(measured.height >= WINDOW_HEIGHT);
-            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
-            assert_eq!(
-                spec.root.design_size,
-                Some(Size {
-                    width: WINDOW_WIDTH,
-                    height: WINDOW_HEIGHT,
-                })
-            );
+            assert_eq!(spec.root.scale_mode, RootScaleMode::None);
+            assert_eq!(spec.root.design_size, None);
 
             let curve_region = find_curve_region_node(&spec.root.content)
                 .expect("curve region should exist for all measured sizes");
-            assert_eq!(curve_region.width, CURVE_W);
-            assert_eq!(curve_region.height, CURVE_H);
+            assert_eq!(curve_region.width, input_size.width.max(WINDOW_WIDTH));
+            assert_eq!(
+                curve_region.height,
+                resolve_vertical_section_heights(input_size.height.max(WINDOW_HEIGHT)).1
+            );
         }
     }
 
@@ -2416,7 +2342,7 @@ mod tests {
             None,
         );
         let spec = state.build_ui(&InputState::default());
-        let root_grid = match spec.root.content.as_ref() {
+        let root_grid = match expect_slot_child(spec.root.content.as_ref(), "root") {
             Node::Grid(grid) => grid,
             other => panic!("expected root content grid, got {other:?}"),
         };
@@ -2424,7 +2350,7 @@ mod tests {
         let _header_panel = expect_section_panel(&root_grid.children[0], "header");
         let _curve_panel = expect_section_panel(&root_grid.children[1], "curve");
         let controls_panel = expect_section_panel(&root_grid.children[2], "controls");
-        let controls_grid = match controls_panel.content.as_ref() {
+        let controls_grid = match expect_slot_child(controls_panel.content.as_ref(), "controls") {
             Node::Grid(grid) => grid,
             other => panic!("expected controls grid in panel, got {other:?}"),
         };
@@ -2495,6 +2421,7 @@ mod tests {
 
     fn find_curve_region_node(node: &Node) -> Option<Size> {
         match node {
+            Node::Slot(slot) => find_curve_region_node(&slot.child),
             Node::Region(region) if region.key == CURVE_KEY => Some(region.size),
             Node::Panel(panel) => find_curve_region_node(&panel.content),
             Node::Row(flex) | Node::Column(flex) => {
