@@ -37,6 +37,12 @@ pub const DEFAULT_PHASE_OFFSET: f32 = 0.0;
 pub const DEFAULT_OUTPUT_GAIN_DB: f32 = 0.0;
 /// Default sync division index (`1/4`).
 pub const DEFAULT_SYNC_DIVISION_INDEX: usize = 4;
+/// Maximum number of stored user presets.
+pub const MAX_PRESETS: usize = 16;
+/// Maximum preset-name length in characters.
+pub const MAX_PRESET_NAME_CHARS: usize = 24;
+/// Default preset name for the initialized plugin state.
+pub const DEFAULT_PRESET_NAME: &str = "Init";
 
 /// Minimum mix value.
 pub const MIN_MIX: f32 = 0.0;
@@ -104,7 +110,7 @@ pub const SYNC_DIVISIONS: [SyncDivision; 8] = [
 pub const MAX_SYNC_DIVISION: f32 = (SYNC_DIVISIONS.len() - 1) as f32;
 
 const STATE_MAGIC: &[u8; 4] = b"PMP2";
-const STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
 
 const AUTO: u32 = ParamInfoFlags::IS_AUTOMATABLE.bits();
 const AUTO_ENUM: u32 = AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags::IS_ENUM.bits();
@@ -310,6 +316,79 @@ pub fn sync_division_index_from_text(text: &str) -> Option<usize> {
         .map(clamp_sync_division)
 }
 
+/// Serializable snapshot of one Pump preset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PumpPreset {
+    /// User-facing preset name.
+    pub name: String,
+    /// Dry/wet mix amount.
+    pub mix: f32,
+    /// Duck depth amount.
+    pub depth: f32,
+    /// Cycle phase offset.
+    pub phase_offset: f32,
+    /// Output trim in decibels.
+    pub output_gain_db: f32,
+    /// Sync-division index.
+    pub sync_division: usize,
+    /// Editable curve shape.
+    pub editable_curve: EditableCurve,
+}
+
+/// Ordered preset collection with a selected index.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PumpPresetBank {
+    /// Currently selected preset index.
+    pub selected: usize,
+    /// Preset entries.
+    pub presets: Vec<PumpPreset>,
+}
+
+impl PumpPresetBank {
+    /// Build the default single-entry preset bank from plugin defaults.
+    pub fn default_init() -> Self {
+        Self {
+            selected: 0,
+            presets: vec![PumpPreset {
+                name: DEFAULT_PRESET_NAME.to_string(),
+                mix: DEFAULT_MIX,
+                depth: DEFAULT_DEPTH,
+                phase_offset: DEFAULT_PHASE_OFFSET,
+                output_gain_db: DEFAULT_OUTPUT_GAIN_DB,
+                sync_division: DEFAULT_SYNC_DIVISION_INDEX,
+                editable_curve: default_editable_curve(),
+            }],
+        }
+    }
+}
+
+fn sanitize_preset_name(raw: &str, fallback_index: usize) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return format!("Preset {}", fallback_index.saturating_add(1));
+    }
+    trimmed.chars().take(MAX_PRESET_NAME_CHARS).collect()
+}
+
+fn float_near_eq(left: f32, right: f32) -> bool {
+    (left - right).abs() <= 1.0e-4
+}
+
+fn curve_near_eq(left: &EditableCurve, right: &EditableCurve) -> bool {
+    if left.nodes.len() != right.nodes.len() || left.segments.len() != right.segments.len() {
+        return false;
+    }
+    left.nodes
+        .iter()
+        .zip(right.nodes.iter())
+        .all(|(lhs, rhs)| float_near_eq(lhs.x, rhs.x) && float_near_eq(lhs.y, rhs.y))
+        && left
+            .segments
+            .iter()
+            .zip(right.segments.iter())
+            .all(|(lhs, rhs)| float_near_eq(lhs.tension, rhs.tension))
+}
+
 /// Shared atomic parameter/state storage across threads.
 pub struct PumpParams {
     mix: AtomicF32,
@@ -320,6 +399,7 @@ pub struct PumpParams {
     editable_curve: RwLock<EditableCurve>,
     curve: [AtomicF32; CURVE_TABLE_LEN],
     curve_revision: AtomicU32,
+    preset_bank: RwLock<PumpPresetBank>,
 }
 
 impl PumpParams {
@@ -336,6 +416,7 @@ impl PumpParams {
             editable_curve: RwLock::new(editable_curve),
             curve: std::array::from_fn(|index| AtomicF32::new(default_curve[index])),
             curve_revision: AtomicU32::new(1),
+            preset_bank: RwLock::new(PumpPresetBank::default_init()),
         }
     }
 
@@ -458,6 +539,117 @@ impl PumpParams {
         self.set_editable_curve(&default_editable_curve());
     }
 
+    fn current_preset_snapshot_with_name(&self, name: String) -> PumpPreset {
+        PumpPreset {
+            name,
+            mix: self.mix(),
+            depth: self.depth(),
+            phase_offset: self.phase_offset(),
+            output_gain_db: self.output_gain_db(),
+            sync_division: self.sync_division(),
+            editable_curve: self.editable_curve_snapshot(),
+        }
+    }
+
+    fn apply_preset_snapshot(&self, preset: &PumpPreset) {
+        self.set_mix(preset.mix);
+        self.set_depth(preset.depth);
+        self.set_phase_offset(preset.phase_offset);
+        self.set_output_gain_db(preset.output_gain_db);
+        self.set_sync_division(preset.sync_division as f32);
+        self.set_editable_curve(&preset.editable_curve);
+    }
+
+    /// Snapshot the stored preset bank.
+    pub fn preset_bank_snapshot(&self) -> PumpPresetBank {
+        self.preset_bank
+            .read()
+            .map(|bank| bank.clone())
+            .unwrap_or_else(|_| PumpPresetBank::default_init())
+    }
+
+    /// Replace the full preset bank, clamping to supported limits.
+    pub fn set_preset_bank(&self, bank: PumpPresetBank) {
+        let mut normalized = bank;
+        if normalized.presets.is_empty() {
+            normalized = PumpPresetBank::default_init();
+        }
+        if normalized.presets.len() > MAX_PRESETS {
+            normalized.presets.truncate(MAX_PRESETS);
+        }
+        for (index, preset) in normalized.presets.iter_mut().enumerate() {
+            preset.name = sanitize_preset_name(&preset.name, index);
+            preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
+            preset.editable_curve = preset.editable_curve.clone().normalized();
+        }
+        normalized.selected = normalized
+            .selected
+            .min(normalized.presets.len().saturating_sub(1));
+        if let Ok(mut guard) = self.preset_bank.write() {
+            *guard = normalized;
+        }
+    }
+
+    /// Load one preset by index into the active parameter state.
+    pub fn load_preset(&self, index: usize) -> Option<usize> {
+        let preset = self
+            .preset_bank
+            .read()
+            .ok()
+            .and_then(|bank| bank.presets.get(index).cloned())?;
+        self.apply_preset_snapshot(&preset);
+        if let Ok(mut guard) = self.preset_bank.write() {
+            guard.selected = index.min(guard.presets.len().saturating_sub(1));
+            return Some(guard.selected);
+        }
+        Some(index)
+    }
+
+    /// Insert a new preset cloned from current state and select it.
+    pub fn add_preset_from_current_state(&self) -> Option<usize> {
+        let snapshot = self.current_preset_snapshot_with_name(String::new());
+        let Ok(mut guard) = self.preset_bank.write() else {
+            return None;
+        };
+        if guard.presets.len() >= MAX_PRESETS {
+            return None;
+        }
+        let insert_at = guard.selected.saturating_add(1).min(guard.presets.len());
+        let fallback_index = guard.presets.len();
+        let mut inserted = snapshot;
+        inserted.name = sanitize_preset_name("", fallback_index);
+        guard.presets.insert(insert_at, inserted);
+        guard.selected = insert_at;
+        Some(insert_at)
+    }
+
+    /// Rename one preset entry.
+    pub fn rename_preset(&self, index: usize, new_name: &str) -> bool {
+        let Ok(mut guard) = self.preset_bank.write() else {
+            return false;
+        };
+        let Some(preset) = guard.presets.get_mut(index) else {
+            return false;
+        };
+        preset.name = sanitize_preset_name(new_name, index);
+        true
+    }
+
+    /// Return true when current parameters/curve differ from selected preset.
+    pub fn current_state_differs_from_selected_preset(&self) -> bool {
+        let bank = self.preset_bank_snapshot();
+        let Some(selected) = bank.presets.get(bank.selected) else {
+            return false;
+        };
+        let current = self.current_preset_snapshot_with_name(String::new());
+        !float_near_eq(current.mix, selected.mix)
+            || !float_near_eq(current.depth, selected.depth)
+            || !float_near_eq(current.phase_offset, selected.phase_offset)
+            || !float_near_eq(current.output_gain_db, selected.output_gain_db)
+            || current.sync_division != selected.sync_division
+            || !curve_near_eq(&current.editable_curve, &selected.editable_curve)
+    }
+
     fn store_curve_table(&self, values: &[f32; CURVE_TABLE_LEN]) {
         for (index, sample) in values.iter().copied().enumerate() {
             self.curve[index].store(sample.clamp(0.0, 1.0), Ordering::Release);
@@ -476,7 +668,8 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     let editable = params.editable_curve_snapshot();
     let node_count = editable.nodes.len().min(MAX_EDITABLE_NODES);
     let segment_count = node_count.saturating_sub(1);
-    let mut payload = Vec::with_capacity(32 + node_count * 8 + segment_count * 4);
+    let bank = params.preset_bank_snapshot();
+    let mut payload = Vec::with_capacity(64 + node_count * 8 + segment_count * 4);
 
     payload.extend_from_slice(STATE_MAGIC);
     payload.extend_from_slice(&STATE_VERSION.to_le_bytes());
@@ -493,6 +686,11 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     }
     for segment in editable.segments.iter().take(segment_count) {
         payload.extend_from_slice(&segment.tension.to_le_bytes());
+    }
+    payload.extend_from_slice(&(bank.selected as u32).to_le_bytes());
+    payload.extend_from_slice(&(bank.presets.len() as u32).to_le_bytes());
+    for (index, preset) in bank.presets.iter().enumerate() {
+        encode_preset(&mut payload, preset, index);
     }
 
     payload
@@ -514,7 +712,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     let Some(version) = read_u32(&mut cursor) else {
         return Err("invalid state version");
     };
-    if version != STATE_VERSION {
+    if !(2..=STATE_VERSION).contains(&version) {
         return Err("unsupported state payload version");
     }
 
@@ -536,28 +734,24 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     let Some(node_count) = read_u32(&mut cursor).map(|count| count as usize) else {
         return Err("invalid node count");
     };
-    if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
-        return Err("invalid node count bounds");
-    }
+    let editable_curve = decode_curve(&mut cursor, node_count)?;
 
-    let mut nodes = Vec::with_capacity(node_count);
-    for _ in 0..node_count {
-        let Some(x) = read_f32(&mut cursor) else {
-            return Err("invalid curve node x");
-        };
-        let Some(y) = read_f32(&mut cursor) else {
-            return Err("invalid curve node y");
-        };
-        nodes.push(CurveNode { x, y });
-    }
-
-    let mut segments = Vec::with_capacity(node_count.saturating_sub(1));
-    for _ in 0..node_count.saturating_sub(1) {
-        let Some(tension) = read_f32(&mut cursor) else {
-            return Err("invalid curve segment");
-        };
-        segments.push(CurveSegment { tension });
-    }
+    let preset_bank = if version >= 3 {
+        decode_preset_bank(&mut cursor)?
+    } else {
+        PumpPresetBank {
+            selected: 0,
+            presets: vec![PumpPreset {
+                name: DEFAULT_PRESET_NAME.to_string(),
+                mix,
+                depth,
+                phase_offset,
+                output_gain_db,
+                sync_division: clamp_sync_division(sync_division),
+                editable_curve: editable_curve.clone(),
+            }],
+        }
+    };
 
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
@@ -568,9 +762,119 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_phase_offset(phase_offset);
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
-    params.set_editable_curve(&EditableCurve { nodes, segments });
+    params.set_editable_curve(&editable_curve);
+    params.set_preset_bank(preset_bank);
 
     Ok(())
+}
+
+fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
+    let name = sanitize_preset_name(&preset.name, index);
+    payload.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    payload.extend_from_slice(name.as_bytes());
+    payload.extend_from_slice(&preset.mix.to_le_bytes());
+    payload.extend_from_slice(&preset.depth.to_le_bytes());
+    payload.extend_from_slice(&preset.phase_offset.to_le_bytes());
+    payload.extend_from_slice(&preset.output_gain_db.to_le_bytes());
+    payload.extend_from_slice(&(preset.sync_division as u32).to_le_bytes());
+
+    let normalized_curve = preset.editable_curve.clone().normalized();
+    let node_count = normalized_curve.nodes.len().min(MAX_EDITABLE_NODES);
+    payload.extend_from_slice(&(node_count as u32).to_le_bytes());
+    for node in normalized_curve.nodes.iter().take(node_count) {
+        payload.extend_from_slice(&node.x.to_le_bytes());
+        payload.extend_from_slice(&node.y.to_le_bytes());
+    }
+    for segment in normalized_curve
+        .segments
+        .iter()
+        .take(node_count.saturating_sub(1))
+    {
+        payload.extend_from_slice(&segment.tension.to_le_bytes());
+    }
+}
+
+fn decode_curve(
+    cursor: &mut Cursor<&[u8]>,
+    node_count: usize,
+) -> Result<EditableCurve, &'static str> {
+    if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
+        return Err("invalid node count bounds");
+    }
+    let mut nodes = Vec::with_capacity(node_count);
+    for _ in 0..node_count {
+        let Some(x) = read_f32(cursor) else {
+            return Err("invalid curve node x");
+        };
+        let Some(y) = read_f32(cursor) else {
+            return Err("invalid curve node y");
+        };
+        nodes.push(CurveNode { x, y });
+    }
+    let mut segments = Vec::with_capacity(node_count.saturating_sub(1));
+    for _ in 0..node_count.saturating_sub(1) {
+        let Some(tension) = read_f32(cursor) else {
+            return Err("invalid curve segment");
+        };
+        segments.push(CurveSegment { tension });
+    }
+    Ok(EditableCurve { nodes, segments })
+}
+
+fn decode_preset_bank(cursor: &mut Cursor<&[u8]>) -> Result<PumpPresetBank, &'static str> {
+    let Some(selected) = read_u32(cursor).map(|value| value as usize) else {
+        return Err("invalid preset selected index");
+    };
+    let Some(count) = read_u32(cursor).map(|value| value as usize) else {
+        return Err("invalid preset count");
+    };
+    if count == 0 || count > MAX_PRESETS {
+        return Err("invalid preset count bounds");
+    }
+    let mut presets = Vec::with_capacity(count);
+    for index in 0..count {
+        let Some(name_len) = read_u32(cursor).map(|value| value as usize) else {
+            return Err("invalid preset name length");
+        };
+        if name_len == 0 || name_len > 256 {
+            return Err("invalid preset name length bounds");
+        }
+        let mut name_bytes = vec![0_u8; name_len];
+        std::io::Read::read_exact(cursor, &mut name_bytes).map_err(|_| "invalid preset name")?;
+        let raw_name = std::str::from_utf8(&name_bytes).map_err(|_| "invalid preset name utf8")?;
+        let Some(mix) = read_f32(cursor) else {
+            return Err("invalid preset mix");
+        };
+        let Some(depth) = read_f32(cursor) else {
+            return Err("invalid preset depth");
+        };
+        let Some(phase_offset) = read_f32(cursor) else {
+            return Err("invalid preset phase offset");
+        };
+        let Some(output_gain_db) = read_f32(cursor) else {
+            return Err("invalid preset output gain");
+        };
+        let Some(sync_division) = read_u32(cursor).map(|value| value as usize) else {
+            return Err("invalid preset sync division");
+        };
+        let Some(node_count) = read_u32(cursor).map(|value| value as usize) else {
+            return Err("invalid preset node count");
+        };
+        let editable_curve = decode_curve(cursor, node_count)?;
+        presets.push(PumpPreset {
+            name: sanitize_preset_name(raw_name, index),
+            mix,
+            depth,
+            phase_offset,
+            output_gain_db,
+            sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
+            editable_curve: editable_curve.normalized(),
+        });
+    }
+    Ok(PumpPresetBank {
+        selected: selected.min(count.saturating_sub(1)),
+        presets,
+    })
 }
 
 fn legacy_payload_len() -> usize {
@@ -613,6 +917,18 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
     params.set_curve(&curve);
+    params.set_preset_bank(PumpPresetBank {
+        selected: 0,
+        presets: vec![PumpPreset {
+            name: DEFAULT_PRESET_NAME.to_string(),
+            mix: params.mix(),
+            depth: params.depth(),
+            phase_offset: params.phase_offset(),
+            output_gain_db: params.output_gain_db(),
+            sync_division: params.sync_division(),
+            editable_curve: params.editable_curve_snapshot(),
+        }],
+    });
 
     Ok(())
 }
@@ -633,7 +949,7 @@ fn read_u32(cursor: &mut Cursor<&[u8]>) -> Option<u32> {
 mod tests {
     use super::{
         clamp_sync_division, decode_state_payload, encode_state_payload,
-        sync_division_index_from_text, PumpParams, MAX_SYNC_DIVISION,
+        sync_division_index_from_text, PumpParams, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION,
     };
     use crate::curve::{CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN};
 
@@ -757,5 +1073,63 @@ mod tests {
             revision_before,
             "sync division changes must not bump curve revision"
         );
+    }
+
+    #[test]
+    fn preset_add_rename_and_load_roundtrip_current_state() {
+        let params = PumpParams::new();
+        params.set_mix(0.31);
+        params.set_depth(0.91);
+        params.set_phase_offset(0.27);
+        params.set_output_gain_db(-6.0);
+        params.set_sync_division(6.0);
+        params.set_editable_curve(&EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.9 },
+                CurveNode { x: 0.4, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.9 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.2 },
+                CurveSegment { tension: 0.3 },
+            ],
+        });
+
+        let inserted = params
+            .add_preset_from_current_state()
+            .expect("preset insertion should succeed");
+        assert_eq!(inserted, 1);
+        assert!(params.rename_preset(inserted, "My Wide Preset Name That Should Clamp"));
+
+        let bank = params.preset_bank_snapshot();
+        assert_eq!(bank.selected, 1);
+        assert_eq!(bank.presets.len(), 2);
+        assert!(bank.presets[1].name.chars().count() <= MAX_PRESET_NAME_CHARS);
+
+        params.set_mix(0.05);
+        params.set_depth(0.1);
+        params.set_sync_division(1.0);
+        params.load_preset(1).expect("preset load should succeed");
+        assert!((params.mix() - bank.presets[1].mix).abs() < 1.0e-6);
+        assert!((params.depth() - bank.presets[1].depth).abs() < 1.0e-6);
+        assert_eq!(params.sync_division(), bank.presets[1].sync_division);
+    }
+
+    #[test]
+    fn preset_bank_roundtrips_through_state_payload() {
+        let params = PumpParams::new();
+        params
+            .add_preset_from_current_state()
+            .expect("preset insertion should succeed");
+        assert!(params.rename_preset(1, "Verse"));
+        params.load_preset(1).expect("preset load should succeed");
+        let payload = encode_state_payload(&params);
+
+        let restored = PumpParams::new();
+        decode_state_payload(&restored, &payload).expect("state should decode");
+        let bank = restored.preset_bank_snapshot();
+        assert_eq!(bank.presets.len(), 2);
+        assert_eq!(bank.selected, 1);
+        assert_eq!(bank.presets[1].name, "Verse");
     }
 }

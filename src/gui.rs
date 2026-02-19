@@ -10,7 +10,7 @@ use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
     button, column, column_slots, dropdown, grid, indicator, knob, panel, root_frame_sized,
-    row_slots, spacer, stack, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
+    row_slots, stack, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
     LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, SlotAlign,
     SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
@@ -22,9 +22,10 @@ use crate::curve::{
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    sync_division_label, PumpParams, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET,
-    MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID,
-    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
+    sync_division_label, PumpParams, DEFAULT_PRESET_NAME, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB,
+    MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX,
+    MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
+    PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
 };
 use crate::GuiStatus;
 
@@ -48,6 +49,9 @@ const PHASE_KEY: &str = "phase";
 const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
+const PRESET_DROPDOWN_KEY: &str = "preset-dropdown";
+const PRESET_ADD_KEY: &str = "preset-add";
+const PRESET_RENAME_KEY: &str = "preset-rename";
 
 const HEADER_SECTION_WEIGHT: u16 = 7;
 const CURVE_SECTION_WEIGHT: u16 = 63;
@@ -72,6 +76,7 @@ const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const TRANSPORT_INDICATOR_SIZE: u32 = 10;
 const RESET_GUARD_AFTER_DROPDOWN_MICROS: u64 = 120_000;
+const PRESET_ADD_WARNING_FRAMES: u8 = 45;
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const PLAYHEAD_DOT_CORE_RADIUS: i32 = 4;
@@ -254,6 +259,10 @@ struct PumpTheme {
     curve_line: Color,
     curve_line_highlight: Color,
     curve_line_highlight_glow: Color,
+    preset_title_bg: Color,
+    preset_title_dirty_bg: Color,
+    preset_title_outline: Color,
+    preset_add_warning_text: Color,
     preview_fill: Color,
     preview_stroke: Color,
     node_fill: Color,
@@ -291,6 +300,10 @@ impl PumpTheme {
             curve_line: palette.syntax_emphasis,
             curve_line_highlight: palette.accent_focus,
             curve_line_highlight_glow: palette.text_primary,
+            preset_title_bg: palette.background_secondary,
+            preset_title_dirty_bg: Color::rgb(150, 44, 44),
+            preset_title_outline: palette.ui_secondary,
+            preset_add_warning_text: Color::rgb(255, 170, 170),
             preview_fill: palette.literals,
             preview_stroke: palette.identifiers,
             node_fill: palette.text_primary,
@@ -431,6 +444,10 @@ struct GuiRuntime {
     curve_local_pointer: Point,
     curve_size: Size,
     last_division_change_micros: Option<u64>,
+    preset_rename_active: bool,
+    preset_rename_target: usize,
+    preset_name_draft: String,
+    preset_add_warning_frames: u8,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -545,6 +562,17 @@ struct ControlSnapshot {
     division: usize,
 }
 
+/// Snapshot of preset-bank state needed for header rendering.
+#[derive(Clone, Debug)]
+struct PresetSnapshot {
+    names: Vec<String>,
+    selected: usize,
+    dirty: bool,
+    rename_active: bool,
+    rename_draft: String,
+    add_warning_active: bool,
+}
+
 /// Snapshot of curve-editor hover/selection state used for drawing.
 #[derive(Clone, Copy, Debug)]
 struct CurveRenderState {
@@ -566,6 +594,10 @@ impl GuiRuntime {
                 height: CURVE_H,
             },
             last_division_change_micros: None,
+            preset_rename_active: false,
+            preset_rename_target: 0,
+            preset_name_draft: String::new(),
+            preset_add_warning_frames: 0,
         }
     }
 }
@@ -612,6 +644,54 @@ impl GuiState {
         }
     }
 
+    /// Snapshot preset-bank state and transient header interaction flags.
+    fn snapshot_presets(&self) -> PresetSnapshot {
+        let bank = self.params.preset_bank_snapshot();
+        let names = if bank.presets.is_empty() {
+            vec![DEFAULT_PRESET_NAME.to_string()]
+        } else {
+            bank.presets
+                .iter()
+                .map(|preset| preset.name.clone())
+                .collect()
+        };
+        let selected = bank.selected.min(names.len().saturating_sub(1));
+        let dirty = self.params.current_state_differs_from_selected_preset();
+
+        let mut rename_active = false;
+        let mut rename_draft = String::new();
+        let mut add_warning_active = false;
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.preset_rename_active {
+                runtime.preset_rename_target = runtime
+                    .preset_rename_target
+                    .min(names.len().saturating_sub(1));
+                rename_active = true;
+                if runtime.preset_name_draft.is_empty() {
+                    runtime.preset_name_draft = names
+                        .get(runtime.preset_rename_target)
+                        .cloned()
+                        .unwrap_or_else(|| DEFAULT_PRESET_NAME.to_string());
+                }
+                rename_draft = runtime.preset_name_draft.clone();
+            }
+            if runtime.preset_add_warning_frames > 0 {
+                add_warning_active = true;
+                runtime.preset_add_warning_frames =
+                    runtime.preset_add_warning_frames.saturating_sub(1);
+            }
+        }
+
+        PresetSnapshot {
+            names,
+            selected,
+            dirty,
+            rename_active,
+            rename_draft,
+            add_warning_active,
+        }
+    }
+
     fn mark_division_change(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.last_division_change_micros = Some(monotonic_micros());
@@ -636,7 +716,21 @@ impl GuiState {
     }
 
     /// Build the top header slot node.
-    fn build_header_slot(&self, metrics: UiLayoutMetrics) -> Node {
+    fn build_header_slot(
+        &self,
+        metrics: UiLayoutMetrics,
+        theme: PumpTheme,
+        presets: &PresetSnapshot,
+    ) -> Node {
+        let header_slot_widths = weighted_slot_lengths(
+            metrics.content_w.max(1),
+            &[
+                HEADER_EMPTY_SECTION_PERCENT as u16,
+                HEADER_INDICATOR_SECTION_PERCENT as u16,
+            ],
+        );
+        let left_width = header_slot_widths.first().copied().unwrap_or(1).max(1);
+        let add_button_width = (left_width / 8).max(metrics.transport_indicator_size.max(1));
         let indicator_node = Node::align_box(
             indicator(
                 Size {
@@ -652,14 +746,75 @@ impl GuiState {
         )
         .slot_align(SlotAlign::Center, SlotAlign::Center)
         .fill();
+
+        let preset_dropdown_or_edit = if presets.rename_active {
+            textbox(presets.rename_draft.clone())
+                .text_color(theme.subtitle_text)
+                .text_editable(PRESET_RENAME_KEY, true)
+                .text_edit_max_chars(MAX_PRESET_NAME_CHARS)
+                .widget_layout(LayoutBox::fill())
+                .fill()
+        } else {
+            dropdown(
+                PRESET_DROPDOWN_KEY,
+                presets.names.len().max(1),
+                presets.selected.min(presets.names.len().saturating_sub(1)),
+            )
+            .dropdown_option_labels(presets.names.clone())
+            .control_size(Size {
+                width: left_width.saturating_sub(add_button_width).max(1),
+                height: metrics.transport_indicator_size.max(1),
+            })
+            .fill()
+        };
+
+        let preset_title = panel("preset-title", preset_dropdown_or_edit.fill())
+            .background(if presets.dirty {
+                theme.preset_title_dirty_bg
+            } else {
+                theme.preset_title_bg
+            })
+            .outline(theme.preset_title_outline)
+            .pad_all(0)
+            .fill();
+        let add_button = stack(vec![
+            button(PRESET_ADD_KEY)
+                .control_size(Size {
+                    width: add_button_width,
+                    height: metrics.transport_indicator_size.max(1),
+                })
+                .fill(),
+            Node::align_box(
+                textbox("+")
+                    .text_color(theme.subtitle_text)
+                    .widget_layout(LayoutBox::fill()),
+            )
+            .slot_align(SlotAlign::Center, SlotAlign::Center)
+            .fill(),
+            Node::align_box(
+                textbox(if presets.add_warning_active {
+                    "MAX"
+                } else {
+                    ""
+                })
+                .text_color(theme.preset_add_warning_text)
+                .widget_layout(LayoutBox::fill()),
+            )
+            .slot_align(SlotAlign::Center, SlotAlign::Center)
+            .fill(),
+        ])
+        .container_overflow(OverflowPolicy::Compress)
+        .fill();
+        let left_content = row_slots(vec![
+            weighted_slot(preset_title, 88),
+            weighted_slot(add_button, 12),
+        ])
+        .gap(HEADER_CONTROL_GAP.max(0))
+        .container_overflow(OverflowPolicy::Compress)
+        .fill();
+
         let header_content = row_slots(vec![
-            weighted_slot(
-                spacer(Size {
-                    width: 1,
-                    height: 1,
-                }),
-                HEADER_EMPTY_SECTION_PERCENT as u16,
-            ),
+            weighted_slot(left_content, HEADER_EMPTY_SECTION_PERCENT as u16),
             weighted_slot(indicator_node, HEADER_INDICATOR_SECTION_PERCENT as u16),
         ])
         .container_overflow(OverflowPolicy::Compress);
@@ -901,9 +1056,10 @@ impl GuiState {
         let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
         let controls = self.snapshot_controls();
+        let presets = self.snapshot_presets();
         let draw_commands = self.build_curve_commands_for_frame(input, metrics, theme);
 
-        let header_slot = self.build_header_slot(metrics);
+        let header_slot = self.build_header_slot(metrics, theme, &presets);
         let spline_slot = self.build_spline_slot(metrics, theme, draw_commands);
         let controls_slot = self.build_controls_slot(metrics, theme, controls);
 
@@ -925,6 +1081,9 @@ impl GuiState {
         match action {
             UiAction::KnobChanged { key, value } => self.reduce_knob(key.as_str(), value),
             UiAction::DropdownSelected { key, index } => self.reduce_dropdown(key.as_str(), index),
+            UiAction::DropdownDoubleClicked { key } if key == PRESET_DROPDOWN_KEY => {
+                self.begin_preset_rename();
+            }
             UiAction::ButtonPressed { key } if key == RESET_KEY => {
                 if self.consume_recent_division_change_guard() {
                     return;
@@ -934,6 +1093,28 @@ impl GuiState {
                     runtime.selected_node = None;
                     runtime.drag_mode = None;
                 }
+            }
+            UiAction::ButtonPressed { key } if key == PRESET_ADD_KEY => {
+                if self.params.add_preset_from_current_state().is_some() {
+                    if let Ok(mut runtime) = self.runtime.lock() {
+                        runtime.preset_rename_active = false;
+                        runtime.preset_name_draft.clear();
+                        runtime.preset_add_warning_frames = 0;
+                    }
+                } else if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.preset_add_warning_frames = PRESET_ADD_WARNING_FRAMES;
+                }
+            }
+            UiAction::TextBoxEdited { key, text } if key == PRESET_RENAME_KEY => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.preset_name_draft = text;
+                }
+            }
+            UiAction::TextBoxEditCommitted { key, text } if key == PRESET_RENAME_KEY => {
+                self.commit_preset_rename(text.as_str());
+            }
+            UiAction::TextBoxEditCanceled { key } if key == PRESET_RENAME_KEY => {
+                self.cancel_preset_rename();
             }
             UiAction::RegionHover {
                 key,
@@ -984,6 +1165,18 @@ impl GuiState {
     }
 
     fn reduce_dropdown(&mut self, key: &str, index: usize) {
+        if key == PRESET_DROPDOWN_KEY {
+            if let Some(selected) = self.params.load_preset(index) {
+                self.push_all_param_updates();
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.preset_rename_active = false;
+                    runtime.preset_name_draft.clear();
+                    runtime.preset_rename_target = selected;
+                }
+            }
+            return;
+        }
+
         if key != DIVISION_KEY {
             return;
         }
@@ -992,6 +1185,38 @@ impl GuiState {
         self.mark_division_change();
         self.params.set_sync_division(clamped as f32);
         self.push_single_value_update(PARAM_SYNC_DIVISION_ID, clamped as f64);
+    }
+
+    fn begin_preset_rename(&self) {
+        let bank = self.params.preset_bank_snapshot();
+        if bank.presets.is_empty() {
+            return;
+        }
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.preset_rename_target = bank.selected.min(bank.presets.len().saturating_sub(1));
+            runtime.preset_name_draft = bank.presets[runtime.preset_rename_target].name.clone();
+            runtime.preset_rename_active = true;
+        }
+    }
+
+    fn commit_preset_rename(&self, text: &str) {
+        let Ok(mut runtime) = self.runtime.lock() else {
+            return;
+        };
+        if !runtime.preset_rename_active {
+            return;
+        }
+        let target = runtime.preset_rename_target;
+        let _ = self.params.rename_preset(target, text);
+        runtime.preset_rename_active = false;
+        runtime.preset_name_draft.clear();
+    }
+
+    fn cancel_preset_rename(&self) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.preset_rename_active = false;
+            runtime.preset_name_draft.clear();
+        }
     }
 
     fn reduce_curve_interaction(
@@ -1521,6 +1746,14 @@ impl GuiState {
         if let Some(requester) = self.param_requester {
             requester.request_flush();
         }
+    }
+
+    fn push_all_param_updates(&self) {
+        self.push_single_value_update(PARAM_MIX_ID, self.params.mix() as f64);
+        self.push_single_value_update(PARAM_DEPTH_ID, self.params.depth() as f64);
+        self.push_single_value_update(PARAM_PHASE_OFFSET_ID, self.params.phase_offset() as f64);
+        self.push_single_value_update(PARAM_OUTPUT_GAIN_ID, self.params.output_gain_db() as f64);
+        self.push_single_value_update(PARAM_SYNC_DIVISION_ID, self.params.sync_division() as f64);
     }
 
     fn push_single_value_update(&self, param_id: ClapId, value: f64) {
