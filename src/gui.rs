@@ -10,7 +10,8 @@ use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, Input
 use toybox::gui::declarative::{
     button, column, column_sections, dropdown, fill_section, fraction, grid, knob, label, panel,
     root_frame_sized, row_sections, surface, weighted, GridTemplate, LayoutBox, Node,
-    RegionInteractionKind, RootScaleMode, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
+    RegionInteractionKind, RootScaleMode, SectionAlign, SurfaceCommand, ThemeTokens, TrackSize,
+    UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -774,7 +775,8 @@ impl GuiState {
 
         let controls_row = row_sections(vec![
             weighted(knobs_section, KNOBS_SECTION_WEIGHT),
-            weighted(dropdown_section, DROPDOWN_SECTION_WEIGHT),
+            weighted(dropdown_section, DROPDOWN_SECTION_WEIGHT)
+                .align(SectionAlign::End, SectionAlign::Start),
         ]);
         panel("controls", controls_row).pad_all(0)
     }
