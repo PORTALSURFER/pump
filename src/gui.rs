@@ -485,7 +485,7 @@ impl UiLayoutMetrics {
         let text_scale = BASE_TEXT_SCALE.max(1);
         let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
         let knob_diameter = BASE_KNOB_DIAMETER.min(knob_track_width.max(1));
-        let knob_track_w = knob_track_width.max(1);
+        let knob_track_w = knob_diameter.max(1);
         let label_line_h = scaled_line_height(text_scale);
         let expanded_control_h = controls_h
             .saturating_sub(label_line_h)
@@ -682,11 +682,11 @@ impl GuiState {
             .slot_align(SlotAlign::Center, SlotAlign::End)
             .fill();
             stack(vec![
-                knob(key, value, range).widget_layout(LayoutBox::auto()),
+                knob(key, value, range)
+                    .widget_layout(fixed_box(metrics.knob_diameter, metrics.knob_diameter)),
                 title,
                 value_label,
             ])
-            .fill()
             .container_overflow(OverflowPolicy::Compress)
         };
         let knobs_grid = grid(
@@ -730,32 +730,20 @@ impl GuiState {
 
         let knobs_slot = panel("knobs", knobs_grid.fill()).pad_all(0);
         let dropdown_slot_content = column(vec![
-            stack(vec![
-                dropdown(
-                    DIVISION_KEY,
-                    MAX_SYNC_DIVISION as usize + 1,
-                    controls.division.min(MAX_SYNC_DIVISION as usize),
-                )
-                .dropdown_option_labels(
-                    (0..=MAX_SYNC_DIVISION as usize)
-                        .map(|index| sync_division_label(index).to_string())
-                        .collect(),
-                )
-                .control_size(Size {
-                    width: metrics.dropdown_control_w,
-                    height: metrics.dropdown_control_h,
-                }),
-                Node::align_box(
-                    textbox(sync_division_label(controls.division))
-                        .text_color(theme.subtitle_text)
-                        .widget_layout(fixed_box(
-                            metrics.dropdown_control_w.saturating_sub(20).max(1),
-                            metrics.label_line_h,
-                        )),
-                )
-                .slot_align(SlotAlign::Center, SlotAlign::Center)
-                .fill(),
-            ])
+            dropdown(
+                DIVISION_KEY,
+                MAX_SYNC_DIVISION as usize + 1,
+                controls.division.min(MAX_SYNC_DIVISION as usize),
+            )
+            .dropdown_option_labels(
+                (0..=MAX_SYNC_DIVISION as usize)
+                    .map(|index| sync_division_label(index).to_string())
+                    .collect(),
+            )
+            .control_size(Size {
+                width: metrics.dropdown_control_w,
+                height: metrics.dropdown_control_h,
+            })
             .fill(),
             stack(vec![
                 button(RESET_KEY).control_size(Size {
@@ -2044,7 +2032,7 @@ mod tests {
         HEADER_INDICATOR_SECTION_PERCENT, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
-    use crate::params::{sync_division_label, PumpParams};
+    use crate::params::PumpParams;
     use crate::{GuiStatus, GuiTransportTelemetry};
     use std::sync::Arc;
     use toybox::clack_extensions::gui::GuiSize;
@@ -2877,14 +2865,7 @@ mod tests {
         let mut texts = Vec::new();
         collect_textbox_texts(spec.root.content(), &mut texts);
 
-        for expected in [
-            "Mix",
-            "Depth",
-            "Phase",
-            "Output",
-            sync_division_label(crate::params::DEFAULT_SYNC_DIVISION_INDEX),
-            "Reset Curve",
-        ] {
+        for expected in ["Mix", "Depth", "Phase", "Output", "Reset Curve"] {
             assert!(
                 texts.iter().any(|text| text == expected),
                 "expected textbox caption `{expected}` in {:?}",
