@@ -22,9 +22,9 @@ use crate::curve::{
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    PumpParams, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_SYNC_DIVISION,
-    MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
+    sync_division_label, PumpParams, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET,
+    MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID,
+    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
 };
 use crate::GuiStatus;
 
@@ -74,8 +74,8 @@ const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
-const PLAYHEAD_DOT_CORE_RADIUS: i32 = 3;
-const PLAYHEAD_DOT_GLOW_RADIUS: i32 = 8;
+const PLAYHEAD_DOT_CORE_RADIUS: i32 = 4;
+const PLAYHEAD_DOT_GLOW_RADIUS: i32 = 10;
 const SEGMENT_NEAR_HIT_RADIUS: i32 = 16;
 const SEGMENT_DIRECT_HIT_RADIUS: i32 = 6;
 const NODE_INSERT_GUARD_RADIUS: i32 = 12;
@@ -261,6 +261,7 @@ struct PumpTheme {
     node_selected_ring: Color,
     playhead_dot_core: Color,
     playhead_dot_glow: Color,
+    playhead_dot_stroke: Color,
     meter_outline: Color,
     meter_fill: Color,
 }
@@ -296,13 +297,14 @@ impl PumpTheme {
             node_selected_stroke: palette.text_primary,
             node_hover_ring: palette.syntax_emphasis,
             node_selected_ring: palette.accent_focus,
-            playhead_dot_core: palette.accent_focus,
+            playhead_dot_core: Color::rgba(255, 255, 255, 220),
             playhead_dot_glow: Color::rgba(
                 palette.accent_focus.r,
                 palette.accent_focus.g,
                 palette.accent_focus.b,
-                140,
+                180,
             ),
+            playhead_dot_stroke: palette.accent_focus,
             meter_outline: palette.ui_secondary,
             meter_fill: palette.literals,
         }
@@ -765,22 +767,47 @@ impl GuiState {
 
         let knobs_slot = panel("knobs", knobs_grid.fill()).pad_all(0);
         let dropdown_slot_content = column(vec![
-            dropdown(
-                DIVISION_KEY,
-                MAX_SYNC_DIVISION as usize + 1,
-                controls.division.min(MAX_SYNC_DIVISION as usize),
-            )
-            .control_size(Size {
-                width: metrics.dropdown_control_w,
-                height: metrics.dropdown_control_h,
-            }),
-            textbox("Reset Curve")
-                .text_color(theme.subtitle_text)
-                .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
-            button(RESET_KEY).control_size(Size {
-                width: metrics.dropdown_control_w,
-                height: metrics.button_control_h,
-            }),
+            stack(vec![
+                dropdown(
+                    DIVISION_KEY,
+                    MAX_SYNC_DIVISION as usize + 1,
+                    controls.division.min(MAX_SYNC_DIVISION as usize),
+                )
+                .dropdown_option_labels(
+                    (0..=MAX_SYNC_DIVISION as usize)
+                        .map(|index| sync_division_label(index).to_string())
+                        .collect(),
+                )
+                .control_size(Size {
+                    width: metrics.dropdown_control_w,
+                    height: metrics.dropdown_control_h,
+                }),
+                Node::align_box(
+                    textbox(sync_division_label(controls.division))
+                        .text_color(theme.subtitle_text)
+                        .widget_layout(fixed_box(
+                            metrics.dropdown_control_w.saturating_sub(20).max(1),
+                            metrics.label_line_h,
+                        )),
+                )
+                .slot_align(SlotAlign::Center, SlotAlign::Center)
+                .fill(),
+            ])
+            .fill(),
+            stack(vec![
+                button(RESET_KEY).control_size(Size {
+                    width: metrics.dropdown_control_w,
+                    height: metrics.button_control_h,
+                }),
+                Node::align_box(
+                    textbox("Reset Curve")
+                        .text_color(theme.subtitle_text)
+                        .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
+                )
+                .slot_align(SlotAlign::Center, SlotAlign::Center)
+                .fill(),
+            ])
+            .fill(),
         ])
         .gap(metrics.controls_gap.max(0))
         .pad_all(0)
@@ -1435,7 +1462,7 @@ impl GuiState {
             }
         }
 
-        if self.status.is_playing() && self.status.has_host_beats_timeline() {
+        if self.status.has_host_beats_timeline() || self.status.is_playing() {
             let phase = self.status.phase();
             let point = to_canvas(local_from_node_for_size(
                 CurveNode {
@@ -1453,6 +1480,12 @@ impl GuiState {
                 center: point,
                 radius: playhead_core_radius,
                 color: theme.playhead_dot_core,
+            });
+            commands.push(SurfaceCommand::StrokeCircle {
+                center: point,
+                radius: playhead_core_radius.saturating_add(1),
+                thickness: node_stroke.max(1),
+                color: theme.playhead_dot_stroke,
             });
         }
 
@@ -2048,7 +2081,7 @@ mod tests {
         WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
-    use crate::params::PumpParams;
+    use crate::params::{sync_division_label, PumpParams};
     use crate::GuiStatus;
     use std::sync::Arc;
     use toybox::clack_extensions::gui::GuiSize;
@@ -2481,28 +2514,41 @@ mod tests {
     }
 
     #[test]
-    fn playhead_dot_hidden_when_transport_stopped() {
-        let (commands, _curve, theme) = curve_draw_commands_with_transport(0.25, false, true);
+    fn playhead_dot_hidden_when_transport_stopped_without_host_timeline() {
+        let (commands, _curve, theme) = curve_draw_commands_with_transport(0.25, false, false);
         assert!(
             fill_circle_centers_for_color(&commands, theme.playhead_dot_glow).is_empty(),
-            "glow dot should be hidden while host transport is stopped"
+            "glow dot should be hidden when transport is stopped and host timeline is unavailable"
         );
         assert!(
             fill_circle_centers_for_color(&commands, theme.playhead_dot_core).is_empty(),
-            "core dot should be hidden while host transport is stopped"
+            "core dot should be hidden when transport is stopped and host timeline is unavailable"
         );
     }
 
     #[test]
-    fn playhead_dot_hidden_without_host_beats_timeline() {
-        let (commands, _curve, theme) = curve_draw_commands_with_transport(0.25, true, false);
+    fn playhead_dot_visible_when_transport_stopped_with_host_timeline() {
+        let (commands, _curve, theme) = curve_draw_commands_with_transport(0.25, false, true);
         assert!(
-            fill_circle_centers_for_color(&commands, theme.playhead_dot_glow).is_empty(),
-            "glow dot should be hidden without host beat timeline"
+            !fill_circle_centers_for_color(&commands, theme.playhead_dot_glow).is_empty(),
+            "glow dot should remain visible when host timeline is available"
         );
         assert!(
-            fill_circle_centers_for_color(&commands, theme.playhead_dot_core).is_empty(),
-            "core dot should be hidden without host beat timeline"
+            !fill_circle_centers_for_color(&commands, theme.playhead_dot_core).is_empty(),
+            "core dot should remain visible when host timeline is available"
+        );
+    }
+
+    #[test]
+    fn playhead_dot_visible_without_host_beats_timeline_when_playing() {
+        let (commands, _curve, theme) = curve_draw_commands_with_transport(0.25, true, false);
+        assert!(
+            !fill_circle_centers_for_color(&commands, theme.playhead_dot_glow).is_empty(),
+            "glow dot should remain visible while transport is playing"
+        );
+        assert!(
+            !fill_circle_centers_for_color(&commands, theme.playhead_dot_core).is_empty(),
+            "core dot should remain visible while transport is playing"
         );
     }
 
@@ -2887,7 +2933,14 @@ mod tests {
         let mut texts = Vec::new();
         collect_textbox_texts(spec.root.content(), &mut texts);
 
-        for expected in ["Mix", "Depth", "Phase", "Output", "Reset Curve"] {
+        for expected in [
+            "Mix",
+            "Depth",
+            "Phase",
+            "Output",
+            sync_division_label(crate::params::DEFAULT_SYNC_DIVISION_INDEX),
+            "Reset Curve",
+        ] {
             assert!(
                 texts.iter().any(|text| text == expected),
                 "expected textbox caption `{expected}` in {:?}",
