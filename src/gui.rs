@@ -2056,6 +2056,11 @@ mod tests {
                 assert!(matches!(align_box.content(), Node::Slot(_)));
                 assert_slot_tree_node(align_box.content());
             }
+            Node::AspectBox(aspect_box) => {
+                assert_container_layout_host_derived(aspect_box.container_layout());
+                assert!(matches!(aspect_box.content(), Node::Slot(_)));
+                assert_slot_tree_node(aspect_box.content());
+            }
             Node::Row(row) => {
                 assert_container_layout_host_derived(row.container_layout());
                 for child in row.children() {
@@ -2134,6 +2139,7 @@ mod tests {
                 Node::Panel(_)
                     | Node::PaddingBox(_)
                     | Node::AlignBox(_)
+                    | Node::AspectBox(_)
                     | Node::Row(_)
                     | Node::Column(_)
                     | Node::Grid(_)
@@ -2750,6 +2756,7 @@ mod tests {
             Node::Panel(panel) => find_curve_region_node(panel.content()),
             Node::PaddingBox(padding_box) => find_curve_region_node(padding_box.content()),
             Node::AlignBox(align_box) => find_curve_region_node(align_box.content()),
+            Node::AspectBox(aspect_box) => find_curve_region_node(aspect_box.content()),
             Node::Row(flex) | Node::Column(flex) => {
                 flex.children().iter().find_map(find_curve_region_node)
             }
