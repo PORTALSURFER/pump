@@ -546,7 +546,15 @@ impl GuiStatus {
     /// Return whether transport beat blink should currently be lit.
     pub fn transport_beat_blink_active(&self) -> bool {
         const BEAT_FLASH_DUTY: f32 = 0.18;
-        self.has_host_beats_timeline() && self.is_playing() && self.beat_phase() < BEAT_FLASH_DUTY
+        if !self.is_playing() {
+            return false;
+        }
+        if self.has_host_beats_timeline() {
+            return self.beat_phase() < BEAT_FLASH_DUTY;
+        }
+        // Fallback activity mode: keep the transport indicator lit while
+        // playing when the host does not expose a beat timeline.
+        true
     }
 }
 
@@ -637,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_beat_blink_requires_timeline_playback_and_duty_window() {
+    fn transport_beat_blink_requires_playback_and_uses_timeline_when_available() {
         let status = GuiStatus::default();
         status.update(
             0.0,
@@ -689,7 +697,7 @@ mod tests {
                 beats_per_cycle: 1.0,
             },
         );
-        assert!(!status.transport_beat_blink_active());
+        assert!(status.transport_beat_blink_active());
     }
 
     #[test]

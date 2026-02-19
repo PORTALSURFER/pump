@@ -37,5 +37,21 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 ## Notes
 
 - v1 is envelope-only (no external sidechain input).
-- The modulation phase is host-beat-locked when transport data is available.
+- The modulation phase follows host beat position when the host exposes a beat timeline.
+- When beat timeline data is unavailable, phase falls back to transport-driven free running so curve modulation remains audible.
 - Curve state is persisted in plugin state payloads.
+
+## Transport Indicator
+
+- The header indicator blinks by beat phase when host beat timeline data is available.
+- If the host is playing but does not expose beat timeline data, the indicator stays lit as a fallback "transport active" signal.
+
+## Troubleshooting
+
+- If curve edits are visible but audio does not change:
+  - Verify `Mix` and `Depth` are above `0%`.
+  - Verify the plugin is not bypassed.
+  - For VST3 hosts, ensure you are on a build that includes shared processor/controller state sync.
+- If the transport indicator never lights:
+  - Start host playback.
+  - Confirm the plugin build includes transport telemetry propagation from the processor to GUI status.

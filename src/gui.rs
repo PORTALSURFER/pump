@@ -2958,8 +2958,8 @@ mod tests {
         let no_timeline = find_first_indicator_active(no_timeline_spec.root.content())
             .expect("header transport indicator should exist");
         assert!(
-            !no_timeline,
-            "indicator should stay off when host beat timeline is unavailable"
+            no_timeline,
+            "indicator should stay lit while playing when host beat timeline is unavailable"
         );
     }
 

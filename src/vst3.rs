@@ -8,7 +8,7 @@
 use std::ffi::{c_void, CStr};
 use std::ptr;
 use std::slice;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use toybox::clap::automation::AutomationQueue;
 use toybox::vst3::prelude::Steinberg::*;
@@ -22,8 +22,8 @@ use crate::params::{
     DEFAULT_SYNC_DIVISION_INDEX, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET,
     MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET,
 };
-use crate::GuiStatus;
-use toybox::dsp::TransportState;
+use crate::{GuiStatus, GuiTransportTelemetry};
+use toybox::dsp::{phase_from_beats, TransportState};
 
 const PLUGIN_NAME: &str = "pump";
 const PROCESSOR_CID: TUID = uid(0xE5A9A79F, 0xC4A94392, 0x97A8A8AA, 0xA9A90B3C);
@@ -105,6 +105,113 @@ fn apply_normalized_param(params: &PumpParams, param_id: ParamID, normalized: f6
     apply_plain_param(params, param_id, plain);
 }
 
+/// Shared VST3 state used by processor, controller, and hosted GUI.
+struct PumpVst3Shared {
+    params: Arc<PumpParams>,
+    status: Arc<GuiStatus>,
+    automation_queue: Arc<AutomationQueue>,
+}
+
+impl PumpVst3Shared {
+    fn new() -> Self {
+        Self {
+            params: Arc::new(PumpParams::new()),
+            status: Arc::new(GuiStatus::default()),
+            automation_queue: Arc::new(AutomationQueue::default()),
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+enum SharedRole {
+    Processor,
+    Controller,
+}
+
+struct SharedRegistryEntry {
+    shared: Weak<PumpVst3Shared>,
+    processor_claimed: bool,
+    controller_claimed: bool,
+}
+
+fn shared_registry() -> &'static Mutex<Vec<SharedRegistryEntry>> {
+    static REGISTRY: OnceLock<Mutex<Vec<SharedRegistryEntry>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn acquire_shared_for_role(role: SharedRole) -> Arc<PumpVst3Shared> {
+    let mut registry = match shared_registry().lock() {
+        Ok(registry) => registry,
+        Err(_) => return Arc::new(PumpVst3Shared::new()),
+    };
+
+    registry.retain(|entry| entry.shared.upgrade().is_some());
+    for entry in registry.iter_mut() {
+        let Some(shared) = entry.shared.upgrade() else {
+            continue;
+        };
+        match role {
+            SharedRole::Processor if !entry.processor_claimed => {
+                entry.processor_claimed = true;
+                return shared;
+            }
+            SharedRole::Controller if !entry.controller_claimed => {
+                entry.controller_claimed = true;
+                return shared;
+            }
+            _ => {}
+        }
+    }
+
+    let shared = Arc::new(PumpVst3Shared::new());
+    registry.push(SharedRegistryEntry {
+        shared: Arc::downgrade(&shared),
+        processor_claimed: matches!(role, SharedRole::Processor),
+        controller_claimed: matches!(role, SharedRole::Controller),
+    });
+    shared
+}
+
+fn gui_phase_from_transport(
+    transport: TransportState,
+    settings: DspSettings,
+    fallback: f32,
+) -> f32 {
+    transport
+        .song_pos_beats
+        .map(|beats| phase_from_beats(beats, settings.beats_per_cycle, settings.phase_offset))
+        .unwrap_or_else(|| fallback.rem_euclid(1.0))
+}
+
+fn host_beat_phase(transport: TransportState) -> Option<f32> {
+    transport
+        .song_pos_beats
+        .map(|beats| beats.rem_euclid(1.0) as f32)
+}
+
+fn transport_state_from_vst3_process_context(
+    process_context: *mut ProcessContext,
+) -> TransportState {
+    let Some(process_context) = (unsafe { process_context.as_ref() }) else {
+        return TransportState::default();
+    };
+
+    let state = process_context.state;
+    let tempo_valid = (state & ProcessContext_::StatesAndFlags_::kTempoValid as u32) != 0;
+    let project_time_music_valid =
+        (state & ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid as u32) != 0;
+    let is_playing = (state & ProcessContext_::StatesAndFlags_::kPlaying as u32) != 0;
+    TransportState {
+        tempo_bpm: if tempo_valid {
+            process_context.tempo as f32
+        } else {
+            120.0
+        },
+        is_playing,
+        song_pos_beats: project_time_music_valid.then_some(process_context.projectTimeMusic),
+    }
+}
+
 struct PumpVst3Runtime {
     engine: PumpEngine,
     last_curve_revision: u32,
@@ -134,16 +241,15 @@ impl PumpVst3Runtime {
 }
 
 struct PumpVst3Processor {
-    params: Arc<PumpParams>,
+    shared: Arc<PumpVst3Shared>,
     runtime: Mutex<PumpVst3Runtime>,
 }
 
 impl PumpVst3Processor {
-    fn new() -> Self {
-        let params = Arc::new(PumpParams::new());
+    fn new(shared: Arc<PumpVst3Shared>) -> Self {
         Self {
-            runtime: Mutex::new(PumpVst3Runtime::new(params.as_ref())),
-            params,
+            runtime: Mutex::new(PumpVst3Runtime::new(shared.params.as_ref())),
+            shared,
         }
     }
 }
@@ -254,22 +360,22 @@ impl IComponentTrait for PumpVst3Processor {
             return kInvalidArgument;
         };
 
-        if decode_state_payload(self.params.as_ref(), &payload.payload).is_err() {
+        if decode_state_payload(self.shared.params.as_ref(), &payload.payload).is_err() {
             return kInvalidArgument;
         }
 
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime
                 .engine
-                .set_target_curve(self.params.curve_snapshot());
-            runtime.last_curve_revision = self.params.curve_revision();
+                .set_target_curve(self.shared.params.curve_snapshot());
+            runtime.last_curve_revision = self.shared.params.curve_revision();
         }
 
         kResultOk
     }
 
     unsafe fn getState(&self, state: *mut IBStream) -> tresult {
-        let payload = encode_state_payload(self.params.as_ref());
+        let payload = encode_state_payload(self.shared.params.as_ref());
         match unsafe { write_versioned_payload(state, STATE_MAGIC, STATE_VERSION, &payload) } {
             Ok(()) => kResultOk,
             Err(_) => kResultFalse,
@@ -337,7 +443,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
         let setup = unsafe { &*setup };
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.set_sample_rate(setup.sampleRate, self.params.as_ref());
+            runtime.set_sample_rate(setup.sampleRate, self.shared.params.as_ref());
         }
 
         kResultOk
@@ -364,50 +470,81 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             if let Some((_, value)) =
                 unsafe { latest_param_point(process_data.inputParameterChanges, id) }
             {
-                apply_normalized_param(self.params.as_ref(), id, value);
+                apply_normalized_param(self.shared.params.as_ref(), id, value);
             }
         }
-
-        let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
-            return process_ok();
-        };
 
         let mut runtime = match self.runtime.lock() {
             Ok(runtime) => runtime,
             Err(_) => return process_ok(),
         };
 
-        let revision = self.params.curve_revision();
+        let revision = self.shared.params.curve_revision();
         if revision != runtime.last_curve_revision {
             runtime
                 .engine
-                .set_target_curve(self.params.curve_snapshot());
+                .set_target_curve(self.shared.params.curve_snapshot());
             runtime.last_curve_revision = revision;
         }
 
         let settings = DspSettings {
-            mix: self.params.mix(),
-            depth: self.params.depth(),
-            phase_offset: self.params.phase_offset(),
-            output_gain_db: self.params.output_gain_db(),
-            beats_per_cycle: self.params.sync_beats_per_cycle(),
+            mix: self.shared.params.mix(),
+            depth: self.shared.params.depth(),
+            phase_offset: self.shared.params.phase_offset(),
+            output_gain_db: self.shared.params.output_gain_db(),
+            beats_per_cycle: self.shared.params.sync_beats_per_cycle(),
+        };
+        let transport = transport_state_from_vst3_process_context(process_data.processContext);
+        let phase_running = transport.is_playing || transport.song_pos_beats.is_none();
+        let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
+        let beat_phase =
+            host_beat_phase(transport).unwrap_or_else(|| self.shared.status.beat_phase());
+        self.shared.status.update(
+            gui_phase,
+            self.shared.status.gain(),
+            GuiTransportTelemetry {
+                is_playing: phase_running,
+                has_host_beats_timeline: transport.song_pos_beats.is_some(),
+                beat_phase,
+                tempo_bpm: transport.tempo_bpm,
+                beats_per_cycle: settings.beats_per_cycle,
+            },
+        );
+
+        let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
+            return process_ok();
         };
 
-        let transport = TransportState {
-            tempo_bpm: 120.0,
-            is_playing: true,
-            song_pos_beats: None,
-        };
-
+        let mut last_phase = 0.0_f32;
+        let mut last_gain = 1.0_f32;
+        let mut transport_for_sample = transport;
         for sample_index in 0..buffers.num_samples {
             let mut left = buffers.input_left[sample_index];
             let mut right = buffers.input_right[sample_index];
-            let _ = runtime
-                .engine
-                .process_sample(&mut left, &mut right, settings, transport);
+            let telemetry = runtime.engine.process_sample(
+                &mut left,
+                &mut right,
+                settings,
+                transport_for_sample,
+            );
+            transport_for_sample.song_pos_beats = None;
+            last_phase = telemetry.phase;
+            last_gain = telemetry.gain;
             buffers.output_left[sample_index] = left;
             buffers.output_right[sample_index] = right;
         }
+        self.shared.status.update(
+            last_phase,
+            last_gain,
+            GuiTransportTelemetry {
+                is_playing: phase_running,
+                has_host_beats_timeline: transport.song_pos_beats.is_some(),
+                beat_phase: host_beat_phase(transport)
+                    .unwrap_or_else(|| self.shared.status.beat_phase()),
+                tempo_bpm: transport.tempo_bpm,
+                beats_per_cycle: settings.beats_per_cycle,
+            },
+        );
 
         process_ok()
     }
@@ -419,18 +556,22 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
 impl IProcessContextRequirementsTrait for PumpVst3Processor {
     unsafe fn getProcessContextRequirements(&self) -> u32 {
-        0
+        (IProcessContextRequirements_::Flags_::kNeedTempo
+            | IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic
+            | IProcessContextRequirements_::Flags_::kNeedTransportState) as u32
     }
 }
 
 struct PumpVst3Controller {
-    params: Arc<PumpParams>,
+    shared: Arc<PumpVst3Shared>,
+    component_handler: Mutex<Option<ComPtr<IComponentHandler>>>,
 }
 
 impl PumpVst3Controller {
-    fn new() -> Self {
+    fn new(shared: Arc<PumpVst3Shared>) -> Self {
         Self {
-            params: Arc::new(PumpParams::new()),
+            shared,
+            component_handler: Mutex::new(None),
         }
     }
 }
@@ -456,7 +597,7 @@ impl IEditControllerTrait for PumpVst3Controller {
             return kInvalidArgument;
         };
 
-        if decode_state_payload(self.params.as_ref(), &payload.payload).is_ok() {
+        if decode_state_payload(self.shared.params.as_ref(), &payload.payload).is_ok() {
             kResultOk
         } else {
             kInvalidArgument
@@ -468,7 +609,7 @@ impl IEditControllerTrait for PumpVst3Controller {
     }
 
     unsafe fn getState(&self, state: *mut IBStream) -> tresult {
-        let payload = encode_state_payload(self.params.as_ref());
+        let payload = encode_state_payload(self.shared.params.as_ref());
         match unsafe { write_versioned_payload(state, STATE_MAGIC, STATE_VERSION, &payload) } {
             Ok(()) => kResultOk,
             Err(_) => kResultFalse,
@@ -627,15 +768,24 @@ impl IEditControllerTrait for PumpVst3Controller {
     }
 
     unsafe fn getParamNormalized(&self, id: ParamID) -> ParamValue {
-        to_normalized(id, read_plain_param(self.params.as_ref(), id))
+        to_normalized(id, read_plain_param(self.shared.params.as_ref(), id))
     }
 
     unsafe fn setParamNormalized(&self, id: ParamID, value: ParamValue) -> tresult {
-        apply_normalized_param(self.params.as_ref(), id, value);
+        apply_normalized_param(self.shared.params.as_ref(), id, value);
         kResultOk
     }
 
-    unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
+    unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
+        let Ok(mut component_handler) = self.component_handler.lock() else {
+            return kResultFalse;
+        };
+        if handler.is_null() {
+            *component_handler = None;
+            return kResultOk;
+        }
+        unsafe { ((*(*handler).vtbl).base.addRef)(handler.cast()) };
+        *component_handler = unsafe { ComPtr::from_raw(handler) };
         kResultOk
     }
 
@@ -650,7 +800,7 @@ impl IEditControllerTrait for PumpVst3Controller {
             return ptr::null_mut();
         }
 
-        let adapter = PumpVst3GuiAdapter::new(self.params.clone());
+        let adapter = PumpVst3GuiAdapter::new(self.shared.clone());
         let (default_width, default_height) = preferred_window_size();
         let Some(view) =
             ComWrapper::new(HostedVst3View::new(adapter, default_width, default_height))
@@ -663,18 +813,14 @@ impl IEditControllerTrait for PumpVst3Controller {
 }
 
 struct PumpVst3GuiAdapter {
-    params: Arc<PumpParams>,
-    status: Arc<GuiStatus>,
-    automation_queue: Arc<AutomationQueue>,
+    shared: Arc<PumpVst3Shared>,
     gui: PumpGui,
 }
 
 impl PumpVst3GuiAdapter {
-    fn new(params: Arc<PumpParams>) -> Self {
+    fn new(shared: Arc<PumpVst3Shared>) -> Self {
         Self {
-            params,
-            status: Arc::new(GuiStatus::default()),
-            automation_queue: Arc::new(AutomationQueue::default()),
+            shared,
             gui: PumpGui::default(),
         }
     }
@@ -688,9 +834,9 @@ impl Vst3HostedGui for PumpVst3GuiAdapter {
     fn open(&mut self) -> bool {
         self.gui
             .open(
-                &self.params,
-                &self.status,
-                self.automation_queue.clone(),
+                &self.shared.params,
+                &self.shared.status,
+                self.shared.automation_queue.clone(),
                 None,
             )
             .is_ok()
@@ -776,8 +922,14 @@ impl IPluginFactoryTrait for PumpVst3Factory {
 
         let class_id = unsafe { *(cid as *const TUID) };
         let instance = match class_id {
-            PROCESSOR_CID => ComWrapper::new(PumpVst3Processor::new()).to_com_ptr::<FUnknown>(),
-            CONTROLLER_CID => ComWrapper::new(PumpVst3Controller::new()).to_com_ptr::<FUnknown>(),
+            PROCESSOR_CID => {
+                let shared = acquire_shared_for_role(SharedRole::Processor);
+                ComWrapper::new(PumpVst3Processor::new(shared)).to_com_ptr::<FUnknown>()
+            }
+            CONTROLLER_CID => {
+                let shared = acquire_shared_for_role(SharedRole::Controller);
+                ComWrapper::new(PumpVst3Controller::new(shared)).to_com_ptr::<FUnknown>()
+            }
             _ => None,
         };
 
@@ -795,10 +947,11 @@ toybox::vst3_plugin_entry!(PumpVst3Factory);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::mem;
 
     #[test]
     fn controller_reports_expected_parameter_count() {
-        let controller = PumpVst3Controller::new();
+        let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
         let count = unsafe { controller.getParameterCount() };
         assert_eq!(count, 5);
     }
@@ -807,7 +960,7 @@ mod tests {
     fn view_enforces_minimum_size() {
         let (preferred_width, preferred_height) = preferred_window_size();
         let view = HostedVst3View::new(
-            PumpVst3GuiAdapter::new(Arc::new(PumpParams::new())),
+            PumpVst3GuiAdapter::new(Arc::new(PumpVst3Shared::new())),
             preferred_width,
             preferred_height,
         );
@@ -816,5 +969,53 @@ mod tests {
         assert_eq!(result, kResultOk);
         assert!(rect.right - rect.left >= preferred_width as i32);
         assert!(rect.bottom - rect.top >= preferred_height as i32);
+    }
+
+    #[test]
+    fn controller_and_processor_share_param_state() {
+        let shared = Arc::new(PumpVst3Shared::new());
+        let controller = PumpVst3Controller::new(Arc::clone(&shared));
+        let processor = PumpVst3Processor::new(Arc::clone(&shared));
+        let value = to_normalized(PARAM_DEPTH_ID, 0.25);
+        let result = unsafe { controller.setParamNormalized(PARAM_DEPTH_ID, value) };
+        assert_eq!(result, kResultOk);
+        assert!((processor.shared.params.depth() - 0.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn transport_state_uses_vst3_process_context_when_available() {
+        let context = ProcessContext {
+            state: (ProcessContext_::StatesAndFlags_::kTempoValid
+                | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid
+                | ProcessContext_::StatesAndFlags_::kPlaying) as u32,
+            sampleRate: 48_000.0,
+            projectTimeSamples: 0,
+            systemTime: 0,
+            continousTimeSamples: 0,
+            projectTimeMusic: 17.5,
+            barPositionMusic: 0.0,
+            cycleStartMusic: 0.0,
+            cycleEndMusic: 0.0,
+            tempo: 128.0,
+            timeSigNumerator: 4,
+            timeSigDenominator: 4,
+            chord: unsafe { mem::zeroed() },
+            smpteOffsetSubframes: 0,
+            frameRate: unsafe { mem::zeroed() },
+            samplesToNextClock: 0,
+        };
+        let state =
+            transport_state_from_vst3_process_context(&context as *const ProcessContext as *mut _);
+        assert!(state.is_playing);
+        assert!((state.tempo_bpm - 128.0).abs() < 1.0e-6);
+        assert!((state.song_pos_beats.unwrap_or_default() - 17.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn transport_state_defaults_without_process_context() {
+        let state = transport_state_from_vst3_process_context(std::ptr::null_mut());
+        assert!(!state.is_playing);
+        assert_eq!(state.song_pos_beats, None);
+        assert!((state.tempo_bpm - 120.0).abs() < 1.0e-6);
     }
 }
