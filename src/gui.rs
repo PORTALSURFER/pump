@@ -9,9 +9,9 @@ use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
     button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, knob, label, panel,
-    row_slots, surface, weighted_slot, weighted_slot_lengths, GridTemplate, LayoutBox, Node,
-    OverflowPolicy, RegionInteractionKind, RootFrameSpec, RootScaleMode, SlotAlign, SurfaceCommand,
-    ThemeTokens, TrackSize, UiAction, UiSpec,
+    row_slots, surface, switch_layout, weighted_slot, weighted_slot_lengths, when_width_ge,
+    GridTemplate, LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootFrameSpec,
+    RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -56,6 +56,7 @@ const ROOT_SECTION_WEIGHT_SUM: u32 =
     HEADER_SECTION_WEIGHT as u32 + CURVE_SECTION_WEIGHT as u32 + CONTROLS_SECTION_WEIGHT as u32;
 const KNOBS_SECTION_WEIGHT: u16 = 70;
 const DROPDOWN_SECTION_WEIGHT: u16 = 30;
+const HEADER_SWITCH_WIDE_MIN_WIDTH: u32 = 560;
 const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_slot_heights(WINDOW_HEIGHT).1;
@@ -594,10 +595,10 @@ impl GuiState {
     /// Build the top header slot node.
     fn build_header_slot(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
         let _title_y = scaled_i32(SPLINE_TITLE_Y, metrics.scale);
-        let header_content = row_slots(vec![
+        let wide_header = row_slots(vec![
             fraction_slot(
                 panel(
-                    "header-title",
+                    "header-title-wide",
                     label("PUMP")
                         .text_color(theme.title_text)
                         .widget_layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
@@ -607,7 +608,7 @@ impl GuiState {
             ),
             fill_slot(
                 panel(
-                    "header-subtitle",
+                    "header-subtitle-wide",
                     label("Spline Beat-Synced Ducking")
                         .text_color(theme.subtitle_text)
                         .widget_layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
@@ -615,6 +616,32 @@ impl GuiState {
                 .pad_xy(0, 0),
             ),
         ])
+        .container_overflow(OverflowPolicy::Compress);
+        let compact_header = column_slots(vec![
+            fill_slot(
+                panel(
+                    "header-title-compact",
+                    label("PUMP")
+                        .text_color(theme.title_text)
+                        .widget_layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
+                )
+                .pad_xy(metrics.padding_x.max(0), 0),
+            ),
+            fill_slot(
+                panel(
+                    "header-subtitle-compact",
+                    label("Spline Beat-Synced Ducking")
+                        .text_color(theme.subtitle_text)
+                        .widget_layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
+                )
+                .pad_xy(0, 0),
+            ),
+        ])
+        .container_overflow(OverflowPolicy::Compress);
+        let header_content = switch_layout(
+            vec![when_width_ge(HEADER_SWITCH_WIDE_MIN_WIDTH, wide_header)],
+            compact_header,
+        )
         .container_overflow(OverflowPolicy::Compress);
         panel("header", header_content).pad_all(0)
     }
@@ -1956,7 +1983,8 @@ mod tests {
         constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
         local_from_node, move_node_with_push_through, move_segment_translated,
         preferred_window_size, preview_node_on_curve, resolve_runtime_controls_slot_widths,
-        resolve_vertical_slot_heights, GuiState, CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
+        resolve_vertical_slot_heights, GuiState, CURVE_H, CURVE_KEY, HEADER_SWITCH_WIDE_MIN_WIDTH,
+        WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -1966,7 +1994,8 @@ mod tests {
     use toybox::clap::automation::AutomationQueue;
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
-        measure_checked, ContainerLayout, ContainerLength, Node, PanelSpec, RootScaleMode, UiSpec,
+        measure_checked, ContainerLayout, ContainerLength, GridKind, Node, PanelSpec,
+        RootScaleMode, SwitchLayoutSpec, UiSpec,
     };
     use toybox::gui::{render_spec_to_frame, MainPalette, Point, Size};
 
@@ -2045,6 +2074,34 @@ mod tests {
                     assert_slot_tree_node(child.node());
                 }
             }
+            Node::Stack(stack) => {
+                assert_container_layout_host_derived(stack.container_layout());
+                for child in stack.children() {
+                    assert!(matches!(child, Node::Slot(_)));
+                    assert_slot_tree_node(child);
+                }
+            }
+            Node::ScrollView(scroll_view) => {
+                assert_container_layout_host_derived(scroll_view.container_layout());
+                assert!(matches!(scroll_view.content(), Node::Slot(_)));
+                assert_slot_tree_node(scroll_view.content());
+            }
+            Node::Wrap(wrap) => {
+                assert_container_layout_host_derived(wrap.container_layout());
+                for child in wrap.children() {
+                    assert!(matches!(child, Node::Slot(_)));
+                    assert_slot_tree_node(child);
+                }
+            }
+            Node::SwitchLayout(switch_layout) => {
+                assert_container_layout_host_derived(switch_layout.container_layout());
+                assert!(matches!(switch_layout.fallback(), Node::Slot(_)));
+                assert_slot_tree_node(switch_layout.fallback());
+                for case_entry in switch_layout.cases() {
+                    assert!(matches!(case_entry.child(), Node::Slot(_)));
+                    assert_slot_tree_node(case_entry.child());
+                }
+            }
             Node::Label(_)
             | Node::Spacer(_)
             | Node::Knob(_)
@@ -2064,11 +2121,31 @@ mod tests {
         assert!(
             matches!(
                 root_child,
-                Node::Panel(_) | Node::Row(_) | Node::Column(_) | Node::Grid(_) | Node::Absolute(_)
+                Node::Panel(_)
+                    | Node::Row(_)
+                    | Node::Column(_)
+                    | Node::Grid(_)
+                    | Node::Absolute(_)
+                    | Node::Stack(_)
+                    | Node::ScrollView(_)
+                    | Node::Wrap(_)
+                    | Node::SwitchLayout(_)
             ),
             "root slot child must be a container"
         );
         assert_slot_tree_node(root_child);
+    }
+
+    fn extract_header_switch(spec: &UiSpec) -> &SwitchLayoutSpec {
+        let root_grid = match expect_slot_child(spec.root.content(), "root") {
+            Node::Grid(grid) => grid,
+            other => panic!("expected root content grid, got {other:?}"),
+        };
+        let header_panel = expect_slot_panel(&root_grid.children()[0], "header");
+        match expect_slot_child(header_panel.content(), "header") {
+            Node::SwitchLayout(switch_layout) => switch_layout,
+            other => panic!("expected header switch-layout, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2487,6 +2564,30 @@ mod tests {
         assert_eq!(root_grid.children().len(), 3);
         let _header_panel = expect_slot_panel(&root_grid.children()[0], "header");
         let _curve_panel = expect_slot_panel(&root_grid.children()[1], "curve");
+        let header_panel = expect_slot_panel(&root_grid.children()[0], "header");
+        let header_switch = match expect_slot_child(header_panel.content(), "header") {
+            Node::SwitchLayout(switch_layout) => switch_layout,
+            other => panic!("expected header switch-layout in panel, got {other:?}"),
+        };
+        assert_eq!(header_switch.cases().len(), 1);
+        let wide_case_child = header_switch
+            .cases()
+            .first()
+            .expect("expected one wide-case child")
+            .child();
+        let wide_grid = match expect_slot_child(wide_case_child, "header-wide") {
+            Node::Grid(grid) => grid,
+            other => panic!("expected wide header grid, got {other:?}"),
+        };
+        assert_eq!(wide_grid.children().len(), 2);
+        let _title_panel = expect_slot_panel(&wide_grid.children()[0], "header-title");
+        let _subtitle_panel = expect_slot_panel(&wide_grid.children()[1], "header-subtitle");
+        let compact_grid = match expect_slot_child(header_switch.fallback(), "header-compact") {
+            Node::Grid(grid) => grid,
+            other => panic!("expected compact header grid fallback, got {other:?}"),
+        };
+        assert_eq!(compact_grid.children().len(), 2);
+
         let controls_panel = expect_slot_panel(&root_grid.children()[2], "controls");
         let controls_grid = match expect_slot_child(controls_panel.content(), "controls") {
             Node::Grid(grid) => grid,
@@ -2495,6 +2596,46 @@ mod tests {
         assert_eq!(controls_grid.children().len(), 2);
         let _knobs_panel = expect_slot_panel(&controls_grid.children()[0], "knobs");
         let _dropdown_panel = expect_slot_panel(&controls_grid.children()[1], "dropdowns");
+    }
+
+    #[test]
+    fn header_switch_selects_compact_and_wide_variants_by_root_width() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let compact_spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
+        let compact_switch = extract_header_switch(&compact_spec);
+        let compact_child = compact_switch.selected_child(WINDOW_WIDTH);
+        let compact_grid = match expect_slot_child(compact_child, "compact-header") {
+            Node::Grid(grid) => grid,
+            other => panic!("expected compact header grid, got {other:?}"),
+        };
+        assert_eq!(compact_grid.kind(), GridKind::SlotColumn);
+
+        let wide_width = HEADER_SWITCH_WIDE_MIN_WIDTH.saturating_add(1);
+        let wide_spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: wide_width,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
+        let wide_switch = extract_header_switch(&wide_spec);
+        let wide_child = wide_switch.selected_child(wide_width);
+        let wide_grid = match expect_slot_child(wide_child, "wide-header") {
+            Node::Grid(grid) => grid,
+            other => panic!("expected wide header grid, got {other:?}"),
+        };
+        assert_eq!(wide_grid.kind(), GridKind::SlotRow);
     }
 
     #[test]
@@ -2599,6 +2740,14 @@ mod tests {
                 flex.children().iter().find_map(find_curve_region_node)
             }
             Node::Grid(grid) => grid.children().iter().find_map(find_curve_region_node),
+            Node::Stack(stack) => stack.children().iter().find_map(find_curve_region_node),
+            Node::ScrollView(scroll_view) => find_curve_region_node(scroll_view.content()),
+            Node::Wrap(wrap) => wrap.children().iter().find_map(find_curve_region_node),
+            Node::SwitchLayout(switch_layout) => switch_layout
+                .cases()
+                .iter()
+                .find_map(|case_entry| find_curve_region_node(case_entry.child()))
+                .or_else(|| find_curve_region_node(switch_layout.fallback())),
             Node::Region(_) => None,
             Node::Label(_)
             | Node::Spacer(_)
