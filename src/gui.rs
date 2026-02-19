@@ -74,6 +74,8 @@ const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
+const PLAYHEAD_DOT_CORE_RADIUS: i32 = 3;
+const PLAYHEAD_DOT_GLOW_RADIUS: i32 = 8;
 const SEGMENT_NEAR_HIT_RADIUS: i32 = 16;
 const SEGMENT_DIRECT_HIT_RADIUS: i32 = 6;
 const NODE_INSERT_GUARD_RADIUS: i32 = 12;
@@ -229,7 +231,8 @@ struct PumpTheme {
     node_selected_stroke: Color,
     node_hover_ring: Color,
     node_selected_ring: Color,
-    playhead: Color,
+    playhead_dot_core: Color,
+    playhead_dot_glow: Color,
     meter_outline: Color,
     meter_fill: Color,
 }
@@ -265,7 +268,13 @@ impl PumpTheme {
             node_selected_stroke: palette.text_primary,
             node_hover_ring: palette.syntax_emphasis,
             node_selected_ring: palette.accent_focus,
-            playhead: palette.accent_focus,
+            playhead_dot_core: palette.accent_focus,
+            playhead_dot_glow: Color::rgba(
+                palette.accent_focus.r,
+                palette.accent_focus.g,
+                palette.accent_focus.b,
+                140,
+            ),
             meter_outline: palette.ui_secondary,
             meter_fill: palette.literals,
         }
@@ -1229,6 +1238,8 @@ impl GuiState {
         let node_preview_radius = scaled_curve_i32(NODE_DRAW_RADIUS + 1, curve_size);
         let node_preview_stroke_radius = scaled_curve_i32(NODE_DRAW_RADIUS + 2, curve_size);
         let node_ring_radius = scaled_curve_i32(NODE_DRAW_RADIUS + 3, curve_size);
+        let playhead_core_radius = scaled_curve_i32(PLAYHEAD_DOT_CORE_RADIUS, curve_size);
+        let playhead_glow_radius = scaled_curve_i32(PLAYHEAD_DOT_GLOW_RADIUS, curve_size);
         let node_stroke = scaled_curve_i32(METER_STROKE, curve_size);
         let highlight_offset = scaled_curve_i32(1, curve_size);
         let meter_x_offset = metrics.meter_x_offset.max(0);
@@ -1392,19 +1403,26 @@ impl GuiState {
             }
         }
 
-        let phase = self.status.phase();
-        let playhead_x = (phase * (curve_size.width as f32 - 1.0)).round() as i32;
-        commands.push(SurfaceCommand::Line {
-            start: Point {
-                x: playhead_x,
-                y: 0,
-            },
-            end: Point {
-                x: playhead_x,
-                y: curve_size.height as i32 - 1,
-            },
-            color: theme.playhead,
-        });
+        if self.status.is_playing() && self.status.has_host_beats_timeline() {
+            let phase = self.status.phase();
+            let point = to_canvas(local_from_node_for_size(
+                CurveNode {
+                    x: phase,
+                    y: sample_editable_curve(editable_curve, phase).clamp(0.0, 1.0),
+                },
+                curve_size,
+            ));
+            commands.push(SurfaceCommand::FillCircle {
+                center: point,
+                radius: playhead_glow_radius,
+                color: theme.playhead_dot_glow,
+            });
+            commands.push(SurfaceCommand::FillCircle {
+                center: point,
+                radius: playhead_core_radius,
+                color: theme.playhead_dot_core,
+            });
+        }
 
         let reduction = (1.0 - self.status.gain().clamp(0.0, 1.0)).clamp(0.0, 1.0);
         let meter_rect = Rect {
@@ -1992,8 +2010,9 @@ mod tests {
         constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
         local_from_node, move_node_with_push_through, move_segment_translated,
         preferred_window_size, preview_node_on_curve, resolve_runtime_controls_slot_widths,
-        resolve_vertical_slot_heights, GuiState, CURVE_H, CURVE_KEY, DIVISION_KEY,
-        HEADER_SWITCH_WIDE_MIN_WIDTH, WINDOW_HEIGHT, WINDOW_WIDTH,
+        resolve_vertical_slot_heights, CurveRenderState, GuiState, PumpTheme, UiLayoutMetrics,
+        CURVE_H, CURVE_KEY, DIVISION_KEY, HEADER_SWITCH_WIDE_MIN_WIDTH, WINDOW_HEIGHT,
+        WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -2004,9 +2023,9 @@ mod tests {
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
         measure_checked, ContainerLayout, ContainerLength, GridKind, Node, PanelSpec,
-        RootScaleMode, SwitchLayoutSpec, UiSpec,
+        RootScaleMode, SurfaceCommand, SwitchLayoutSpec, UiSpec,
     };
-    use toybox::gui::{render_spec_to_frame, MainPalette, Point, Size};
+    use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
     fn expect_slot_child<'a>(node: &'a Node, label: &str) -> &'a Node {
         match node {
@@ -2310,6 +2329,107 @@ mod tests {
         assert!((curve.nodes[2].x - 0.7).abs() < 1.0e-6);
         assert!((curve.nodes[1].y - 0.6).abs() < 1.0e-6);
         assert!((curve.nodes[2].y - 0.6).abs() < 1.0e-6);
+    }
+
+    fn curve_draw_commands_with_transport(
+        phase: f32,
+        is_playing: bool,
+        has_host_beats_timeline: bool,
+    ) -> (Vec<SurfaceCommand>, EditableCurve, PumpTheme) {
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        status.update(phase, 1.0, is_playing, has_host_beats_timeline);
+        let state = GuiState::new(
+            Arc::clone(&params),
+            status,
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let metrics = UiLayoutMetrics::design_space();
+        let theme = PumpTheme::main(metrics);
+        let curve = params.editable_curve_snapshot();
+        let commands = state.build_curve_draw_commands(
+            &curve,
+            metrics,
+            CurveRenderState {
+                selected_node: None,
+                hovered_node: None,
+                hovered_segment: None,
+                preview_node: None,
+            },
+            &theme,
+        );
+        (commands, curve, theme)
+    }
+
+    fn fill_circle_centers_for_color(commands: &[SurfaceCommand], color: Color) -> Vec<Point> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                SurfaceCommand::FillCircle {
+                    center,
+                    color: command_color,
+                    ..
+                } if *command_color == color => Some(*center),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn playhead_dot_hidden_when_transport_stopped() {
+        let (commands, _curve, theme) = curve_draw_commands_with_transport(0.25, false, true);
+        assert!(
+            fill_circle_centers_for_color(&commands, theme.playhead_dot_glow).is_empty(),
+            "glow dot should be hidden while host transport is stopped"
+        );
+        assert!(
+            fill_circle_centers_for_color(&commands, theme.playhead_dot_core).is_empty(),
+            "core dot should be hidden while host transport is stopped"
+        );
+    }
+
+    #[test]
+    fn playhead_dot_hidden_without_host_beats_timeline() {
+        let (commands, _curve, theme) = curve_draw_commands_with_transport(0.25, true, false);
+        assert!(
+            fill_circle_centers_for_color(&commands, theme.playhead_dot_glow).is_empty(),
+            "glow dot should be hidden without host beat timeline"
+        );
+        assert!(
+            fill_circle_centers_for_color(&commands, theme.playhead_dot_core).is_empty(),
+            "core dot should be hidden without host beat timeline"
+        );
+    }
+
+    #[test]
+    fn playhead_dot_visible_when_transport_running_with_beats_timeline() {
+        let (commands, _curve, theme) = curve_draw_commands_with_transport(0.25, true, true);
+        let glow_centers = fill_circle_centers_for_color(&commands, theme.playhead_dot_glow);
+        let core_centers = fill_circle_centers_for_color(&commands, theme.playhead_dot_core);
+        assert_eq!(glow_centers.len(), 1, "expected one glow playhead dot");
+        assert_eq!(core_centers.len(), 1, "expected one core playhead dot");
+        assert_eq!(
+            core_centers[0], glow_centers[0],
+            "playhead glow and core should share the same center"
+        );
+    }
+
+    #[test]
+    fn playhead_dot_tracks_curve_sample_at_host_phase() {
+        let phase = 0.37;
+        let (commands, curve, theme) = curve_draw_commands_with_transport(phase, true, true);
+        let core_centers = fill_circle_centers_for_color(&commands, theme.playhead_dot_core);
+        assert_eq!(core_centers.len(), 1, "expected one core playhead dot");
+        let phase = phase.rem_euclid(1.0);
+        let expected = local_from_node(CurveNode {
+            x: phase,
+            y: sample_editable_curve(&curve, phase).clamp(0.0, 1.0),
+        });
+        assert_eq!(
+            core_centers[0], expected,
+            "playhead dot should map to the sampled curve point at host phase"
+        );
     }
 
     #[test]

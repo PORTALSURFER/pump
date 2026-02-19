@@ -2,7 +2,7 @@
 
 #![warn(missing_docs)]
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use toybox::clack_extensions::audio_ports::*;
@@ -346,6 +346,8 @@ impl PumpAudioProcessor<'_> {
             };
         }
 
+        let host_is_playing = transport.is_playing;
+        let host_has_beats_timeline = transport.song_pos_beats.is_some();
         let mut transport_for_sample = transport;
         let mut last_phase = 0.0_f32;
         let mut last_gain = 1.0_f32;
@@ -362,7 +364,12 @@ impl PumpAudioProcessor<'_> {
             last_gain = telemetry.gain;
         }
 
-        self.shared.status.update(last_phase, last_gain);
+        self.shared.status.update(
+            last_phase,
+            last_gain,
+            host_is_playing,
+            host_has_beats_timeline,
+        );
 
         if let Some(out_left) = left_output {
             out_left[..frames].copy_from_slice(&self.scratch_left[..frames]);
@@ -387,13 +394,18 @@ impl PumpAudioProcessor<'_> {
 pub struct GuiStatus {
     phase: AtomicF32,
     gain: AtomicF32,
+    is_playing: AtomicBool,
+    has_host_beats_timeline: AtomicBool,
 }
 
 impl GuiStatus {
     /// Update telemetry from the latest processed frame.
-    pub fn update(&self, phase: f32, gain: f32) {
+    pub fn update(&self, phase: f32, gain: f32, is_playing: bool, has_host_beats_timeline: bool) {
         self.phase.store(phase, Ordering::Relaxed);
         self.gain.store(gain, Ordering::Relaxed);
+        self.is_playing.store(is_playing, Ordering::Relaxed);
+        self.has_host_beats_timeline
+            .store(has_host_beats_timeline, Ordering::Relaxed);
     }
 
     /// Read latest phase value.
@@ -404,6 +416,16 @@ impl GuiStatus {
     /// Read latest linear gain value.
     pub fn gain(&self) -> f32 {
         self.gain.load(Ordering::Relaxed).max(0.0)
+    }
+
+    /// Read whether host transport is currently playing.
+    pub fn is_playing(&self) -> bool {
+        self.is_playing.load(Ordering::Relaxed)
+    }
+
+    /// Read whether host beat timeline is currently available.
+    pub fn has_host_beats_timeline(&self) -> bool {
+        self.has_host_beats_timeline.load(Ordering::Relaxed)
     }
 }
 
