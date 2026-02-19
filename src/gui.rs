@@ -58,7 +58,7 @@ const KNOBS_SECTION_WEIGHT: u16 = 70;
 const DROPDOWN_SECTION_WEIGHT: u16 = 30;
 const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
-const CURVE_H: u32 = resolve_vertical_section_heights(WINDOW_HEIGHT).1;
+const CURVE_H: u32 = resolve_vertical_slot_heights(WINDOW_HEIGHT).1;
 const TITLE_LABEL_W: u32 = 64;
 const TITLE_LABEL_RIGHT_GAP: i32 = 8;
 const HEADER_CONTROL_GAP: i32 = 4;
@@ -178,7 +178,7 @@ const fn u32_max(left: u32, right: u32) -> u32 {
     }
 }
 
-const fn resolve_vertical_section_heights(total_height: u32) -> (u32, u32, u32) {
+const fn resolve_vertical_slot_heights(total_height: u32) -> (u32, u32, u32) {
     let clamped_total = u32_max(total_height, 1);
     let header_h =
         clamped_total.saturating_mul(HEADER_SECTION_WEIGHT as u32) / ROOT_SECTION_WEIGHT_SUM;
@@ -189,7 +189,7 @@ const fn resolve_vertical_section_heights(total_height: u32) -> (u32, u32, u32) 
     (header_h, curve_h, controls_h)
 }
 
-fn resolve_runtime_controls_section_widths(total_width: u32) -> (u32, u32) {
+fn resolve_runtime_controls_slot_widths(total_width: u32) -> (u32, u32) {
     let widths = weighted_slot_lengths(
         total_width.max(1),
         &[KNOBS_SECTION_WEIGHT, DROPDOWN_SECTION_WEIGHT],
@@ -455,9 +455,8 @@ impl UiLayoutMetrics {
     fn from_input(input: &InputState) -> Self {
         let content_w = input.window_size.width.max(WINDOW_WIDTH);
         let content_h = input.window_size.height.max(WINDOW_HEIGHT);
-        let (_header_h, curve_h, _controls_h) = resolve_vertical_section_heights(content_h);
-        let (knobs_section_w, dropdown_section_w) =
-            resolve_runtime_controls_section_widths(content_w);
+        let (_header_h, curve_h, _controls_h) = resolve_vertical_slot_heights(content_h);
+        let (knobs_slot_w, dropdown_slot_w) = resolve_runtime_controls_slot_widths(content_w);
         let scale = 1.0;
         let padding_x = scaled_i32(BASE_PADDING_X, scale);
         let title_label_w = scaled_u32(TITLE_LABEL_W, scale);
@@ -466,10 +465,10 @@ impl UiLayoutMetrics {
         let dropdown_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let button_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
         let text_scale = scaled_text_scale(scale);
-        let knob_track_width = knobs_section_w.saturating_div(KNOBS_PER_ROW as u32);
+        let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
         let knob_diameter = scaled_knob_diameter(scale).min(knob_track_width.max(1));
         let label_line_h = scaled_line_height(text_scale);
-        let dropdown_control_w = dropdown_section_w.max(1);
+        let dropdown_control_w = dropdown_slot_w.max(1);
         let subtitle_label_x = padding_x
             .saturating_add(title_label_w as i32)
             .saturating_add(title_label_gap)
@@ -583,8 +582,8 @@ impl GuiState {
         }
     }
 
-    /// Build the top header section node.
-    fn build_header_section(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
+    /// Build the top header slot node.
+    fn build_header_slot(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
         let _title_y = scaled_i32(SPLINE_TITLE_Y, metrics.scale);
         let header_content = row_slots(vec![
             fraction_slot(
@@ -610,8 +609,8 @@ impl GuiState {
         panel("header", header_content).pad_all(0)
     }
 
-    /// Build the spline/curve section node.
-    fn build_spline_section(
+    /// Build the spline/curve slot node.
+    fn build_spline_slot(
         &self,
         metrics: UiLayoutMetrics,
         theme: PumpTheme,
@@ -632,8 +631,8 @@ impl GuiState {
             .pad_all(0)
     }
 
-    /// Build the controls section node.
-    fn build_controls_section(
+    /// Build the controls slot node.
+    fn build_controls_slot(
         &self,
         metrics: UiLayoutMetrics,
         theme: PumpTheme,
@@ -676,8 +675,8 @@ impl GuiState {
         )
         .layout(LayoutBox::fill());
 
-        let knobs_section = panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_all(0);
-        let dropdown_section_content = column(vec![
+        let knobs_slot = panel("knobs", knobs_grid.layout(LayoutBox::fill())).pad_all(0);
+        let dropdown_slot_content = column(vec![
             dropdown(
                 DIVISION_KEY,
                 "Division",
@@ -699,15 +698,12 @@ impl GuiState {
         .gap(metrics.controls_gap.max(0))
         .pad_all(0)
         .layout(LayoutBox::fill());
-        let dropdown_section = panel(
-            "dropdown",
-            dropdown_section_content.layout(LayoutBox::fill()),
-        )
-        .pad_all(0);
+        let dropdown_slot =
+            panel("dropdown", dropdown_slot_content.layout(LayoutBox::fill())).pad_all(0);
 
         let controls_row = row_slots(vec![
-            weighted_slot(knobs_section, KNOBS_SECTION_WEIGHT),
-            weighted_slot(dropdown_section, DROPDOWN_SECTION_WEIGHT)
+            weighted_slot(knobs_slot, KNOBS_SECTION_WEIGHT),
+            weighted_slot(dropdown_slot, DROPDOWN_SECTION_WEIGHT)
                 .align(SlotAlign::End, SlotAlign::Start),
         ]);
         panel("controls", controls_row).pad_all(0)
@@ -812,14 +808,14 @@ impl GuiState {
         let controls = self.snapshot_controls();
         let draw_commands = self.build_curve_commands_for_frame(input, metrics, theme);
 
-        let header_section = self.build_header_section(metrics, theme);
-        let spline_section = self.build_spline_section(metrics, theme, draw_commands);
-        let controls_section = self.build_controls_section(metrics, theme, controls);
+        let header_slot = self.build_header_slot(metrics, theme);
+        let spline_slot = self.build_spline_slot(metrics, theme, draw_commands);
+        let controls_slot = self.build_controls_slot(metrics, theme, controls);
 
         let content = column_slots(vec![
-            weighted_slot(header_section, HEADER_SECTION_WEIGHT),
-            weighted_slot(spline_section, CURVE_SECTION_WEIGHT),
-            weighted_slot(controls_section, CONTROLS_SECTION_WEIGHT),
+            weighted_slot(header_slot, HEADER_SECTION_WEIGHT),
+            weighted_slot(spline_slot, CURVE_SECTION_WEIGHT),
+            weighted_slot(controls_slot, CONTROLS_SECTION_WEIGHT),
         ]);
         self.build_root_spec(metrics, theme, content)
     }
@@ -1946,9 +1942,8 @@ mod tests {
     use super::{
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
-        preview_node_on_curve, resolve_runtime_controls_section_widths,
-        resolve_vertical_section_heights, GuiState, CURVE_H, CURVE_KEY, WINDOW_HEIGHT,
-        WINDOW_WIDTH,
+        preview_node_on_curve, resolve_runtime_controls_slot_widths, resolve_vertical_slot_heights,
+        GuiState, CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -1966,7 +1961,7 @@ mod tests {
         }
     }
 
-    fn expect_section_panel<'a>(node: &'a Node, label: &str) -> &'a PanelSpec {
+    fn expect_slot_panel<'a>(node: &'a Node, label: &str) -> &'a PanelSpec {
         match expect_slot_child(node, label) {
             Node::Row(row) => match row.children.as_slice() {
                 [child] => match expect_slot_child(child, label) {
@@ -2147,8 +2142,8 @@ mod tests {
     }
 
     #[test]
-    fn section_height_split_matches_expected_ratios() {
-        let (header_h, curve_h, controls_h) = resolve_vertical_section_heights(WINDOW_HEIGHT);
+    fn slot_height_split_matches_expected_ratios() {
+        let (header_h, curve_h, controls_h) = resolve_vertical_slot_heights(WINDOW_HEIGHT);
         assert_eq!(header_h, 18);
         assert_eq!(curve_h, 163);
         assert_eq!(controls_h, 77);
@@ -2157,18 +2152,18 @@ mod tests {
 
     #[test]
     fn bottom_row_split_matches_expected_ratio() {
-        let (knobs_w, dropdown_w) = resolve_runtime_controls_section_widths(WINDOW_WIDTH);
+        let (knobs_w, dropdown_w) = resolve_runtime_controls_slot_widths(WINDOW_WIDTH);
         assert_eq!(knobs_w, 294);
         assert_eq!(dropdown_w, 126);
         assert_eq!(knobs_w + dropdown_w, WINDOW_WIDTH);
     }
 
     #[test]
-    fn runtime_section_splits_consume_full_parent_extent() {
-        let (header_h, curve_h, controls_h) = resolve_vertical_section_heights(259);
+    fn runtime_slot_splits_consume_full_parent_extent() {
+        let (header_h, curve_h, controls_h) = resolve_vertical_slot_heights(259);
         assert_eq!(header_h + curve_h + controls_h, 259);
 
-        let (knobs_w, dropdown_w) = resolve_runtime_controls_section_widths(799);
+        let (knobs_w, dropdown_w) = resolve_runtime_controls_slot_widths(799);
         assert_eq!(knobs_w + dropdown_w, 799);
     }
 
@@ -2328,13 +2323,13 @@ mod tests {
             assert_eq!(curve_region.width, input_size.width.max(WINDOW_WIDTH));
             assert_eq!(
                 curve_region.height,
-                resolve_vertical_section_heights(input_size.height.max(WINDOW_HEIGHT)).1
+                resolve_vertical_slot_heights(input_size.height.max(WINDOW_HEIGHT)).1
             );
         }
     }
 
     #[test]
-    fn build_ui_root_content_is_three_section_column() {
+    fn build_ui_root_content_is_three_slot_column() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -2347,16 +2342,16 @@ mod tests {
             other => panic!("expected root content grid, got {other:?}"),
         };
         assert_eq!(root_grid.children.len(), 3);
-        let _header_panel = expect_section_panel(&root_grid.children[0], "header");
-        let _curve_panel = expect_section_panel(&root_grid.children[1], "curve");
-        let controls_panel = expect_section_panel(&root_grid.children[2], "controls");
+        let _header_panel = expect_slot_panel(&root_grid.children[0], "header");
+        let _curve_panel = expect_slot_panel(&root_grid.children[1], "curve");
+        let controls_panel = expect_slot_panel(&root_grid.children[2], "controls");
         let controls_grid = match expect_slot_child(controls_panel.content.as_ref(), "controls") {
             Node::Grid(grid) => grid,
             other => panic!("expected controls grid in panel, got {other:?}"),
         };
         assert_eq!(controls_grid.children.len(), 2);
-        let _knobs_panel = expect_section_panel(&controls_grid.children[0], "knobs");
-        let _dropdown_panel = expect_section_panel(&controls_grid.children[1], "dropdowns");
+        let _knobs_panel = expect_slot_panel(&controls_grid.children[0], "knobs");
+        let _dropdown_panel = expect_slot_panel(&controls_grid.children[1], "dropdowns");
     }
 
     #[test]
@@ -2376,10 +2371,10 @@ mod tests {
         )
         .expect("pump frame should render");
 
-        let (header_h, curve_h, _) = resolve_vertical_section_heights(WINDOW_HEIGHT);
+        let (header_h, curve_h, _) = resolve_vertical_slot_heights(WINDOW_HEIGHT);
         let controls_top = header_h.saturating_add(curve_h);
         let base_row = controls_top.min(frame.height.saturating_sub(1));
-        let (knobs_w, _) = resolve_runtime_controls_section_widths(WINDOW_WIDTH);
+        let (knobs_w, _) = resolve_runtime_controls_slot_widths(WINDOW_WIDTH);
         let border = MainPalette::main().text_primary;
 
         let end_row = base_row
@@ -2414,7 +2409,7 @@ mod tests {
         assert_eq!(
             significant_runs.len(),
             1,
-            "expected one contiguous knob-border run in pump knob section, got {:?}",
+            "expected one contiguous knob-border run in pump knob slot, got {:?}",
             significant_runs
         );
     }

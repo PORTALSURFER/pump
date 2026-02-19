@@ -132,5 +132,27 @@ if [ -n "${source_files}" ]; then
   fi
 fi
 
-echo "[policy] ok"
+# Slot grammar drift checks:
+# - legacy section helper API is disallowed
+# - canonical slot grids must not use pixel tracks
+if [ -n "${source_files}" ]; then
+  # shellcheck disable=SC2086
+  legacy_slot_api="$(echo "${source_files}" | xargs grep -nE 'row_sections|column_sections|weighted_section|fraction_section|fill_section|weighted_section_lengths' 2>/dev/null || true)"
+  if [ -n "${legacy_slot_api}" ]; then
+    echo "${legacy_slot_api}" >&2
+    fail "legacy section helper API is not allowed; use slot helpers (row_slots/column_slots/weighted_slot/fraction_slot/fill_slot/weighted_slot_lengths)"
+  fi
 
+  # shellcheck disable=SC2086
+  slot_kind_refs="$(echo "${source_files}" | xargs grep -nE 'GridKind::Slot(Row|Column)' 2>/dev/null || true)"
+  if [ -n "${slot_kind_refs}" ]; then
+    # shellcheck disable=SC2086
+    slot_px_tracks="$(echo "${source_files}" | xargs grep -nE 'TrackSize::Px[[:space:]]*[(]' 2>/dev/null || true)"
+    if [ -n "${slot_px_tracks}" ]; then
+      echo "${slot_px_tracks}" >&2
+      fail "slot grids must use fraction/fill tracks only; remove TrackSize::Px from slot-grid definitions"
+    fi
+  fi
+fi
+
+echo "[policy] ok"
