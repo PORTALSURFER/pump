@@ -2046,6 +2046,16 @@ mod tests {
                 assert!(matches!(panel.content(), Node::Slot(_)));
                 assert_slot_tree_node(panel.content());
             }
+            Node::PaddingBox(padding_box) => {
+                assert_container_layout_host_derived(padding_box.container_layout());
+                assert!(matches!(padding_box.content(), Node::Slot(_)));
+                assert_slot_tree_node(padding_box.content());
+            }
+            Node::AlignBox(align_box) => {
+                assert_container_layout_host_derived(align_box.container_layout());
+                assert!(matches!(align_box.content(), Node::Slot(_)));
+                assert_slot_tree_node(align_box.content());
+            }
             Node::Row(row) => {
                 assert_container_layout_host_derived(row.container_layout());
                 for child in row.children() {
@@ -2122,6 +2132,8 @@ mod tests {
             matches!(
                 root_child,
                 Node::Panel(_)
+                    | Node::PaddingBox(_)
+                    | Node::AlignBox(_)
                     | Node::Row(_)
                     | Node::Column(_)
                     | Node::Grid(_)
@@ -2736,6 +2748,8 @@ mod tests {
             Node::Slot(slot) => find_curve_region_node(slot.child()),
             Node::Region(region) if region.key == CURVE_KEY => Some(region.size),
             Node::Panel(panel) => find_curve_region_node(panel.content()),
+            Node::PaddingBox(padding_box) => find_curve_region_node(padding_box.content()),
+            Node::AlignBox(align_box) => find_curve_region_node(align_box.content()),
             Node::Row(flex) | Node::Column(flex) => {
                 flex.children().iter().find_map(find_curve_region_node)
             }
