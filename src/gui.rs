@@ -8,11 +8,10 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
-    button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, indicator, knob, panel,
-    root_frame_sized, row_slots, stack, surface, switch_layout, textbox, weighted_slot,
-    weighted_slot_lengths, when_width_ge, GridTemplate, LayoutBox, Node, OverflowPolicy,
-    RegionInteractionKind, RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens, TrackSize,
-    UiAction, UiSpec,
+    button, column, column_slots, dropdown, grid, indicator, knob, panel, root_frame_sized,
+    row_slots, spacer, stack, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
+    LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, SlotAlign,
+    SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -49,7 +48,6 @@ const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 
-const BASE_PADDING_X: i32 = 18;
 const HEADER_SECTION_WEIGHT: u16 = 7;
 const CURVE_SECTION_WEIGHT: u16 = 63;
 const CONTROLS_SECTION_WEIGHT: u16 = 30;
@@ -57,11 +55,10 @@ const ROOT_SECTION_WEIGHT_SUM: u32 =
     HEADER_SECTION_WEIGHT as u32 + CURVE_SECTION_WEIGHT as u32 + CONTROLS_SECTION_WEIGHT as u32;
 const KNOBS_SECTION_WEIGHT: u16 = 70;
 const DROPDOWN_SECTION_WEIGHT: u16 = 30;
-const HEADER_SWITCH_WIDE_MIN_WIDTH: u32 = 560;
+const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
+const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_slot_heights(WINDOW_HEIGHT).1;
-const TITLE_LABEL_W: u32 = 64;
-const TITLE_LABEL_RIGHT_GAP: i32 = 8;
 const HEADER_CONTROL_GAP: i32 = 4;
 const METER_X_OFFSET: i32 = 12;
 const METER_Y_OFFSET: i32 = 10;
@@ -240,7 +237,6 @@ fn scaled_line_height(text_scale: u32) -> u32 {
 #[derive(Clone, Copy, Debug)]
 struct PumpTheme {
     tokens: ThemeTokens,
-    title_text: Color,
     subtitle_text: Color,
     hint_text: Color,
     curve_bg: Color,
@@ -278,7 +274,6 @@ impl PumpTheme {
         tokens.controls.button_height = metrics.button_control_h;
         Self {
             tokens,
-            title_text: palette.accent_focus,
             subtitle_text: palette.syntax_emphasis,
             hint_text: palette.text_muted,
             curve_bg: palette.background_primary,
@@ -463,8 +458,6 @@ struct UiLayoutMetrics {
     content_w: u32,
     content_h: u32,
     curve_h: u32,
-    padding_x: i32,
-    title_label_w: u32,
     controls_gap: i32,
     meter_x_offset: i32,
     meter_y_offset: i32,
@@ -473,7 +466,6 @@ struct UiLayoutMetrics {
     dropdown_control_w: u32,
     dropdown_control_h: u32,
     button_control_h: u32,
-    subtitle_label_w: u32,
     transport_indicator_size: u32,
     curve_size: Size,
     knob_track_w: u32,
@@ -489,9 +481,6 @@ impl UiLayoutMetrics {
         let content_h = WINDOW_HEIGHT;
         let (_header_h, curve_h, controls_h) = resolve_vertical_slot_heights(content_h);
         let (knobs_slot_w, dropdown_slot_w) = resolve_runtime_controls_slot_widths(content_w);
-        let padding_x = BASE_PADDING_X.max(0);
-        let title_label_w = TITLE_LABEL_W.max(1);
-        let title_label_gap = TITLE_LABEL_RIGHT_GAP.max(0);
         let controls_gap = HEADER_CONTROL_GAP.max(0);
         let text_scale = BASE_TEXT_SCALE.max(1);
         let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
@@ -506,11 +495,6 @@ impl UiLayoutMetrics {
         let dropdown_control_h = expanded_control_h;
         let button_control_h = expanded_control_h;
         let dropdown_control_w = dropdown_slot_w.max(1);
-        let subtitle_label_x = padding_x
-            .saturating_add(title_label_w as i32)
-            .saturating_add(title_label_gap)
-            .max(0) as u32;
-        let subtitle_label_w = content_w.saturating_sub(subtitle_label_x).max(1);
         let transport_indicator_size = TRANSPORT_INDICATOR_SIZE.max(1);
         let curve_size = Size {
             width: content_w,
@@ -524,8 +508,6 @@ impl UiLayoutMetrics {
             content_w,
             content_h,
             curve_h,
-            padding_x,
-            title_label_w,
             controls_gap,
             meter_x_offset,
             meter_y_offset,
@@ -534,7 +516,6 @@ impl UiLayoutMetrics {
             dropdown_control_w,
             dropdown_control_h,
             button_control_h,
-            subtitle_label_w,
             transport_indicator_size,
             curve_size,
             knob_track_w,
@@ -622,85 +603,32 @@ impl GuiState {
     }
 
     /// Build the top header slot node.
-    fn build_header_slot(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
-        let header_indicator = || {
-            Node::align_box(
-                indicator(
-                    Size {
-                        width: metrics.transport_indicator_size,
-                        height: metrics.transport_indicator_size,
-                    },
-                    self.status.transport_beat_blink_active(),
-                )
-                .widget_layout(fixed_box(
-                    metrics.transport_indicator_size,
-                    metrics.transport_indicator_size,
-                )),
+    fn build_header_slot(&self, metrics: UiLayoutMetrics) -> Node {
+        let indicator_node = Node::align_box(
+            indicator(
+                Size {
+                    width: metrics.transport_indicator_size,
+                    height: metrics.transport_indicator_size,
+                },
+                self.status.transport_beat_blink_active(),
             )
-            .slot_align(SlotAlign::End, SlotAlign::Center)
-            .fill()
-        };
-        let wide_header = row_slots(vec![
-            fraction_slot(
-                panel(
-                    "header-title-wide",
-                    textbox("PUMP")
-                        .text_color(theme.title_text)
-                        .widget_layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
-                )
-                .pad_xy(metrics.padding_x.max(0), 0),
-                18,
-            ),
-            fill_slot(
-                panel(
-                    "header-subtitle-wide",
-                    stack(vec![
-                        textbox("Spline Beat-Synced Ducking")
-                            .text_color(theme.subtitle_text)
-                            .widget_layout(fixed_box(
-                                metrics.subtitle_label_w,
-                                metrics.label_line_h,
-                            )),
-                        header_indicator(),
-                    ])
-                    .fill(),
-                )
-                .pad_xy(0, 0),
-            ),
-        ])
-        .container_overflow(OverflowPolicy::Compress);
-        let compact_header = column_slots(vec![
-            fill_slot(
-                panel(
-                    "header-title-compact",
-                    textbox("PUMP")
-                        .text_color(theme.title_text)
-                        .widget_layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
-                )
-                .pad_xy(metrics.padding_x.max(0), 0),
-            ),
-            fill_slot(
-                panel(
-                    "header-subtitle-compact",
-                    stack(vec![
-                        textbox("Spline Beat-Synced Ducking")
-                            .text_color(theme.subtitle_text)
-                            .widget_layout(fixed_box(
-                                metrics.subtitle_label_w,
-                                metrics.label_line_h,
-                            )),
-                        header_indicator(),
-                    ])
-                    .fill(),
-                )
-                .pad_xy(0, 0),
-            ),
-        ])
-        .container_overflow(OverflowPolicy::Compress);
-        let header_content = switch_layout(
-            vec![when_width_ge(HEADER_SWITCH_WIDE_MIN_WIDTH, wide_header)],
-            compact_header,
+            .widget_layout(fixed_box(
+                metrics.transport_indicator_size,
+                metrics.transport_indicator_size,
+            )),
         )
+        .slot_align(SlotAlign::Center, SlotAlign::Center)
+        .fill();
+        let header_content = row_slots(vec![
+            weighted_slot(
+                spacer(Size {
+                    width: 1,
+                    height: 1,
+                }),
+                HEADER_EMPTY_SECTION_PERCENT as u16,
+            ),
+            weighted_slot(indicator_node, HEADER_INDICATOR_SECTION_PERCENT as u16),
+        ])
         .container_overflow(OverflowPolicy::Compress);
         panel("header", header_content).pad_all(0)
     }
@@ -954,7 +882,7 @@ impl GuiState {
         let controls = self.snapshot_controls();
         let draw_commands = self.build_curve_commands_for_frame(input, metrics, theme);
 
-        let header_slot = self.build_header_slot(metrics, theme);
+        let header_slot = self.build_header_slot(metrics);
         let spline_slot = self.build_spline_slot(metrics, theme, draw_commands);
         let controls_slot = self.build_controls_slot(metrics, theme, controls);
 
@@ -2112,8 +2040,8 @@ mod tests {
         preferred_window_size, preview_node_on_curve, resolve_runtime_controls_slot_widths,
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
-        UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_SWITCH_WIDE_MIN_WIDTH,
-        TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
+        UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
+        HEADER_INDICATOR_SECTION_PERCENT, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{sync_division_label, PumpParams};
@@ -2124,7 +2052,7 @@ mod tests {
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
         measure_checked, ContainerLayout, ContainerLength, GridKind, Node, PanelSpec,
-        RootScaleMode, SurfaceCommand, SwitchLayoutSpec, UiSpec,
+        RootScaleMode, SurfaceCommand, UiSpec,
     };
     use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
@@ -2281,18 +2209,6 @@ mod tests {
             "root slot child must be a container"
         );
         assert_slot_tree_node(root_child);
-    }
-
-    fn extract_header_switch(spec: &UiSpec) -> &SwitchLayoutSpec {
-        let root_grid = match expect_slot_child(spec.root.content(), "root") {
-            Node::Grid(grid) => grid,
-            other => panic!("expected root content grid, got {other:?}"),
-        };
-        let header_panel = expect_slot_panel(&root_grid.children()[0], "header");
-        match expect_slot_child(header_panel.content(), "header") {
-            Node::SwitchLayout(switch_layout) => switch_layout,
-            other => panic!("expected header switch-layout, got {other:?}"),
-        }
     }
 
     #[test]
@@ -2924,31 +2840,14 @@ mod tests {
             other => panic!("expected root content grid, got {other:?}"),
         };
         assert_eq!(root_grid.children().len(), 3);
-        let _header_panel = expect_slot_panel(&root_grid.children()[0], "header");
-        let _curve_panel = expect_slot_panel(&root_grid.children()[1], "curve");
         let header_panel = expect_slot_panel(&root_grid.children()[0], "header");
-        let header_switch = match expect_slot_child(header_panel.content(), "header") {
-            Node::SwitchLayout(switch_layout) => switch_layout,
-            other => panic!("expected header switch-layout in panel, got {other:?}"),
-        };
-        assert_eq!(header_switch.cases().len(), 1);
-        let wide_case_child = header_switch
-            .cases()
-            .first()
-            .expect("expected one wide-case child")
-            .child();
-        let wide_grid = match expect_slot_child(wide_case_child, "header-wide") {
+        let _curve_panel = expect_slot_panel(&root_grid.children()[1], "curve");
+        let header_grid = match expect_slot_child(header_panel.content(), "header") {
             Node::Grid(grid) => grid,
-            other => panic!("expected wide header grid, got {other:?}"),
+            other => panic!("expected header row grid in panel, got {other:?}"),
         };
-        assert_eq!(wide_grid.children().len(), 2);
-        let _title_panel = expect_slot_panel(&wide_grid.children()[0], "header-title");
-        let _subtitle_panel = expect_slot_panel(&wide_grid.children()[1], "header-subtitle");
-        let compact_grid = match expect_slot_child(header_switch.fallback(), "header-compact") {
-            Node::Grid(grid) => grid,
-            other => panic!("expected compact header grid fallback, got {other:?}"),
-        };
-        assert_eq!(compact_grid.children().len(), 2);
+        assert_eq!(header_grid.kind(), GridKind::SlotRow);
+        assert_eq!(header_grid.children().len(), 2);
 
         let controls_panel = expect_slot_panel(&root_grid.children()[2], "controls");
         let controls_grid = match expect_slot_child(controls_panel.content(), "controls") {
@@ -3091,43 +2990,45 @@ mod tests {
     }
 
     #[test]
-    fn header_switch_selects_compact_and_wide_variants_by_root_width() {
+    fn header_uses_two_slot_row_with_80_20_split() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
             Arc::new(AutomationQueue::default()),
             None,
         );
-        let compact_spec = state.build_ui(&InputState {
+        let spec = state.build_ui(&InputState {
             window_size: Size {
                 width: WINDOW_WIDTH,
                 height: WINDOW_HEIGHT,
             },
             ..InputState::default()
         });
-        let compact_switch = extract_header_switch(&compact_spec);
-        let compact_child = compact_switch.selected_child(WINDOW_WIDTH);
-        let compact_grid = match expect_slot_child(compact_child, "compact-header") {
+        let root_grid = match expect_slot_child(spec.root.content(), "root") {
             Node::Grid(grid) => grid,
-            other => panic!("expected compact header grid, got {other:?}"),
+            other => panic!("expected root content grid, got {other:?}"),
         };
-        assert_eq!(compact_grid.kind(), GridKind::SlotColumn);
-
-        let wide_width = HEADER_SWITCH_WIDE_MIN_WIDTH.saturating_add(1);
-        let wide_spec = state.build_ui(&InputState {
-            window_size: Size {
-                width: wide_width,
-                height: WINDOW_HEIGHT,
-            },
-            ..InputState::default()
-        });
-        let wide_switch = extract_header_switch(&wide_spec);
-        let wide_child = wide_switch.selected_child(wide_width);
-        let wide_grid = match expect_slot_child(wide_child, "wide-header") {
+        let header_panel = expect_slot_panel(&root_grid.children()[0], "header");
+        let header_grid = match expect_slot_child(header_panel.content(), "header") {
             Node::Grid(grid) => grid,
-            other => panic!("expected wide header grid, got {other:?}"),
+            other => panic!("expected header row grid in panel, got {other:?}"),
         };
-        assert_eq!(wide_grid.kind(), GridKind::SlotRow);
+        assert_eq!(header_grid.kind(), GridKind::SlotRow);
+        assert_eq!(header_grid.children().len(), 2);
+        assert!(
+            matches!(
+                header_grid.template.columns.as_slice(),
+                [
+                    toybox::gui::declarative::TrackSize::Fr(left),
+                    toybox::gui::declarative::TrackSize::Fr(right)
+                ] if *left == HEADER_EMPTY_SECTION_PERCENT as u16
+                    && *right == HEADER_INDICATOR_SECTION_PERCENT as u16
+            ),
+            "expected header slot weights [{}, {}], got {:?}",
+            HEADER_EMPTY_SECTION_PERCENT,
+            HEADER_INDICATOR_SECTION_PERCENT,
+            header_grid.template.columns
+        );
     }
 
     #[test]
