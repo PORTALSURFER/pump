@@ -110,7 +110,7 @@ pub const SYNC_DIVISIONS: [SyncDivision; 8] = [
 pub const MAX_SYNC_DIVISION: f32 = (SYNC_DIVISIONS.len() - 1) as f32;
 
 const STATE_MAGIC: &[u8; 4] = b"PMP2";
-const STATE_VERSION: u32 = 3;
+const STATE_VERSION: u32 = 4;
 
 const AUTO: u32 = ParamInfoFlags::IS_AUTOMATABLE.bits();
 const AUTO_ENUM: u32 = AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags::IS_ENUM.bits();
@@ -321,6 +321,8 @@ pub fn sync_division_index_from_text(text: &str) -> Option<usize> {
 pub struct PumpPreset {
     /// User-facing preset name.
     pub name: String,
+    /// True when this preset is immutable (for built-in `Init`).
+    pub is_read_only: bool,
     /// Dry/wet mix amount.
     pub mix: f32,
     /// Duck depth amount.
@@ -344,6 +346,27 @@ pub struct PumpPresetBank {
     pub presets: Vec<PumpPreset>,
 }
 
+/// Outcome from saving current state into the preset bank.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SavePresetOutcome {
+    /// Existing non-read-only preset was overwritten.
+    Overwritten {
+        /// Index of the overwritten preset.
+        index: usize,
+    },
+    /// New preset was created.
+    Created {
+        /// Index of the created preset.
+        index: usize,
+    },
+    /// Save was blocked because target preset is immutable.
+    BlockedReadOnly,
+    /// Save was blocked because the preset bank is at capacity.
+    BlockedFull,
+    /// Save was blocked due to an invalid name.
+    InvalidName,
+}
+
 impl PumpPresetBank {
     /// Build the default single-entry preset bank from plugin defaults.
     pub fn default_init() -> Self {
@@ -351,6 +374,7 @@ impl PumpPresetBank {
             selected: 0,
             presets: vec![PumpPreset {
                 name: DEFAULT_PRESET_NAME.to_string(),
+                is_read_only: true,
                 mix: DEFAULT_MIX,
                 depth: DEFAULT_DEPTH,
                 phase_offset: DEFAULT_PHASE_OFFSET,
@@ -368,6 +392,10 @@ fn sanitize_preset_name(raw: &str, fallback_index: usize) -> String {
         return format!("Preset {}", fallback_index.saturating_add(1));
     }
     trimmed.chars().take(MAX_PRESET_NAME_CHARS).collect()
+}
+
+fn normalized_preset_name(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase()
 }
 
 fn float_near_eq(left: f32, right: f32) -> bool {
@@ -542,6 +570,7 @@ impl PumpParams {
     fn current_preset_snapshot_with_name(&self, name: String) -> PumpPreset {
         PumpPreset {
             name,
+            is_read_only: false,
             mix: self.mix(),
             depth: self.depth(),
             phase_offset: self.phase_offset(),
@@ -577,10 +606,38 @@ impl PumpParams {
         if normalized.presets.len() > MAX_PRESETS {
             normalized.presets.truncate(MAX_PRESETS);
         }
+        let init_name = normalized_preset_name(DEFAULT_PRESET_NAME);
+        let mut first_read_only: Option<usize> = None;
         for (index, preset) in normalized.presets.iter_mut().enumerate() {
             preset.name = sanitize_preset_name(&preset.name, index);
+            if preset.is_read_only {
+                if first_read_only.is_some() {
+                    preset.is_read_only = false;
+                } else {
+                    first_read_only = Some(index);
+                }
+            }
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
             preset.editable_curve = preset.editable_curve.clone().normalized();
+            if !preset.is_read_only && normalized_preset_name(&preset.name) == init_name {
+                preset.name = sanitize_preset_name("", index);
+            }
+        }
+        if first_read_only.is_none() {
+            normalized.presets[0].is_read_only = true;
+            normalized.presets[0].name = DEFAULT_PRESET_NAME.to_string();
+        } else if let Some(read_only_index) = first_read_only {
+            if read_only_index != 0 {
+                let init_preset = normalized.presets.remove(read_only_index);
+                normalized.presets.insert(0, init_preset);
+                normalized.selected = if normalized.selected == read_only_index {
+                    0
+                } else if normalized.selected < read_only_index {
+                    normalized.selected + 1
+                } else {
+                    normalized.selected
+                };
+            }
         }
         normalized.selected = normalized
             .selected
@@ -588,6 +645,15 @@ impl PumpParams {
         if let Ok(mut guard) = self.preset_bank.write() {
             *guard = normalized;
         }
+    }
+
+    /// Return true when the preset at `index` is read-only.
+    pub fn is_preset_read_only(&self, index: usize) -> bool {
+        self.preset_bank
+            .read()
+            .ok()
+            .and_then(|bank| bank.presets.get(index).map(|preset| preset.is_read_only))
+            .unwrap_or(false)
     }
 
     /// Load one preset by index into the active parameter state.
@@ -618,6 +684,7 @@ impl PumpParams {
         let fallback_index = guard.presets.len();
         let mut inserted = snapshot;
         inserted.name = sanitize_preset_name("", fallback_index);
+        inserted.is_read_only = false;
         guard.presets.insert(insert_at, inserted);
         guard.selected = insert_at;
         Some(insert_at)
@@ -631,8 +698,72 @@ impl PumpParams {
         let Some(preset) = guard.presets.get_mut(index) else {
             return false;
         };
-        preset.name = sanitize_preset_name(new_name, index);
+        if preset.is_read_only {
+            return false;
+        }
+        let candidate = sanitize_preset_name(new_name, index);
+        if normalized_preset_name(&candidate) == normalized_preset_name(DEFAULT_PRESET_NAME) {
+            return false;
+        }
+        preset.name = candidate;
         true
+    }
+
+    /// Save current state by preset name using overwrite-or-create semantics.
+    pub fn save_current_state_by_name(&self, name: &str) -> SavePresetOutcome {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return SavePresetOutcome::InvalidName;
+        }
+        let candidate_name: String = trimmed.chars().take(MAX_PRESET_NAME_CHARS).collect();
+        if candidate_name.is_empty() {
+            return SavePresetOutcome::InvalidName;
+        }
+        let normalized_candidate = normalized_preset_name(&candidate_name);
+        let init_name = normalized_preset_name(DEFAULT_PRESET_NAME);
+
+        let snapshot = self.current_preset_snapshot_with_name(candidate_name.clone());
+        let Ok(mut guard) = self.preset_bank.write() else {
+            return SavePresetOutcome::InvalidName;
+        };
+
+        let matching_index = guard
+            .presets
+            .iter()
+            .position(|preset| normalized_preset_name(&preset.name) == normalized_candidate);
+        if let Some(index) = matching_index {
+            if guard
+                .presets
+                .get(index)
+                .map(|preset| preset.is_read_only)
+                .unwrap_or(false)
+            {
+                return SavePresetOutcome::BlockedReadOnly;
+            }
+            if let Some(existing) = guard.presets.get_mut(index) {
+                existing.mix = snapshot.mix;
+                existing.depth = snapshot.depth;
+                existing.phase_offset = snapshot.phase_offset;
+                existing.output_gain_db = snapshot.output_gain_db;
+                existing.sync_division = snapshot.sync_division;
+                existing.editable_curve = snapshot.editable_curve;
+            }
+            guard.selected = index;
+            return SavePresetOutcome::Overwritten { index };
+        }
+
+        if normalized_candidate == init_name {
+            return SavePresetOutcome::BlockedReadOnly;
+        }
+        if guard.presets.len() >= MAX_PRESETS {
+            return SavePresetOutcome::BlockedFull;
+        }
+        let created_index = guard.presets.len();
+        guard.presets.push(snapshot);
+        guard.selected = created_index;
+        SavePresetOutcome::Created {
+            index: created_index,
+        }
     }
 
     /// Return true when current parameters/curve differ from selected preset.
@@ -737,12 +868,13 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     let editable_curve = decode_curve(&mut cursor, node_count)?;
 
     let preset_bank = if version >= 3 {
-        decode_preset_bank(&mut cursor)?
+        decode_preset_bank(&mut cursor, version)?
     } else {
         PumpPresetBank {
             selected: 0,
             presets: vec![PumpPreset {
                 name: DEFAULT_PRESET_NAME.to_string(),
+                is_read_only: true,
                 mix,
                 depth,
                 phase_offset,
@@ -777,6 +909,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.phase_offset.to_le_bytes());
     payload.extend_from_slice(&preset.output_gain_db.to_le_bytes());
     payload.extend_from_slice(&(preset.sync_division as u32).to_le_bytes());
+    payload.push(u8::from(preset.is_read_only));
 
     let normalized_curve = preset.editable_curve.clone().normalized();
     let node_count = normalized_curve.nodes.len().min(MAX_EDITABLE_NODES);
@@ -821,7 +954,10 @@ fn decode_curve(
     Ok(EditableCurve { nodes, segments })
 }
 
-fn decode_preset_bank(cursor: &mut Cursor<&[u8]>) -> Result<PumpPresetBank, &'static str> {
+fn decode_preset_bank(
+    cursor: &mut Cursor<&[u8]>,
+    version: u32,
+) -> Result<PumpPresetBank, &'static str> {
     let Some(selected) = read_u32(cursor).map(|value| value as usize) else {
         return Err("invalid preset selected index");
     };
@@ -857,12 +993,22 @@ fn decode_preset_bank(cursor: &mut Cursor<&[u8]>) -> Result<PumpPresetBank, &'st
         let Some(sync_division) = read_u32(cursor).map(|value| value as usize) else {
             return Err("invalid preset sync division");
         };
+        let is_read_only = if version >= 4 {
+            let Some(flag) = read_u8(cursor) else {
+                return Err("invalid preset read-only flag");
+            };
+            flag != 0
+        } else {
+            index == 0
+                && normalized_preset_name(raw_name) == normalized_preset_name(DEFAULT_PRESET_NAME)
+        };
         let Some(node_count) = read_u32(cursor).map(|value| value as usize) else {
             return Err("invalid preset node count");
         };
         let editable_curve = decode_curve(cursor, node_count)?;
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
+            is_read_only,
             mix,
             depth,
             phase_offset,
@@ -921,6 +1067,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
         selected: 0,
         presets: vec![PumpPreset {
             name: DEFAULT_PRESET_NAME.to_string(),
+            is_read_only: true,
             mix: params.mix(),
             depth: params.depth(),
             phase_offset: params.phase_offset(),
@@ -945,11 +1092,18 @@ fn read_u32(cursor: &mut Cursor<&[u8]>) -> Option<u32> {
     Some(u32::from_le_bytes(bytes))
 }
 
+fn read_u8(cursor: &mut Cursor<&[u8]>) -> Option<u8> {
+    let mut bytes = [0_u8; 1];
+    std::io::Read::read_exact(cursor, &mut bytes).ok()?;
+    Some(bytes[0])
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         clamp_sync_division, decode_state_payload, encode_state_payload,
-        sync_division_index_from_text, PumpParams, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION,
+        sync_division_index_from_text, PumpParams, SavePresetOutcome, MAX_PRESET_NAME_CHARS,
+        MAX_SYNC_DIVISION,
     };
     use crate::curve::{CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN};
 
@@ -1131,5 +1285,66 @@ mod tests {
         assert_eq!(bank.presets.len(), 2);
         assert_eq!(bank.selected, 1);
         assert_eq!(bank.presets[1].name, "Verse");
+        assert!(bank.presets[0].is_read_only);
+    }
+
+    #[test]
+    fn save_by_name_overwrites_case_insensitive_match() {
+        let params = PumpParams::new();
+        params
+            .add_preset_from_current_state()
+            .expect("preset insertion should succeed");
+        assert!(params.rename_preset(1, "Verse"));
+        params.set_mix(0.12);
+        params.set_depth(0.33);
+
+        let outcome = params.save_current_state_by_name(" verse ");
+        assert_eq!(outcome, SavePresetOutcome::Overwritten { index: 1 });
+        let bank = params.preset_bank_snapshot();
+        assert_eq!(bank.selected, 1);
+        assert_eq!(bank.presets[1].name, "Verse");
+        assert!((bank.presets[1].mix - 0.12).abs() < 1.0e-6);
+        assert!((bank.presets[1].depth - 0.33).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn save_by_name_creates_when_no_match_exists() {
+        let params = PumpParams::new();
+        params.set_mix(0.77);
+        let outcome = params.save_current_state_by_name("Hook");
+        assert_eq!(outcome, SavePresetOutcome::Created { index: 1 });
+        let bank = params.preset_bank_snapshot();
+        assert_eq!(bank.presets.len(), 2);
+        assert_eq!(bank.selected, 1);
+        assert_eq!(bank.presets[1].name, "Hook");
+        assert!((bank.presets[1].mix - 0.77).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn init_preset_is_read_only_for_rename_and_save() {
+        let params = PumpParams::new();
+        assert!(params.is_preset_read_only(0));
+        assert!(!params.rename_preset(0, "Init2"));
+        assert_eq!(
+            params.save_current_state_by_name("Init"),
+            SavePresetOutcome::BlockedReadOnly
+        );
+        let bank = params.preset_bank_snapshot();
+        assert_eq!(bank.presets[0].name, "Init");
+    }
+
+    #[test]
+    fn save_by_name_blocks_when_preset_bank_is_full() {
+        let params = PumpParams::new();
+        for _ in 1..16 {
+            params
+                .add_preset_from_current_state()
+                .expect("preset insertion should succeed");
+        }
+        assert_eq!(params.preset_bank_snapshot().presets.len(), 16);
+        assert_eq!(
+            params.save_current_state_by_name("BrandNew"),
+            SavePresetOutcome::BlockedFull
+        );
     }
 }

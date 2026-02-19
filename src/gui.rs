@@ -22,10 +22,10 @@ use crate::curve::{
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    sync_division_label, PumpParams, DEFAULT_PRESET_NAME, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB,
-    MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX,
-    MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
-    PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
+    sync_division_label, PumpParams, SavePresetOutcome, DEFAULT_PRESET_NAME, MAX_DEPTH, MAX_MIX,
+    MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_DEPTH,
+    MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_MIX_ID,
+    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
 };
 use crate::GuiStatus;
 
@@ -51,6 +51,7 @@ const DIVISION_KEY: &str = "division";
 const RESET_KEY: &str = "reset";
 const PRESET_DROPDOWN_KEY: &str = "preset-dropdown";
 const PRESET_ADD_KEY: &str = "preset-add";
+const PRESET_SAVE_KEY: &str = "preset-save";
 const PRESET_RENAME_KEY: &str = "preset-rename";
 
 const HEADER_SECTION_WEIGHT: u16 = 7;
@@ -76,7 +77,10 @@ const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const TRANSPORT_INDICATOR_SIZE: u32 = 10;
 const RESET_GUARD_AFTER_DROPDOWN_MICROS: u64 = 120_000;
-const PRESET_ADD_WARNING_FRAMES: u8 = 45;
+const PRESET_WARNING_FRAMES: u8 = 45;
+const PRESET_WARNING_MAX: &str = "MAX";
+const PRESET_WARNING_INIT: &str = "INIT";
+const PRESET_WARNING_NAME: &str = "NAME";
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const PLAYHEAD_DOT_CORE_RADIUS: i32 = 4;
@@ -447,7 +451,8 @@ struct GuiRuntime {
     preset_rename_active: bool,
     preset_rename_target: usize,
     preset_name_draft: String,
-    preset_add_warning_frames: u8,
+    preset_warning_frames: u8,
+    preset_warning_text: Option<&'static str>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -570,7 +575,7 @@ struct PresetSnapshot {
     dirty: bool,
     rename_active: bool,
     rename_draft: String,
-    add_warning_active: bool,
+    warning_text: Option<&'static str>,
 }
 
 /// Snapshot of curve-editor hover/selection state used for drawing.
@@ -597,7 +602,8 @@ impl GuiRuntime {
             preset_rename_active: false,
             preset_rename_target: 0,
             preset_name_draft: String::new(),
-            preset_add_warning_frames: 0,
+            preset_warning_frames: 0,
+            preset_warning_text: None,
         }
     }
 }
@@ -660,7 +666,7 @@ impl GuiState {
 
         let mut rename_active = false;
         let mut rename_draft = String::new();
-        let mut add_warning_active = false;
+        let mut warning_text = None;
         if let Ok(mut runtime) = self.runtime.lock() {
             if runtime.preset_rename_active {
                 runtime.preset_rename_target = runtime
@@ -675,10 +681,9 @@ impl GuiState {
                 }
                 rename_draft = runtime.preset_name_draft.clone();
             }
-            if runtime.preset_add_warning_frames > 0 {
-                add_warning_active = true;
-                runtime.preset_add_warning_frames =
-                    runtime.preset_add_warning_frames.saturating_sub(1);
+            if runtime.preset_warning_frames > 0 {
+                warning_text = runtime.preset_warning_text;
+                runtime.preset_warning_frames = runtime.preset_warning_frames.saturating_sub(1);
             }
         }
 
@@ -688,13 +693,20 @@ impl GuiState {
             dirty,
             rename_active,
             rename_draft,
-            add_warning_active,
+            warning_text,
         }
     }
 
     fn mark_division_change(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.last_division_change_micros = Some(monotonic_micros());
+        }
+    }
+
+    fn set_preset_warning(&self, text: &'static str) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.preset_warning_text = Some(text);
+            runtime.preset_warning_frames = PRESET_WARNING_FRAMES;
         }
     }
 
@@ -777,6 +789,23 @@ impl GuiState {
             .outline(theme.preset_title_outline)
             .pad_all(0)
             .fill();
+        let save_button = stack(vec![
+            button(PRESET_SAVE_KEY)
+                .control_size(Size {
+                    width: add_button_width,
+                    height: metrics.transport_indicator_size.max(1),
+                })
+                .fill(),
+            Node::align_box(
+                textbox("Save")
+                    .text_color(theme.subtitle_text)
+                    .widget_layout(LayoutBox::fill()),
+            )
+            .slot_align(SlotAlign::Center, SlotAlign::Center)
+            .fill(),
+        ])
+        .container_overflow(OverflowPolicy::Compress)
+        .fill();
         let add_button = stack(vec![
             button(PRESET_ADD_KEY)
                 .control_size(Size {
@@ -791,25 +820,33 @@ impl GuiState {
             )
             .slot_align(SlotAlign::Center, SlotAlign::Center)
             .fill(),
-            Node::align_box(
-                textbox(if presets.add_warning_active {
-                    "MAX"
-                } else {
-                    ""
-                })
-                .text_color(theme.preset_add_warning_text)
-                .widget_layout(LayoutBox::fill()),
-            )
-            .slot_align(SlotAlign::Center, SlotAlign::Center)
-            .fill(),
         ])
+        .container_overflow(OverflowPolicy::Compress)
+        .fill();
+        let action_buttons = row_slots(vec![
+            weighted_slot(save_button, 1),
+            weighted_slot(add_button, 1),
+        ])
+        .gap(HEADER_CONTROL_GAP.max(0))
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let left_content = row_slots(vec![
             weighted_slot(preset_title, 88),
-            weighted_slot(add_button, 12),
+            weighted_slot(action_buttons, 12),
         ])
         .gap(HEADER_CONTROL_GAP.max(0))
+        .container_overflow(OverflowPolicy::Compress)
+        .fill();
+        let left_content = stack(vec![
+            left_content,
+            Node::align_box(
+                textbox(presets.warning_text.unwrap_or(""))
+                    .text_color(theme.preset_add_warning_text)
+                    .widget_layout(LayoutBox::fill()),
+            )
+            .slot_align(SlotAlign::End, SlotAlign::Center)
+            .fill(),
+        ])
         .container_overflow(OverflowPolicy::Compress)
         .fill();
 
@@ -1099,11 +1136,15 @@ impl GuiState {
                     if let Ok(mut runtime) = self.runtime.lock() {
                         runtime.preset_rename_active = false;
                         runtime.preset_name_draft.clear();
-                        runtime.preset_add_warning_frames = 0;
+                        runtime.preset_warning_frames = 0;
+                        runtime.preset_warning_text = None;
                     }
-                } else if let Ok(mut runtime) = self.runtime.lock() {
-                    runtime.preset_add_warning_frames = PRESET_ADD_WARNING_FRAMES;
+                } else {
+                    self.set_preset_warning(PRESET_WARNING_MAX);
                 }
+            }
+            UiAction::ButtonPressed { key } if key == PRESET_SAVE_KEY => {
+                self.save_current_preset_by_name();
             }
             UiAction::TextBoxEdited { key, text } if key == PRESET_RENAME_KEY => {
                 if let Ok(mut runtime) = self.runtime.lock() {
@@ -1172,6 +1213,8 @@ impl GuiState {
                     runtime.preset_rename_active = false;
                     runtime.preset_name_draft.clear();
                     runtime.preset_rename_target = selected;
+                    runtime.preset_warning_frames = 0;
+                    runtime.preset_warning_text = None;
                 }
             }
             return;
@@ -1192,10 +1235,17 @@ impl GuiState {
         if bank.presets.is_empty() {
             return;
         }
+        let selected = bank.selected.min(bank.presets.len().saturating_sub(1));
+        if self.params.is_preset_read_only(selected) {
+            self.set_preset_warning(PRESET_WARNING_INIT);
+            return;
+        }
         if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.preset_rename_target = bank.selected.min(bank.presets.len().saturating_sub(1));
+            runtime.preset_rename_target = selected;
             runtime.preset_name_draft = bank.presets[runtime.preset_rename_target].name.clone();
             runtime.preset_rename_active = true;
+            runtime.preset_warning_frames = 0;
+            runtime.preset_warning_text = None;
         }
     }
 
@@ -1207,15 +1257,58 @@ impl GuiState {
             return;
         }
         let target = runtime.preset_rename_target;
-        let _ = self.params.rename_preset(target, text);
+        let renamed = self.params.rename_preset(target, text);
         runtime.preset_rename_active = false;
         runtime.preset_name_draft.clear();
+        if renamed {
+            runtime.preset_warning_frames = 0;
+            runtime.preset_warning_text = None;
+        } else {
+            runtime.preset_warning_text = Some(PRESET_WARNING_INIT);
+            runtime.preset_warning_frames = PRESET_WARNING_FRAMES;
+        }
     }
 
     fn cancel_preset_rename(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.preset_rename_active = false;
             runtime.preset_name_draft.clear();
+        }
+    }
+
+    fn save_current_preset_by_name(&self) {
+        let bank = self.params.preset_bank_snapshot();
+        let selected = bank.selected.min(bank.presets.len().saturating_sub(1));
+        let fallback_name = bank
+            .presets
+            .get(selected)
+            .map(|preset| preset.name.clone())
+            .unwrap_or_else(|| DEFAULT_PRESET_NAME.to_string());
+        let candidate = self
+            .runtime
+            .lock()
+            .ok()
+            .and_then(|runtime| {
+                if runtime.preset_rename_active {
+                    Some(runtime.preset_name_draft.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(fallback_name);
+        match self.params.save_current_state_by_name(&candidate) {
+            SavePresetOutcome::Overwritten { index } | SavePresetOutcome::Created { index } => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.preset_rename_active = false;
+                    runtime.preset_name_draft.clear();
+                    runtime.preset_rename_target = index;
+                    runtime.preset_warning_frames = 0;
+                    runtime.preset_warning_text = None;
+                }
+            }
+            SavePresetOutcome::BlockedReadOnly => self.set_preset_warning(PRESET_WARNING_INIT),
+            SavePresetOutcome::BlockedFull => self.set_preset_warning(PRESET_WARNING_MAX),
+            SavePresetOutcome::InvalidName => self.set_preset_warning(PRESET_WARNING_NAME),
         }
     }
 
@@ -2300,8 +2393,8 @@ mod tests {
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
-        HEADER_INDICATOR_SECTION_PERCENT, RESET_KEY, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT,
-        WINDOW_WIDTH,
+        HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY,
+        PRESET_WARNING_INIT, RESET_KEY, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{PumpParams, MAX_SYNC_DIVISION};
@@ -3204,7 +3297,7 @@ mod tests {
         let mut texts = Vec::new();
         collect_textbox_texts(spec.root.content(), &mut texts);
 
-        for expected in ["Mix", "Depth", "Phase", "Output", "Reset Curve"] {
+        for expected in ["Mix", "Depth", "Phase", "Output", "Reset Curve", "Save"] {
             assert!(
                 texts.iter().any(|text| text == expected),
                 "expected textbox caption `{expected}` in {:?}",
@@ -3302,6 +3395,94 @@ mod tests {
             crate::curve::default_editable_curve(),
             "second reset press should perform an intentional curve reset"
         );
+    }
+
+    #[test]
+    fn preset_save_overwrites_existing_name_from_rename_draft() {
+        let params = Arc::new(PumpParams::new());
+        params
+            .add_preset_from_current_state()
+            .expect("preset insertion should succeed");
+        assert!(params.rename_preset(1, "Verse"));
+        params
+            .load_preset(1)
+            .expect("preset selection should succeed");
+        params.set_mix(0.19);
+
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        state.reduce_action(UiAction::DropdownDoubleClicked {
+            key: PRESET_DROPDOWN_KEY.to_string(),
+        });
+        state.reduce_action(UiAction::TextBoxEdited {
+            key: PRESET_RENAME_KEY.to_string(),
+            text: "verse".to_string(),
+        });
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_SAVE_KEY.to_string(),
+        });
+
+        let bank = params.preset_bank_snapshot();
+        assert_eq!(bank.presets.len(), 2);
+        assert_eq!(bank.selected, 1);
+        assert_eq!(bank.presets[1].name, "Verse");
+        assert!((bank.presets[1].mix - 0.19).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn preset_save_creates_new_entry_for_new_name() {
+        let params = Arc::new(PumpParams::new());
+        params
+            .add_preset_from_current_state()
+            .expect("preset insertion should succeed");
+        params.set_mix(0.74);
+
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        state.reduce_action(UiAction::DropdownDoubleClicked {
+            key: PRESET_DROPDOWN_KEY.to_string(),
+        });
+        state.reduce_action(UiAction::TextBoxEdited {
+            key: PRESET_RENAME_KEY.to_string(),
+            text: "Hook".to_string(),
+        });
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_SAVE_KEY.to_string(),
+        });
+
+        let bank = params.preset_bank_snapshot();
+        assert_eq!(bank.presets.len(), 3);
+        assert_eq!(bank.selected, 2);
+        assert_eq!(bank.presets[2].name, "Hook");
+        assert!((bank.presets[2].mix - 0.74).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn init_preset_is_not_renamable_from_header_interaction() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+
+        state.reduce_action(UiAction::DropdownDoubleClicked {
+            key: PRESET_DROPDOWN_KEY.to_string(),
+        });
+
+        let runtime = state.runtime.lock().expect("runtime lock should succeed");
+        assert!(!runtime.preset_rename_active);
+        assert_eq!(runtime.preset_warning_text, Some(PRESET_WARNING_INIT));
+        assert_eq!(params.preset_bank_snapshot().presets[0].name, "Init");
     }
 
     #[test]
