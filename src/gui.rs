@@ -57,7 +57,6 @@ const ROOT_SECTION_WEIGHT_SUM: u32 =
 const KNOBS_SECTION_WEIGHT: u16 = 70;
 const DROPDOWN_SECTION_WEIGHT: u16 = 30;
 const HEADER_SWITCH_WIDE_MIN_WIDTH: u32 = 560;
-const SPLINE_TITLE_Y: i32 = 4;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_slot_heights(WINDOW_HEIGHT).1;
 const TITLE_LABEL_W: u32 = 64;
@@ -84,14 +83,6 @@ const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
 const fn fixed_box(width: u32, height: u32) -> LayoutBox {
     LayoutBox::fixed(width, height).max(width, height)
-}
-
-fn scaled_i32(base: i32, scale_factor: f32) -> i32 {
-    (base as f32 * scale_factor).round().max(0.0) as i32
-}
-
-fn scaled_u32(base: u32, scale_factor: f32) -> u32 {
-    (base as f32 * scale_factor).round().max(1.0) as u32
 }
 
 fn curve_scale_for_size(curve_size: Size) -> f32 {
@@ -209,21 +200,8 @@ fn resolve_runtime_controls_slot_widths(total_width: u32) -> (u32, u32) {
     )
 }
 
-fn scaled_text_scale(scale_factor: f32) -> u32 {
-    let scaled = (BASE_TEXT_SCALE as f32 * scale_factor).round();
-    scaled.max(1.0) as u32
-}
-
 fn scaled_line_height(text_scale: u32) -> u32 {
     BASE_CONTROL_LINE_UNIT.saturating_mul(text_scale.max(1))
-}
-
-fn scaled_control_height(base_height: u32, scale_factor: f32) -> u32 {
-    (base_height as f32 * scale_factor).round().max(1.0) as u32
-}
-
-fn scaled_knob_diameter(scale_factor: f32) -> u32 {
-    (BASE_KNOB_DIAMETER as f32 * scale_factor).round().max(1.0) as u32
 }
 
 /// Shared Pump color/style tokens derived from the canonical Patchbay theme.
@@ -433,16 +411,16 @@ enum CurveDragMode {
     },
 }
 
-/// Layout dimensions used to author Pump controls for one frame.
+/// Layout dimensions used to author Pump controls in design space.
 ///
-/// Metrics derive from the current host window size for strict host-sized
-/// layout behavior.
+/// Pump authors all widget geometry at a fixed logical design resolution.
+/// Patchbay applies uniform root scaling at render time so host window size
+/// changes do not alter declarative layout structure.
 #[derive(Clone, Copy, Debug)]
 struct UiLayoutMetrics {
     content_w: u32,
     content_h: u32,
     curve_h: u32,
-    scale: f32,
     padding_x: i32,
     title_label_w: u32,
     controls_gap: i32,
@@ -461,22 +439,21 @@ struct UiLayoutMetrics {
 }
 
 impl UiLayoutMetrics {
-    /// Resolve all layout dimensions from the current host window size.
-    fn from_input(input: &InputState) -> Self {
-        let content_w = input.window_size.width.max(1);
-        let content_h = input.window_size.height.max(1);
+    /// Resolve all layout dimensions from the fixed design resolution.
+    fn design_space() -> Self {
+        let content_w = WINDOW_WIDTH;
+        let content_h = WINDOW_HEIGHT;
         let (_header_h, curve_h, _controls_h) = resolve_vertical_slot_heights(content_h);
         let (knobs_slot_w, dropdown_slot_w) = resolve_runtime_controls_slot_widths(content_w);
-        let scale = 1.0;
-        let padding_x = scaled_i32(BASE_PADDING_X, scale);
-        let title_label_w = scaled_u32(TITLE_LABEL_W, scale);
-        let title_label_gap = scaled_i32(TITLE_LABEL_RIGHT_GAP, scale);
-        let controls_gap = scaled_i32(HEADER_CONTROL_GAP, scale);
-        let dropdown_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
-        let button_control_h = scaled_control_height(BASE_DROPDOWN_CONTROL_H, scale);
-        let text_scale = scaled_text_scale(scale);
+        let padding_x = BASE_PADDING_X.max(0);
+        let title_label_w = TITLE_LABEL_W.max(1);
+        let title_label_gap = TITLE_LABEL_RIGHT_GAP.max(0);
+        let controls_gap = HEADER_CONTROL_GAP.max(0);
+        let dropdown_control_h = BASE_DROPDOWN_CONTROL_H.max(1);
+        let button_control_h = BASE_DROPDOWN_CONTROL_H.max(1);
+        let text_scale = BASE_TEXT_SCALE.max(1);
         let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
-        let knob_diameter = scaled_knob_diameter(scale).min(knob_track_width.max(1));
+        let knob_diameter = BASE_KNOB_DIAMETER.min(knob_track_width.max(1));
         let label_line_h = scaled_line_height(text_scale);
         let dropdown_control_w = dropdown_slot_w.max(1);
         let subtitle_label_x = padding_x
@@ -488,15 +465,14 @@ impl UiLayoutMetrics {
             width: content_w,
             height: curve_h,
         };
-        let meter_x_offset = scaled_i32(METER_X_OFFSET, scale);
-        let meter_y_offset = scaled_i32(METER_Y_OFFSET, scale);
-        let meter_width = scaled_u32(METER_WIDTH.max(0) as u32, scale);
-        let meter_stroke = scaled_u32(METER_STROKE.max(0) as u32, scale);
+        let meter_x_offset = METER_X_OFFSET.max(0);
+        let meter_y_offset = METER_Y_OFFSET.max(0);
+        let meter_width = METER_WIDTH.max(0) as u32;
+        let meter_stroke = METER_STROKE.max(0) as u32;
         Self {
             content_w,
             content_h,
             curve_h,
-            scale,
             padding_x,
             title_label_w,
             controls_gap,
@@ -594,7 +570,6 @@ impl GuiState {
 
     /// Build the top header slot node.
     fn build_header_slot(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
-        let _title_y = scaled_i32(SPLINE_TITLE_Y, metrics.scale);
         let wide_header = row_slots(vec![
             fraction_slot(
                 panel(
@@ -804,18 +779,19 @@ impl GuiState {
 
     /// Build the root UI spec for the current frame dimensions and content tree.
     fn build_root_spec(&self, metrics: UiLayoutMetrics, theme: PumpTheme, content: Node) -> UiSpec {
-        let window_size = Size {
+        let design_size = Size {
             width: metrics.content_w,
             height: metrics.content_h,
         };
         UiSpec::new(
             RootFrameSpec::new(ROOT_KEY, content)
                 .layout(
-                    LayoutBox::fixed(window_size.width, window_size.height)
-                        .max(window_size.width, window_size.height),
+                    LayoutBox::fixed(design_size.width, design_size.height)
+                        .max(design_size.width, design_size.height),
                 )
+                .design_size(design_size)
                 .padding(0)
-                .scale_mode(RootScaleMode::None)
+                .scale_mode(RootScaleMode::UniformFit)
                 .tokens(theme.tokens),
         )
     }
@@ -842,7 +818,7 @@ impl GuiState {
     }
 
     fn build_ui(&self, input: &InputState) -> UiSpec {
-        let metrics = UiLayoutMetrics::from_input(input);
+        let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
         let controls = self.snapshot_controls();
         let draw_commands = self.build_curve_commands_for_frame(input, metrics, theme);
@@ -2414,7 +2390,7 @@ mod tests {
     }
 
     #[test]
-    fn build_ui_accepts_resize_sequences_with_host_sized_root_layout() {
+    fn build_ui_keeps_design_sized_root_across_host_resize_sequences() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -2446,10 +2422,16 @@ mod tests {
             };
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
-            assert_eq!(measured.width, window_size.width.max(1));
-            assert_eq!(measured.height, window_size.height.max(1));
-            assert_eq!(spec.root.scale_mode, RootScaleMode::None);
-            assert_eq!(spec.root.design_size, None);
+            assert_eq!(measured.width, WINDOW_WIDTH);
+            assert_eq!(measured.height, WINDOW_HEIGHT);
+            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
+            assert_eq!(
+                spec.root.design_size,
+                Some(Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                })
+            );
         }
     }
 
@@ -2487,10 +2469,16 @@ mod tests {
             };
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
-            assert_eq!(measured.width, input_size.width.max(1));
-            assert_eq!(measured.height, input_size.height.max(1));
-            assert_eq!(spec.root.scale_mode, RootScaleMode::None);
-            assert_eq!(spec.root.design_size, None);
+            assert_eq!(measured.width, WINDOW_WIDTH);
+            assert_eq!(measured.height, WINDOW_HEIGHT);
+            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
+            assert_eq!(
+                spec.root.design_size,
+                Some(Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                })
+            );
         }
     }
 
@@ -2545,18 +2533,21 @@ mod tests {
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
 
-            assert_eq!(measured.width, input_size.width.max(1));
-            assert_eq!(measured.height, input_size.height.max(1));
-            assert_eq!(spec.root.scale_mode, RootScaleMode::None);
-            assert_eq!(spec.root.design_size, None);
+            assert_eq!(measured.width, WINDOW_WIDTH);
+            assert_eq!(measured.height, WINDOW_HEIGHT);
+            assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
+            assert_eq!(
+                spec.root.design_size,
+                Some(Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                })
+            );
 
             let curve_region = find_curve_region_node(spec.root.content())
                 .expect("curve region should exist for all measured sizes");
-            assert_eq!(curve_region.width, input_size.width.max(1));
-            assert_eq!(
-                curve_region.height,
-                resolve_vertical_slot_heights(input_size.height.max(1)).1
-            );
+            assert_eq!(curve_region.width, WINDOW_WIDTH);
+            assert_eq!(curve_region.height, CURVE_H);
         }
     }
 
