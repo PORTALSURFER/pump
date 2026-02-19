@@ -9,9 +9,8 @@ use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
     button, column, column_sections, dropdown, grid, knob, label, panel, root_frame_sized,
-    row_sections, weighted, AbsoluteChild, AbsoluteSpec, DrawCommand, GridTemplate, LayoutBox,
-    Node, RegionInteractionKind, RegionSpec, RootScaleMode, ThemeTokens, TrackSize, UiAction,
-    UiSpec,
+    row_sections, surface, weighted, fill_section, fraction, GridTemplate, LayoutBox, Node,
+    RegionInteractionKind, RootScaleMode, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -657,34 +656,28 @@ impl GuiState {
 
     /// Build the top header section node.
     fn build_header_section(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
-        let title_y = scaled_i32(SPLINE_TITLE_Y, metrics.scale);
-        let subtitle_x = metrics
-            .padding_x
-            .saturating_add(metrics.title_label_w as i32)
-            .saturating_add(metrics.title_label_gap);
-        let header_controls = vec![
-            AbsoluteChild::new(
-                Point {
-                    x: metrics.padding_x,
-                    y: title_y,
-                },
-                label("PUMP")
-                    .text_color(theme.title_text)
-                    .layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
+        let _title_y = scaled_i32(SPLINE_TITLE_Y, metrics.scale);
+        let header_content = row_sections(vec![
+            fraction(
+                panel(
+                    "header-title",
+                    label("PUMP")
+                        .text_color(theme.title_text)
+                        .layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
+                )
+                .pad_xy(metrics.padding_x.max(0), 0),
+                18,
             ),
-            AbsoluteChild::new(
-                Point {
-                    x: subtitle_x,
-                    y: title_y,
-                },
-                label("Spline Beat-Synced Ducking")
-                    .text_color(theme.subtitle_text)
-                    .layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
+            fill_section(
+                panel(
+                    "header-subtitle",
+                    label("Spline Beat-Synced Ducking")
+                        .text_color(theme.subtitle_text)
+                        .layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
+                )
+                .pad_xy(0, 0),
             ),
-        ];
-        let header_content =
-            Node::Absolute(AbsoluteSpec::new(header_controls).layout(LayoutBox::fill()))
-                .layout(LayoutBox::fill());
+        ]);
         panel("header", header_content).pad_all(0)
     }
 
@@ -693,24 +686,17 @@ impl GuiState {
         &self,
         metrics: UiLayoutMetrics,
         theme: PumpTheme,
-        draw_commands: Vec<DrawCommand>,
+        draw_commands: Vec<SurfaceCommand>,
     ) -> Node {
-        let spline_controls = vec![AbsoluteChild::new(
-            Point { x: 0, y: 0 },
-            Node::Region(
-                RegionSpec::new(
-                    CURVE_KEY,
-                    Size {
-                        width: metrics.content_w,
-                        height: metrics.curve_h,
-                    },
-                )
-                .draw_commands(draw_commands),
-            ),
-        )];
-        let spline_content =
-            Node::Absolute(AbsoluteSpec::new(spline_controls).layout(LayoutBox::fill()))
-                .layout(LayoutBox::fill());
+        let spline_content = surface(
+            CURVE_KEY,
+            Size {
+                width: metrics.content_w,
+                height: metrics.curve_h,
+            },
+            draw_commands,
+        )
+        .layout(LayoutBox::fill());
         panel("spline", spline_content)
             .background(theme.curve_bg)
             .outline(theme.curve_border)
@@ -875,7 +861,7 @@ impl GuiState {
         input: &InputState,
         metrics: UiLayoutMetrics,
         theme: PumpTheme,
-    ) -> Vec<DrawCommand> {
+    ) -> Vec<SurfaceCommand> {
         let (selected_node, curve_hovered, curve_local_pointer) =
             self.snapshot_curve_runtime(metrics.curve_size);
         let editable_curve = self.params.editable_curve_snapshot();
@@ -1252,7 +1238,7 @@ impl GuiState {
         metrics: UiLayoutMetrics,
         state: CurveRenderState,
         theme: &PumpTheme,
-    ) -> Vec<DrawCommand> {
+    ) -> Vec<SurfaceCommand> {
         let curve_size = metrics.curve_size;
         let rect = Rect {
             origin: Point { x: 0, y: 0 },
@@ -1281,11 +1267,11 @@ impl GuiState {
             .saturating_sub(meter_stroke_u32.saturating_mul(2));
 
         let mut commands = Vec::with_capacity(1024);
-        commands.push(DrawCommand::FillRect {
+        commands.push(SurfaceCommand::FillRect {
             rect,
             color: theme.curve_bg,
         });
-        commands.push(DrawCommand::StrokeRect {
+        commands.push(SurfaceCommand::StrokeRect {
             rect,
             thickness: border_stroke,
             color: theme.curve_border,
@@ -1293,7 +1279,7 @@ impl GuiState {
 
         for step in 1..16 {
             let x = ((curve_size.width as i32 - 1) * step) / 16;
-            commands.push(DrawCommand::Line {
+            commands.push(SurfaceCommand::Line {
                 start: Point { x, y: 0 },
                 end: Point {
                     x,
@@ -1305,7 +1291,7 @@ impl GuiState {
 
         for step in 1..4 {
             let y = ((curve_size.height as i32 - 1) * step) / 4;
-            commands.push(DrawCommand::Line {
+            commands.push(SurfaceCommand::Line {
                 start: Point { x: 0, y },
                 end: Point {
                     x: curve_size.width as i32 - 1,
@@ -1347,13 +1333,13 @@ impl GuiState {
                     },
                     curve_size,
                 ));
-                commands.push(DrawCommand::Line {
+                commands.push(SurfaceCommand::Line {
                     start: prev,
                     end: point,
                     color: line_color,
                 });
                 if highlight {
-                    commands.push(DrawCommand::Line {
+                    commands.push(SurfaceCommand::Line {
                         start: Point {
                             x: prev.x,
                             y: prev.y + highlight_offset,
@@ -1371,12 +1357,12 @@ impl GuiState {
 
         if let Some(preview) = state.preview_node {
             let center = to_canvas(local_from_node_for_size(preview, curve_size));
-            commands.push(DrawCommand::FillCircle {
+            commands.push(SurfaceCommand::FillCircle {
                 center,
                 radius: node_preview_radius,
                 color: theme.preview_fill,
             });
-            commands.push(DrawCommand::StrokeCircle {
+            commands.push(SurfaceCommand::StrokeCircle {
                 center,
                 radius: node_preview_stroke_radius,
                 thickness: node_stroke,
@@ -1402,7 +1388,7 @@ impl GuiState {
             } else {
                 theme.node_stroke
             };
-            commands.push(DrawCommand::FillCircle {
+            commands.push(SurfaceCommand::FillCircle {
                 center,
                 radius: if selected || hovered {
                     node_hover_radius
@@ -1411,14 +1397,14 @@ impl GuiState {
                 },
                 color: fill_color,
             });
-            commands.push(DrawCommand::StrokeCircle {
+            commands.push(SurfaceCommand::StrokeCircle {
                 center,
                 radius: node_radius,
                 thickness: node_stroke,
                 color: stroke_color,
             });
             if selected || hovered {
-                commands.push(DrawCommand::StrokeCircle {
+                commands.push(SurfaceCommand::StrokeCircle {
                     center,
                     radius: node_ring_radius,
                     thickness: node_stroke,
@@ -1433,7 +1419,7 @@ impl GuiState {
 
         let phase = self.status.phase();
         let playhead_x = (phase * (curve_size.width as f32 - 1.0)).round() as i32;
-        commands.push(DrawCommand::Line {
+        commands.push(SurfaceCommand::Line {
             start: Point {
                 x: playhead_x,
                 y: 0,
@@ -1458,14 +1444,14 @@ impl GuiState {
                     .saturating_sub((meter_y_offset.saturating_mul(2)).max(0) as u32),
             },
         };
-        commands.push(DrawCommand::StrokeRect {
+        commands.push(SurfaceCommand::StrokeRect {
             rect: meter_rect,
             thickness: meter_stroke_u32,
             color: theme.meter_outline,
         });
         let fill_height = ((meter_rect.size.height as f32) * reduction).round() as u32;
         if fill_height > 0 {
-            commands.push(DrawCommand::FillRect {
+            commands.push(SurfaceCommand::FillRect {
                 rect: Rect {
                     origin: Point {
                         x: meter_rect.origin.x
@@ -2245,8 +2231,8 @@ mod tests {
         );
         let spec = state.build_ui(&InputState::default());
         let region = find_curve_region_node(&spec.root.content).expect("curve region should exist");
-        assert_eq!(region.size.width, WINDOW_WIDTH);
-        assert_eq!(region.size.height, CURVE_H);
+        assert_eq!(region.width, WINDOW_WIDTH);
+        assert_eq!(region.height, CURVE_H);
     }
 
     #[test]
@@ -2406,8 +2392,8 @@ mod tests {
 
             let curve_region = find_curve_region_node(&spec.root.content)
                 .expect("curve region should exist for all measured sizes");
-            assert_eq!(curve_region.size.width, CURVE_W);
-            assert_eq!(curve_region.size.height, CURVE_H);
+            assert_eq!(curve_region.width, CURVE_W);
+            assert_eq!(curve_region.height, CURVE_H);
         }
     }
 
@@ -2503,18 +2489,14 @@ mod tests {
         );
     }
 
-    fn find_curve_region_node(node: &Node) -> Option<&toybox::gui::declarative::RegionSpec> {
+    fn find_curve_region_node(node: &Node) -> Option<Size> {
         match node {
-            Node::Region(region) if region.key == CURVE_KEY => Some(region),
+            Node::Region(region) if region.key == CURVE_KEY => Some(region.size),
             Node::Panel(panel) => find_curve_region_node(&panel.content),
             Node::Row(flex) | Node::Column(flex) => {
                 flex.children.iter().find_map(find_curve_region_node)
             }
             Node::Grid(grid) => grid.children.iter().find_map(find_curve_region_node),
-            Node::Absolute(absolute) => absolute
-                .children
-                .iter()
-                .find_map(|child| find_curve_region_node(&child.node)),
             Node::Region(_) => None,
             Node::Label(_)
             | Node::Spacer(_)
