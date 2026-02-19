@@ -8,7 +8,7 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
-    button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, knob, panel,
+    button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, indicator, knob, panel,
     root_frame_sized, row_slots, stack, surface, switch_layout, textbox, weighted_slot,
     weighted_slot_lengths, when_width_ge, GridTemplate, LayoutBox, Node, OverflowPolicy,
     RegionInteractionKind, RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens, TrackSize,
@@ -72,6 +72,7 @@ const BASE_TEXT_SCALE: u32 = 2;
 const KNOBS_PER_ROW: usize = 4;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
+const TRANSPORT_INDICATOR_SIZE: u32 = 10;
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const PLAYHEAD_DOT_CORE_RADIUS: i32 = 4;
@@ -473,6 +474,7 @@ struct UiLayoutMetrics {
     dropdown_control_h: u32,
     button_control_h: u32,
     subtitle_label_w: u32,
+    transport_indicator_size: u32,
     curve_size: Size,
     knob_track_w: u32,
     knob_diameter: u32,
@@ -509,6 +511,7 @@ impl UiLayoutMetrics {
             .saturating_add(title_label_gap)
             .max(0) as u32;
         let subtitle_label_w = content_w.saturating_sub(subtitle_label_x).max(1);
+        let transport_indicator_size = TRANSPORT_INDICATOR_SIZE.max(1);
         let curve_size = Size {
             width: content_w,
             height: curve_h,
@@ -532,6 +535,7 @@ impl UiLayoutMetrics {
             dropdown_control_h,
             button_control_h,
             subtitle_label_w,
+            transport_indicator_size,
             curve_size,
             knob_track_w,
             knob_diameter,
@@ -619,6 +623,23 @@ impl GuiState {
 
     /// Build the top header slot node.
     fn build_header_slot(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
+        let header_indicator = || {
+            Node::align_box(
+                indicator(
+                    Size {
+                        width: metrics.transport_indicator_size,
+                        height: metrics.transport_indicator_size,
+                    },
+                    self.status.transport_beat_blink_active(),
+                )
+                .widget_layout(fixed_box(
+                    metrics.transport_indicator_size,
+                    metrics.transport_indicator_size,
+                )),
+            )
+            .slot_align(SlotAlign::End, SlotAlign::Center)
+            .fill()
+        };
         let wide_header = row_slots(vec![
             fraction_slot(
                 panel(
@@ -633,9 +654,16 @@ impl GuiState {
             fill_slot(
                 panel(
                     "header-subtitle-wide",
-                    textbox("Spline Beat-Synced Ducking")
-                        .text_color(theme.subtitle_text)
-                        .widget_layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
+                    stack(vec![
+                        textbox("Spline Beat-Synced Ducking")
+                            .text_color(theme.subtitle_text)
+                            .widget_layout(fixed_box(
+                                metrics.subtitle_label_w,
+                                metrics.label_line_h,
+                            )),
+                        header_indicator(),
+                    ])
+                    .fill(),
                 )
                 .pad_xy(0, 0),
             ),
@@ -654,9 +682,16 @@ impl GuiState {
             fill_slot(
                 panel(
                     "header-subtitle-compact",
-                    textbox("Spline Beat-Synced Ducking")
-                        .text_color(theme.subtitle_text)
-                        .widget_layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
+                    stack(vec![
+                        textbox("Spline Beat-Synced Ducking")
+                            .text_color(theme.subtitle_text)
+                            .widget_layout(fixed_box(
+                                metrics.subtitle_label_w,
+                                metrics.label_line_h,
+                            )),
+                        header_indicator(),
+                    ])
+                    .fill(),
                 )
                 .pad_xy(0, 0),
             ),
@@ -2078,7 +2113,7 @@ mod tests {
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_SWITCH_WIDE_MIN_WIDTH,
-        WINDOW_HEIGHT, WINDOW_WIDTH,
+        TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{sync_division_label, PumpParams};
@@ -2475,7 +2510,13 @@ mod tests {
     ) -> (Vec<SurfaceCommand>, EditableCurve, PumpTheme) {
         let params = Arc::new(PumpParams::new());
         let status = Arc::new(GuiStatus::default());
-        status.update(phase, 1.0, is_playing, has_host_beats_timeline);
+        status.update(
+            phase,
+            1.0,
+            is_playing,
+            has_host_beats_timeline,
+            phase.rem_euclid(1.0),
+        );
         let state = GuiState::new(
             Arc::clone(&params),
             status,
@@ -2950,6 +2991,72 @@ mod tests {
     }
 
     #[test]
+    fn header_transport_indicator_reflects_transport_blink_state() {
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        let state = GuiState::new(
+            params,
+            Arc::clone(&status),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let input = InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        };
+
+        status.update(0.0, 1.0, true, true, 0.05);
+        let lit_spec = state.build_ui(&input);
+        let lit = find_first_indicator_active(lit_spec.root.content())
+            .expect("header transport indicator should exist");
+        assert!(lit, "indicator should blink on at beat onset");
+
+        status.update(0.0, 1.0, true, true, 0.5);
+        let dim_spec = state.build_ui(&input);
+        let dim = find_first_indicator_active(dim_spec.root.content())
+            .expect("header transport indicator should exist");
+        assert!(!dim, "indicator should be off between beat flashes");
+
+        status.update(0.0, 1.0, true, false, 0.05);
+        let no_timeline_spec = state.build_ui(&input);
+        let no_timeline = find_first_indicator_active(no_timeline_spec.root.content())
+            .expect("header transport indicator should exist");
+        assert!(
+            !no_timeline,
+            "indicator should stay off when host beat timeline is unavailable"
+        );
+    }
+
+    #[test]
+    fn header_transport_indicator_has_expected_fixed_size() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
+        let size = find_first_indicator_size(spec.root.content())
+            .expect("header transport indicator should exist");
+        assert_eq!(
+            size,
+            Size {
+                width: TRANSPORT_INDICATOR_SIZE,
+                height: TRANSPORT_INDICATOR_SIZE,
+            }
+        );
+    }
+
+    #[test]
     fn header_switch_selects_compact_and_wide_variants_by_root_width() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
@@ -3206,6 +3313,79 @@ mod tests {
             | Node::Region(_)
             | Node::Indicator(_)
             | Node::Absolute(_) => None,
+        }
+    }
+
+    fn find_first_indicator_active(node: &Node) -> Option<bool> {
+        match node {
+            Node::Slot(slot) => find_first_indicator_active(slot.child()),
+            Node::Indicator(indicator) => Some(indicator.active),
+            Node::Panel(panel) => find_first_indicator_active(panel.content()),
+            Node::PaddingBox(padding_box) => find_first_indicator_active(padding_box.content()),
+            Node::AlignBox(align_box) => find_first_indicator_active(align_box.content()),
+            Node::AspectBox(aspect_box) => find_first_indicator_active(aspect_box.content()),
+            Node::Row(flex) | Node::Column(flex) => {
+                flex.children().iter().find_map(find_first_indicator_active)
+            }
+            Node::Grid(grid) => grid.children().iter().find_map(find_first_indicator_active),
+            Node::Stack(stack) => stack
+                .children()
+                .iter()
+                .find_map(find_first_indicator_active),
+            Node::ScrollView(scroll_view) => find_first_indicator_active(scroll_view.content()),
+            Node::Wrap(wrap) => wrap.children().iter().find_map(find_first_indicator_active),
+            Node::SwitchLayout(switch_layout) => switch_layout
+                .cases()
+                .iter()
+                .find_map(|case_entry| find_first_indicator_active(case_entry.child()))
+                .or_else(|| find_first_indicator_active(switch_layout.fallback())),
+            Node::Absolute(absolute) => absolute
+                .children()
+                .iter()
+                .find_map(|child| find_first_indicator_active(child.node())),
+            Node::TextBox(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::Region(_) => None,
+        }
+    }
+
+    fn find_first_indicator_size(node: &Node) -> Option<Size> {
+        match node {
+            Node::Slot(slot) => find_first_indicator_size(slot.child()),
+            Node::Indicator(indicator) => Some(indicator.size),
+            Node::Panel(panel) => find_first_indicator_size(panel.content()),
+            Node::PaddingBox(padding_box) => find_first_indicator_size(padding_box.content()),
+            Node::AlignBox(align_box) => find_first_indicator_size(align_box.content()),
+            Node::AspectBox(aspect_box) => find_first_indicator_size(aspect_box.content()),
+            Node::Row(flex) | Node::Column(flex) => {
+                flex.children().iter().find_map(find_first_indicator_size)
+            }
+            Node::Grid(grid) => grid.children().iter().find_map(find_first_indicator_size),
+            Node::Stack(stack) => stack.children().iter().find_map(find_first_indicator_size),
+            Node::ScrollView(scroll_view) => find_first_indicator_size(scroll_view.content()),
+            Node::Wrap(wrap) => wrap.children().iter().find_map(find_first_indicator_size),
+            Node::SwitchLayout(switch_layout) => switch_layout
+                .cases()
+                .iter()
+                .find_map(|case_entry| find_first_indicator_size(case_entry.child()))
+                .or_else(|| find_first_indicator_size(switch_layout.fallback())),
+            Node::Absolute(absolute) => absolute
+                .children()
+                .iter()
+                .find_map(|child| find_first_indicator_size(child.node())),
+            Node::TextBox(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::Region(_) => None,
         }
     }
 

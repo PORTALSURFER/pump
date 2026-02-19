@@ -250,11 +250,14 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
 
         let transport = transport_state_from_transport(process.transport.copied());
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
+        let beat_phase =
+            host_beat_phase(transport).unwrap_or_else(|| self.shared.status.beat_phase());
         self.shared.status.update(
             gui_phase,
             self.shared.status.gain(),
             transport.is_playing,
             transport.song_pos_beats.is_some(),
+            beat_phase,
         );
 
         for mut port_pair in &mut audio {
@@ -375,6 +378,7 @@ impl PumpAudioProcessor<'_> {
             last_gain,
             host_is_playing,
             host_has_beats_timeline,
+            host_beat_phase(transport).unwrap_or_else(|| self.shared.status.beat_phase()),
         );
 
         if let Some(out_left) = left_output {
@@ -410,6 +414,13 @@ fn gui_phase_from_transport(
         .unwrap_or_else(|| fallback_phase.rem_euclid(1.0))
 }
 
+/// Resolve normalized host beat phase from transport snapshot.
+fn host_beat_phase(transport: TransportState) -> Option<f32> {
+    transport
+        .song_pos_beats
+        .map(|beats| beats.rem_euclid(1.0) as f32)
+}
+
 /// Shared GUI telemetry values updated by the audio thread.
 #[derive(Default)]
 pub struct GuiStatus {
@@ -417,16 +428,26 @@ pub struct GuiStatus {
     gain: AtomicF32,
     is_playing: AtomicBool,
     has_host_beats_timeline: AtomicBool,
+    beat_phase: AtomicF32,
 }
 
 impl GuiStatus {
     /// Update telemetry from the latest processed frame.
-    pub fn update(&self, phase: f32, gain: f32, is_playing: bool, has_host_beats_timeline: bool) {
+    pub fn update(
+        &self,
+        phase: f32,
+        gain: f32,
+        is_playing: bool,
+        has_host_beats_timeline: bool,
+        beat_phase: f32,
+    ) {
         self.phase.store(phase, Ordering::Relaxed);
         self.gain.store(gain, Ordering::Relaxed);
         self.is_playing.store(is_playing, Ordering::Relaxed);
         self.has_host_beats_timeline
             .store(has_host_beats_timeline, Ordering::Relaxed);
+        self.beat_phase
+            .store(beat_phase.rem_euclid(1.0), Ordering::Relaxed);
     }
 
     /// Read latest phase value.
@@ -447,6 +468,17 @@ impl GuiStatus {
     /// Read whether host beat timeline is currently available.
     pub fn has_host_beats_timeline(&self) -> bool {
         self.has_host_beats_timeline.load(Ordering::Relaxed)
+    }
+
+    /// Read normalized host beat phase in `[0, 1)`.
+    pub fn beat_phase(&self) -> f32 {
+        self.beat_phase.load(Ordering::Relaxed).rem_euclid(1.0)
+    }
+
+    /// Return whether transport beat blink should currently be lit.
+    pub fn transport_beat_blink_active(&self) -> bool {
+        const BEAT_FLASH_DUTY: f32 = 0.18;
+        self.has_host_beats_timeline() && self.is_playing() && self.beat_phase() < BEAT_FLASH_DUTY
     }
 }
 
@@ -473,7 +505,7 @@ mod tests {
     use crate::dsp::{db_to_linear, DspSettings};
     use toybox::dsp::{phase_from_beats, TransportState};
 
-    use super::gui_phase_from_transport;
+    use super::{gui_phase_from_transport, host_beat_phase, GuiStatus};
 
     #[test]
     fn db_to_linear_matches_unity_at_zero_db() {
@@ -515,5 +547,37 @@ mod tests {
         };
         let resolved = gui_phase_from_transport(transport, settings, 1.25);
         assert!((resolved - 0.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn host_beat_phase_wraps_negative_and_positive_positions() {
+        let positive = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(4.75),
+        };
+        let negative = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(-0.2),
+        };
+        assert!((host_beat_phase(positive).unwrap_or_default() - 0.75).abs() < 1.0e-6);
+        assert!((host_beat_phase(negative).unwrap_or_default() - 0.8).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn transport_beat_blink_requires_timeline_playback_and_duty_window() {
+        let status = GuiStatus::default();
+        status.update(0.0, 1.0, true, true, 0.05);
+        assert!(status.transport_beat_blink_active());
+
+        status.update(0.0, 1.0, true, true, 0.5);
+        assert!(!status.transport_beat_blink_active());
+
+        status.update(0.0, 1.0, false, true, 0.05);
+        assert!(!status.transport_beat_blink_active());
+
+        status.update(0.0, 1.0, true, false, 0.05);
+        assert!(!status.transport_beat_blink_active());
     }
 }
