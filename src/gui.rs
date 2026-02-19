@@ -8,8 +8,8 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
-    button, column, column_sections, dropdown, grid, knob, label, panel, root_frame_sized,
-    row_sections, surface, weighted, fill_section, fraction, GridTemplate, LayoutBox, Node,
+    button, column, column_sections, dropdown, fill_section, fraction, grid, knob, label, panel,
+    root_frame_sized, row_sections, surface, weighted, GridTemplate, LayoutBox, Node,
     RegionInteractionKind, RootScaleMode, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
@@ -500,8 +500,6 @@ struct UiLayoutMetrics {
     scale: f32,
     padding_x: i32,
     title_label_w: u32,
-    title_label_gap: i32,
-    controls_padding: i32,
     controls_gap: i32,
     meter_x_offset: i32,
     meter_y_offset: i32,
@@ -559,8 +557,6 @@ impl UiLayoutMetrics {
             scale,
             padding_x,
             title_label_w,
-            title_label_gap,
-            controls_padding,
             controls_gap,
             meter_x_offset,
             meter_y_offset,
@@ -2017,8 +2013,8 @@ mod tests {
         find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
         move_node_with_push_through, move_segment_translated, preferred_window_size,
         preview_node_on_curve, resolve_runtime_controls_section_widths,
-        resolve_vertical_section_heights, GuiState, UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W,
-        WINDOW_HEIGHT, WINDOW_WIDTH,
+        resolve_vertical_section_heights, GuiState, CURVE_H, CURVE_KEY, CURVE_W, WINDOW_HEIGHT,
+        WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -2026,8 +2022,20 @@ mod tests {
     use std::sync::Arc;
     use toybox::clap::automation::AutomationQueue;
     use toybox::clap::gui::InputState;
-    use toybox::gui::declarative::{measure_checked, Node, RootScaleMode};
+    use toybox::gui::declarative::{measure_checked, Node, PanelSpec, RootScaleMode};
     use toybox::gui::{render_spec_to_frame, MainPalette, Point, Size};
+
+    fn expect_section_panel<'a>(node: &'a Node, label: &str) -> &'a PanelSpec {
+        match node {
+            Node::Row(row) => match row.children.as_slice() {
+                [Node::Panel(panel)] => panel,
+                [other] => panic!("expected {label} row to wrap panel, got {other:?}"),
+                _ => panic!("expected {label} row to contain exactly one child"),
+            },
+            Node::Panel(panel) => panel,
+            other => panic!("expected {label} panel (or row wrapper), got {other:?}"),
+        }
+    }
 
     #[test]
     fn delete_hit_ignores_endpoints_and_targets_interior_nodes() {
@@ -2411,19 +2419,16 @@ mod tests {
             other => panic!("expected root content grid, got {other:?}"),
         };
         assert_eq!(root_grid.children.len(), 3);
-        assert!(matches!(root_grid.children[0], Node::Panel(_)));
-        assert!(matches!(root_grid.children[1], Node::Panel(_)));
-        let controls_panel = match &root_grid.children[2] {
-            Node::Panel(panel) => panel,
-            other => panic!("expected controls panel, got {other:?}"),
-        };
+        let _header_panel = expect_section_panel(&root_grid.children[0], "header");
+        let _curve_panel = expect_section_panel(&root_grid.children[1], "curve");
+        let controls_panel = expect_section_panel(&root_grid.children[2], "controls");
         let controls_grid = match controls_panel.content.as_ref() {
             Node::Grid(grid) => grid,
             other => panic!("expected controls grid in panel, got {other:?}"),
         };
         assert_eq!(controls_grid.children.len(), 2);
-        assert!(matches!(controls_grid.children[0], Node::Panel(_)));
-        assert!(matches!(controls_grid.children[1], Node::Panel(_)));
+        let _knobs_panel = expect_section_panel(&controls_grid.children[0], "knobs");
+        let _dropdown_panel = expect_section_panel(&controls_grid.children[1], "dropdowns");
     }
 
     #[test]
@@ -2445,15 +2450,12 @@ mod tests {
 
         let (header_h, curve_h, _) = resolve_vertical_section_heights(WINDOW_HEIGHT);
         let controls_top = header_h.saturating_add(curve_h);
-        let metrics = UiLayoutMetrics::from_input(&InputState::default());
-        let base_row = controls_top
-            .saturating_add(metrics.controls_padding.max(0) as u32)
-            .min(frame.height.saturating_sub(1));
+        let base_row = controls_top.min(frame.height.saturating_sub(1));
         let (knobs_w, _) = resolve_runtime_controls_section_widths(WINDOW_WIDTH);
         let border = MainPalette::main().text_primary;
 
         let end_row = base_row
-            .saturating_add(4)
+            .saturating_add(12)
             .min(frame.height.saturating_sub(1));
         let mut best_runs: Vec<(u32, u32)> = Vec::new();
         let mut best_coverage = 0u32;
@@ -2505,7 +2507,8 @@ mod tests {
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
-            | Node::Indicator(_) => None,
+            | Node::Indicator(_)
+            | Node::Absolute(_) => None,
         }
     }
 

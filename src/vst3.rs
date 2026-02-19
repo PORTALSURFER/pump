@@ -723,7 +723,7 @@ impl IPluginFactoryTrait for PumpVst3Factory {
         }
 
         let info = unsafe { &mut *info };
-        copy_cstring("uhx", &mut info.vendor);
+        copy_cstring("portalsurfer", &mut info.vendor);
         copy_cstring("https://github.com/uhx/pump", &mut info.url);
         copy_cstring("support@localhost", &mut info.email);
         info.flags = PFactoryInfo_::FactoryFlags_::kUnicode as int32;

@@ -62,6 +62,7 @@ impl DefaultPluginFactory for PumpPlugin {
         use clack_plugin::plugin::features::*;
 
         PluginDescriptor::new("com.portalsurfer.pump", "pump")
+            .with_vendor("portalsurfer")
             .with_features([AUDIO_EFFECT, STEREO])
             .with_description("Freehand beat-synced gain ducking effect")
     }
