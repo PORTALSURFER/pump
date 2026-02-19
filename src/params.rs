@@ -288,14 +288,6 @@ pub fn sync_division_beats(index: usize) -> f32 {
         .unwrap_or(SYNC_DIVISIONS[DEFAULT_SYNC_DIVISION_INDEX].beats)
 }
 
-/// Convert a sync division index into a host-normalized string list.
-pub fn sync_division_labels() -> Vec<String> {
-    SYNC_DIVISIONS
-        .iter()
-        .map(|division| division.label.to_string())
-        .collect()
-}
-
 /// Clamp and round sync division value into a valid index.
 pub fn clamp_sync_division(value: f32) -> usize {
     value.round().clamp(0.0, MAX_SYNC_DIVISION) as usize

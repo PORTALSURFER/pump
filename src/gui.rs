@@ -8,10 +8,11 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
-    button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, knob, label, panel,
-    root_frame_sized, row_slots, surface, switch_layout, weighted_slot, weighted_slot_lengths,
-    when_width_ge, GridTemplate, LayoutBox, Node, OverflowPolicy, RegionInteractionKind,
-    RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
+    button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, knob, panel,
+    root_frame_sized, row_slots, surface, switch_layout, textbox, weighted_slot,
+    weighted_slot_lengths, when_width_ge, GridTemplate, LayoutBox, Node, OverflowPolicy,
+    RegionInteractionKind, RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens, TrackSize,
+    UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -21,10 +22,9 @@ use crate::curve::{
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    sync_division_label, sync_division_labels, PumpParams, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB,
-    MAX_PHASE_OFFSET, MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET,
-    PARAM_DEPTH_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
-    PARAM_SYNC_DIVISION_ID,
+    sync_division_label, PumpParams, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET,
+    MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID,
+    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
 };
 use crate::GuiStatus;
 
@@ -576,7 +576,7 @@ impl GuiState {
             fraction_slot(
                 panel(
                     "header-title-wide",
-                    label("PUMP")
+                    textbox("PUMP")
                         .text_color(theme.title_text)
                         .widget_layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
                 )
@@ -586,7 +586,7 @@ impl GuiState {
             fill_slot(
                 panel(
                     "header-subtitle-wide",
-                    label("Spline Beat-Synced Ducking")
+                    textbox("Spline Beat-Synced Ducking")
                         .text_color(theme.subtitle_text)
                         .widget_layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
                 )
@@ -598,7 +598,7 @@ impl GuiState {
             fill_slot(
                 panel(
                     "header-title-compact",
-                    label("PUMP")
+                    textbox("PUMP")
                         .text_color(theme.title_text)
                         .widget_layout(fixed_box(metrics.title_label_w, metrics.label_line_h)),
                 )
@@ -607,7 +607,7 @@ impl GuiState {
             fill_slot(
                 panel(
                     "header-subtitle-compact",
-                    label("Spline Beat-Synced Ducking")
+                    textbox("Spline Beat-Synced Ducking")
                         .text_color(theme.subtitle_text)
                         .widget_layout(fixed_box(metrics.subtitle_label_w, metrics.label_line_h)),
                 )
@@ -652,38 +652,26 @@ impl GuiState {
         theme: PumpTheme,
         controls: ControlSnapshot,
     ) -> Node {
-        let knob_label_text_scale = (metrics.text_scale / 2).max(1);
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; KNOBS_PER_ROW])
                 .rows(vec![TrackSize::Auto])
                 .gap(0)
                 .justify_start(),
             vec![
-                knob(MIX_KEY, "Mix", controls.mix, (MIN_MIX, MAX_MIX))
-                    .value_label(format!("{:.0}%", controls.mix * 100.0))
-                    .text_scale(knob_label_text_scale)
-                    .widget_layout(LayoutBox::auto()),
-                knob(DEPTH_KEY, "Depth", controls.depth, (MIN_DEPTH, MAX_DEPTH))
-                    .value_label(format!("{:.0}%", controls.depth * 100.0))
-                    .text_scale(knob_label_text_scale)
+                knob(MIX_KEY, controls.mix, (MIN_MIX, MAX_MIX)).widget_layout(LayoutBox::auto()),
+                knob(DEPTH_KEY, controls.depth, (MIN_DEPTH, MAX_DEPTH))
                     .widget_layout(LayoutBox::auto()),
                 knob(
                     PHASE_KEY,
-                    "Phase",
                     controls.phase_offset,
                     (MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
                 )
-                .value_label(format!("{:.0}%", controls.phase_offset * 100.0))
-                .text_scale(knob_label_text_scale)
                 .widget_layout(LayoutBox::auto()),
                 knob(
                     OUTPUT_KEY,
-                    "Output",
                     controls.output_gain_db,
                     (MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
                 )
-                .value_label(format!("{:+.1} dB", controls.output_gain_db))
-                .text_scale(knob_label_text_scale)
                 .widget_layout(LayoutBox::auto()),
             ],
         )
@@ -694,19 +682,18 @@ impl GuiState {
         let dropdown_slot_content = column(vec![
             dropdown(
                 DIVISION_KEY,
-                "Division",
-                sync_division_labels(),
+                MAX_SYNC_DIVISION as usize + 1,
                 controls.division.min(MAX_SYNC_DIVISION as usize),
             )
             .control_size(Size {
                 width: metrics.dropdown_control_w,
                 height: metrics.dropdown_control_h,
             }),
-            button(RESET_KEY, "Reset Curve").control_size(Size {
+            button(RESET_KEY).control_size(Size {
                 width: metrics.dropdown_control_w,
                 height: metrics.button_control_h,
             }),
-            label(format!("Cycle: {}", sync_division_label(controls.division)))
+            textbox(format!("Cycle: {}", sync_division_label(controls.division)))
                 .text_color(theme.hint_text)
                 .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
         ])
@@ -2090,7 +2077,7 @@ mod tests {
                     assert_slot_tree_node(case_entry.child());
                 }
             }
-            Node::Label(_)
+            Node::TextBox(_)
             | Node::Spacer(_)
             | Node::Knob(_)
             | Node::Slider(_)
@@ -2763,7 +2750,7 @@ mod tests {
                 .find_map(|case_entry| find_curve_region_node(case_entry.child()))
                 .or_else(|| find_curve_region_node(switch_layout.fallback())),
             Node::Region(_) => None,
-            Node::Label(_)
+            Node::TextBox(_)
             | Node::Spacer(_)
             | Node::Knob(_)
             | Node::Slider(_)
@@ -2806,7 +2793,7 @@ mod tests {
                 .find_map(|case_entry| find_dropdown_control_size(case_entry.child(), key))
                 .or_else(|| find_dropdown_control_size(switch_layout.fallback(), key)),
             Node::Dropdown(_) => None,
-            Node::Label(_)
+            Node::TextBox(_)
             | Node::Spacer(_)
             | Node::Knob(_)
             | Node::Slider(_)
