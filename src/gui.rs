@@ -9,8 +9,8 @@ use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
     button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, knob, label, panel,
-    row_slots, surface, switch_layout, weighted_slot, weighted_slot_lengths, when_width_ge,
-    GridTemplate, LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootFrameSpec,
+    root_frame_sized, row_slots, surface, switch_layout, weighted_slot, weighted_slot_lengths,
+    when_width_ge, GridTemplate, LayoutBox, Node, OverflowPolicy, RegionInteractionKind,
     RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
@@ -38,6 +38,7 @@ pub const WINDOW_WIDTH: u32 = 420;
 /// Patchbay owns runtime scaling and resize policy; Pump only publishes this
 /// baseline logical size.
 pub const WINDOW_HEIGHT: u32 = 258;
+const DESIGN_ASPECT_RATIO: f32 = WINDOW_WIDTH as f32 / WINDOW_HEIGHT as f32;
 
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
@@ -296,6 +297,7 @@ impl PumpGui {
         automation_queue: Arc<AutomationQueue>,
         param_requester: Option<HostParamRequester>,
     ) -> Result<(), PluginError> {
+        self.window.set_aspect_ratio(Some(DESIGN_ASPECT_RATIO));
         let state = GuiState::new(
             Arc::clone(params),
             Arc::clone(status),
@@ -784,12 +786,7 @@ impl GuiState {
             height: metrics.content_h,
         };
         UiSpec::new(
-            RootFrameSpec::new(ROOT_KEY, content)
-                .layout(
-                    LayoutBox::fixed(design_size.width, design_size.height)
-                        .max(design_size.width, design_size.height),
-                )
-                .design_size(design_size)
+            root_frame_sized(ROOT_KEY, content, design_size)
                 .padding(0)
                 .scale_mode(RootScaleMode::UniformFit)
                 .tokens(theme.tokens),
@@ -1959,8 +1956,8 @@ mod tests {
         constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
         local_from_node, move_node_with_push_through, move_segment_translated,
         preferred_window_size, preview_node_on_curve, resolve_runtime_controls_slot_widths,
-        resolve_vertical_slot_heights, GuiState, CURVE_H, CURVE_KEY, HEADER_SWITCH_WIDE_MIN_WIDTH,
-        WINDOW_HEIGHT, WINDOW_WIDTH,
+        resolve_vertical_slot_heights, GuiState, CURVE_H, CURVE_KEY, DIVISION_KEY,
+        HEADER_SWITCH_WIDE_MIN_WIDTH, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
@@ -2426,7 +2423,7 @@ mod tests {
             assert_eq!(measured.height, WINDOW_HEIGHT);
             assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
             assert_eq!(
-                spec.root.design_size,
+                spec.root.design_size_value(),
                 Some(Size {
                     width: WINDOW_WIDTH,
                     height: WINDOW_HEIGHT,
@@ -2473,7 +2470,7 @@ mod tests {
             assert_eq!(measured.height, WINDOW_HEIGHT);
             assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
             assert_eq!(
-                spec.root.design_size,
+                spec.root.design_size_value(),
                 Some(Size {
                     width: WINDOW_WIDTH,
                     height: WINDOW_HEIGHT,
@@ -2537,7 +2534,7 @@ mod tests {
             assert_eq!(measured.height, WINDOW_HEIGHT);
             assert_eq!(spec.root.scale_mode, RootScaleMode::UniformFit);
             assert_eq!(
-                spec.root.design_size,
+                spec.root.design_size_value(),
                 Some(Size {
                     width: WINDOW_WIDTH,
                     height: WINDOW_HEIGHT,
@@ -2548,6 +2545,11 @@ mod tests {
                 .expect("curve region should exist for all measured sizes");
             assert_eq!(curve_region.width, WINDOW_WIDTH);
             assert_eq!(curve_region.height, CURVE_H);
+
+            let dropdown_size = find_dropdown_control_size(spec.root.content(), DIVISION_KEY)
+                .expect("division dropdown control size should exist for all measured sizes");
+            let (_, expected_dropdown_w) = resolve_runtime_controls_slot_widths(WINDOW_WIDTH);
+            assert_eq!(dropdown_size.width, expected_dropdown_w);
         }
     }
 
@@ -2768,6 +2770,49 @@ mod tests {
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
+            | Node::Indicator(_)
+            | Node::Absolute(_) => None,
+        }
+    }
+
+    fn find_dropdown_control_size(node: &Node, key: &str) -> Option<Size> {
+        match node {
+            Node::Slot(slot) => find_dropdown_control_size(slot.child(), key),
+            Node::Dropdown(dropdown) if dropdown.key == key => dropdown.control_size,
+            Node::Panel(panel) => find_dropdown_control_size(panel.content(), key),
+            Node::PaddingBox(padding_box) => find_dropdown_control_size(padding_box.content(), key),
+            Node::AlignBox(align_box) => find_dropdown_control_size(align_box.content(), key),
+            Node::AspectBox(aspect_box) => find_dropdown_control_size(aspect_box.content(), key),
+            Node::Row(flex) | Node::Column(flex) => flex
+                .children()
+                .iter()
+                .find_map(|child| find_dropdown_control_size(child, key)),
+            Node::Grid(grid) => grid
+                .children()
+                .iter()
+                .find_map(|child| find_dropdown_control_size(child, key)),
+            Node::Stack(stack) => stack
+                .children()
+                .iter()
+                .find_map(|child| find_dropdown_control_size(child, key)),
+            Node::ScrollView(scroll_view) => find_dropdown_control_size(scroll_view.content(), key),
+            Node::Wrap(wrap) => wrap
+                .children()
+                .iter()
+                .find_map(|child| find_dropdown_control_size(child, key)),
+            Node::SwitchLayout(switch_layout) => switch_layout
+                .cases()
+                .iter()
+                .find_map(|case_entry| find_dropdown_control_size(case_entry.child(), key))
+                .or_else(|| find_dropdown_control_size(switch_layout.fallback(), key)),
+            Node::Dropdown(_) => None,
+            Node::Label(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Region(_)
             | Node::Indicator(_)
             | Node::Absolute(_) => None,
         }
