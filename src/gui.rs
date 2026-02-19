@@ -22,9 +22,9 @@ use crate::curve::{
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    sync_division_label, PumpParams, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET,
-    MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID,
-    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
+    PumpParams, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_SYNC_DIVISION,
+    MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_MIX_ID,
+    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
 };
 use crate::GuiStatus;
 
@@ -455,19 +455,24 @@ impl UiLayoutMetrics {
     fn design_space() -> Self {
         let content_w = WINDOW_WIDTH;
         let content_h = WINDOW_HEIGHT;
-        let (_header_h, curve_h, _controls_h) = resolve_vertical_slot_heights(content_h);
+        let (_header_h, curve_h, controls_h) = resolve_vertical_slot_heights(content_h);
         let (knobs_slot_w, dropdown_slot_w) = resolve_runtime_controls_slot_widths(content_w);
         let padding_x = BASE_PADDING_X.max(0);
         let title_label_w = TITLE_LABEL_W.max(1);
         let title_label_gap = TITLE_LABEL_RIGHT_GAP.max(0);
         let controls_gap = HEADER_CONTROL_GAP.max(0);
-        let dropdown_control_h = BASE_DROPDOWN_CONTROL_H.max(1);
-        let button_control_h = BASE_DROPDOWN_CONTROL_H.max(1);
         let text_scale = BASE_TEXT_SCALE.max(1);
         let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
         let knob_diameter = BASE_KNOB_DIAMETER.min(knob_track_width.max(1));
         let knob_track_w = knob_track_width.max(1);
         let label_line_h = scaled_line_height(text_scale);
+        let expanded_control_h = controls_h
+            .saturating_sub(label_line_h)
+            .saturating_sub((controls_gap.max(0) as u32).saturating_mul(2))
+            .saturating_div(2)
+            .max(BASE_DROPDOWN_CONTROL_H.max(1));
+        let dropdown_control_h = expanded_control_h;
+        let button_control_h = expanded_control_h;
         let dropdown_control_w = dropdown_slot_w.max(1);
         let subtitle_label_x = padding_x
             .saturating_add(title_label_w as i32)
@@ -732,9 +737,6 @@ impl GuiState {
 
         let knobs_slot = panel("knobs", knobs_grid.fill()).pad_all(0);
         let dropdown_slot_content = column(vec![
-            textbox("Division")
-                .text_color(theme.subtitle_text)
-                .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
             dropdown(
                 DIVISION_KEY,
                 MAX_SYNC_DIVISION as usize + 1,
@@ -751,9 +753,6 @@ impl GuiState {
                 width: metrics.dropdown_control_w,
                 height: metrics.button_control_h,
             }),
-            textbox(format!("Cycle: {}", sync_division_label(controls.division)))
-                .text_color(theme.hint_text)
-                .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
         ])
         .gap(metrics.controls_gap.max(0))
         .pad_all(0)
@@ -2783,7 +2782,7 @@ mod tests {
         let mut texts = Vec::new();
         collect_textbox_texts(spec.root.content(), &mut texts);
 
-        for expected in ["Mix", "Depth", "Phase", "Output", "Division", "Reset Curve"] {
+        for expected in ["Mix", "Depth", "Phase", "Output", "Reset Curve"] {
             assert!(
                 texts.iter().any(|text| text == expected),
                 "expected textbox caption `{expected}` in {:?}",
