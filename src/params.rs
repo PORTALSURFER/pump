@@ -724,4 +724,38 @@ mod tests {
         assert_eq!(reset_curve.nodes.len(), 4);
         assert_eq!(reset_curve.segments.len(), 3);
     }
+
+    #[test]
+    fn sync_division_change_does_not_mutate_curve_or_revision() {
+        let params = PumpParams::new();
+        let custom_curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.3, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.3 },
+                CurveSegment { tension: 0.2 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&custom_curve);
+        let curve_before = params.editable_curve_snapshot();
+        let revision_before = params.curve_revision();
+
+        params.set_sync_division(2.0);
+
+        assert_eq!(params.sync_division(), 2);
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            curve_before,
+            "sync division changes must preserve editable curve"
+        );
+        assert_eq!(
+            params.curve_revision(),
+            revision_before,
+            "sync division changes must not bump curve revision"
+        );
+    }
 }

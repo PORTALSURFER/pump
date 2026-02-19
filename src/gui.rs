@@ -1,6 +1,7 @@
 //! Declarative curve-editor GUI for Pump.
 
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use toybox::clack_extensions::gui::{GuiSize, Window};
 use toybox::clack_plugin::plugin::PluginError;
@@ -70,6 +71,7 @@ const KNOBS_PER_ROW: usize = 4;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const TRANSPORT_INDICATOR_SIZE: u32 = 10;
+const RESET_GUARD_AFTER_DROPDOWN_MICROS: u64 = 120_000;
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const PLAYHEAD_DOT_CORE_RADIUS: i32 = 4;
@@ -106,6 +108,12 @@ fn scaled_curve_u32(base: u32, curve_size: Size) -> u32 {
 
 fn scaled_curve_tension_pixel_scale(curve_size: Size) -> f32 {
     CURVE_TENSION_PIXEL_SCALE * curve_scale_for_size(curve_size)
+}
+
+fn monotonic_micros() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let epoch = EPOCH.get_or_init(Instant::now);
+    epoch.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
 fn node_hit_radius(curve_size: Size) -> i32 {
@@ -422,6 +430,7 @@ struct GuiRuntime {
     curve_hovered: bool,
     curve_local_pointer: Point,
     curve_size: Size,
+    last_division_change_micros: Option<u64>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -556,6 +565,7 @@ impl GuiRuntime {
                 width: CURVE_W,
                 height: CURVE_H,
             },
+            last_division_change_micros: None,
         }
     }
 }
@@ -600,6 +610,29 @@ impl GuiState {
             output_gain_db: self.params.output_gain_db(),
             division: self.params.sync_division(),
         }
+    }
+
+    fn mark_division_change(&self) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.last_division_change_micros = Some(monotonic_micros());
+        }
+    }
+
+    fn consume_recent_division_change_guard(&self) -> bool {
+        let Ok(mut runtime) = self.runtime.lock() else {
+            return false;
+        };
+        let Some(last_division_change_micros) = runtime.last_division_change_micros else {
+            return false;
+        };
+        let elapsed = monotonic_micros().saturating_sub(last_division_change_micros);
+        if elapsed <= RESET_GUARD_AFTER_DROPDOWN_MICROS {
+            // Swallow one immediate reset press after dropdown selection to avoid
+            // accidental click-through while popup selection closes.
+            runtime.last_division_change_micros = None;
+            return true;
+        }
+        false
     }
 
     /// Build the top header slot node.
@@ -893,6 +926,9 @@ impl GuiState {
             UiAction::KnobChanged { key, value } => self.reduce_knob(key.as_str(), value),
             UiAction::DropdownSelected { key, index } => self.reduce_dropdown(key.as_str(), index),
             UiAction::ButtonPressed { key } if key == RESET_KEY => {
+                if self.consume_recent_division_change_guard() {
+                    return;
+                }
                 self.params.reset_curve_to_default();
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.selected_node = None;
@@ -953,6 +989,7 @@ impl GuiState {
         }
 
         let clamped = index.min(MAX_SYNC_DIVISION as usize);
+        self.mark_division_change();
         self.params.set_sync_division(clamped as f32);
         self.push_single_value_update(PARAM_SYNC_DIVISION_ID, clamped as f64);
     }
@@ -2030,10 +2067,11 @@ mod tests {
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
-        HEADER_INDICATOR_SECTION_PERCENT, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
+        HEADER_INDICATOR_SECTION_PERCENT, RESET_KEY, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT,
+        WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
-    use crate::params::PumpParams;
+    use crate::params::{PumpParams, MAX_SYNC_DIVISION};
     use crate::{GuiStatus, GuiTransportTelemetry};
     use std::sync::Arc;
     use toybox::clack_extensions::gui::GuiSize;
@@ -2041,7 +2079,7 @@ mod tests {
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
         measure_checked, ContainerLayout, ContainerLength, GridKind, Node, PanelSpec,
-        RootScaleMode, SurfaceCommand, UiSpec,
+        RootScaleMode, SurfaceCommand, UiAction, UiSpec,
     };
     use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
@@ -2940,6 +2978,97 @@ mod tests {
                 texts
             );
         }
+    }
+
+    #[test]
+    fn dropdown_change_preserves_curve_and_swallows_immediate_reset_press() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let custom_curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.35, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.85 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.4 },
+                CurveSegment { tension: 0.25 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&custom_curve);
+
+        let previous_division = params.sync_division();
+        state.reduce_action(UiAction::DropdownSelected {
+            key: DIVISION_KEY.to_string(),
+            index: (previous_division + 1).min(MAX_SYNC_DIVISION as usize),
+        });
+        state.reduce_action(UiAction::ButtonPressed {
+            key: RESET_KEY.to_string(),
+        });
+
+        assert_ne!(
+            params.sync_division(),
+            previous_division,
+            "division should still update on dropdown selection"
+        );
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            custom_curve,
+            "division changes must not reset the editable curve"
+        );
+    }
+
+    #[test]
+    fn second_reset_press_after_dropdown_still_resets_curve() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let custom_curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.4, y: 0.1 },
+                CurveNode { x: 1.0, y: 0.9 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.5 },
+                CurveSegment { tension: 0.4 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&custom_curve);
+
+        state.reduce_action(UiAction::DropdownSelected {
+            key: DIVISION_KEY.to_string(),
+            index: 2,
+        });
+        state.reduce_action(UiAction::ButtonPressed {
+            key: RESET_KEY.to_string(),
+        });
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            custom_curve,
+            "first reset press after dropdown should be guarded"
+        );
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: RESET_KEY.to_string(),
+        });
+        let reset_curve = params.editable_curve_snapshot();
+        assert_eq!(
+            reset_curve,
+            crate::curve::default_editable_curve(),
+            "second reset press should perform an intentional curve reset"
+        );
     }
 
     #[test]
