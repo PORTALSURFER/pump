@@ -18,8 +18,7 @@ use toybox::clap::prelude::apply_param_events;
 use toybox::clap::process::{min_len, split_channel};
 use toybox::clap::state::{read_versioned_payload, write_versioned_payload};
 use toybox::clap::transport::transport_state_from_transport;
-use toybox::dsp::AtomicF32;
-use toybox::dsp::TransportState;
+use toybox::dsp::{phase_from_beats, AtomicF32, TransportState};
 
 use crate::dsp::{DspSettings, PumpEngine};
 use crate::gui::PumpGui;
@@ -250,6 +249,13 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         };
 
         let transport = transport_state_from_transport(process.transport.copied());
+        let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
+        self.shared.status.update(
+            gui_phase,
+            self.shared.status.gain(),
+            transport.is_playing,
+            transport.song_pos_beats.is_some(),
+        );
 
         for mut port_pair in &mut audio {
             let Some(mut channels) = port_pair.channels()?.into_f32() else {
@@ -389,6 +395,21 @@ impl PumpAudioProcessor<'_> {
     }
 }
 
+/// Resolve GUI phase from the latest host transport snapshot.
+///
+/// Uses host beat timeline when available so the curve marker remains aligned to
+/// arranger position even when no audio frames are processed for this callback.
+fn gui_phase_from_transport(
+    transport: TransportState,
+    settings: DspSettings,
+    fallback_phase: f32,
+) -> f32 {
+    transport
+        .song_pos_beats
+        .map(|beats| phase_from_beats(beats, settings.beats_per_cycle, settings.phase_offset))
+        .unwrap_or_else(|| fallback_phase.rem_euclid(1.0))
+}
+
 /// Shared GUI telemetry values updated by the audio thread.
 #[derive(Default)]
 pub struct GuiStatus {
@@ -449,10 +470,50 @@ toybox::clap_plugin_entry!(PumpPlugin);
 
 #[cfg(test)]
 mod tests {
-    use crate::dsp::db_to_linear;
+    use crate::dsp::{db_to_linear, DspSettings};
+    use toybox::dsp::{phase_from_beats, TransportState};
+
+    use super::gui_phase_from_transport;
 
     #[test]
     fn db_to_linear_matches_unity_at_zero_db() {
         assert!((db_to_linear(0.0) - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gui_phase_from_transport_prefers_host_song_position() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth: 1.0,
+            phase_offset: 0.2,
+            output_gain_db: 0.0,
+            beats_per_cycle: 4.0,
+        };
+        let transport = TransportState {
+            tempo_bpm: 128.0,
+            is_playing: true,
+            song_pos_beats: Some(9.5),
+        };
+        let expected = phase_from_beats(9.5, settings.beats_per_cycle, settings.phase_offset);
+        let resolved = gui_phase_from_transport(transport, settings, 0.75);
+        assert!((resolved - expected).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gui_phase_from_transport_uses_fallback_without_song_position() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth: 1.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: false,
+            song_pos_beats: None,
+        };
+        let resolved = gui_phase_from_transport(transport, settings, 1.25);
+        assert!((resolved - 0.25).abs() < 1.0e-6);
     }
 }
