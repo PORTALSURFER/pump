@@ -1956,14 +1956,14 @@ mod tests {
 
     fn expect_slot_child<'a>(node: &'a Node, label: &str) -> &'a Node {
         match node {
-            Node::Slot(slot) => slot.child.as_ref(),
+            Node::Slot(slot) => slot.child(),
             other => panic!("expected {label} slot wrapper, got {other:?}"),
         }
     }
 
     fn expect_slot_panel<'a>(node: &'a Node, label: &str) -> &'a PanelSpec {
         match expect_slot_child(node, label) {
-            Node::Row(row) => match row.children.as_slice() {
+            Node::Row(row) => match row.children() {
                 [child] => match expect_slot_child(child, label) {
                     Node::Panel(panel) => panel,
                     other => panic!("expected {label} row to wrap panel, got {other:?}"),
@@ -2176,7 +2176,8 @@ mod tests {
             None,
         );
         let spec = state.build_ui(&InputState::default());
-        let region = find_curve_region_node(&spec.root.content).expect("curve region should exist");
+        let region =
+            find_curve_region_node(spec.root.content()).expect("curve region should exist");
         assert_eq!(region.width, WINDOW_WIDTH);
         assert_eq!(region.height, CURVE_H);
     }
@@ -2318,7 +2319,7 @@ mod tests {
             assert_eq!(spec.root.scale_mode, RootScaleMode::None);
             assert_eq!(spec.root.design_size, None);
 
-            let curve_region = find_curve_region_node(&spec.root.content)
+            let curve_region = find_curve_region_node(spec.root.content())
                 .expect("curve region should exist for all measured sizes");
             assert_eq!(curve_region.width, input_size.width.max(WINDOW_WIDTH));
             assert_eq!(
@@ -2337,21 +2338,21 @@ mod tests {
             None,
         );
         let spec = state.build_ui(&InputState::default());
-        let root_grid = match expect_slot_child(spec.root.content.as_ref(), "root") {
+        let root_grid = match expect_slot_child(spec.root.content(), "root") {
             Node::Grid(grid) => grid,
             other => panic!("expected root content grid, got {other:?}"),
         };
-        assert_eq!(root_grid.children.len(), 3);
-        let _header_panel = expect_slot_panel(&root_grid.children[0], "header");
-        let _curve_panel = expect_slot_panel(&root_grid.children[1], "curve");
-        let controls_panel = expect_slot_panel(&root_grid.children[2], "controls");
-        let controls_grid = match expect_slot_child(controls_panel.content.as_ref(), "controls") {
+        assert_eq!(root_grid.children().len(), 3);
+        let _header_panel = expect_slot_panel(&root_grid.children()[0], "header");
+        let _curve_panel = expect_slot_panel(&root_grid.children()[1], "curve");
+        let controls_panel = expect_slot_panel(&root_grid.children()[2], "controls");
+        let controls_grid = match expect_slot_child(controls_panel.content(), "controls") {
             Node::Grid(grid) => grid,
             other => panic!("expected controls grid in panel, got {other:?}"),
         };
-        assert_eq!(controls_grid.children.len(), 2);
-        let _knobs_panel = expect_slot_panel(&controls_grid.children[0], "knobs");
-        let _dropdown_panel = expect_slot_panel(&controls_grid.children[1], "dropdowns");
+        assert_eq!(controls_grid.children().len(), 2);
+        let _knobs_panel = expect_slot_panel(&controls_grid.children()[0], "knobs");
+        let _dropdown_panel = expect_slot_panel(&controls_grid.children()[1], "dropdowns");
     }
 
     #[test]
@@ -2416,13 +2417,13 @@ mod tests {
 
     fn find_curve_region_node(node: &Node) -> Option<Size> {
         match node {
-            Node::Slot(slot) => find_curve_region_node(&slot.child),
+            Node::Slot(slot) => find_curve_region_node(slot.child()),
             Node::Region(region) if region.key == CURVE_KEY => Some(region.size),
-            Node::Panel(panel) => find_curve_region_node(&panel.content),
+            Node::Panel(panel) => find_curve_region_node(panel.content()),
             Node::Row(flex) | Node::Column(flex) => {
-                flex.children.iter().find_map(find_curve_region_node)
+                flex.children().iter().find_map(find_curve_region_node)
             }
-            Node::Grid(grid) => grid.children.iter().find_map(find_curve_region_node),
+            Node::Grid(grid) => grid.children().iter().find_map(find_curve_region_node),
             Node::Region(_) => None,
             Node::Label(_)
             | Node::Spacer(_)
