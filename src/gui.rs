@@ -9,8 +9,8 @@ use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
     button, column, column_slots, dropdown, fill_slot, fraction_slot, grid, knob, label, panel,
-    root_frame_sized, row_slots, surface, weighted_slot, weighted_slot_lengths, GridTemplate,
-    LayoutBox, Node, RegionInteractionKind, RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens,
+    row_slots, surface, weighted_slot, weighted_slot_lengths, GridTemplate, LayoutBox, Node,
+    RegionInteractionKind, RootFrameSpec, RootScaleMode, SlotAlign, SurfaceCommand, ThemeTokens,
     TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
@@ -175,6 +175,14 @@ const fn u32_max(left: u32, right: u32) -> u32 {
         left
     } else {
         right
+    }
+}
+
+/// Enforce Pump's host-negotiated minimum window size.
+fn constrained_host_size(size: GuiSize) -> GuiSize {
+    GuiSize {
+        width: size.width.max(WINDOW_WIDTH),
+        height: size.height.max(WINDOW_HEIGHT),
     }
 }
 
@@ -344,12 +352,14 @@ impl PumpGui {
 
     /// Resolve host-adjusted size according to the configured resize policy.
     pub fn adjust_host_size(&self, size: GuiSize) -> Option<GuiSize> {
-        self.window.adjust_host_size(size)
+        self.window
+            .adjust_host_size(size)
+            .map(constrained_host_size)
     }
 
     /// Apply a host-provided size using Toybox's canonical resize behavior.
     pub fn apply_host_size(&self, size: GuiSize) {
-        self.window.apply_host_size(size);
+        self.window.apply_host_size(constrained_host_size(size));
     }
 
     /// Close editor if it is open.
@@ -424,9 +434,8 @@ enum CurveDragMode {
 
 /// Layout dimensions used to author Pump controls for one frame.
 ///
-/// The metric fields are resolved from fixed design constants so rendering is
-/// authored at a single logical resolution and scaled only by Patchbay's
-/// root-level uniform-fit transform.
+/// Metrics derive from the current host window size for strict host-sized
+/// layout behavior.
 #[derive(Clone, Copy, Debug)]
 struct UiLayoutMetrics {
     content_w: u32,
@@ -453,8 +462,8 @@ struct UiLayoutMetrics {
 impl UiLayoutMetrics {
     /// Resolve all layout dimensions from the current host window size.
     fn from_input(input: &InputState) -> Self {
-        let content_w = input.window_size.width.max(WINDOW_WIDTH);
-        let content_h = input.window_size.height.max(WINDOW_HEIGHT);
+        let content_w = input.window_size.width.max(1);
+        let content_h = input.window_size.height.max(1);
         let (_header_h, curve_h, _controls_h) = resolve_vertical_slot_heights(content_h);
         let (knobs_slot_w, dropdown_slot_w) = resolve_runtime_controls_slot_widths(content_w);
         let scale = 1.0;
@@ -769,12 +778,12 @@ impl GuiState {
             width: metrics.content_w,
             height: metrics.content_h,
         };
-        let min_size = Size {
-            width: WINDOW_WIDTH,
-            height: WINDOW_HEIGHT,
-        };
         UiSpec::new(
-            root_frame_sized(ROOT_KEY, content, min_size, window_size)
+            RootFrameSpec::new(ROOT_KEY, content)
+                .layout(
+                    LayoutBox::fixed(window_size.width, window_size.height)
+                        .max(window_size.width, window_size.height),
+                )
                 .padding(0)
                 .scale_mode(RootScaleMode::None)
                 .tokens(theme.tokens),
@@ -1940,15 +1949,16 @@ fn find_deletable_node_hit_for_size(
 #[cfg(test)]
 mod tests {
     use super::{
-        find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
-        move_node_with_push_through, move_segment_translated, preferred_window_size,
-        preview_node_on_curve, resolve_runtime_controls_slot_widths, resolve_vertical_slot_heights,
-        GuiState, CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
+        constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
+        local_from_node, move_node_with_push_through, move_segment_translated,
+        preferred_window_size, preview_node_on_curve, resolve_runtime_controls_slot_widths,
+        resolve_vertical_slot_heights, GuiState, CURVE_H, CURVE_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::PumpParams;
     use crate::GuiStatus;
     use std::sync::Arc;
+    use toybox::clack_extensions::gui::GuiSize;
     use toybox::clap::automation::AutomationQueue;
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{measure_checked, Node, PanelSpec, RootScaleMode};
@@ -2142,6 +2152,40 @@ mod tests {
     }
 
     #[test]
+    fn constrained_host_size_enforces_baseline_minimums() {
+        assert_eq!(
+            constrained_host_size(GuiSize {
+                width: 1,
+                height: 1,
+            }),
+            GuiSize {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            }
+        );
+        assert_eq!(
+            constrained_host_size(GuiSize {
+                width: WINDOW_WIDTH * 2,
+                height: 40,
+            }),
+            GuiSize {
+                width: WINDOW_WIDTH * 2,
+                height: WINDOW_HEIGHT,
+            }
+        );
+        assert_eq!(
+            constrained_host_size(GuiSize {
+                width: 64,
+                height: WINDOW_HEIGHT * 2,
+            }),
+            GuiSize {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT * 2,
+            }
+        );
+    }
+
+    #[test]
     fn slot_height_split_matches_expected_ratios() {
         let (header_h, curve_h, controls_h) = resolve_vertical_slot_heights(WINDOW_HEIGHT);
         assert_eq!(header_h, 18);
@@ -2175,7 +2219,13 @@ mod tests {
             Arc::new(AutomationQueue::default()),
             None,
         );
-        let spec = state.build_ui(&InputState::default());
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
         let region =
             find_curve_region_node(spec.root.content()).expect("curve region should exist");
         assert_eq!(region.width, WINDOW_WIDTH);
@@ -2183,7 +2233,7 @@ mod tests {
     }
 
     #[test]
-    fn build_ui_accepts_resize_sequences_with_design_sized_root_layout() {
+    fn build_ui_accepts_resize_sequences_with_host_sized_root_layout() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -2215,8 +2265,8 @@ mod tests {
             };
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
-            assert!(measured.width >= WINDOW_WIDTH);
-            assert!(measured.height >= WINDOW_HEIGHT);
+            assert_eq!(measured.width, window_size.width.max(1));
+            assert_eq!(measured.height, window_size.height.max(1));
             assert_eq!(spec.root.scale_mode, RootScaleMode::None);
             assert_eq!(spec.root.design_size, None);
         }
@@ -2256,8 +2306,8 @@ mod tests {
             };
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
-            assert!(measured.width >= WINDOW_WIDTH);
-            assert!(measured.height >= WINDOW_HEIGHT);
+            assert_eq!(measured.width, input_size.width.max(1));
+            assert_eq!(measured.height, input_size.height.max(1));
             assert_eq!(spec.root.scale_mode, RootScaleMode::None);
             assert_eq!(spec.root.design_size, None);
         }
@@ -2314,17 +2364,17 @@ mod tests {
             let spec = state.build_ui(&input);
             let measured = measure_checked(&spec).expect("measurement should succeed");
 
-            assert!(measured.width >= WINDOW_WIDTH);
-            assert!(measured.height >= WINDOW_HEIGHT);
+            assert_eq!(measured.width, input_size.width.max(1));
+            assert_eq!(measured.height, input_size.height.max(1));
             assert_eq!(spec.root.scale_mode, RootScaleMode::None);
             assert_eq!(spec.root.design_size, None);
 
             let curve_region = find_curve_region_node(spec.root.content())
                 .expect("curve region should exist for all measured sizes");
-            assert_eq!(curve_region.width, input_size.width.max(WINDOW_WIDTH));
+            assert_eq!(curve_region.width, input_size.width.max(1));
             assert_eq!(
                 curve_region.height,
-                resolve_vertical_slot_heights(input_size.height.max(WINDOW_HEIGHT)).1
+                resolve_vertical_slot_heights(input_size.height.max(1)).1
             );
         }
     }
@@ -2337,7 +2387,13 @@ mod tests {
             Arc::new(AutomationQueue::default()),
             None,
         );
-        let spec = state.build_ui(&InputState::default());
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
         let root_grid = match expect_slot_child(spec.root.content(), "root") {
             Node::Grid(grid) => grid,
             other => panic!("expected root content grid, got {other:?}"),
