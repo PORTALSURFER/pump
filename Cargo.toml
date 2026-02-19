@@ -10,7 +10,7 @@ build = "build.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "4e224481220005c3356bc839604951c70be2d2a5", features = ["gui"] }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "3ced7fb032db7048d160ba4e8ae7801cc3b0ba26", features = ["gui"] }
 
 [features]
 # Default to CLAP-only builds so CI does not require the VST3 SDK. Enable VST3
