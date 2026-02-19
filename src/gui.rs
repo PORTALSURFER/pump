@@ -1465,7 +1465,8 @@ impl GuiState {
                     origin: Point {
                         x: meter_rect.origin.x
                             + i32::try_from(meter_stroke_u32).unwrap_or(i32::MAX),
-                        y: meter_rect.origin.y + meter_rect.size.height as i32 - fill_height as i32,
+                        y: meter_rect.origin.y
+                            + i32::try_from(meter_stroke_u32).unwrap_or(i32::MAX),
                     },
                     size: Size {
                         width: meter_inner_width,
@@ -2407,16 +2408,17 @@ mod tests {
         );
     }
 
-    fn curve_draw_commands_with_transport(
+    fn curve_draw_commands_with_status(
         phase: f32,
         is_playing: bool,
         has_host_beats_timeline: bool,
+        gain: f32,
     ) -> (Vec<SurfaceCommand>, EditableCurve, PumpTheme) {
         let params = Arc::new(PumpParams::new());
         let status = Arc::new(GuiStatus::default());
         status.update(
             phase,
-            1.0,
+            gain,
             GuiTransportTelemetry {
                 is_playing,
                 has_host_beats_timeline,
@@ -2448,6 +2450,14 @@ mod tests {
         (commands, curve, theme)
     }
 
+    fn curve_draw_commands_with_transport(
+        phase: f32,
+        is_playing: bool,
+        has_host_beats_timeline: bool,
+    ) -> (Vec<SurfaceCommand>, EditableCurve, PumpTheme) {
+        curve_draw_commands_with_status(phase, is_playing, has_host_beats_timeline, 1.0)
+    }
+
     fn fill_circle_centers_for_color(commands: &[SurfaceCommand], color: Color) -> Vec<Point> {
         commands
             .iter()
@@ -2457,6 +2467,19 @@ mod tests {
                     color: command_color,
                     ..
                 } if *command_color == color => Some(*center),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn fill_rects_for_color(commands: &[SurfaceCommand], color: Color) -> Vec<(Point, Size)> {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                SurfaceCommand::FillRect {
+                    rect,
+                    color: command_color,
+                } if *command_color == color => Some((rect.origin, rect.size)),
                 _ => None,
             })
             .collect()
@@ -2528,6 +2551,51 @@ mod tests {
         assert_eq!(
             core_centers[0], expected,
             "playhead dot should map to the sampled curve point at host phase"
+        );
+    }
+
+    #[test]
+    fn reduction_meter_is_empty_at_unity_and_fills_top_down_under_reduction() {
+        let (unity_commands, _curve, theme) =
+            curve_draw_commands_with_status(0.25, true, true, 1.0);
+        assert!(
+            fill_rects_for_color(&unity_commands, theme.meter_fill).is_empty(),
+            "gain reduction meter should be empty at unity gain"
+        );
+
+        let reduced_gain = 0.4;
+        let (reduced_commands, _curve, theme) =
+            curve_draw_commands_with_status(0.25, true, true, reduced_gain);
+        let rects = fill_rects_for_color(&reduced_commands, theme.meter_fill);
+        assert_eq!(rects.len(), 1, "expected one gain-reduction fill rect");
+        let (fill_origin, fill_size) = rects[0];
+
+        let metrics = UiLayoutMetrics::design_space();
+        let meter_x_offset = metrics.meter_x_offset.max(0);
+        let meter_y_offset = metrics.meter_y_offset.max(0);
+        let meter_width = metrics.meter_width.max(1);
+        let meter_width_i32 = i32::try_from(meter_width).unwrap_or(i32::MAX);
+        let meter_stroke_u32 = metrics.meter_stroke.max(1);
+        let meter_stroke_i32 = i32::try_from(meter_stroke_u32).unwrap_or(i32::MAX);
+        let meter_height = metrics
+            .curve_size
+            .height
+            .saturating_sub((meter_y_offset.saturating_mul(2)).max(0) as u32);
+        let reduction = (1.0 - reduced_gain.clamp(0.0, 1.0)).clamp(0.0, 1.0);
+        let expected_fill_height = ((meter_height as f32) * reduction).round() as u32;
+        let expected_fill_origin = Point {
+            x: metrics.curve_size.width as i32 - meter_x_offset - meter_width_i32
+                + meter_stroke_i32,
+            y: meter_y_offset + meter_stroke_i32,
+        };
+
+        assert_eq!(
+            fill_origin, expected_fill_origin,
+            "gain-reduction fill should start at top-left inside meter border"
+        );
+        assert_eq!(
+            fill_size.height, expected_fill_height,
+            "gain-reduction fill height should match reduction amount"
         );
     }
 
