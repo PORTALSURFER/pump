@@ -70,7 +70,7 @@ impl PumpEngine {
         settings: DspSettings,
         transport: TransportState,
     ) -> DspTelemetry {
-        let frame = self.clock.tick(transport);
+        let frame = self.clock.tick(resolve_effective_transport(transport));
 
         let mix = self.mix.next(settings.mix.clamp(0.0, 1.0));
         let depth = self.depth.next(settings.depth.clamp(0.0, 1.0));
@@ -112,6 +112,17 @@ impl PumpEngine {
         }
 
         morphed
+    }
+}
+
+fn resolve_effective_transport(transport: TransportState) -> TransportState {
+    if transport.song_pos_beats.is_none() {
+        TransportState {
+            is_playing: true,
+            ..transport
+        }
+    } else {
+        transport
     }
 }
 
@@ -189,5 +200,39 @@ mod tests {
     fn db_to_linear_matches_reference_points() {
         assert!((db_to_linear(0.0) - 1.0).abs() < 1.0e-6);
         assert!((db_to_linear(6.0) - 1.9952623).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn modulation_advances_without_host_transport_timeline() {
+        let curve = editable_curve_to_table(&default_editable_curve());
+        let mut engine = PumpEngine::new(48_000.0, curve);
+        let settings = DspSettings {
+            mix: 1.0,
+            depth: 1.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+        };
+
+        let mut min_gain = 1.0_f32;
+        let mut left = 1.0_f32;
+        let mut right = 1.0_f32;
+        for _ in 0..4_096 {
+            let telemetry = engine.process_sample(
+                &mut left,
+                &mut right,
+                settings,
+                TransportState {
+                    tempo_bpm: 120.0,
+                    is_playing: false,
+                    song_pos_beats: None,
+                },
+            );
+            min_gain = min_gain.min(telemetry.gain);
+            left = 1.0;
+            right = 1.0;
+        }
+
+        assert!(min_gain < 0.95);
     }
 }
