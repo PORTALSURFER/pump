@@ -1042,9 +1042,13 @@ impl GuiState {
             )
             .slot_align(SlotAlign::Center, SlotAlign::Center)
             .fill();
-            column(vec![title, knob_body, value_label])
-                .gap(0)
-                .container_overflow(OverflowPolicy::Compress)
+            column_slots(vec![
+                weighted_slot(title, 15),
+                weighted_slot(knob_body, 70),
+                weighted_slot(value_label, 15),
+            ])
+            .gap(0)
+            .container_overflow(OverflowPolicy::Compress)
         };
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; KNOBS_PER_ROW])
