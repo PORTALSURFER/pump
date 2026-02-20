@@ -169,7 +169,7 @@ impl PluginMainThreadParams for PumpMainThread<'_> {
             apply_param_event(self.shared.params.as_ref(), param_id, value as f32)
         });
 
-        let _ = self
+        let _stats = self
             .shared
             .automation_queue
             .drain_to_output(output_parameter_changes, &mut self.automation_drain);
@@ -280,7 +280,7 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             self.process_stereo_pair(left_pair, right_pair, settings, transport, phase_running);
         }
 
-        let _ = self
+        let _stats = self
             .shared
             .automation_queue
             .drain_to_output(events.output, &mut self.automation_drain);
@@ -299,7 +299,7 @@ impl PluginAudioProcessorParams for PumpAudioProcessor<'_> {
             apply_param_event(self.shared.params.as_ref(), param_id, value as f32)
         });
 
-        let _ = self
+        let _stats = self
             .shared
             .automation_queue
             .drain_to_output(output_parameter_changes, &mut self.automation_drain);

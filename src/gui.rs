@@ -1948,21 +1948,24 @@ impl GuiState {
 
     /// Begin one automation gesture event.
     fn begin_param_gesture(&self, param_id: ClapId) {
-        self.automation_queue
+        let _status = self
+            .automation_queue
             .push_gesture_begin(&self.automation_config, param_id);
         self.request_flush();
     }
 
     /// Push one automation value event.
     fn push_param_value(&self, param_id: ClapId, value: f64) {
-        self.automation_queue
+        let _status = self
+            .automation_queue
             .push_value(&self.automation_config, param_id, value);
         self.request_flush();
     }
 
     /// End one automation gesture event.
     fn end_param_gesture(&self, param_id: ClapId) {
-        self.automation_queue
+        let _status = self
+            .automation_queue
             .push_gesture_end(&self.automation_config, param_id);
         self.request_flush();
     }

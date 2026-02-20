@@ -18,9 +18,7 @@ mod interaction_and_automation_tests {
         let mut buffer = EventBuffer::new();
         let mut output = buffer.as_output();
         let mut scratch = Vec::new();
-        queue
-            .drain_to_output_with_stats(&mut output, &mut scratch)
-            .attempted
+        queue.drain_to_output(&mut output, &mut scratch).attempted
     }
 
     #[test]
