@@ -273,6 +273,10 @@ struct PumpTheme {
     curve_line_highlight_glow: Color,
     preset_title_bg: Color,
     preset_title_dirty_bg: Color,
+    preset_title_hover_bg: Color,
+    preset_title_dirty_hover_bg: Color,
+    preset_title_active_bg: Color,
+    preset_title_dirty_active_bg: Color,
     preset_title_outline: Color,
     preset_add_warning_text: Color,
     preview_fill: Color,
@@ -314,6 +318,10 @@ impl PumpTheme {
             curve_line_highlight_glow: palette.text_primary,
             preset_title_bg: palette.background_secondary,
             preset_title_dirty_bg: Color::rgb(150, 44, 44),
+            preset_title_hover_bg: palette.syntax_emphasis,
+            preset_title_dirty_hover_bg: Color::rgb(184, 64, 64),
+            preset_title_active_bg: palette.accent_focus,
+            preset_title_dirty_active_bg: Color::rgb(205, 84, 84),
             preset_title_outline: palette.ui_secondary,
             preset_add_warning_text: Color::rgb(255, 170, 170),
             preview_fill: palette.literals,
@@ -845,6 +853,16 @@ impl GuiState {
                 theme.preset_title_dirty_bg
             } else {
                 theme.preset_title_bg
+            })
+            .dropdown_hover_background_color(if presets.dirty {
+                theme.preset_title_dirty_hover_bg
+            } else {
+                theme.preset_title_hover_bg
+            })
+            .dropdown_active_background_color(if presets.dirty {
+                theme.preset_title_dirty_active_bg
+            } else {
+                theme.preset_title_active_bg
             })
             .dropdown_outline_color(theme.preset_title_outline)
             .dropdown_text_color(theme.subtitle_text)
