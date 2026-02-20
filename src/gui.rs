@@ -1001,14 +1001,18 @@ impl GuiState {
             let title = Node::align_box(
                 textbox(label)
                     .text_color(theme.subtitle_text)
-                    .widget_layout(fixed_box(metrics.knob_track_w, metrics.label_line_h)),
+                    .widget_layout(
+                        LayoutBox::auto().max(metrics.knob_track_w, metrics.label_line_h),
+                    ),
             )
             .slot_align(SlotAlign::Center, SlotAlign::Start)
             .fill();
             let value_label = Node::align_box(
                 textbox(value_text)
                     .text_color(theme.hint_text)
-                    .widget_layout(fixed_box(metrics.knob_track_w, metrics.label_line_h)),
+                    .widget_layout(
+                        LayoutBox::auto().max(metrics.knob_track_w, metrics.label_line_h),
+                    ),
             )
             .slot_align(SlotAlign::Center, SlotAlign::End)
             .fill();
