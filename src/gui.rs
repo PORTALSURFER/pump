@@ -744,12 +744,6 @@ impl GuiState {
                     .preset_rename_target
                     .min(names.len().saturating_sub(1));
                 rename_active = true;
-                if runtime.preset_name_draft.is_empty() {
-                    runtime.preset_name_draft = names
-                        .get(runtime.preset_rename_target)
-                        .cloned()
-                        .unwrap_or_else(|| DEFAULT_PRESET_NAME.to_string());
-                }
                 rename_draft = runtime.preset_name_draft.clone();
             }
             if runtime.preset_warning_frames > 0 {
@@ -3619,6 +3613,44 @@ mod tests {
         let runtime = state.runtime.lock().expect("runtime lock should succeed");
         assert!(runtime.preset_rename_active);
         assert_eq!(runtime.preset_name_draft, "Preset 2");
+    }
+
+    #[test]
+    fn preset_rename_draft_allows_empty_name_while_editing() {
+        let params = Arc::new(PumpParams::new());
+        params
+            .add_preset_from_current_state()
+            .expect("preset insertion should succeed");
+        params
+            .load_preset(1)
+            .expect("preset selection should succeed");
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_RENAME_BUTTON_KEY.to_string(),
+        });
+        state.reduce_action(UiAction::TextBoxEdited {
+            key: PRESET_RENAME_KEY.to_string(),
+            text: String::new(),
+        });
+
+        let snapshot = state.snapshot_presets();
+        assert!(snapshot.rename_active);
+        assert_eq!(
+            snapshot.rename_draft, "",
+            "rename draft should remain empty instead of being refilled"
+        );
+
+        let runtime = state.runtime.lock().expect("runtime lock should succeed");
+        assert_eq!(
+            runtime.preset_name_draft, "",
+            "runtime draft should preserve user-cleared state"
+        );
     }
 
     #[test]
