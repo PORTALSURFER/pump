@@ -13,9 +13,9 @@ use toybox::clap::gui::{
 };
 use toybox::gui::declarative::{
     button, column, column_slots, dropdown, grid, indicator, knob, panel, root_frame_sized,
-    row_slots, stack, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
-    LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, SlotAlign,
-    SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
+    row_slots, spacer, stack, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
+    LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, Slot, SlotAlign,
+    SlotCrossSize, SlotParams, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -871,6 +871,16 @@ impl GuiState {
             .outline(theme.preset_title_outline)
             .pad_all(0)
             .fill();
+
+        let action_button_slot = |node: Node| {
+            Slot::with_params(
+                node,
+                SlotParams::intrinsic()
+                    .cross_size(SlotCrossSize::Intrinsic)
+                    .align(SlotAlign::Start, SlotAlign::Center),
+            )
+        };
+
         let rename_button = stack(vec![
             button(PRESET_RENAME_BUTTON_KEY)
                 .control_size(Size {
@@ -881,7 +891,7 @@ impl GuiState {
             Node::align_box(
                 textbox("R")
                     .text_color(theme.subtitle_text)
-                    .widget_layout(LayoutBox::fill()),
+                    .widget_layout(LayoutBox::auto()),
             )
             .slot_align(SlotAlign::Center, SlotAlign::Center)
             .fill(),
@@ -896,9 +906,9 @@ impl GuiState {
                 })
                 .fill(),
             Node::align_box(
-                textbox("Save")
+                textbox("S")
                     .text_color(theme.subtitle_text)
-                    .widget_layout(LayoutBox::fill()),
+                    .widget_layout(LayoutBox::auto()),
             )
             .slot_align(SlotAlign::Center, SlotAlign::Center)
             .fill(),
@@ -915,7 +925,7 @@ impl GuiState {
             Node::align_box(
                 textbox("+")
                     .text_color(theme.subtitle_text)
-                    .widget_layout(LayoutBox::fill()),
+                    .widget_layout(LayoutBox::auto()),
             )
             .slot_align(SlotAlign::Center, SlotAlign::Center)
             .fill(),
@@ -923,11 +933,18 @@ impl GuiState {
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let action_buttons = row_slots(vec![
-            weighted_slot(rename_button, 1),
-            weighted_slot(save_button, 1),
-            weighted_slot(add_button, 1),
+            action_button_slot(rename_button),
+            action_button_slot(save_button),
+            action_button_slot(add_button),
+            weighted_slot(
+                spacer(Size {
+                    width: 1,
+                    height: 1,
+                }),
+                1,
+            ),
         ])
-        .gap(HEADER_CONTROL_GAP.max(0))
+        .gap(0)
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let left_content = row_slots(vec![
@@ -3402,7 +3419,7 @@ mod tests {
         let mut texts = Vec::new();
         collect_textbox_texts(spec.root.content(), &mut texts);
 
-        for expected in ["Mix", "Depth", "Phase", "Output", "Reset Curve", "Save"] {
+        for expected in ["Mix", "Depth", "Phase", "Output", "Reset Curve", "S"] {
             assert!(
                 texts.iter().any(|text| text == expected),
                 "expected textbox caption `{expected}` in {:?}",
