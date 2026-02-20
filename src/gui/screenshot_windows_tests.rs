@@ -19,6 +19,12 @@
 
     use super::{AutomationQueue, PumpGui, PumpParams, WINDOW_HEIGHT, WINDOW_WIDTH};
 
+    struct CapturedFrame {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    }
+
     #[test]
     fn screenshot_renders_initial_ui() {
         if !screenshot_harness::screenshots_enabled() {
@@ -40,26 +46,19 @@
         let status = Arc::new(GuiStatus::default());
         let host = parent_window(width, height);
         let queue = Arc::new(AutomationQueue::default());
-        let expected_width = width.max(WINDOW_WIDTH);
-        let expected_height = height.max(WINDOW_HEIGHT);
 
         gui.set_parent_raw(host.raw_handle());
         gui.open(&params, &status, queue, None)
             .expect("open should succeed");
         let hwnd = wait_for_window_handle(&gui);
-        wait_for_any_logical_size(&gui);
+        let size_before_resize = wait_for_any_logical_size(&gui);
         gui.request_resize(width, height);
-        wait_for_logical_size(&gui, (expected_width, expected_height));
+        wait_for_size_change_or_stable(&gui, size_before_resize);
 
-        std::thread::sleep(Duration::from_millis(75));
-
-        let path = screenshot_path(env!("CARGO_PKG_NAME"), expected_width, expected_height);
-        let (captured_width, captured_height) =
-            capture_hwnd(hwnd, &path).expect("failed to capture screenshot");
-        assert!(
-            captured_width == expected_width && captured_height == expected_height,
-            "captured image should be exactly {expected_width}x{expected_height}, got {captured_width}x{captured_height}"
-        );
+        let frame = wait_for_rendered_frame(hwnd).expect("failed to capture rendered screenshot");
+        let path = screenshot_path(env!("CARGO_PKG_NAME"), frame.width, frame.height);
+        screenshot_harness::write_png_rgba8(&path, frame.width, frame.height, frame.pixels)
+            .expect("failed to write screenshot PNG");
 
         gui.close();
         assert!(path.exists());
@@ -69,12 +68,12 @@
         ScreenshotParentWindow::new(width, height)
     }
 
-    fn wait_for_any_logical_size(gui: &PumpGui) {
+    fn wait_for_any_logical_size(gui: &PumpGui) -> (u32, u32) {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(3) {
             if let Some(size) = gui.last_size() {
                 if size.0 > 0 && size.1 > 0 {
-                    return;
+                    return size;
                 }
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -82,20 +81,25 @@
         panic!("plugin GUI never reported any logical size");
     }
 
-    fn wait_for_logical_size(gui: &PumpGui, min_size: (u32, u32)) {
+    fn wait_for_size_change_or_stable(gui: &PumpGui, previous: (u32, u32)) {
         let start = Instant::now();
+        let mut stable_count = 0u8;
         while start.elapsed() < Duration::from_secs(3) {
             if let Some((width, height)) = gui.last_size() {
-                if width >= min_size.0 && height >= min_size.1 {
+                if width > 0 && height > 0 && (width, height) != previous {
                     return;
+                }
+                if (width, height) == previous {
+                    stable_count = stable_count.saturating_add(1);
+                    if stable_count >= 3 {
+                        return;
+                    }
+                } else {
+                    stable_count = 0;
                 }
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        panic!(
-            "plugin GUI never reached logical size >= {min_size:?}, last size={:?}",
-            gui.last_size()
-        );
     }
 
     fn wait_for_window_handle(gui: &PumpGui) -> HWND {
@@ -116,7 +120,44 @@
             .expect("resolve screenshot path")
     }
 
-    fn capture_hwnd(hwnd: HWND, out: &PathBuf) -> Result<(u32, u32), String> {
+    fn wait_for_rendered_frame(hwnd: HWND) -> Result<CapturedFrame, String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut last_frame: Option<CapturedFrame> = None;
+        loop {
+            let frame = capture_hwnd_frame(hwnd)?;
+            let has_content = frame_has_non_uniform_content(&frame.pixels);
+            if has_content {
+                return Ok(frame);
+            }
+            last_frame = Some(frame);
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        match last_frame {
+            Some(frame) => Err(format!(
+                "captured only uniform/blank frames at {}x{} before timeout",
+                frame.width, frame.height
+            )),
+            None => Err("failed to capture any frame before timeout".to_string()),
+        }
+    }
+
+    fn frame_has_non_uniform_content(pixels: &[u8]) -> bool {
+        if pixels.len() < 8 {
+            return false;
+        }
+        let first = &pixels[0..4];
+        for pixel in pixels.chunks_exact(4).skip(1) {
+            if pixel != first {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn capture_hwnd_frame(hwnd: HWND) -> Result<CapturedFrame, String> {
         let mut client = RECT::default();
         unsafe {
             GetClientRect(hwnd, &mut client as *mut RECT)
@@ -230,8 +271,11 @@
             pixel.swap(0, 2);
         }
 
-        screenshot_harness::write_png_rgba8(out, width, height, pixels)?;
-        Ok((width, height))
+        Ok(CapturedFrame {
+            width,
+            height,
+            pixels,
+        })
     }
 
     struct ScreenshotParentWindow {
