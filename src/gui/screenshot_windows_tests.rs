@@ -77,7 +77,7 @@
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(3) {
             if let Some(handle) = gui.window.handle() {
-                if handle.is_valid() && handle.parent_matches(expected_parent.0) {
+                if handle.is_valid() && handle.parent_matches(expected_parent.0 as isize) {
                     return handle.hwnd();
                 }
             }
@@ -310,7 +310,7 @@
     fn wait_for_window_visible(hwnd: HWND) -> Result<(), String> {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(3) {
-            if unsafe { IsWindowVisible(Some(hwnd)).as_bool() } {
+            if unsafe { IsWindowVisible(hwnd).as_bool() } {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(20));
