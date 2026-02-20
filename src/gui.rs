@@ -786,7 +786,8 @@ impl GuiState {
         let left_width = header_slot_widths.first().copied().unwrap_or(1).max(1);
         let action_button_width = (left_width / 8).max(metrics.transport_indicator_size.max(1));
         let preset_title_width = left_width.saturating_sub(action_button_width).max(1);
-        let preset_highlight_active = presets.dirty || presets.warning_blink_visible;
+        let preset_selected_row_highlight = (presets.dirty || presets.warning_blink_visible)
+            .then_some(theme.preset_dirty_highlight);
         let indicator_node = Node::align_box(
             indicator(
                 Size {
@@ -821,20 +822,15 @@ impl GuiState {
                 height: header_h,
             })
             .fill();
-            if preset_highlight_active {
-                preset_dropdown = preset_dropdown
-                    .dropdown_background_color(theme.preset_dirty_highlight)
-                    .dropdown_hover_background_color(theme.preset_dirty_highlight)
-                    .dropdown_active_background_color(theme.preset_dirty_highlight);
+            if let Some(highlight_color) = preset_selected_row_highlight {
+                preset_dropdown =
+                    preset_dropdown.dropdown_selected_option_background_color(highlight_color);
             }
             preset_dropdown
         };
-        let mut preset_title = panel("preset-title", preset_dropdown_or_edit.fill())
+        let preset_title = panel("preset-title", preset_dropdown_or_edit.fill())
             .pad_all(0)
             .fill();
-        if preset_highlight_active {
-            preset_title = preset_title.background(theme.preset_dirty_highlight);
-        }
 
         let action_button_slot = |node: Node| {
             Slot::with_params(

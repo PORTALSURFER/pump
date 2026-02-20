@@ -1123,7 +1123,7 @@
         let dropdown = find_dropdown_spec(spec.root.content(), PRESET_DROPDOWN_KEY)
             .expect("preset dropdown should exist");
         assert_eq!(
-            dropdown.background_override,
+            dropdown.selected_option_background_override,
             Some(MainPalette::main().literals)
         );
 
@@ -1215,7 +1215,7 @@
     }
 
     #[test]
-    fn preset_dropdown_uses_red_theme_highlight_when_dirty() {
+    fn preset_dropdown_marks_selected_option_with_red_highlight_when_dirty() {
         let params = Arc::new(PumpParams::new());
         let state = GuiState::new(
             Arc::clone(&params),
@@ -1234,7 +1234,7 @@
         let clean_spec = state.build_ui(&input);
         let clean_dropdown = find_dropdown_spec(clean_spec.root.content(), PRESET_DROPDOWN_KEY)
             .expect("preset dropdown should exist");
-        assert_eq!(clean_dropdown.background_override, None);
+        assert_eq!(clean_dropdown.selected_option_background_override, None);
         assert!(!state.snapshot_presets().dirty);
 
         params.set_mix(0.5);
@@ -1242,7 +1242,7 @@
         let dirty_dropdown = find_dropdown_spec(dirty_spec.root.content(), PRESET_DROPDOWN_KEY)
             .expect("preset dropdown should exist");
         assert_eq!(
-            dirty_dropdown.background_override,
+            dirty_dropdown.selected_option_background_override,
             Some(MainPalette::main().literals)
         );
         assert!(state.snapshot_presets().dirty);
