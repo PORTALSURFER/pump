@@ -874,19 +874,7 @@ impl PumpVst3GuiAdapter {
 
     /// Resolve a VST3 key event into one character/control input.
     fn key_char(key: char16, key_code: int16) -> Option<char> {
-        let code = key as u32;
-        if code != 0 {
-            return char::from_u32(code);
-        }
-        match key_code as i32 {
-            8 => Some('\u{8}'),
-            9 => Some('\t'),
-            13 => Some('\r'),
-            27 => Some('\u{1b}'),
-            32 => Some(' '),
-            value @ 0x21..=0x7e => char::from_u32(value as u32),
-            _ => None,
-        }
+        toybox::vst3::gui::vst3_key_down_to_input_char(key, key_code)
     }
 }
 
@@ -1101,10 +1089,31 @@ mod tests {
 
     #[test]
     fn key_char_prefers_char16_and_falls_back_to_key_code() {
+        use toybox::vst3::prelude::Steinberg::VirtualKeyCodes_::{
+            KEY_BACK, KEY_END, KEY_ESCAPE, KEY_LEFT, KEY_RETURN,
+        };
+
         assert_eq!(PumpVst3GuiAdapter::key_char('A' as u16, 0), Some('A'));
-        assert_eq!(PumpVst3GuiAdapter::key_char(0, 8), Some('\u{8}'));
-        assert_eq!(PumpVst3GuiAdapter::key_char(0, 13), Some('\r'));
-        assert_eq!(PumpVst3GuiAdapter::key_char(0, 27), Some('\u{1b}'));
+        assert_eq!(
+            PumpVst3GuiAdapter::key_char(0, KEY_BACK as i16),
+            Some('\u{8}')
+        );
+        assert_eq!(
+            PumpVst3GuiAdapter::key_char(0, KEY_RETURN as i16),
+            Some('\r')
+        );
+        assert_eq!(
+            PumpVst3GuiAdapter::key_char(0, KEY_ESCAPE as i16),
+            Some('\u{1b}')
+        );
+        assert_eq!(
+            PumpVst3GuiAdapter::key_char(0, KEY_LEFT as i16),
+            Some('\u{1c}')
+        );
+        assert_eq!(
+            PumpVst3GuiAdapter::key_char(0, KEY_END as i16),
+            Some('\u{1f}')
+        );
         assert_eq!(PumpVst3GuiAdapter::key_char(0, 0x51), Some('Q'));
         assert_eq!(PumpVst3GuiAdapter::key_char(0, 0), None);
     }
