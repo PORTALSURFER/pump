@@ -1117,8 +1117,12 @@ impl GuiState {
                 }),
                 Node::align_box(
                     textbox("Reset")
+                        .text_align_center()
                         .text_color(theme.subtitle_text)
-                        .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
+                        .widget_layout(fixed_box(
+                            metrics.dropdown_control_w,
+                            metrics.button_control_h,
+                        )),
                 )
                 .slot_align(SlotAlign::Center, SlotAlign::Center)
                 .fill(),
