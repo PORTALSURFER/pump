@@ -67,8 +67,8 @@ const CURVE_SECTION_WEIGHT: u16 = 63;
 const CONTROLS_SECTION_WEIGHT: u16 = 30;
 const ROOT_SECTION_WEIGHT_SUM: u32 =
     HEADER_SECTION_WEIGHT as u32 + CURVE_SECTION_WEIGHT as u32 + CONTROLS_SECTION_WEIGHT as u32;
-const KNOBS_SECTION_WEIGHT: u16 = 70;
-const DROPDOWN_SECTION_WEIGHT: u16 = 30;
+const KNOBS_SECTION_WEIGHT: u16 = 75;
+const DROPDOWN_SECTION_WEIGHT: u16 = 25;
 const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
 const CURVE_W: u32 = WINDOW_WIDTH;
@@ -3171,8 +3171,8 @@ mod tests {
     #[test]
     fn bottom_row_split_matches_expected_ratio() {
         let (knobs_w, dropdown_w) = resolve_runtime_controls_slot_widths(WINDOW_WIDTH);
-        assert_eq!(knobs_w, 294);
-        assert_eq!(dropdown_w, 126);
+        assert_eq!(knobs_w, 315);
+        assert_eq!(dropdown_w, 105);
         assert_eq!(knobs_w + dropdown_w, WINDOW_WIDTH);
     }
 
