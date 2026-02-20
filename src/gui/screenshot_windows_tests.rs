@@ -6,16 +6,16 @@
     use crate::GuiStatus;
     use toybox::gui::screenshot_harness;
     use toybox::raw_window_handle::{RawWindowHandle, Win32WindowHandle};
-    use windows::Win32::Foundation::{HINSTANCE, HWND, POINT, RECT};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, ClientToScreen, CreateCompatibleBitmap,
-        CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HGDIOBJ,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, GetWindowDC, HGDIOBJ,
         ReleaseDC, SRCCOPY, SelectObject,
     };
     use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetClientRect, PW_RENDERFULLCONTENT, SW_SHOW, ShowWindow,
-        WS_OVERLAPPEDWINDOW,
+        CreateWindowExW, DestroyWindow, GetClientRect, IsWindowVisible, PW_RENDERFULLCONTENT,
+        SW_SHOW, ShowWindow, WS_OVERLAPPEDWINDOW,
     };
     use windows::core::w;
 
@@ -52,10 +52,13 @@
         gui.set_parent_raw(host.raw_handle());
         gui.open(&params, &status, queue, None)
             .expect("open should succeed");
-        let hwnd = wait_for_window_handle(&gui);
+        gui.window.show();
+        let hwnd = wait_for_window_handle(&gui, host.hwnd);
         let size_before_resize = wait_for_any_logical_size(&gui);
         gui.request_resize(width, height);
         wait_for_size_change_or_stable(&gui, size_before_resize);
+        gui.window.show();
+        wait_for_window_visible(hwnd).expect("plugin window never became visible");
 
         let frame = wait_for_rendered_frame(hwnd).expect("failed to capture rendered screenshot");
         let path = screenshot_path(env!("CARGO_PKG_NAME"), frame.width, frame.height);
@@ -70,17 +73,17 @@
         ScreenshotParentWindow::new(width, height)
     }
 
-    fn wait_for_window_handle(gui: &PumpGui) -> HWND {
+    fn wait_for_window_handle(gui: &PumpGui, expected_parent: HWND) -> HWND {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(3) {
             if let Some(handle) = gui.window.handle() {
-                if handle.is_valid() {
+                if handle.is_valid() && handle.parent_matches(expected_parent.0) {
                     return handle.hwnd();
                 }
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        panic!("plugin GUI handle did not become available");
+        panic!("plugin GUI handle did not become available under expected parent");
     }
 
     fn wait_for_any_logical_size(gui: &PumpGui) -> (u32, u32) {
@@ -125,13 +128,20 @@
     fn wait_for_rendered_frame(hwnd: HWND) -> Result<CapturedFrame, String> {
         let deadline = Instant::now() + Duration::from_secs(4);
         let mut last: Option<CapturedFrame> = None;
+        let mut last_error: Option<String> = None;
 
         while Instant::now() < deadline {
-            let frame = capture_hwnd_exact(hwnd)?;
-            if frame_has_non_uniform_content(&frame.pixels) {
-                return Ok(frame);
+            match capture_hwnd_exact(hwnd) {
+                Ok(frame) => {
+                    if frame_has_non_uniform_content(&frame.pixels) {
+                        return Ok(frame);
+                    }
+                    last = Some(frame);
+                }
+                Err(err) => {
+                    last_error = Some(err);
+                }
             }
-            last = Some(frame);
             std::thread::sleep(Duration::from_millis(40));
         }
 
@@ -140,6 +150,9 @@
                 "captured only uniform/blank frames at {}x{} before timeout",
                 frame.width, frame.height
             ));
+        }
+        if let Some(err) = last_error {
+            return Err(format!("failed to capture non-uniform frame before timeout: {err}"));
         }
         Err("failed to capture any frame before timeout".to_string())
     }
@@ -163,7 +176,11 @@
                 return Ok(frame);
             }
         }
-        capture_from_screen(hwnd)
+        let fallback = capture_with_window_dc(hwnd)?;
+        if frame_has_non_uniform_content(&fallback.pixels) {
+            return Ok(fallback);
+        }
+        Err("PrintWindow and GetWindowDC captures were uniform".to_string())
     }
 
     fn client_rect_size(hwnd: HWND) -> Result<(u32, u32), String> {
@@ -233,30 +250,24 @@
         Ok(frame)
     }
 
-    fn capture_from_screen(hwnd: HWND) -> Result<CapturedFrame, String> {
+    fn capture_with_window_dc(hwnd: HWND) -> Result<CapturedFrame, String> {
         let (width, height) = client_rect_size(hwnd)?;
-        let mut top_left = POINT { x: 0, y: 0 };
-        let ok = unsafe { ClientToScreen(hwnd, &mut top_left as *mut POINT).as_bool() };
-        if !ok {
-            return Err("ClientToScreen failed".to_string());
+        let source_dc = unsafe { GetWindowDC(Some(hwnd)) };
+        if source_dc.is_invalid() {
+            return Err("GetWindowDC returned invalid DC".to_string());
         }
-
-        let screen_dc = unsafe { GetDC(None) };
-        if screen_dc.is_invalid() {
-            return Err("GetDC(None) returned invalid DC".to_string());
-        }
-        let memory_dc = unsafe { CreateCompatibleDC(Some(screen_dc)) };
+        let memory_dc = unsafe { CreateCompatibleDC(Some(source_dc)) };
         if memory_dc.is_invalid() {
             unsafe {
-                let _ = ReleaseDC(None, screen_dc);
+                let _ = ReleaseDC(Some(hwnd), source_dc);
             }
             return Err("CreateCompatibleDC returned invalid DC".to_string());
         }
-        let bitmap = unsafe { CreateCompatibleBitmap(screen_dc, width as i32, height as i32) };
+        let bitmap = unsafe { CreateCompatibleBitmap(source_dc, width as i32, height as i32) };
         if bitmap.is_invalid() {
             unsafe {
                 let _ = DeleteDC(memory_dc);
-                let _ = ReleaseDC(None, screen_dc);
+                let _ = ReleaseDC(Some(hwnd), source_dc);
             }
             return Err("CreateCompatibleBitmap returned invalid bitmap".to_string());
         }
@@ -269,9 +280,9 @@
                 0,
                 width as i32,
                 height as i32,
-                Some(screen_dc),
-                top_left.x,
-                top_left.y,
+                Some(source_dc),
+                0,
+                0,
                 SRCCOPY,
             )
             .is_ok()
@@ -281,9 +292,9 @@
                 let _ = SelectObject(memory_dc, old_object);
                 let _ = DeleteObject(bitmap.into());
                 let _ = DeleteDC(memory_dc);
-                let _ = ReleaseDC(None, screen_dc);
+                let _ = ReleaseDC(Some(hwnd), source_dc);
             }
-            return Err("BitBlt(screen) failed".to_string());
+            return Err("BitBlt(window) failed".to_string());
         }
 
         let frame = extract_bitmap_rgba(memory_dc, bitmap, width, height)?;
@@ -291,9 +302,20 @@
             let _ = SelectObject(memory_dc, old_object);
             let _ = DeleteObject(bitmap.into());
             let _ = DeleteDC(memory_dc);
-            let _ = ReleaseDC(None, screen_dc);
+            let _ = ReleaseDC(Some(hwnd), source_dc);
         }
         Ok(frame)
+    }
+
+    fn wait_for_window_visible(hwnd: HWND) -> Result<(), String> {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            if unsafe { IsWindowVisible(Some(hwnd)).as_bool() } {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Err("window did not become visible before timeout".to_string())
     }
 
     fn extract_bitmap_rgba(
