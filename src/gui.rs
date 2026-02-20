@@ -1116,7 +1116,7 @@ impl GuiState {
                     height: metrics.button_control_h,
                 }),
                 Node::align_box(
-                    textbox("Reset Curve")
+                    textbox("Reset")
                         .text_color(theme.subtitle_text)
                         .widget_layout(fixed_box(metrics.dropdown_control_w, metrics.label_line_h)),
                 )

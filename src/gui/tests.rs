@@ -911,7 +911,7 @@
         let mut texts = Vec::new();
         collect_textbox_texts(spec.root.content(), &mut texts);
 
-        for expected in ["Mix", "Depth", "Phase", "Output", "Reset Curve", "S"] {
+        for expected in ["Mix", "Depth", "Phase", "Output", "Reset", "S"] {
             assert!(
                 texts.iter().any(|text| text == expected),
                 "expected textbox caption `{expected}` in {:?}",
@@ -1369,7 +1369,7 @@
     }
 
     #[test]
-    fn pump_knob_strip_renders_clear_dial_caps() {
+    fn pump_knob_strip_is_borderless() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -1421,8 +1421,8 @@
             .collect();
 
         assert!(
-            !significant_runs.is_empty(),
-            "expected visible knob-border runs in pump knob slot, got {:?}",
+            significant_runs.is_empty(),
+            "expected no knob-border runs in pump knob slot, got {:?}",
             significant_runs
         );
     }
