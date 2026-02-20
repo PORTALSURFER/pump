@@ -824,6 +824,36 @@ impl PumpVst3GuiAdapter {
             gui: PumpGui::default(),
         }
     }
+
+    /// Decode VST3 modifier bit flags into Pump shortcut modifiers.
+    ///
+    /// Steinberg hosts commonly encode bitflags with shift/alt/control in the
+    /// low bits. We accept both control-style bits to remain host-tolerant.
+    fn shortcut_modifiers(modifiers: int16) -> toybox::clap::gui::ShortcutModifiers {
+        let bits = modifiers as u16;
+        toybox::clap::gui::ShortcutModifiers::new(
+            (bits & 0b0001) != 0,
+            (bits & 0b0010) != 0,
+            (bits & 0b0100) != 0 || (bits & 0b1000) != 0,
+        )
+    }
+
+    /// Resolve a VST3 key event into one character/control input.
+    fn key_char(key: char16, key_code: int16) -> Option<char> {
+        let code = key as u32;
+        if code != 0 {
+            return char::from_u32(code);
+        }
+        match key_code as i32 {
+            8 => Some('\u{8}'),
+            9 => Some('\t'),
+            13 => Some('\r'),
+            27 => Some('\u{1b}'),
+            32 => Some(' '),
+            value @ 0x21..=0x7e => char::from_u32(value as u32),
+            _ => None,
+        }
+    }
 }
 
 impl Vst3HostedGui for PumpVst3GuiAdapter {
@@ -854,15 +884,20 @@ impl Vst3HostedGui for PumpVst3GuiAdapter {
         self.gui.request_resize(width, height);
     }
 
-    fn on_key_down(&self, key: char16, _key_code: int16, _modifiers: int16) -> bool {
-        let code = key as u32;
-        if code == 0 {
-            return false;
-        }
-        let Some(ch) = char::from_u32(code) else {
+    fn on_key_down(&self, key: char16, key_code: int16, modifiers: int16) -> bool {
+        let Some(ch) = Self::key_char(key, key_code) else {
             return false;
         };
-        self.gui.post_text_char(ch)
+        let shortcut_modifiers = Self::shortcut_modifiers(modifiers);
+        let should_consume = self.gui.text_edit_active()
+            || self
+                .gui
+                .shortcut_action_for_input(ch, shortcut_modifiers)
+                .is_some();
+        if !should_consume {
+            return false;
+        }
+        self.gui.post_injected_text_char(ch, shortcut_modifiers)
     }
 }
 
@@ -1028,5 +1063,23 @@ mod tests {
         assert!(!state.is_playing);
         assert_eq!(state.song_pos_beats, None);
         assert!((state.tempo_bpm - 120.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn key_char_prefers_char16_and_falls_back_to_key_code() {
+        assert_eq!(PumpVst3GuiAdapter::key_char('A' as u16, 0), Some('A'));
+        assert_eq!(PumpVst3GuiAdapter::key_char(0, 8), Some('\u{8}'));
+        assert_eq!(PumpVst3GuiAdapter::key_char(0, 13), Some('\r'));
+        assert_eq!(PumpVst3GuiAdapter::key_char(0, 27), Some('\u{1b}'));
+        assert_eq!(PumpVst3GuiAdapter::key_char(0, 0x51), Some('Q'));
+        assert_eq!(PumpVst3GuiAdapter::key_char(0, 0), None);
+    }
+
+    #[test]
+    fn shortcut_modifiers_decode_vst3_bits() {
+        let modifiers = PumpVst3GuiAdapter::shortcut_modifiers(0b1001);
+        assert!(modifiers.shift);
+        assert!(!modifiers.alt);
+        assert!(modifiers.ctrl);
     }
 }

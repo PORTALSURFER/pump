@@ -7,7 +7,10 @@ use toybox::clack_extensions::gui::{GuiSize, Window};
 use toybox::clack_plugin::plugin::PluginError;
 use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
-use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
+use toybox::clap::gui::{
+    GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState, ShortcutBinding,
+    ShortcutModifiers,
+};
 use toybox::gui::declarative::{
     button, column, column_slots, dropdown, grid, indicator, knob, panel, root_frame_sized,
     row_slots, stack, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
@@ -54,6 +57,10 @@ const PRESET_ADD_KEY: &str = "preset-add";
 const PRESET_SAVE_KEY: &str = "preset-save";
 const PRESET_RENAME_BUTTON_KEY: &str = "preset-rename-button";
 const PRESET_RENAME_KEY: &str = "preset-rename";
+const SHORTCUT_KEY_RENAME: char = 'r';
+const SHORTCUT_KEY_SAVE: char = 's';
+const SHORTCUT_KEY_ADD: char = '+';
+const SHORTCUT_KEY_ADD_ALT: char = '=';
 
 const HEADER_SECTION_WEIGHT: u16 = 7;
 const CURVE_SECTION_WEIGHT: u16 = 63;
@@ -340,6 +347,32 @@ pub struct PumpGui {
 }
 
 impl PumpGui {
+    /// Return default focused-window keyboard shortcuts for Pump.
+    fn default_shortcuts() -> Vec<ShortcutBinding> {
+        vec![
+            ShortcutBinding::new(
+                PRESET_RENAME_BUTTON_KEY,
+                SHORTCUT_KEY_RENAME,
+                ShortcutModifiers::default(),
+            ),
+            ShortcutBinding::new(
+                PRESET_SAVE_KEY,
+                SHORTCUT_KEY_SAVE,
+                ShortcutModifiers::default(),
+            ),
+            ShortcutBinding::new(
+                PRESET_ADD_KEY,
+                SHORTCUT_KEY_ADD,
+                ShortcutModifiers::new(true, false, false),
+            ),
+            ShortcutBinding::new(
+                PRESET_ADD_KEY,
+                SHORTCUT_KEY_ADD_ALT,
+                ShortcutModifiers::default(),
+            ),
+        ]
+    }
+
     /// Attach raw host window handle.
     pub fn set_parent_raw(&mut self, parent: RawWindowHandle) {
         self.window.set_parent(parent);
@@ -359,6 +392,7 @@ impl PumpGui {
         param_requester: Option<HostParamRequester>,
     ) -> Result<(), PluginError> {
         self.window.set_aspect_ratio(Some(DESIGN_ASPECT_RATIO));
+        self.window.set_shortcuts(Self::default_shortcuts());
         let state = GuiState::new(
             Arc::clone(params),
             Arc::clone(status),
@@ -391,6 +425,28 @@ impl PumpGui {
     #[cfg(any(feature = "vst3", windows))]
     pub fn post_text_char(&self, ch: char) -> bool {
         self.window.post_text_char(ch)
+    }
+
+    /// Inject one character tagged as host-injected key input.
+    #[cfg(any(feature = "vst3", windows))]
+    pub fn post_injected_text_char(&self, ch: char, modifiers: ShortcutModifiers) -> bool {
+        self.window.post_injected_text_char(ch, modifiers)
+    }
+
+    /// Return `true` when preset rename text editing is active.
+    #[cfg(any(feature = "vst3", windows))]
+    pub fn text_edit_active(&self) -> bool {
+        self.window.text_edit_active()
+    }
+
+    /// Resolve one registered shortcut action key from input.
+    #[cfg(any(feature = "vst3", windows))]
+    pub fn shortcut_action_for_input(
+        &self,
+        ch: char,
+        modifiers: ShortcutModifiers,
+    ) -> Option<String> {
+        self.window.shortcut_action_for_input(ch, modifiers)
     }
 
     /// Return true when host-driven resizing is enabled.
