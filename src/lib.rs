@@ -579,10 +579,11 @@ toybox::clap_plugin_entry!(PumpPlugin);
 #[cfg(test)]
 mod tests {
     use crate::dsp::{db_to_linear, DspSettings};
+    use std::sync::atomic::Ordering;
     use toybox::dsp::{phase_from_beats, TransportState};
 
     use super::{
-        extrapolate_phase, gui_phase_from_transport, host_beat_phase, GuiStatus,
+        extrapolate_phase, gui_phase_from_transport, host_beat_phase, monotonic_micros, GuiStatus,
         GuiTransportTelemetry,
     };
 
@@ -710,5 +711,55 @@ mod tests {
     fn extrapolate_phase_holds_when_not_playing() {
         let phase = extrapolate_phase(0.25, 2.0, false, 1_000_000, 2_000_000);
         assert!((phase - 0.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gui_status_phase_holds_when_last_update_timestamp_is_stale_future_value() {
+        let status = GuiStatus::default();
+        status.update(
+            0.42,
+            1.0,
+            GuiTransportTelemetry {
+                is_playing: true,
+                has_host_beats_timeline: true,
+                beat_phase: 0.2,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        status.last_update_micros.store(
+            monotonic_micros().saturating_add(1_000_000),
+            Ordering::Relaxed,
+        );
+        let phase = status.phase();
+        assert!(
+            (phase - 0.42).abs() <= 1.0e-6,
+            "future/stale timestamp should hold anchor phase instead of extrapolating"
+        );
+    }
+
+    #[test]
+    fn gui_status_beat_phase_holds_when_last_update_timestamp_is_stale_future_value() {
+        let status = GuiStatus::default();
+        status.update(
+            0.0,
+            1.0,
+            GuiTransportTelemetry {
+                is_playing: true,
+                has_host_beats_timeline: true,
+                beat_phase: 0.73,
+                tempo_bpm: 123.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        status.last_update_micros.store(
+            monotonic_micros().saturating_add(1_000_000),
+            Ordering::Relaxed,
+        );
+        let phase = status.beat_phase();
+        assert!(
+            (phase - 0.73).abs() <= 1.0e-6,
+            "future/stale timestamp should hold anchor beat phase instead of extrapolating"
+        );
     }
 }

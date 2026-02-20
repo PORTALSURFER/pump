@@ -237,6 +237,17 @@ fn scaled_line_height(text_scale: u32) -> u32 {
     BASE_CONTROL_LINE_UNIT.saturating_mul(text_scale.max(1))
 }
 
+/// Resolve a stable parameter id for one knob action key.
+fn knob_param_id(key: &str) -> Option<ClapId> {
+    match key {
+        MIX_KEY => Some(PARAM_MIX_ID),
+        DEPTH_KEY => Some(PARAM_DEPTH_ID),
+        PHASE_KEY => Some(PARAM_PHASE_OFFSET_ID),
+        OUTPUT_KEY => Some(PARAM_OUTPUT_GAIN_ID),
+        _ => None,
+    }
+}
+
 /// Shared Pump color/style tokens derived from the canonical Patchbay theme.
 #[derive(Clone, Copy, Debug)]
 struct PumpTheme {
@@ -503,6 +514,8 @@ struct GuiRuntime {
     preset_name_draft: String,
     preset_warning_frames: u8,
     preset_warning_text: Option<&'static str>,
+    pointer_primary_down: bool,
+    active_knob_gesture_param: Option<ClapId>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -654,6 +667,8 @@ impl GuiRuntime {
             preset_name_draft: String::new(),
             preset_warning_frames: 0,
             preset_warning_text: None,
+            pointer_primary_down: false,
+            active_knob_gesture_param: None,
         }
     }
 }
@@ -926,25 +941,32 @@ impl GuiState {
         .gap(0)
         .container_overflow(OverflowPolicy::Compress)
         .fill();
-        let left_content = row_slots(vec![
+        let left_controls = row_slots(vec![
             weighted_slot(preset_title, 82),
             weighted_slot(action_buttons, 18),
         ])
         .gap(HEADER_CONTROL_GAP.max(0))
         .container_overflow(OverflowPolicy::Compress)
         .fill();
-        let left_content = stack(vec![
-            left_content,
+        let warning_row = if let Some(warning_text) = presets.warning_text {
             Node::align_box(
-                textbox(presets.warning_text.unwrap_or(""))
+                textbox(warning_text)
                     .text_color(theme.preset_add_warning_text)
                     .widget_layout(LayoutBox::fill()),
             )
             .slot_align(SlotAlign::End, SlotAlign::Center)
-            .fill(),
-        ])
-        .container_overflow(OverflowPolicy::Compress)
-        .fill();
+            .fill()
+        } else {
+            spacer(Size {
+                width: 1,
+                height: 1,
+            })
+            .fill()
+        };
+        let left_content = column(vec![left_controls, warning_row])
+            .gap(0)
+            .container_overflow(OverflowPolicy::Compress)
+            .fill();
 
         let header_content = row_slots(vec![
             weighted_slot(left_content, HEADER_EMPTY_SECTION_PERCENT as u16),
@@ -1014,13 +1036,15 @@ impl GuiState {
             )
             .slot_align(SlotAlign::Center, SlotAlign::End)
             .fill();
-            stack(vec![
+            let knob_body = Node::align_box(
                 knob(key, value, range)
                     .widget_layout(fixed_box(metrics.knob_diameter, metrics.knob_diameter)),
-                title,
-                value_label,
-            ])
-            .container_overflow(OverflowPolicy::Compress)
+            )
+            .slot_align(SlotAlign::Center, SlotAlign::Center)
+            .fill();
+            column(vec![title, knob_body, value_label])
+                .gap(0)
+                .container_overflow(OverflowPolicy::Compress)
         };
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; KNOBS_PER_ROW])
@@ -1198,6 +1222,7 @@ impl GuiState {
     }
 
     fn build_ui(&self, input: &InputState) -> UiSpec {
+        self.sync_knob_gesture_state(input.mouse_down);
         let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
         let controls = self.snapshot_controls();
@@ -1292,25 +1317,25 @@ impl GuiState {
     }
 
     fn reduce_knob(&mut self, key: &str, value: f32) {
+        let Some(param_id) = knob_param_id(key) else {
+            return;
+        };
         match key {
             MIX_KEY => {
                 self.params.set_mix(value);
-                self.push_single_value_update(PARAM_MIX_ID, value as f64);
             }
             DEPTH_KEY => {
                 self.params.set_depth(value);
-                self.push_single_value_update(PARAM_DEPTH_ID, value as f64);
             }
             PHASE_KEY => {
                 self.params.set_phase_offset(value);
-                self.push_single_value_update(PARAM_PHASE_OFFSET_ID, value as f64);
             }
             OUTPUT_KEY => {
                 self.params.set_output_gain_db(value);
-                self.push_single_value_update(PARAM_OUTPUT_GAIN_ID, value as f64);
             }
-            _ => {}
+            _ => return,
         }
+        self.push_knob_value_update(param_id, value as f64);
     }
 
     fn reduce_dropdown(&mut self, key: &str, index: usize) {
@@ -1949,6 +1974,20 @@ impl GuiState {
         }
     }
 
+    /// Close any active knob automation gesture when pointer drag ends.
+    fn sync_knob_gesture_state(&self, mouse_down: bool) {
+        let mut ended_param = None;
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.pointer_primary_down && !mouse_down {
+                ended_param = runtime.active_knob_gesture_param.take();
+            }
+            runtime.pointer_primary_down = mouse_down;
+        }
+        if let Some(param_id) = ended_param {
+            self.end_param_gesture(param_id);
+        }
+    }
+
     fn push_all_param_updates(&self) {
         self.push_single_value_update(PARAM_MIX_ID, self.params.mix() as f64);
         self.push_single_value_update(PARAM_DEPTH_ID, self.params.depth() as f64);
@@ -1958,10 +1997,60 @@ impl GuiState {
     }
 
     fn push_single_value_update(&self, param_id: ClapId, value: f64) {
+        self.begin_param_gesture(param_id);
+        self.push_param_value(param_id, value);
+        self.end_param_gesture(param_id);
+    }
+
+    /// Push one knob update using drag-aware gesture boundaries.
+    fn push_knob_value_update(&self, param_id: ClapId, value: f64) {
+        let mut should_begin = false;
+        let mut should_end_previous = None;
+        let mut immediate = false;
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.pointer_primary_down {
+                if runtime.active_knob_gesture_param != Some(param_id) {
+                    should_end_previous = runtime.active_knob_gesture_param.take();
+                    runtime.active_knob_gesture_param = Some(param_id);
+                    should_begin = true;
+                }
+            } else {
+                should_end_previous = runtime.active_knob_gesture_param.take();
+                immediate = true;
+            }
+        } else {
+            immediate = true;
+        }
+
+        if let Some(previous) = should_end_previous {
+            self.end_param_gesture(previous);
+        }
+        if immediate {
+            self.push_single_value_update(param_id, value);
+            return;
+        }
+        if should_begin {
+            self.begin_param_gesture(param_id);
+        }
+        self.push_param_value(param_id, value);
+    }
+
+    /// Begin one automation gesture event.
+    fn begin_param_gesture(&self, param_id: ClapId) {
         self.automation_queue
             .push_gesture_begin(&self.automation_config, param_id);
+        self.request_flush();
+    }
+
+    /// Push one automation value event.
+    fn push_param_value(&self, param_id: ClapId, value: f64) {
         self.automation_queue
             .push_value(&self.automation_config, param_id, value);
+        self.request_flush();
+    }
+
+    /// End one automation gesture event.
+    fn end_param_gesture(&self, param_id: ClapId) {
         self.automation_queue
             .push_gesture_end(&self.automation_config, param_id);
         self.request_flush();
@@ -2496,6 +2585,7 @@ fn find_deletable_node_hit_for_size(
 mod tests {
     // Policy anchor: fn emitted_ui_spec_passes_strict_slot_validation
     include!("gui/tests.rs");
+    include!("gui/interaction_and_automation_tests.rs");
 }
 
 #[cfg(all(test, feature = "screenshot-test", target_os = "windows"))]
