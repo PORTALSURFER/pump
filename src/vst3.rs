@@ -853,6 +853,17 @@ impl Vst3HostedGui for PumpVst3GuiAdapter {
     fn request_resize(&self, width: u32, height: u32) {
         self.gui.request_resize(width, height);
     }
+
+    fn on_key_down(&self, key: char16, _key_code: int16, _modifiers: int16) -> bool {
+        let code = key as u32;
+        if code == 0 {
+            return false;
+        }
+        let Some(ch) = char::from_u32(code) else {
+            return false;
+        };
+        self.gui.post_text_char(ch)
+    }
 }
 
 #[derive(Default)]

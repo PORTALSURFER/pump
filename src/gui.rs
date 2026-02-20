@@ -387,6 +387,12 @@ impl PumpGui {
         self.window.request_resize(width, height);
     }
 
+    /// Inject one text character into the native editor window.
+    #[cfg(any(feature = "vst3", windows))]
+    pub fn post_text_char(&self, ch: char) -> bool {
+        self.window.post_text_char(ch)
+    }
+
     /// Return true when host-driven resizing is enabled.
     pub fn host_resize_enabled(&self) -> bool {
         self.window.host_resize_enabled()
