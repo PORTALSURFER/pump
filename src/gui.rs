@@ -1011,7 +1011,9 @@ impl GuiState {
             .saturating_div(KNOB_TEXT_MAX_CHARS.saturating_mul(MONO_CHAR_CELL_WIDTH_PX))
             .max(1)
             .min(metrics.text_scale.max(1));
-        let knob_label_h = scaled_line_height(knob_text_scale);
+        let knob_label_h = metrics
+            .label_line_h
+            .max(scaled_line_height(knob_text_scale));
         let knob_cell = |key: &'static str,
                          label: &'static str,
                          value: f32,
