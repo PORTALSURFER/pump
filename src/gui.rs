@@ -13,7 +13,7 @@ use toybox::clap::gui::{
 };
 use toybox::gui::declarative::{
     button, column, column_slots, dropdown, grid, indicator, knob, panel, root_frame_sized,
-    row_slots, spacer, stack, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
+    row_slots, spacer, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
     LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, Slot, SlotAlign,
     SlotCrossSize, SlotParams, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
@@ -876,57 +876,27 @@ impl GuiState {
             )
         };
 
-        let rename_button = stack(vec![
-            button(PRESET_RENAME_BUTTON_KEY)
-                .control_size(Size {
-                    width: action_button_width,
-                    height: header_h,
-                })
-                .fill(),
-            Node::align_box(
-                textbox("R")
-                    .text_color(theme.subtitle_text)
-                    .widget_layout(LayoutBox::auto()),
-            )
-            .slot_align(SlotAlign::Center, SlotAlign::Center)
-            .fill(),
-        ])
-        .container_overflow(OverflowPolicy::Compress)
-        .fill();
-        let save_button = stack(vec![
-            button(PRESET_SAVE_KEY)
-                .control_size(Size {
-                    width: action_button_width,
-                    height: header_h,
-                })
-                .fill(),
-            Node::align_box(
-                textbox("S")
-                    .text_color(theme.subtitle_text)
-                    .widget_layout(LayoutBox::auto()),
-            )
-            .slot_align(SlotAlign::Center, SlotAlign::Center)
-            .fill(),
-        ])
-        .container_overflow(OverflowPolicy::Compress)
-        .fill();
-        let add_button = stack(vec![
-            button(PRESET_ADD_KEY)
-                .control_size(Size {
-                    width: action_button_width,
-                    height: header_h,
-                })
-                .fill(),
-            Node::align_box(
-                textbox("+")
-                    .text_color(theme.subtitle_text)
-                    .widget_layout(LayoutBox::auto()),
-            )
-            .slot_align(SlotAlign::Center, SlotAlign::Center)
-            .fill(),
-        ])
-        .container_overflow(OverflowPolicy::Compress)
-        .fill();
+        let rename_button = button(PRESET_RENAME_BUTTON_KEY)
+            .button_label("R")
+            .control_size(Size {
+                width: action_button_width,
+                height: header_h,
+            })
+            .fill();
+        let save_button = button(PRESET_SAVE_KEY)
+            .button_label("S")
+            .control_size(Size {
+                width: action_button_width,
+                height: header_h,
+            })
+            .fill();
+        let add_button = button(PRESET_ADD_KEY)
+            .button_label("+")
+            .control_size(Size {
+                width: action_button_width,
+                height: header_h,
+            })
+            .fill();
         let action_buttons = row_slots(vec![
             action_button_slot(rename_button),
             action_button_slot(save_button),
@@ -1110,24 +1080,13 @@ impl GuiState {
                 height: metrics.dropdown_control_h,
             })
             .fill(),
-            stack(vec![
-                button(RESET_KEY).control_size(Size {
+            button(RESET_KEY)
+                .button_label("Reset")
+                .control_size(Size {
                     width: metrics.dropdown_control_w,
                     height: metrics.button_control_h,
-                }),
-                Node::align_box(
-                    textbox("Reset")
-                        .text_align_center()
-                        .text_color(theme.subtitle_text)
-                        .widget_layout(fixed_box(
-                            metrics.dropdown_control_w,
-                            metrics.button_control_h,
-                        )),
-                )
-                .slot_align(SlotAlign::Center, SlotAlign::Center)
+                })
                 .fill(),
-            ])
-            .fill(),
         ])
         .gap(metrics.controls_gap.max(0))
         .pad_all(0)
