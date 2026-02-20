@@ -9,7 +9,7 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
-    button, column, column_slots, dropdown, grid, indicator, knob, panel, root_frame_sized,
+    button, column, column_slots, dropdown, grid, indicator, knob, panel, region, root_frame_sized,
     row_slots, stack, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
     LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, SlotAlign,
     SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
@@ -53,6 +53,7 @@ const PRESET_DROPDOWN_KEY: &str = "preset-dropdown";
 const PRESET_ADD_KEY: &str = "preset-add";
 const PRESET_SAVE_KEY: &str = "preset-save";
 const PRESET_RENAME_KEY: &str = "preset-rename";
+const PRESET_TITLE_REGION_KEY: &str = "preset-title-region";
 
 const HEADER_SECTION_WEIGHT: u16 = 7;
 const CURVE_SECTION_WEIGHT: u16 = 63;
@@ -734,6 +735,7 @@ impl GuiState {
         theme: PumpTheme,
         presets: &PresetSnapshot,
     ) -> Node {
+        let header_h = resolve_vertical_slot_heights(metrics.content_h).0.max(1);
         let header_slot_widths = weighted_slot_lengths(
             metrics.content_w.max(1),
             &[
@@ -743,6 +745,7 @@ impl GuiState {
         );
         let left_width = header_slot_widths.first().copied().unwrap_or(1).max(1);
         let add_button_width = (left_width / 8).max(metrics.transport_indicator_size.max(1));
+        let preset_title_width = left_width.saturating_sub(add_button_width).max(1);
         let indicator_node = Node::align_box(
             indicator(
                 Size {
@@ -774,21 +777,42 @@ impl GuiState {
             )
             .dropdown_option_labels(presets.names.clone())
             .control_size(Size {
-                width: left_width.saturating_sub(add_button_width).max(1),
+                width: preset_title_width,
                 height: metrics.transport_indicator_size.max(1),
             })
-            .fill()
-        };
-
-        let preset_title = panel("preset-title", preset_dropdown_or_edit.fill())
-            .background(if presets.dirty {
+            .dropdown_background_color(if presets.dirty {
                 theme.preset_title_dirty_bg
             } else {
                 theme.preset_title_bg
             })
-            .outline(theme.preset_title_outline)
-            .pad_all(0)
-            .fill();
+            .dropdown_outline_color(theme.preset_title_outline)
+            .dropdown_text_color(theme.subtitle_text)
+            .fill()
+        };
+        let preset_title_interaction = region(
+            PRESET_TITLE_REGION_KEY,
+            Size {
+                width: preset_title_width,
+                height: header_h,
+            },
+        );
+
+        let preset_title = panel(
+            "preset-title",
+            stack(vec![
+                preset_dropdown_or_edit.fill(),
+                preset_title_interaction,
+            ])
+            .fill(),
+        )
+        .background(if presets.dirty {
+            theme.preset_title_dirty_bg
+        } else {
+            theme.preset_title_bg
+        })
+        .outline(theme.preset_title_outline)
+        .pad_all(0)
+        .fill();
         let save_button = stack(vec![
             button(PRESET_SAVE_KEY)
                 .control_size(Size {
@@ -1119,6 +1143,13 @@ impl GuiState {
             UiAction::KnobChanged { key, value } => self.reduce_knob(key.as_str(), value),
             UiAction::DropdownSelected { key, index } => self.reduce_dropdown(key.as_str(), index),
             UiAction::DropdownDoubleClicked { key } if key == PRESET_DROPDOWN_KEY => {
+                self.begin_preset_rename();
+            }
+            UiAction::RegionInteracted {
+                key,
+                kind: RegionInteractionKind::DoubleClicked,
+                ..
+            } if key == PRESET_TITLE_REGION_KEY => {
                 self.begin_preset_rename();
             }
             UiAction::ButtonPressed { key } if key == RESET_KEY => {
@@ -2394,7 +2425,8 @@ mod tests {
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY,
-        PRESET_WARNING_INIT, RESET_KEY, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
+        PRESET_TITLE_REGION_KEY, PRESET_WARNING_INIT, RESET_KEY, TRANSPORT_INDICATOR_SIZE,
+        WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{PumpParams, MAX_SYNC_DIVISION};
@@ -2404,8 +2436,8 @@ mod tests {
     use toybox::clap::automation::AutomationQueue;
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
-        measure_checked, ContainerLayout, ContainerLength, GridKind, Node, PanelSpec,
-        RootScaleMode, SurfaceCommand, UiAction, UiSpec,
+        measure_checked, ContainerLayout, ContainerLength, DropdownSpec, GridKind, Node, PanelSpec,
+        RegionInteractionKind, RootScaleMode, SurfaceCommand, UiAction, UiSpec,
     };
     use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
@@ -3486,6 +3518,72 @@ mod tests {
     }
 
     #[test]
+    fn preset_title_region_double_click_enters_rename_mode() {
+        let params = Arc::new(PumpParams::new());
+        params
+            .add_preset_from_current_state()
+            .expect("preset insertion should succeed");
+        params
+            .load_preset(1)
+            .expect("preset selection should succeed");
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+
+        state.reduce_action(UiAction::RegionInteracted {
+            key: PRESET_TITLE_REGION_KEY.to_string(),
+            kind: RegionInteractionKind::DoubleClicked,
+            local_pointer: Point { x: 0, y: 0 },
+            raw_local_pointer: Point { x: 0, y: 0 },
+            alt_down: false,
+        });
+
+        let runtime = state.runtime.lock().expect("runtime lock should succeed");
+        assert!(runtime.preset_rename_active);
+        assert_eq!(runtime.preset_name_draft, "Preset 2");
+    }
+
+    #[test]
+    fn preset_dropdown_background_override_tracks_dirty_state() {
+        let params = Arc::new(PumpParams::new());
+        let state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let input = InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        };
+        let metrics = UiLayoutMetrics::design_space();
+        let theme = PumpTheme::main(metrics);
+
+        let clean_spec = state.build_ui(&input);
+        let clean_dropdown = find_dropdown_spec(clean_spec.root.content(), PRESET_DROPDOWN_KEY)
+            .expect("preset dropdown should exist");
+        assert_eq!(
+            clean_dropdown.background_override,
+            Some(theme.preset_title_bg)
+        );
+
+        params.set_mix(0.5);
+        let dirty_spec = state.build_ui(&input);
+        let dirty_dropdown = find_dropdown_spec(dirty_spec.root.content(), PRESET_DROPDOWN_KEY)
+            .expect("preset dropdown should exist");
+        assert_eq!(
+            dirty_dropdown.background_override,
+            Some(theme.preset_title_dirty_bg)
+        );
+    }
+
+    #[test]
     fn header_transport_indicator_reflects_transport_blink_state() {
         let params = Arc::new(PumpParams::new());
         let status = Arc::new(GuiStatus::default());
@@ -3801,35 +3899,39 @@ mod tests {
     }
 
     fn find_dropdown_control_size(node: &Node, key: &str) -> Option<Size> {
+        find_dropdown_spec(node, key).and_then(|dropdown| dropdown.control_size)
+    }
+
+    fn find_dropdown_spec<'a>(node: &'a Node, key: &str) -> Option<&'a DropdownSpec> {
         match node {
-            Node::Slot(slot) => find_dropdown_control_size(slot.child(), key),
-            Node::Dropdown(dropdown) if dropdown.key == key => dropdown.control_size,
-            Node::Panel(panel) => find_dropdown_control_size(panel.content(), key),
-            Node::PaddingBox(padding_box) => find_dropdown_control_size(padding_box.content(), key),
-            Node::AlignBox(align_box) => find_dropdown_control_size(align_box.content(), key),
-            Node::AspectBox(aspect_box) => find_dropdown_control_size(aspect_box.content(), key),
+            Node::Slot(slot) => find_dropdown_spec(slot.child(), key),
+            Node::Dropdown(dropdown) if dropdown.key == key => Some(dropdown),
+            Node::Panel(panel) => find_dropdown_spec(panel.content(), key),
+            Node::PaddingBox(padding_box) => find_dropdown_spec(padding_box.content(), key),
+            Node::AlignBox(align_box) => find_dropdown_spec(align_box.content(), key),
+            Node::AspectBox(aspect_box) => find_dropdown_spec(aspect_box.content(), key),
             Node::Row(flex) | Node::Column(flex) => flex
                 .children()
                 .iter()
-                .find_map(|child| find_dropdown_control_size(child, key)),
+                .find_map(|child| find_dropdown_spec(child, key)),
             Node::Grid(grid) => grid
                 .children()
                 .iter()
-                .find_map(|child| find_dropdown_control_size(child, key)),
+                .find_map(|child| find_dropdown_spec(child, key)),
             Node::Stack(stack) => stack
                 .children()
                 .iter()
-                .find_map(|child| find_dropdown_control_size(child, key)),
-            Node::ScrollView(scroll_view) => find_dropdown_control_size(scroll_view.content(), key),
+                .find_map(|child| find_dropdown_spec(child, key)),
+            Node::ScrollView(scroll_view) => find_dropdown_spec(scroll_view.content(), key),
             Node::Wrap(wrap) => wrap
                 .children()
                 .iter()
-                .find_map(|child| find_dropdown_control_size(child, key)),
+                .find_map(|child| find_dropdown_spec(child, key)),
             Node::SwitchLayout(switch_layout) => switch_layout
                 .cases()
                 .iter()
-                .find_map(|case_entry| find_dropdown_control_size(case_entry.child(), key))
-                .or_else(|| find_dropdown_control_size(switch_layout.fallback(), key)),
+                .find_map(|case_entry| find_dropdown_spec(case_entry.child(), key))
+                .or_else(|| find_dropdown_spec(switch_layout.fallback(), key)),
             Node::Dropdown(_) => None,
             Node::TextBox(_)
             | Node::Spacer(_)
