@@ -73,7 +73,6 @@ const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_slot_heights(WINDOW_HEIGHT).1;
-const CONTROLS_COLUMN_GAP: i32 = 4;
 const METER_X_OFFSET: i32 = 12;
 const METER_Y_OFFSET: i32 = 10;
 const METER_WIDTH: i32 = 6;
@@ -552,7 +551,6 @@ struct UiLayoutMetrics {
     content_w: u32,
     content_h: u32,
     curve_h: u32,
-    controls_gap: i32,
     meter_x_offset: i32,
     meter_y_offset: i32,
     meter_width: u32,
@@ -575,7 +573,6 @@ impl UiLayoutMetrics {
         let content_h = WINDOW_HEIGHT;
         let (_header_h, curve_h, controls_h) = resolve_vertical_slot_heights(content_h);
         let (knobs_slot_w, dropdown_slot_w) = resolve_runtime_controls_slot_widths(content_w);
-        let controls_gap = CONTROLS_COLUMN_GAP.max(0);
         let text_scale = BASE_TEXT_SCALE.max(1);
         let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
         let knob_diameter = BASE_KNOB_DIAMETER.min(knob_track_width.max(1));
@@ -583,7 +580,6 @@ impl UiLayoutMetrics {
         let label_line_h = scaled_line_height(text_scale);
         let expanded_control_h = controls_h
             .saturating_sub(label_line_h)
-            .saturating_sub((controls_gap.max(0) as u32).saturating_mul(2))
             .saturating_div(2)
             .max(BASE_DROPDOWN_CONTROL_H.max(1));
         let dropdown_control_h = expanded_control_h;
@@ -602,7 +598,6 @@ impl UiLayoutMetrics {
             content_w,
             content_h,
             curve_h,
-            controls_gap,
             meter_x_offset,
             meter_y_offset,
             meter_width,
@@ -909,7 +904,6 @@ impl GuiState {
                 1,
             ),
         ])
-        .gap(0)
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let left_controls = row_slots(vec![
@@ -930,7 +924,6 @@ impl GuiState {
                 weighted_slot(left_controls, 82),
                 weighted_slot(warning_row, 18),
             ])
-            .gap(0)
             .container_overflow(OverflowPolicy::Compress)
             .fill()
         } else {
@@ -1020,13 +1013,11 @@ impl GuiState {
                 weighted_slot(knob_body, 70),
                 weighted_slot(value_label, 15),
             ])
-            .gap(0)
             .container_overflow(OverflowPolicy::Compress)
         };
         let knobs_grid = grid(
             GridTemplate::new(vec![TrackSize::Auto; KNOBS_PER_ROW])
                 .rows(vec![TrackSize::Auto])
-                .gap(0)
                 .justify_start(),
             vec![
                 knob_cell(
@@ -1087,7 +1078,6 @@ impl GuiState {
                 })
                 .fill(),
         ])
-        .gap(metrics.controls_gap.max(0))
         .pad_all(0)
         .fill()
         .container_overflow(OverflowPolicy::Compress);
