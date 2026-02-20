@@ -1004,7 +1004,7 @@ impl GuiState {
                     .text_color(theme.hint_text)
                     .widget_layout(fixed_box(metrics.knob_track_w, knob_label_h)),
             )
-            .slot_align(SlotAlign::Center, SlotAlign::End)
+            .slot_align(SlotAlign::Center, SlotAlign::Start)
             .fill();
             let knob_body = Node::align_box(
                 knob(key, value, range)
