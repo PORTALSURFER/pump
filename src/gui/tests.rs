@@ -1163,7 +1163,7 @@
     }
 
     #[test]
-    fn preset_dropdown_background_override_tracks_dirty_state() {
+    fn preset_dropdown_uses_default_theme_backgrounds() {
         let params = Arc::new(PumpParams::new());
         let state = GuiState::new(
             Arc::clone(&params),
@@ -1178,25 +1178,17 @@
             },
             ..InputState::default()
         };
-        let metrics = UiLayoutMetrics::design_space();
-        let theme = PumpTheme::main(metrics);
 
         let clean_spec = state.build_ui(&input);
         let clean_dropdown = find_dropdown_spec(clean_spec.root.content(), PRESET_DROPDOWN_KEY)
             .expect("preset dropdown should exist");
-        assert_eq!(
-            clean_dropdown.background_override,
-            Some(theme.preset_title_bg)
-        );
+        assert_eq!(clean_dropdown.background_override, None);
 
         params.set_mix(0.5);
         let dirty_spec = state.build_ui(&input);
         let dirty_dropdown = find_dropdown_spec(dirty_spec.root.content(), PRESET_DROPDOWN_KEY)
             .expect("preset dropdown should exist");
-        assert_eq!(
-            dirty_dropdown.background_override,
-            Some(theme.preset_title_dirty_bg)
-        );
+        assert_eq!(dirty_dropdown.background_override, None);
     }
 
     #[test]

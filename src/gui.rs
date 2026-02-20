@@ -251,8 +251,6 @@ fn knob_param_id(key: &str) -> Option<ClapId> {
 #[derive(Clone, Copy, Debug)]
 struct PumpTheme {
     tokens: ThemeTokens,
-    subtitle_text: Color,
-    hint_text: Color,
     curve_bg: Color,
     curve_border: Color,
     curve_grid_vertical: Color,
@@ -260,14 +258,6 @@ struct PumpTheme {
     curve_line: Color,
     curve_line_highlight: Color,
     curve_line_highlight_glow: Color,
-    preset_title_bg: Color,
-    preset_title_dirty_bg: Color,
-    preset_title_hover_bg: Color,
-    preset_title_dirty_hover_bg: Color,
-    preset_title_active_bg: Color,
-    preset_title_dirty_active_bg: Color,
-    preset_title_outline: Color,
-    preset_add_warning_text: Color,
     preview_fill: Color,
     preview_stroke: Color,
     node_fill: Color,
@@ -296,8 +286,6 @@ impl PumpTheme {
         tokens.controls.button_height = metrics.button_control_h;
         Self {
             tokens,
-            subtitle_text: palette.syntax_emphasis,
-            hint_text: palette.text_muted,
             curve_bg: palette.background_primary,
             curve_border: palette.ui_secondary,
             curve_grid_vertical: palette.background_secondary,
@@ -305,14 +293,6 @@ impl PumpTheme {
             curve_line: palette.syntax_emphasis,
             curve_line_highlight: palette.accent_focus,
             curve_line_highlight_glow: palette.text_primary,
-            preset_title_bg: palette.background_secondary,
-            preset_title_dirty_bg: Color::rgb(150, 44, 44),
-            preset_title_hover_bg: palette.syntax_emphasis,
-            preset_title_dirty_hover_bg: Color::rgb(184, 64, 64),
-            preset_title_active_bg: palette.accent_focus,
-            preset_title_dirty_active_bg: Color::rgb(205, 84, 84),
-            preset_title_outline: palette.ui_secondary,
-            preset_add_warning_text: Color::rgb(255, 170, 170),
             preview_fill: palette.literals,
             preview_stroke: palette.identifiers,
             node_fill: palette.text_primary,
@@ -630,7 +610,6 @@ struct ControlSnapshot {
 struct PresetSnapshot {
     names: Vec<String>,
     selected: usize,
-    dirty: bool,
     rename_active: bool,
     rename_draft: String,
     warning_text: Option<&'static str>,
@@ -722,7 +701,6 @@ impl GuiState {
                 .collect()
         };
         let selected = bank.selected.min(names.len().saturating_sub(1));
-        let dirty = self.params.current_state_differs_from_selected_preset();
 
         let mut rename_active = false;
         let mut rename_draft = String::new();
@@ -744,7 +722,6 @@ impl GuiState {
         PresetSnapshot {
             names,
             selected,
-            dirty,
             rename_active,
             rename_draft,
             warning_text,
@@ -782,12 +759,7 @@ impl GuiState {
     }
 
     /// Build the top header slot node.
-    fn build_header_slot(
-        &self,
-        metrics: UiLayoutMetrics,
-        theme: PumpTheme,
-        presets: &PresetSnapshot,
-    ) -> Node {
+    fn build_header_slot(&self, metrics: UiLayoutMetrics, presets: &PresetSnapshot) -> Node {
         let header_h = resolve_vertical_slot_heights(metrics.content_h).0.max(1);
         let header_slot_widths = weighted_slot_lengths(
             metrics.content_w.max(1),
@@ -817,7 +789,6 @@ impl GuiState {
 
         let preset_dropdown_or_edit = if presets.rename_active {
             textbox(presets.rename_draft.clone())
-                .text_color(theme.subtitle_text)
                 .text_editable(PRESET_RENAME_KEY, true)
                 .text_edit_max_chars(MAX_PRESET_NAME_CHARS)
                 .widget_layout(LayoutBox::fill())
@@ -833,32 +804,9 @@ impl GuiState {
                 width: preset_title_width,
                 height: header_h,
             })
-            .dropdown_background_color(if presets.dirty {
-                theme.preset_title_dirty_bg
-            } else {
-                theme.preset_title_bg
-            })
-            .dropdown_hover_background_color(if presets.dirty {
-                theme.preset_title_dirty_hover_bg
-            } else {
-                theme.preset_title_hover_bg
-            })
-            .dropdown_active_background_color(if presets.dirty {
-                theme.preset_title_dirty_active_bg
-            } else {
-                theme.preset_title_active_bg
-            })
-            .dropdown_outline_color(theme.preset_title_outline)
-            .dropdown_text_color(theme.subtitle_text)
             .fill()
         };
         let preset_title = panel("preset-title", preset_dropdown_or_edit.fill())
-            .background(if presets.dirty {
-                theme.preset_title_dirty_bg
-            } else {
-                theme.preset_title_bg
-            })
-            .outline(theme.preset_title_outline)
             .pad_all(0)
             .fill();
 
@@ -913,13 +861,10 @@ impl GuiState {
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let left_content = if let Some(warning_text) = presets.warning_text {
-            let warning_row = Node::align_box(
-                textbox(warning_text)
-                    .text_color(theme.preset_add_warning_text)
-                    .widget_layout(LayoutBox::fill()),
-            )
-            .slot_align(SlotAlign::End, SlotAlign::Center)
-            .fill();
+            let warning_row =
+                Node::align_box(textbox(warning_text).widget_layout(LayoutBox::fill()))
+                    .slot_align(SlotAlign::End, SlotAlign::Center)
+                    .fill();
             column_slots(vec![
                 weighted_slot(left_controls, 82),
                 weighted_slot(warning_row, 18),
@@ -942,7 +887,6 @@ impl GuiState {
     fn build_spline_slot(
         &self,
         metrics: UiLayoutMetrics,
-        theme: PumpTheme,
         draw_commands: Vec<SurfaceCommand>,
     ) -> Node {
         let spline_content = surface(
@@ -954,19 +898,11 @@ impl GuiState {
             draw_commands,
         )
         .fill();
-        panel("spline", spline_content)
-            .background(theme.curve_bg)
-            .outline(theme.curve_border)
-            .pad_all(0)
+        panel("spline", spline_content).pad_all(0)
     }
 
     /// Build the controls slot node.
-    fn build_controls_slot(
-        &self,
-        metrics: UiLayoutMetrics,
-        theme: PumpTheme,
-        controls: ControlSnapshot,
-    ) -> Node {
+    fn build_controls_slot(&self, metrics: UiLayoutMetrics, controls: ControlSnapshot) -> Node {
         const KNOB_TEXT_MAX_CHARS: u32 = 8;
         const MONO_CHAR_CELL_WIDTH_PX: u32 = 6;
         let knob_text_scale = metrics
@@ -985,7 +921,6 @@ impl GuiState {
             let title = Node::align_box(
                 textbox(label)
                     .text_align_center()
-                    .text_color(theme.subtitle_text)
                     .widget_layout(fixed_box(metrics.knob_track_w, knob_label_h)),
             )
             .slot_align(SlotAlign::Center, SlotAlign::Start)
@@ -993,7 +928,6 @@ impl GuiState {
             let value_label = Node::align_box(
                 textbox(value_text)
                     .text_align_center()
-                    .text_color(theme.hint_text)
                     .widget_layout(fixed_box(metrics.knob_track_w, knob_label_h)),
             )
             .slot_align(SlotAlign::Center, SlotAlign::Start)
@@ -1189,9 +1123,9 @@ impl GuiState {
         let presets = self.snapshot_presets();
         let draw_commands = self.build_curve_commands_for_frame(input, metrics, theme);
 
-        let header_slot = self.build_header_slot(metrics, theme, &presets);
-        let spline_slot = self.build_spline_slot(metrics, theme, draw_commands);
-        let controls_slot = self.build_controls_slot(metrics, theme, controls);
+        let header_slot = self.build_header_slot(metrics, &presets);
+        let spline_slot = self.build_spline_slot(metrics, draw_commands);
+        let controls_slot = self.build_controls_slot(metrics, controls);
 
         let content = column_slots(vec![
             weighted_slot(header_slot, HEADER_SECTION_WEIGHT),
