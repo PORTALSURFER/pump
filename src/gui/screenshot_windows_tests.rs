@@ -158,10 +158,10 @@
     }
 
     fn capture_hwnd_exact(hwnd: HWND) -> Result<CapturedFrame, String> {
-        if let Ok(frame) = capture_with_print_window(hwnd)
-            && frame_has_non_uniform_content(&frame.pixels)
-        {
-            return Ok(frame);
+        if let Ok(frame) = capture_with_print_window(hwnd) {
+            if frame_has_non_uniform_content(&frame.pixels) {
+                return Ok(frame);
+            }
         }
         capture_from_screen(hwnd)
     }
