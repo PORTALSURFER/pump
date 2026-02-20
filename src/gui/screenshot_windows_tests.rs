@@ -54,14 +54,15 @@
             .expect("open should succeed");
         gui.window.show();
         let hwnd = wait_for_window_handle(&gui, host.hwnd);
-        let size_before_resize = wait_for_any_logical_size(&gui);
+        let _ = wait_for_any_logical_size(&gui);
         gui.request_resize(width, height);
-        wait_for_size_change_or_stable(&gui, size_before_resize);
+        wait_for_requested_logical_size(&gui, width, height)
+            .expect("plugin GUI did not reach requested logical size");
         gui.window.show();
         wait_for_window_visible(hwnd).expect("plugin window never became visible");
 
         let frame = wait_for_rendered_frame(hwnd).expect("failed to capture rendered screenshot");
-        let path = screenshot_path(env!("CARGO_PKG_NAME"), frame.width, frame.height);
+        let path = screenshot_path(env!("CARGO_PKG_NAME"), width, height);
         screenshot_harness::write_png_rgba8(&path, frame.width, frame.height, frame.pixels)
             .expect("failed to write screenshot PNG");
 
@@ -99,25 +100,19 @@
         panic!("plugin GUI never reported any logical size");
     }
 
-    fn wait_for_size_change_or_stable(gui: &PumpGui, previous: (u32, u32)) {
+    fn wait_for_requested_logical_size(gui: &PumpGui, width: u32, height: u32) -> Result<(), String> {
         let start = Instant::now();
-        let mut stable_count = 0u8;
         while start.elapsed() < Duration::from_secs(3) {
-            if let Some((width, height)) = gui.last_size() {
-                if width > 0 && height > 0 && (width, height) != previous {
-                    return;
-                }
-                if (width, height) == previous {
-                    stable_count = stable_count.saturating_add(1);
-                    if stable_count >= 3 {
-                        return;
-                    }
-                } else {
-                    stable_count = 0;
+            if let Some((current_w, current_h)) = gui.last_size() {
+                if current_w == width && current_h == height {
+                    return Ok(());
                 }
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        Err(format!(
+            "plugin GUI never reached requested logical size ({width}, {height})"
+        ))
     }
 
     fn screenshot_path(plugin: &str, width: u32, height: u32) -> PathBuf {
