@@ -1004,6 +1004,14 @@ impl GuiState {
         theme: PumpTheme,
         controls: ControlSnapshot,
     ) -> Node {
+        const KNOB_TEXT_MAX_CHARS: u32 = 8;
+        const MONO_CHAR_CELL_WIDTH_PX: u32 = 6;
+        let knob_text_scale = metrics
+            .knob_track_w
+            .saturating_div(KNOB_TEXT_MAX_CHARS.saturating_mul(MONO_CHAR_CELL_WIDTH_PX))
+            .max(1)
+            .min(metrics.text_scale.max(1));
+        let knob_label_h = scaled_line_height(knob_text_scale);
         let knob_cell = |key: &'static str,
                          label: &'static str,
                          value: f32,
@@ -1011,19 +1019,17 @@ impl GuiState {
                          value_text: String| {
             let title = Node::align_box(
                 textbox(label)
+                    .text_align_center()
                     .text_color(theme.subtitle_text)
-                    .widget_layout(
-                        LayoutBox::auto().max(metrics.knob_track_w, metrics.label_line_h),
-                    ),
+                    .widget_layout(fixed_box(metrics.knob_track_w, knob_label_h)),
             )
             .slot_align(SlotAlign::Center, SlotAlign::Start)
             .fill();
             let value_label = Node::align_box(
                 textbox(value_text)
+                    .text_align_center()
                     .text_color(theme.hint_text)
-                    .widget_layout(
-                        LayoutBox::auto().max(metrics.knob_track_w, metrics.label_line_h),
-                    ),
+                    .widget_layout(fixed_box(metrics.knob_track_w, knob_label_h)),
             )
             .slot_align(SlotAlign::Center, SlotAlign::End)
             .fill();
