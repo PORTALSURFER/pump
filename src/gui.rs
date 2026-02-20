@@ -73,7 +73,8 @@ const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_slot_heights(WINDOW_HEIGHT).1;
-const HEADER_CONTROL_GAP: i32 = 4;
+const HEADER_PRESET_ACTION_GAP: i32 = 0;
+const CONTROLS_COLUMN_GAP: i32 = 4;
 const METER_X_OFFSET: i32 = 12;
 const METER_Y_OFFSET: i32 = 10;
 const METER_WIDTH: i32 = 6;
@@ -575,7 +576,7 @@ impl UiLayoutMetrics {
         let content_h = WINDOW_HEIGHT;
         let (_header_h, curve_h, controls_h) = resolve_vertical_slot_heights(content_h);
         let (knobs_slot_w, dropdown_slot_w) = resolve_runtime_controls_slot_widths(content_w);
-        let controls_gap = HEADER_CONTROL_GAP.max(0);
+        let controls_gap = CONTROLS_COLUMN_GAP.max(0);
         let text_scale = BASE_TEXT_SCALE.max(1);
         let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
         let knob_diameter = BASE_KNOB_DIAMETER.min(knob_track_width.max(1));
@@ -916,7 +917,7 @@ impl GuiState {
             weighted_slot(preset_title, 82),
             weighted_slot(action_buttons, 18),
         ])
-        .gap(HEADER_CONTROL_GAP.max(0))
+        .gap(HEADER_PRESET_ACTION_GAP.max(0))
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let left_content = if let Some(warning_text) = presets.warning_text {
