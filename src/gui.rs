@@ -251,6 +251,7 @@ fn knob_param_id(key: &str) -> Option<ClapId> {
 #[derive(Clone, Copy, Debug)]
 struct PumpTheme {
     tokens: ThemeTokens,
+    preset_dirty_highlight: Color,
     curve_bg: Color,
     curve_border: Color,
     curve_grid_vertical: Color,
@@ -286,6 +287,7 @@ impl PumpTheme {
         tokens.controls.button_height = metrics.button_control_h;
         Self {
             tokens,
+            preset_dirty_highlight: palette.literals,
             curve_bg: palette.background_primary,
             curve_border: palette.ui_secondary,
             curve_grid_vertical: palette.background_secondary,
@@ -610,6 +612,7 @@ struct ControlSnapshot {
 struct PresetSnapshot {
     names: Vec<String>,
     selected: usize,
+    dirty: bool,
     rename_active: bool,
     rename_draft: String,
     warning_text: Option<&'static str>,
@@ -701,6 +704,7 @@ impl GuiState {
                 .collect()
         };
         let selected = bank.selected.min(names.len().saturating_sub(1));
+        let dirty = self.params.current_state_differs_from_selected_preset();
 
         let mut rename_active = false;
         let mut rename_draft = String::new();
@@ -722,6 +726,7 @@ impl GuiState {
         PresetSnapshot {
             names,
             selected,
+            dirty,
             rename_active,
             rename_draft,
             warning_text,
@@ -759,7 +764,12 @@ impl GuiState {
     }
 
     /// Build the top header slot node.
-    fn build_header_slot(&self, metrics: UiLayoutMetrics, presets: &PresetSnapshot) -> Node {
+    fn build_header_slot(
+        &self,
+        metrics: UiLayoutMetrics,
+        theme: PumpTheme,
+        presets: &PresetSnapshot,
+    ) -> Node {
         let header_h = resolve_vertical_slot_heights(metrics.content_h).0.max(1);
         let header_slot_widths = weighted_slot_lengths(
             metrics.content_w.max(1),
@@ -794,7 +804,7 @@ impl GuiState {
                 .widget_layout(LayoutBox::fill())
                 .fill()
         } else {
-            dropdown(
+            let mut preset_dropdown = dropdown(
                 PRESET_DROPDOWN_KEY,
                 presets.names.len().max(1),
                 presets.selected.min(presets.names.len().saturating_sub(1)),
@@ -804,11 +814,21 @@ impl GuiState {
                 width: preset_title_width,
                 height: header_h,
             })
-            .fill()
+            .fill();
+            if presets.dirty {
+                preset_dropdown = preset_dropdown
+                    .dropdown_background_color(theme.preset_dirty_highlight)
+                    .dropdown_hover_background_color(theme.preset_dirty_highlight)
+                    .dropdown_active_background_color(theme.preset_dirty_highlight);
+            }
+            preset_dropdown
         };
-        let preset_title = panel("preset-title", preset_dropdown_or_edit.fill())
+        let mut preset_title = panel("preset-title", preset_dropdown_or_edit.fill())
             .pad_all(0)
             .fill();
+        if presets.dirty {
+            preset_title = preset_title.background(theme.preset_dirty_highlight);
+        }
 
         let action_button_slot = |node: Node| {
             Slot::with_params(
@@ -1123,7 +1143,7 @@ impl GuiState {
         let presets = self.snapshot_presets();
         let draw_commands = self.build_curve_commands_for_frame(input, metrics, theme);
 
-        let header_slot = self.build_header_slot(metrics, &presets);
+        let header_slot = self.build_header_slot(metrics, theme, &presets);
         let spline_slot = self.build_spline_slot(metrics, draw_commands);
         let controls_slot = self.build_controls_slot(metrics, controls);
 
