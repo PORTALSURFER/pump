@@ -4,17 +4,17 @@
     use std::time::{Duration, Instant};
 
     use crate::GuiStatus;
-    use raw_window_handle::{RawWindowHandle, Win32WindowHandle};
+    use toybox::raw_window_handle::{RawWindowHandle, Win32WindowHandle};
     use toybox::gui::screenshot_harness;
     use windows::core::w;
-    use windows::Win32::Foundation::{HINSTANCE, HMENU, HWND};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetClientRect,
-        GetDIBits, GetWindowDC, Rect, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
-        BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits,
+        GetWindowDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, ShowWindow, UpdateWindow, SW_SHOW, WS_OVERLAPPEDWINDOW,
+        CreateWindowExW, DestroyWindow, GetClientRect, ShowWindow, SW_SHOW, WS_OVERLAPPEDWINDOW,
     };
 
     use super::{AutomationQueue, PumpGui, PumpParams, WINDOW_HEIGHT, WINDOW_WIDTH};
@@ -99,7 +99,7 @@
     fn wait_for_window_handle(gui: &PumpGui) -> HWND {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(3) {
-            if let Some(handle) = gui.handle() {
+            if let Some(handle) = gui.window.handle() {
                 if handle.is_valid() {
                     return handle.hwnd();
                 }
@@ -115,9 +115,9 @@
     }
 
     fn capture_hwnd(hwnd: HWND, out: &PathBuf) -> Result<(u32, u32), String> {
-        let mut client = Rect::default();
+        let mut client = RECT::default();
         unsafe {
-            GetClientRect(hwnd, &mut client)
+            GetClientRect(hwnd, &mut client as *mut RECT)
                 .map_err(|err| format!("GetClientRect failed: {err}"))?;
         };
 
@@ -130,15 +130,15 @@
             return Err("screenshot target has empty geometry".into());
         }
 
-        let source_dc = unsafe { GetWindowDC(hwnd) };
+        let source_dc = unsafe { GetWindowDC(Some(hwnd)) };
         if source_dc.is_invalid() {
             return Err("GetWindowDC returned invalid DC".into());
         }
 
-        let memory_dc = unsafe { CreateCompatibleDC(source_dc) };
+        let memory_dc = unsafe { CreateCompatibleDC(Some(source_dc)) };
         if memory_dc.is_invalid() {
             unsafe {
-                let _ = ReleaseDC(hwnd, source_dc);
+                let _ = ReleaseDC(Some(hwnd), source_dc);
             }
             return Err("CreateCompatibleDC returned invalid DC".into());
         }
@@ -147,7 +147,7 @@
         if bitmap.is_invalid() {
             unsafe {
                 let _ = DeleteDC(memory_dc);
-                let _ = ReleaseDC(hwnd, source_dc);
+                let _ = ReleaseDC(Some(hwnd), source_dc);
             }
             return Err("CreateCompatibleBitmap returned invalid bitmap".into());
         }
@@ -160,7 +160,7 @@
                 0,
                 width as i32,
                 height as i32,
-                source_dc,
+                Some(source_dc),
                 0,
                 0,
                 SRCCOPY,
@@ -172,7 +172,7 @@
                 let _ = SelectObject(memory_dc, old_object);
                 let _ = DeleteObject(bitmap.into());
                 let _ = DeleteDC(memory_dc);
-                let _ = ReleaseDC(hwnd, source_dc);
+                let _ = ReleaseDC(Some(hwnd), source_dc);
             }
             return Err("BitBlt failed".into());
         }
@@ -184,7 +184,7 @@
                 biHeight: -(height as i32),
                 biPlanes: 1,
                 biBitCount: 32,
-                biCompression: BI_RGB,
+                biCompression: BI_RGB.0 as u32,
                 biSizeImage: 0,
                 biXPelsPerMeter: 0,
                 biYPelsPerMeter: 0,
@@ -194,14 +194,11 @@
             bmiColors: [Default::default(); 1],
         };
 
-        let pixel_len = usize::try_from(width)
-            .ok()
-            .and_then(|w| {
-                usize::try_from(height)
-                    .ok()
-                    .map(|h| w.saturating_mul(h).saturating_mul(4))
-            })
-            .ok_or_else(|| "invalid pixel dimensions".to_string())?;
+        let width_usize = usize::try_from(width).map_err(|_| "invalid width".to_string())?;
+        let height_usize = usize::try_from(height).map_err(|_| "invalid height".to_string())?;
+        let pixel_len = width_usize
+            .saturating_mul(height_usize)
+            .saturating_mul(4);
         let mut pixels = vec![0_u8; pixel_len];
 
         let got = unsafe {
@@ -220,7 +217,7 @@
             let _ = SelectObject(memory_dc, old_object);
             let _ = DeleteObject(bitmap.into());
             let _ = DeleteDC(memory_dc);
-            let _ = ReleaseDC(hwnd, source_dc);
+            let _ = ReleaseDC(Some(hwnd), source_dc);
         }
 
         if got == 0 {
@@ -251,20 +248,16 @@
                     0,
                     width as i32,
                     height as i32,
-                    HWND::default(),
-                    HMENU::default(),
-                    HINSTANCE::default(),
+                    None,
+                    None,
+                    None,
                     None,
                 )
-            };
-
-            if hwnd.0 == 0 {
-                panic!("CreateWindowExW failed");
             }
+            .expect("CreateWindowExW failed");
 
             unsafe {
                 let _ = ShowWindow(hwnd, SW_SHOW);
-                let _ = UpdateWindow(hwnd);
             }
 
             Self { hwnd }
