@@ -40,6 +40,8 @@
         let status = Arc::new(GuiStatus::default());
         let host = parent_window(width, height);
         let queue = Arc::new(AutomationQueue::default());
+        let expected_width = width.max(WINDOW_WIDTH);
+        let expected_height = height.max(WINDOW_HEIGHT);
 
         gui.set_parent_raw(host.raw_handle());
         gui.open(&params, &status, queue, None)
@@ -47,16 +49,16 @@
         let hwnd = wait_for_window_handle(&gui);
         wait_for_any_logical_size(&gui);
         gui.request_resize(width, height);
-        wait_for_logical_size(&gui, (width, height));
+        wait_for_logical_size(&gui, (expected_width, expected_height));
 
         std::thread::sleep(Duration::from_millis(75));
 
-        let path = screenshot_path(env!("CARGO_PKG_NAME"), width, height);
+        let path = screenshot_path(env!("CARGO_PKG_NAME"), expected_width, expected_height);
         let (captured_width, captured_height) =
             capture_hwnd(hwnd, &path).expect("failed to capture screenshot");
         assert!(
-            captured_width == width && captured_height == height,
-            "captured image should be exactly {width}x{height}, got {captured_width}x{captured_height}"
+            captured_width == expected_width && captured_height == expected_height,
+            "captured image should be exactly {expected_width}x{expected_height}, got {captured_width}x{captured_height}"
         );
 
         gui.close();
