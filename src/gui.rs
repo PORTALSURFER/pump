@@ -73,7 +73,6 @@ const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_H: u32 = resolve_vertical_slot_heights(WINDOW_HEIGHT).1;
-const HEADER_PRESET_ACTION_GAP: i32 = 0;
 const CONTROLS_COLUMN_GAP: i32 = 4;
 const METER_X_OFFSET: i32 = 12;
 const METER_Y_OFFSET: i32 = 10;
@@ -917,7 +916,6 @@ impl GuiState {
             weighted_slot(preset_title, 82),
             weighted_slot(action_buttons, 18),
         ])
-        .gap(HEADER_PRESET_ACTION_GAP.max(0))
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let left_content = if let Some(warning_text) = presets.warning_text {
