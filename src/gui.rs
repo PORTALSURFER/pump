@@ -85,6 +85,7 @@ const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const TRANSPORT_INDICATOR_SIZE: u32 = 10;
 const RESET_GUARD_AFTER_DROPDOWN_MICROS: u64 = 120_000;
 const PRESET_WARNING_FRAMES: u8 = 45;
+const PRESET_WARNING_BLINK_HALF_PERIOD_FRAMES: u8 = 6;
 const PRESET_WARNING_MAX: &str = "MAX";
 const PRESET_WARNING_INIT: &str = "INIT";
 const PRESET_WARNING_NAME: &str = "NAME";
@@ -615,7 +616,7 @@ struct PresetSnapshot {
     dirty: bool,
     rename_active: bool,
     rename_draft: String,
-    warning_text: Option<&'static str>,
+    warning_blink_visible: bool,
 }
 
 /// Snapshot of curve-editor hover/selection state used for drawing.
@@ -708,7 +709,7 @@ impl GuiState {
 
         let mut rename_active = false;
         let mut rename_draft = String::new();
-        let mut warning_text = None;
+        let mut warning_blink_visible = false;
         if let Ok(mut runtime) = self.runtime.lock() {
             if runtime.preset_rename_active {
                 runtime.preset_rename_target = runtime
@@ -718,7 +719,10 @@ impl GuiState {
                 rename_draft = runtime.preset_name_draft.clone();
             }
             if runtime.preset_warning_frames > 0 {
-                warning_text = runtime.preset_warning_text;
+                warning_blink_visible = runtime.preset_warning_text.is_some()
+                    && (runtime.preset_warning_frames / PRESET_WARNING_BLINK_HALF_PERIOD_FRAMES)
+                        % 2
+                        == 1;
                 runtime.preset_warning_frames = runtime.preset_warning_frames.saturating_sub(1);
             }
         }
@@ -729,7 +733,7 @@ impl GuiState {
             dirty,
             rename_active,
             rename_draft,
-            warning_text,
+            warning_blink_visible,
         }
     }
 
@@ -781,6 +785,7 @@ impl GuiState {
         let left_width = header_slot_widths.first().copied().unwrap_or(1).max(1);
         let action_button_width = (left_width / 8).max(metrics.transport_indicator_size.max(1));
         let preset_title_width = left_width.saturating_sub(action_button_width).max(1);
+        let preset_highlight_active = presets.dirty || presets.warning_blink_visible;
         let indicator_node = Node::align_box(
             indicator(
                 Size {
@@ -815,7 +820,7 @@ impl GuiState {
                 height: header_h,
             })
             .fill();
-            if presets.dirty {
+            if preset_highlight_active {
                 preset_dropdown = preset_dropdown
                     .dropdown_background_color(theme.preset_dirty_highlight)
                     .dropdown_hover_background_color(theme.preset_dirty_highlight)
@@ -826,7 +831,7 @@ impl GuiState {
         let mut preset_title = panel("preset-title", preset_dropdown_or_edit.fill())
             .pad_all(0)
             .fill();
-        if presets.dirty {
+        if preset_highlight_active {
             preset_title = preset_title.background(theme.preset_dirty_highlight);
         }
 
@@ -880,23 +885,8 @@ impl GuiState {
         ])
         .container_overflow(OverflowPolicy::Compress)
         .fill();
-        let left_content = if let Some(warning_text) = presets.warning_text {
-            let warning_row =
-                Node::align_box(textbox(warning_text).widget_layout(LayoutBox::fill()))
-                    .slot_align(SlotAlign::End, SlotAlign::Center)
-                    .fill();
-            column_slots(vec![
-                weighted_slot(left_controls, 82),
-                weighted_slot(warning_row, 18),
-            ])
-            .container_overflow(OverflowPolicy::Compress)
-            .fill()
-        } else {
-            left_controls
-        };
-
         let header_content = row_slots(vec![
-            weighted_slot(left_content, HEADER_EMPTY_SECTION_PERCENT as u16),
+            weighted_slot(left_controls, HEADER_EMPTY_SECTION_PERCENT as u16),
             weighted_slot(indicator_node, HEADER_INDICATOR_SECTION_PERCENT as u16),
         ])
         .container_overflow(OverflowPolicy::Compress);

@@ -1100,6 +1100,58 @@
     }
 
     #[test]
+    fn init_save_warning_blinks_without_header_relayout() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_SAVE_KEY.to_string(),
+        });
+
+        let input = InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        };
+        let spec = state.build_ui(&input);
+        let dropdown = find_dropdown_spec(spec.root.content(), PRESET_DROPDOWN_KEY)
+            .expect("preset dropdown should exist");
+        assert_eq!(
+            dropdown.background_override,
+            Some(MainPalette::main().literals)
+        );
+
+        let root_grid = match expect_slot_child(spec.root.content(), "root") {
+            Node::Grid(grid) => grid,
+            other => panic!("expected root slot child grid, got {other:?}"),
+        };
+        let header_panel = expect_slot_panel(&root_grid.children()[0], "header");
+        let header_grid = match expect_slot_child(header_panel.content(), "header") {
+            Node::Grid(grid) => grid,
+            other => panic!("expected header row grid in panel, got {other:?}"),
+        };
+        let left_header = expect_slot_child(&header_grid.children()[0], "header-left");
+        let left_header_grid = match left_header {
+            Node::Grid(grid) => grid,
+            Node::Row(row) => match row.children() {
+                [child] => match expect_slot_child(child, "header-left-row") {
+                    Node::Grid(grid) => grid,
+                    other => panic!("expected wrapped header-left grid, got {other:?}"),
+                },
+                _ => panic!("expected one wrapped header-left child"),
+            },
+            other => panic!("expected left header content to remain slot-based, got {other:?}"),
+        };
+        assert_eq!(left_header_grid.kind(), GridKind::SlotRow);
+    }
+
+    #[test]
     fn preset_rename_button_enters_rename_mode() {
         let params = Arc::new(PumpParams::new());
         params
