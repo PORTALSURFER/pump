@@ -9,7 +9,7 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, HostParamRequester, InputState};
 use toybox::gui::declarative::{
-    button, column, column_slots, dropdown, grid, indicator, knob, panel, region, root_frame_sized,
+    button, column, column_slots, dropdown, grid, indicator, knob, panel, root_frame_sized,
     row_slots, stack, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
     LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, SlotAlign,
     SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
@@ -52,8 +52,8 @@ const RESET_KEY: &str = "reset";
 const PRESET_DROPDOWN_KEY: &str = "preset-dropdown";
 const PRESET_ADD_KEY: &str = "preset-add";
 const PRESET_SAVE_KEY: &str = "preset-save";
+const PRESET_RENAME_BUTTON_KEY: &str = "preset-rename-button";
 const PRESET_RENAME_KEY: &str = "preset-rename";
-const PRESET_TITLE_REGION_KEY: &str = "preset-title-region";
 
 const HEADER_SECTION_WEIGHT: u16 = 7;
 const CURVE_SECTION_WEIGHT: u16 = 63;
@@ -735,7 +735,6 @@ impl GuiState {
         theme: PumpTheme,
         presets: &PresetSnapshot,
     ) -> Node {
-        let header_h = resolve_vertical_slot_heights(metrics.content_h).0.max(1);
         let header_slot_widths = weighted_slot_lengths(
             metrics.content_w.max(1),
             &[
@@ -744,8 +743,8 @@ impl GuiState {
             ],
         );
         let left_width = header_slot_widths.first().copied().unwrap_or(1).max(1);
-        let add_button_width = (left_width / 8).max(metrics.transport_indicator_size.max(1));
-        let preset_title_width = left_width.saturating_sub(add_button_width).max(1);
+        let action_button_width = (left_width / 8).max(metrics.transport_indicator_size.max(1));
+        let preset_title_width = left_width.saturating_sub(action_button_width).max(1);
         let indicator_node = Node::align_box(
             indicator(
                 Size {
@@ -789,34 +788,36 @@ impl GuiState {
             .dropdown_text_color(theme.subtitle_text)
             .fill()
         };
-        let preset_title_interaction = region(
-            PRESET_TITLE_REGION_KEY,
-            Size {
-                width: preset_title_width,
-                height: header_h,
-            },
-        );
-
-        let preset_title = panel(
-            "preset-title",
-            stack(vec![
-                preset_dropdown_or_edit.fill(),
-                preset_title_interaction,
-            ])
+        let preset_title = panel("preset-title", preset_dropdown_or_edit.fill())
+            .background(if presets.dirty {
+                theme.preset_title_dirty_bg
+            } else {
+                theme.preset_title_bg
+            })
+            .outline(theme.preset_title_outline)
+            .pad_all(0)
+            .fill();
+        let rename_button = stack(vec![
+            button(PRESET_RENAME_BUTTON_KEY)
+                .control_size(Size {
+                    width: action_button_width,
+                    height: metrics.transport_indicator_size.max(1),
+                })
+                .fill(),
+            Node::align_box(
+                textbox("R")
+                    .text_color(theme.subtitle_text)
+                    .widget_layout(LayoutBox::fill()),
+            )
+            .slot_align(SlotAlign::Center, SlotAlign::Center)
             .fill(),
-        )
-        .background(if presets.dirty {
-            theme.preset_title_dirty_bg
-        } else {
-            theme.preset_title_bg
-        })
-        .outline(theme.preset_title_outline)
-        .pad_all(0)
+        ])
+        .container_overflow(OverflowPolicy::Compress)
         .fill();
         let save_button = stack(vec![
             button(PRESET_SAVE_KEY)
                 .control_size(Size {
-                    width: add_button_width,
+                    width: action_button_width,
                     height: metrics.transport_indicator_size.max(1),
                 })
                 .fill(),
@@ -833,7 +834,7 @@ impl GuiState {
         let add_button = stack(vec![
             button(PRESET_ADD_KEY)
                 .control_size(Size {
-                    width: add_button_width,
+                    width: action_button_width,
                     height: metrics.transport_indicator_size.max(1),
                 })
                 .fill(),
@@ -848,6 +849,7 @@ impl GuiState {
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let action_buttons = row_slots(vec![
+            weighted_slot(rename_button, 1),
             weighted_slot(save_button, 1),
             weighted_slot(add_button, 1),
         ])
@@ -855,8 +857,8 @@ impl GuiState {
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let left_content = row_slots(vec![
-            weighted_slot(preset_title, 88),
-            weighted_slot(action_buttons, 12),
+            weighted_slot(preset_title, 82),
+            weighted_slot(action_buttons, 18),
         ])
         .gap(HEADER_CONTROL_GAP.max(0))
         .container_overflow(OverflowPolicy::Compress)
@@ -1142,14 +1144,7 @@ impl GuiState {
         match action {
             UiAction::KnobChanged { key, value } => self.reduce_knob(key.as_str(), value),
             UiAction::DropdownSelected { key, index } => self.reduce_dropdown(key.as_str(), index),
-            UiAction::DropdownDoubleClicked { key } if key == PRESET_DROPDOWN_KEY => {
-                self.begin_preset_rename();
-            }
-            UiAction::RegionInteracted {
-                key,
-                kind: RegionInteractionKind::DoubleClicked,
-                ..
-            } if key == PRESET_TITLE_REGION_KEY => {
+            UiAction::ButtonPressed { key } if key == PRESET_RENAME_BUTTON_KEY => {
                 self.begin_preset_rename();
             }
             UiAction::ButtonPressed { key } if key == RESET_KEY => {
@@ -2424,9 +2419,9 @@ mod tests {
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
-        HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY,
-        PRESET_TITLE_REGION_KEY, PRESET_WARNING_INIT, RESET_KEY, TRANSPORT_INDICATOR_SIZE,
-        WINDOW_HEIGHT, WINDOW_WIDTH,
+        HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY, PRESET_RENAME_BUTTON_KEY,
+        PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_INIT, RESET_KEY,
+        TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{PumpParams, MAX_SYNC_DIVISION};
@@ -2437,7 +2432,7 @@ mod tests {
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
         measure_checked, ContainerLayout, ContainerLength, DropdownSpec, GridKind, Node, PanelSpec,
-        RegionInteractionKind, RootScaleMode, SurfaceCommand, UiAction, UiSpec,
+        RootScaleMode, SurfaceCommand, UiAction, UiSpec,
     };
     use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
@@ -3447,8 +3442,8 @@ mod tests {
             Arc::new(AutomationQueue::default()),
             None,
         );
-        state.reduce_action(UiAction::DropdownDoubleClicked {
-            key: PRESET_DROPDOWN_KEY.to_string(),
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_RENAME_BUTTON_KEY.to_string(),
         });
         state.reduce_action(UiAction::TextBoxEdited {
             key: PRESET_RENAME_KEY.to_string(),
@@ -3479,8 +3474,8 @@ mod tests {
             Arc::new(AutomationQueue::default()),
             None,
         );
-        state.reduce_action(UiAction::DropdownDoubleClicked {
-            key: PRESET_DROPDOWN_KEY.to_string(),
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_RENAME_BUTTON_KEY.to_string(),
         });
         state.reduce_action(UiAction::TextBoxEdited {
             key: PRESET_RENAME_KEY.to_string(),
@@ -3507,8 +3502,8 @@ mod tests {
             None,
         );
 
-        state.reduce_action(UiAction::DropdownDoubleClicked {
-            key: PRESET_DROPDOWN_KEY.to_string(),
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_RENAME_BUTTON_KEY.to_string(),
         });
 
         let runtime = state.runtime.lock().expect("runtime lock should succeed");
@@ -3518,7 +3513,7 @@ mod tests {
     }
 
     #[test]
-    fn preset_title_region_double_click_enters_rename_mode() {
+    fn preset_rename_button_enters_rename_mode() {
         let params = Arc::new(PumpParams::new());
         params
             .add_preset_from_current_state()
@@ -3533,12 +3528,8 @@ mod tests {
             None,
         );
 
-        state.reduce_action(UiAction::RegionInteracted {
-            key: PRESET_TITLE_REGION_KEY.to_string(),
-            kind: RegionInteractionKind::DoubleClicked,
-            local_pointer: Point { x: 0, y: 0 },
-            raw_local_pointer: Point { x: 0, y: 0 },
-            alt_down: false,
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_RENAME_BUTTON_KEY.to_string(),
         });
 
         let runtime = state.runtime.lock().expect("runtime lock should succeed");
