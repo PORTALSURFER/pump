@@ -1069,9 +1069,6 @@ impl GuiState {
                 width: metrics.dropdown_control_w,
                 height: metrics.dropdown_control_h,
             })
-            // Keep only one seam line between stacked dropdown/reset rows by
-            // letting the reset button own the shared divider outline.
-            .dropdown_outline_color(Color::rgba(0, 0, 0, 0))
             .fill(),
             button(RESET_KEY)
                 .button_label("Reset")
