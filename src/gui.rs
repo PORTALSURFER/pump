@@ -25,7 +25,8 @@ use crate::curve::{
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    sync_division_label, PumpParams, SavePresetOutcome, DEFAULT_PRESET_NAME, MAX_DEPTH, MAX_MIX,
+    sync_division_label, PumpParams, SavePresetOutcome, DEFAULT_DEPTH, DEFAULT_MIX,
+    DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET, DEFAULT_PRESET_NAME, MAX_DEPTH, MAX_MIX,
     MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_DEPTH,
     MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_MIX_ID,
     PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
@@ -926,6 +927,7 @@ impl GuiState {
         let knob_cell = |key: &'static str,
                          label: &'static str,
                          value: f32,
+                         default_value: f32,
                          range: (f32, f32),
                          value_text: String| {
             let title = Node::align_box(
@@ -944,6 +946,7 @@ impl GuiState {
             .fill();
             let knob_body = Node::align_box(
                 knob(key, value, range)
+                    .default_value(default_value)
                     .control_size(Size {
                         width: metrics.knob_diameter,
                         height: metrics.knob_diameter,
@@ -968,6 +971,7 @@ impl GuiState {
                     MIX_KEY,
                     "Mix",
                     controls.mix,
+                    DEFAULT_MIX,
                     (MIN_MIX, MAX_MIX),
                     format!("{:.0}%", controls.mix * 100.0),
                 ),
@@ -975,6 +979,7 @@ impl GuiState {
                     DEPTH_KEY,
                     "Depth",
                     controls.depth,
+                    DEFAULT_DEPTH,
                     (MIN_DEPTH, MAX_DEPTH),
                     format!("{:.0}%", controls.depth * 100.0),
                 ),
@@ -982,6 +987,7 @@ impl GuiState {
                     PHASE_KEY,
                     "Phase",
                     controls.phase_offset,
+                    DEFAULT_PHASE_OFFSET,
                     (MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
                     format!("{:.0}%", controls.phase_offset * 100.0),
                 ),
@@ -989,6 +995,7 @@ impl GuiState {
                     OUTPUT_KEY,
                     "Output",
                     controls.output_gain_db,
+                    DEFAULT_OUTPUT_GAIN_DB,
                     (MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
                     format!("{:+.0}dB", controls.output_gain_db),
                 ),
