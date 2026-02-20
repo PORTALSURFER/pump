@@ -172,6 +172,28 @@ fn acquire_shared_for_role(role: SharedRole) -> Arc<PumpVst3Shared> {
     shared
 }
 
+/// Release one shared-state role claim when a VST3 component instance drops.
+fn release_shared_for_role(shared: &Arc<PumpVst3Shared>, role: SharedRole) {
+    let mut registry = match shared_registry().lock() {
+        Ok(registry) => registry,
+        Err(_) => return,
+    };
+
+    registry.retain(|entry| entry.shared.upgrade().is_some());
+    for entry in registry.iter_mut() {
+        let Some(candidate) = entry.shared.upgrade() else {
+            continue;
+        };
+        if !Arc::ptr_eq(&candidate, shared) {
+            continue;
+        }
+        match role {
+            SharedRole::Processor => entry.processor_claimed = false,
+            SharedRole::Controller => entry.controller_claimed = false,
+        }
+    }
+}
+
 fn gui_phase_from_transport(
     transport: TransportState,
     settings: DspSettings,
@@ -251,6 +273,12 @@ impl PumpVst3Processor {
             runtime: Mutex::new(PumpVst3Runtime::new(shared.params.as_ref())),
             shared,
         }
+    }
+}
+
+impl Drop for PumpVst3Processor {
+    fn drop(&mut self) {
+        release_shared_for_role(&self.shared, SharedRole::Processor);
     }
 }
 
@@ -573,6 +601,12 @@ impl PumpVst3Controller {
             shared,
             component_handler: Mutex::new(None),
         }
+    }
+}
+
+impl Drop for PumpVst3Controller {
+    fn drop(&mut self) {
+        release_shared_for_role(&self.shared, SharedRole::Controller);
     }
 }
 
@@ -1081,5 +1115,44 @@ mod tests {
         assert!(modifiers.shift);
         assert!(!modifiers.alt);
         assert!(modifiers.ctrl);
+    }
+
+    #[test]
+    fn release_shared_for_role_clears_controller_claim_only() {
+        let shared = Arc::new(PumpVst3Shared::new());
+        {
+            let mut registry = shared_registry().lock().expect("registry lock");
+            registry.push(SharedRegistryEntry {
+                shared: Arc::downgrade(&shared),
+                processor_claimed: true,
+                controller_claimed: true,
+            });
+        }
+
+        release_shared_for_role(&shared, SharedRole::Controller);
+
+        let registry = shared_registry().lock().expect("registry lock");
+        let entry = registry
+            .iter()
+            .find(|entry| {
+                entry
+                    .shared
+                    .upgrade()
+                    .map(|candidate| Arc::ptr_eq(&candidate, &shared))
+                    .unwrap_or(false)
+            })
+            .expect("shared entry should exist");
+        assert!(entry.processor_claimed);
+        assert!(!entry.controller_claimed);
+        drop(registry);
+
+        let mut registry = shared_registry().lock().expect("registry lock");
+        registry.retain(|entry| {
+            !entry
+                .shared
+                .upgrade()
+                .map(|candidate| Arc::ptr_eq(&candidate, &shared))
+                .unwrap_or(false)
+        });
     }
 }

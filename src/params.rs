@@ -386,6 +386,20 @@ impl PumpPresetBank {
     }
 }
 
+/// Build the canonical read-only `Init` preset entry.
+fn default_init_preset() -> PumpPreset {
+    PumpPreset {
+        name: DEFAULT_PRESET_NAME.to_string(),
+        is_read_only: true,
+        mix: DEFAULT_MIX,
+        depth: DEFAULT_DEPTH,
+        phase_offset: DEFAULT_PHASE_OFFSET,
+        output_gain_db: DEFAULT_OUTPUT_GAIN_DB,
+        sync_division: DEFAULT_SYNC_DIVISION_INDEX,
+        editable_curve: default_editable_curve(),
+    }
+}
+
 fn sanitize_preset_name(raw: &str, fallback_index: usize) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -624,8 +638,13 @@ impl PumpParams {
             }
         }
         if first_read_only.is_none() {
-            normalized.presets[0].is_read_only = true;
-            normalized.presets[0].name = DEFAULT_PRESET_NAME.to_string();
+            // Preserve user-authored presets exactly as loaded and prepend a
+            // canonical read-only Init entry instead of overwriting index 0.
+            normalized.presets.insert(0, default_init_preset());
+            normalized.selected = normalized.selected.saturating_add(1);
+            if normalized.presets.len() > MAX_PRESETS {
+                normalized.presets.truncate(MAX_PRESETS);
+            }
         } else if let Some(read_only_index) = first_read_only {
             if read_only_index != 0 {
                 let init_preset = normalized.presets.remove(read_only_index);
@@ -638,6 +657,8 @@ impl PumpParams {
                     normalized.selected
                 };
             }
+            normalized.presets[0].name = DEFAULT_PRESET_NAME.to_string();
+            normalized.presets[0].is_read_only = true;
         }
         normalized.selected = normalized
             .selected
@@ -1102,8 +1123,8 @@ fn read_u8(cursor: &mut Cursor<&[u8]>) -> Option<u8> {
 mod tests {
     use super::{
         clamp_sync_division, decode_state_payload, encode_state_payload,
-        sync_division_index_from_text, PumpParams, SavePresetOutcome, MAX_PRESET_NAME_CHARS,
-        MAX_SYNC_DIVISION,
+        sync_division_index_from_text, PumpParams, PumpPreset, PumpPresetBank, SavePresetOutcome,
+        MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION,
     };
     use crate::curve::{CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN};
 
@@ -1286,6 +1307,49 @@ mod tests {
         assert_eq!(bank.selected, 1);
         assert_eq!(bank.presets[1].name, "Verse");
         assert!(bank.presets[0].is_read_only);
+    }
+
+    #[test]
+    fn set_preset_bank_inserts_init_without_overwriting_user_presets() {
+        let params = PumpParams::new();
+        params.set_preset_bank(PumpPresetBank {
+            selected: 1,
+            presets: vec![
+                PumpPreset {
+                    name: "Live A".to_string(),
+                    is_read_only: false,
+                    mix: 0.11,
+                    depth: 0.22,
+                    phase_offset: 0.33,
+                    output_gain_db: -1.0,
+                    sync_division: 2,
+                    editable_curve: params.editable_curve_snapshot(),
+                },
+                PumpPreset {
+                    name: "Live B".to_string(),
+                    is_read_only: false,
+                    mix: 0.77,
+                    depth: 0.66,
+                    phase_offset: 0.55,
+                    output_gain_db: -2.0,
+                    sync_division: 4,
+                    editable_curve: params.editable_curve_snapshot(),
+                },
+            ],
+        });
+
+        let bank = params.preset_bank_snapshot();
+        assert_eq!(bank.presets.len(), 3);
+        assert_eq!(
+            bank.selected, 2,
+            "selected index should shift with Init prepend"
+        );
+        assert_eq!(bank.presets[0].name, "Init");
+        assert!(bank.presets[0].is_read_only);
+        assert_eq!(bank.presets[1].name, "Live A");
+        assert!((bank.presets[1].mix - 0.11).abs() < 1.0e-6);
+        assert_eq!(bank.presets[2].name, "Live B");
+        assert!((bank.presets[2].mix - 0.77).abs() < 1.0e-6);
     }
 
     #[test]
