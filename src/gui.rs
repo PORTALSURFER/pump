@@ -793,6 +793,7 @@ impl GuiState {
         theme: PumpTheme,
         presets: &PresetSnapshot,
     ) -> Node {
+        let header_h = resolve_vertical_slot_heights(metrics.content_h).0.max(1);
         let header_slot_widths = weighted_slot_lengths(
             metrics.content_w.max(1),
             &[
@@ -835,7 +836,7 @@ impl GuiState {
             .dropdown_option_labels(presets.names.clone())
             .control_size(Size {
                 width: preset_title_width,
-                height: metrics.transport_indicator_size.max(1),
+                height: header_h,
             })
             .dropdown_background_color(if presets.dirty {
                 theme.preset_title_dirty_bg
@@ -879,7 +880,7 @@ impl GuiState {
             button(PRESET_RENAME_BUTTON_KEY)
                 .control_size(Size {
                     width: action_button_width,
-                    height: metrics.transport_indicator_size.max(1),
+                    height: header_h,
                 })
                 .fill(),
             Node::align_box(
@@ -896,7 +897,7 @@ impl GuiState {
             button(PRESET_SAVE_KEY)
                 .control_size(Size {
                     width: action_button_width,
-                    height: metrics.transport_indicator_size.max(1),
+                    height: header_h,
                 })
                 .fill(),
             Node::align_box(
@@ -913,7 +914,7 @@ impl GuiState {
             button(PRESET_ADD_KEY)
                 .control_size(Size {
                     width: action_button_width,
-                    height: metrics.transport_indicator_size.max(1),
+                    height: header_h,
                 })
                 .fill(),
             Node::align_box(
@@ -948,25 +949,24 @@ impl GuiState {
         .gap(HEADER_CONTROL_GAP.max(0))
         .container_overflow(OverflowPolicy::Compress)
         .fill();
-        let warning_row = if let Some(warning_text) = presets.warning_text {
-            Node::align_box(
+        let left_content = if let Some(warning_text) = presets.warning_text {
+            let warning_row = Node::align_box(
                 textbox(warning_text)
                     .text_color(theme.preset_add_warning_text)
                     .widget_layout(LayoutBox::fill()),
             )
             .slot_align(SlotAlign::End, SlotAlign::Center)
-            .fill()
-        } else {
-            spacer(Size {
-                width: 1,
-                height: 1,
-            })
-            .fill()
-        };
-        let left_content = column(vec![left_controls, warning_row])
+            .fill();
+            column_slots(vec![
+                weighted_slot(left_controls, 82),
+                weighted_slot(warning_row, 18),
+            ])
             .gap(0)
             .container_overflow(OverflowPolicy::Compress)
-            .fill();
+            .fill()
+        } else {
+            left_controls
+        };
 
         let header_content = row_slots(vec![
             weighted_slot(left_content, HEADER_EMPTY_SECTION_PERCENT as u16),
