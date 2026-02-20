@@ -17,8 +17,8 @@
     use toybox::clap::automation::AutomationQueue;
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
-        measure_checked, ContainerLayout, ContainerLength, DropdownSpec, GridKind, Node, PanelSpec,
-        RootScaleMode, SurfaceCommand, UiAction, UiSpec,
+        measure_checked, ContainerLayout, ContainerLength, DropdownSpec, GridKind, LayoutBox,
+        Node, PanelSpec, RootScaleMode, SurfaceCommand, UiAction, UiSpec,
     };
     use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
@@ -683,10 +683,9 @@
             },
             ..InputState::default()
         });
-        let region =
+        let region_layout =
             find_curve_region_node(spec.root.content()).expect("curve region should exist");
-        assert_eq!(region.width, WINDOW_WIDTH);
-        assert_eq!(region.height, CURVE_H);
+        assert_eq!(region_layout, LayoutBox::fill());
     }
 
     #[test]
@@ -844,10 +843,9 @@
                 })
             );
 
-            let curve_region = find_curve_region_node(spec.root.content())
+            let curve_region_layout = find_curve_region_node(spec.root.content())
                 .expect("curve region should exist for all measured sizes");
-            assert_eq!(curve_region.width, WINDOW_WIDTH);
-            assert_eq!(curve_region.height, CURVE_H);
+            assert_eq!(curve_region_layout, LayoutBox::fill());
 
             let dropdown_size = find_dropdown_control_size(spec.root.content(), DIVISION_KEY)
                 .expect("division dropdown control size should exist for all measured sizes");
@@ -1286,14 +1284,12 @@
             },
             ..InputState::default()
         });
-        let size = find_first_indicator_size(spec.root.content())
+        let indicator_layout = find_first_indicator_size(spec.root.content())
             .expect("header transport indicator should exist");
         assert_eq!(
-            size,
-            Size {
-                width: TRANSPORT_INDICATOR_SIZE,
-                height: TRANSPORT_INDICATOR_SIZE,
-            }
+            indicator_layout,
+            LayoutBox::fixed(TRANSPORT_INDICATOR_SIZE, TRANSPORT_INDICATOR_SIZE)
+                .max(TRANSPORT_INDICATOR_SIZE, TRANSPORT_INDICATOR_SIZE)
         );
     }
 
@@ -1431,10 +1427,10 @@
         );
     }
 
-    fn find_curve_region_node(node: &Node) -> Option<Size> {
+    fn find_curve_region_node(node: &Node) -> Option<LayoutBox> {
         match node {
             Node::Slot(slot) => find_curve_region_node(slot.child()),
-            Node::Region(region) if region.key == CURVE_KEY => Some(region.size),
+            Node::Region(region) if region.key == CURVE_KEY => Some(region.layout),
             Node::Panel(panel) => find_curve_region_node(panel.content()),
             Node::PaddingBox(padding_box) => find_curve_region_node(padding_box.content()),
             Node::AlignBox(align_box) => find_curve_region_node(align_box.content()),
@@ -1600,10 +1596,10 @@
         }
     }
 
-    fn find_first_indicator_size(node: &Node) -> Option<Size> {
+    fn find_first_indicator_size(node: &Node) -> Option<LayoutBox> {
         match node {
             Node::Slot(slot) => find_first_indicator_size(slot.child()),
-            Node::Indicator(indicator) => Some(indicator.size),
+            Node::Indicator(indicator) => Some(indicator.layout),
             Node::Panel(panel) => find_first_indicator_size(panel.content()),
             Node::PaddingBox(padding_box) => find_first_indicator_size(padding_box.content()),
             Node::AlignBox(align_box) => find_first_indicator_size(align_box.content()),

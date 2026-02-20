@@ -1038,6 +1038,10 @@ impl GuiState {
             .fill();
             let knob_body = Node::align_box(
                 knob(key, value, range)
+                    .control_size(Size {
+                        width: metrics.knob_diameter,
+                        height: metrics.knob_diameter,
+                    })
                     .widget_layout(fixed_box(metrics.knob_diameter, metrics.knob_diameter)),
             )
             .slot_align(SlotAlign::Center, SlotAlign::Center)
