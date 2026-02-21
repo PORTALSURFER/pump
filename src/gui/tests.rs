@@ -2,6 +2,7 @@
         constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
         local_from_node, move_node_with_push_through, move_segment_translated,
         preferred_window_size, preview_node_on_curve, resolve_runtime_controls_slot_widths,
+        recompute_move_node_from_origin_for_size,
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
@@ -258,6 +259,106 @@
         assert_eq!(curve.nodes[0].x, 0.0);
         assert_eq!(curve.nodes[curve.nodes.len() - 1].x, 1.0);
         assert!(curve.nodes.iter().all(|node| node.x <= 1.0));
+    }
+
+    #[test]
+    fn reversible_push_through_restores_crossed_nodes_within_same_drag() {
+        let origin = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.25, y: 0.6 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.15 },
+                CurveSegment { tension: -0.25 },
+                CurveSegment { tension: 0.35 },
+                CurveSegment { tension: -0.05 },
+            ],
+        };
+
+        let size = Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        };
+        let removed = origin.nodes[3];
+
+        let (crossed_curve, _) = recompute_move_node_from_origin_for_size(
+            &origin,
+            2,
+            CurveNode { x: 0.95, y: 0.4 },
+            0,
+            size,
+        );
+        assert_eq!(crossed_curve.nodes.len(), origin.nodes.len() - 1);
+        assert!(
+            !crossed_curve.nodes.contains(&removed),
+            "crossing right should remove crossed interior node"
+        );
+
+        let (restored_curve, _) = recompute_move_node_from_origin_for_size(
+            &origin,
+            2,
+            CurveNode { x: 0.55, y: 0.4 },
+            0,
+            size,
+        );
+        assert_eq!(restored_curve.nodes.len(), origin.nodes.len());
+        assert_eq!(restored_curve.nodes[3], removed);
+        assert_eq!(restored_curve.segments, origin.segments);
+    }
+
+    #[test]
+    fn push_through_threshold_requires_boundary_crossing() {
+        let origin = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.25, y: 0.6 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        };
+
+        let size = Size {
+            width: CURVE_W,
+            height: CURVE_H,
+        };
+        let threshold_px = 10;
+        let threshold_x = threshold_px as f32 / (size.width.max(2) - 1) as f32;
+        let boundary = origin.nodes[3].x;
+
+        let (not_crossed, _) = recompute_move_node_from_origin_for_size(
+            &origin,
+            2,
+            CurveNode {
+                x: boundary + threshold_x - 1.0e-3,
+                y: 0.4,
+            },
+            threshold_px,
+            size,
+        );
+        assert_eq!(not_crossed.nodes.len(), origin.nodes.len());
+
+        let (crossed, _) = recompute_move_node_from_origin_for_size(
+            &origin,
+            2,
+            CurveNode {
+                x: boundary + threshold_x + 1.0e-3,
+                y: 0.4,
+            },
+            threshold_px,
+            size,
+        );
+        assert_eq!(crossed.nodes.len(), origin.nodes.len() - 1);
     }
 
     #[test]

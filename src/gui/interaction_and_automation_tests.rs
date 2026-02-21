@@ -155,4 +155,53 @@ mod interaction_and_automation_tests {
             "segment press should insert a preview node before drag starts"
         );
     }
+
+    #[test]
+    fn drag_back_restores_push_through_deleted_nodes_before_release() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let before = params.editable_curve_snapshot();
+        let moving_node = before.nodes[1];
+        let crossed_node = before.nodes[2];
+
+        let start = local_from_node(moving_node);
+        state.reduce_curve_interaction(RegionInteractionKind::Pressed, start, start, false);
+
+        let drag_right = local_from_node(CurveNode {
+            x: 0.9,
+            y: moving_node.y,
+        });
+        state.reduce_curve_interaction(RegionInteractionKind::Dragged, drag_right, drag_right, false);
+        let crossed = params.editable_curve_snapshot();
+        assert!(
+            crossed.nodes.len() < before.nodes.len(),
+            "dragging through an interior node should temporarily remove crossed nodes"
+        );
+
+        let drag_back = local_from_node(CurveNode {
+            x: 0.18,
+            y: moving_node.y,
+        });
+        state.reduce_curve_interaction(RegionInteractionKind::Dragged, drag_back, drag_back, false);
+        let restored = params.editable_curve_snapshot();
+        assert_eq!(
+            restored.nodes.len(),
+            before.nodes.len(),
+            "dragging back within the same gesture should restore crossed nodes"
+        );
+        assert!(
+            restored.nodes.iter().any(|node| {
+                (node.x - crossed_node.x).abs() <= f32::EPSILON
+                    && (node.y - crossed_node.y).abs() <= f32::EPSILON
+            }),
+            "restored topology should recover the original crossed node values"
+        );
+
+        state.reduce_curve_interaction(RegionInteractionKind::Released, drag_back, drag_back, false);
+    }
 }

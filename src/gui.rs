@@ -501,10 +501,11 @@ struct GuiRuntime {
     active_knob_gesture_param: Option<ClapId>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 enum CurveDragMode {
     MoveNode {
-        index: usize,
+        origin_index: usize,
+        origin_curve: EditableCurve,
         start_pointer: Point,
         dragging: bool,
     },
@@ -1380,7 +1381,8 @@ impl GuiState {
                 ) {
                     runtime.selected_node = Some(index);
                     runtime.drag_mode = Some(CurveDragMode::MoveNode {
-                        index,
+                        origin_index: index,
+                        origin_curve: editable.clone(),
                         start_pointer: local_pointer,
                         dragging: false,
                     });
@@ -1406,7 +1408,8 @@ impl GuiState {
                         insert_node_for_size(&mut editable, preview_node, runtime.curve_size);
                     runtime.selected_node = Some(inserted_index);
                     runtime.drag_mode = Some(CurveDragMode::MoveNode {
-                        index: inserted_index,
+                        origin_index: inserted_index,
+                        origin_curve: editable.clone(),
                         start_pointer: local_pointer,
                         dragging: false,
                     });
@@ -1457,7 +1460,8 @@ impl GuiState {
                 ) {
                     runtime.selected_node = Some(index);
                     runtime.drag_mode = Some(CurveDragMode::MoveNode {
-                        index,
+                        origin_index: index,
+                        origin_curve: editable.clone(),
                         start_pointer: local_pointer,
                         dragging: false,
                     });
@@ -1468,7 +1472,8 @@ impl GuiState {
                     insert_node_for_size(&mut editable, normalized_pointer, runtime.curve_size);
                 runtime.selected_node = Some(inserted_index);
                 runtime.drag_mode = Some(CurveDragMode::MoveNode {
-                    index: inserted_index,
+                    origin_index: inserted_index,
+                    origin_curve: editable.clone(),
                     start_pointer: local_pointer,
                     dragging: false,
                 });
@@ -1476,12 +1481,13 @@ impl GuiState {
                 self.params.set_editable_curve(&editable);
             }
             RegionInteractionKind::Dragged => {
-                if let Some(mut drag_mode) = runtime.drag_mode {
+                if let Some(mut drag_mode) = runtime.drag_mode.take() {
                     let mut editable = self.params.editable_curve_snapshot();
                     let mut curve_changed = false;
                     match drag_mode {
                         CurveDragMode::MoveNode {
-                            index,
+                            origin_index,
+                            origin_curve,
                             start_pointer,
                             mut dragging,
                         } => {
@@ -1492,19 +1498,28 @@ impl GuiState {
                                     curve_drag_threshold_px(runtime.curve_size),
                                 )
                             {
+                                runtime.drag_mode = Some(CurveDragMode::MoveNode {
+                                    origin_index,
+                                    origin_curve,
+                                    start_pointer,
+                                    dragging,
+                                });
                                 return;
                             }
                             dragging = true;
-                            let moved_index = move_node_with_push_through_for_size(
-                                &mut editable,
-                                index,
-                                raw_normalized_pointer,
-                                node_push_through_threshold_px(runtime.curve_size),
-                                runtime.curve_size,
-                            );
+                            let (recomputed_curve, moved_index) =
+                                recompute_move_node_from_origin_for_size(
+                                    &origin_curve,
+                                    origin_index,
+                                    raw_normalized_pointer,
+                                    node_push_through_threshold_px(runtime.curve_size),
+                                    runtime.curve_size,
+                                );
+                            editable = recomputed_curve;
                             runtime.selected_node = Some(moved_index);
                             drag_mode = CurveDragMode::MoveNode {
-                                index: moved_index,
+                                origin_index,
+                                origin_curve,
                                 start_pointer,
                                 dragging,
                             };
@@ -1526,6 +1541,15 @@ impl GuiState {
                                     curve_drag_threshold_px(runtime.curve_size),
                                 )
                             {
+                                runtime.drag_mode = Some(CurveDragMode::MoveSegment {
+                                    index,
+                                    start_pointer,
+                                    start_left_x,
+                                    start_right_x,
+                                    start_left_y,
+                                    start_right_y,
+                                    dragging,
+                                });
                                 return;
                             }
                             dragging = true;
@@ -1566,6 +1590,12 @@ impl GuiState {
                                     curve_drag_threshold_px(runtime.curve_size),
                                 )
                             {
+                                runtime.drag_mode = Some(CurveDragMode::AdjustSegmentCurve {
+                                    index,
+                                    start_pointer,
+                                    start_tension,
+                                    dragging,
+                                });
                                 return;
                             }
                             dragging = true;
@@ -2176,6 +2206,29 @@ fn move_node_with_push_through(
             height: CURVE_H,
         },
     )
+}
+
+/// Recompute move-node drag output from one drag-origin snapshot.
+///
+/// This makes push-through deletion reversible within the same drag gesture:
+/// dragging back across previously crossed nodes rebuilds them from the origin
+/// curve because each frame starts from `origin_curve`.
+fn recompute_move_node_from_origin_for_size(
+    origin_curve: &EditableCurve,
+    origin_index: usize,
+    target: CurveNode,
+    push_threshold_px: i32,
+    curve_size: Size,
+) -> (EditableCurve, usize) {
+    let mut recomputed = origin_curve.clone();
+    let moved_index = move_node_with_push_through_for_size(
+        &mut recomputed,
+        origin_index,
+        target,
+        push_threshold_px,
+        curve_size,
+    );
+    (recomputed, moved_index)
 }
 
 fn move_node_with_push_through_for_size(
