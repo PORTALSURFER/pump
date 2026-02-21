@@ -145,6 +145,7 @@
             | Node::Spacer(_)
             | Node::Knob(_)
             | Node::Slider(_)
+            | Node::CurveEditor(_)
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
@@ -770,7 +771,7 @@
     }
 
     #[test]
-    fn build_ui_places_curve_region_at_full_spline_extent() {
+    fn build_ui_places_curve_editor_at_full_spline_extent() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -784,9 +785,9 @@
             },
             ..InputState::default()
         });
-        let region_layout =
-            find_curve_region_node(spec.root.content()).expect("curve region should exist");
-        assert_eq!(region_layout, LayoutBox::fill());
+        let curve_editor_layout = find_curve_editor_layout(spec.root.content())
+            .expect("curve editor should exist");
+        assert_eq!(curve_editor_layout, LayoutBox::fill());
     }
 
     #[test]
@@ -944,9 +945,9 @@
                 })
             );
 
-            let curve_region_layout = find_curve_region_node(spec.root.content())
-                .expect("curve region should exist for all measured sizes");
-            assert_eq!(curve_region_layout, LayoutBox::fill());
+            let curve_editor_layout = find_curve_editor_layout(spec.root.content())
+                .expect("curve editor should exist for all measured sizes");
+            assert_eq!(curve_editor_layout, LayoutBox::fill());
 
             let dropdown_size = find_dropdown_control_size(spec.root.content(), DIVISION_KEY)
                 .expect("division dropdown control size should exist for all measured sizes");
@@ -1577,26 +1578,29 @@
         );
     }
 
-    fn find_curve_region_node(node: &Node) -> Option<LayoutBox> {
+    fn find_curve_editor_layout(node: &Node) -> Option<LayoutBox> {
         match node {
-            Node::Slot(slot) => find_curve_region_node(slot.child()),
-            Node::Region(region) if region.key == CURVE_KEY => Some(region.layout),
-            Node::Panel(panel) => find_curve_region_node(panel.content()),
-            Node::PaddingBox(padding_box) => find_curve_region_node(padding_box.content()),
-            Node::AlignBox(align_box) => find_curve_region_node(align_box.content()),
-            Node::AspectBox(aspect_box) => find_curve_region_node(aspect_box.content()),
-            Node::Row(flex) | Node::Column(flex) => {
-                flex.children().iter().find_map(find_curve_region_node)
+            Node::Slot(slot) => find_curve_editor_layout(slot.child()),
+            Node::CurveEditor(curve_editor) if curve_editor.key == CURVE_KEY => {
+                Some(curve_editor.layout)
             }
-            Node::Grid(grid) => grid.children().iter().find_map(find_curve_region_node),
-            Node::Stack(stack) => stack.children().iter().find_map(find_curve_region_node),
-            Node::ScrollView(scroll_view) => find_curve_region_node(scroll_view.content()),
-            Node::Wrap(wrap) => wrap.children().iter().find_map(find_curve_region_node),
+            Node::Panel(panel) => find_curve_editor_layout(panel.content()),
+            Node::PaddingBox(padding_box) => find_curve_editor_layout(padding_box.content()),
+            Node::AlignBox(align_box) => find_curve_editor_layout(align_box.content()),
+            Node::AspectBox(aspect_box) => find_curve_editor_layout(aspect_box.content()),
+            Node::Row(flex) | Node::Column(flex) => {
+                flex.children().iter().find_map(find_curve_editor_layout)
+            }
+            Node::Grid(grid) => grid.children().iter().find_map(find_curve_editor_layout),
+            Node::Stack(stack) => stack.children().iter().find_map(find_curve_editor_layout),
+            Node::ScrollView(scroll_view) => find_curve_editor_layout(scroll_view.content()),
+            Node::Wrap(wrap) => wrap.children().iter().find_map(find_curve_editor_layout),
             Node::SwitchLayout(switch_layout) => switch_layout
                 .cases()
                 .iter()
-                .find_map(|case_entry| find_curve_region_node(case_entry.child()))
-                .or_else(|| find_curve_region_node(switch_layout.fallback())),
+                .find_map(|case_entry| find_curve_editor_layout(case_entry.child()))
+                .or_else(|| find_curve_editor_layout(switch_layout.fallback())),
+            Node::CurveEditor(_) => None,
             Node::Region(_) => None,
             Node::TextBox(_)
             | Node::Spacer(_)
@@ -1653,6 +1657,7 @@
             Node::Spacer(_)
             | Node::Knob(_)
             | Node::Slider(_)
+            | Node::CurveEditor(_)
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
@@ -1700,6 +1705,7 @@
             | Node::Spacer(_)
             | Node::Knob(_)
             | Node::Slider(_)
+            | Node::CurveEditor(_)
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Region(_)
@@ -1739,6 +1745,7 @@
             | Node::Spacer(_)
             | Node::Knob(_)
             | Node::Slider(_)
+            | Node::CurveEditor(_)
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
@@ -1774,6 +1781,7 @@
             | Node::Spacer(_)
             | Node::Knob(_)
             | Node::Slider(_)
+            | Node::CurveEditor(_)
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)

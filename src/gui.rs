@@ -12,10 +12,12 @@ use toybox::clap::gui::{
     ShortcutModifiers,
 };
 use toybox::gui::declarative::{
-    button, column, column_slots, dropdown, grid, indicator, knob, panel, root_frame_sized,
-    row_slots, spacer, surface, textbox, weighted_slot, weighted_slot_lengths, GridTemplate,
-    LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, Slot, SlotAlign,
-    SlotCrossSize, SlotParams, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
+    button, column, column_slots, curve_editor, dropdown, grid, indicator, knob, panel,
+    root_frame_sized, row_slots, spacer, textbox, weighted_slot, weighted_slot_lengths,
+    CurveEditorStyle, CurveHighlightMode, CurveInteractionOptions, CurveModel, CurvePoint,
+    CurveSegment as CurveEditorSegment, EndpointMode, GridTemplate, LayoutBox, Node,
+    OverflowPolicy, RegionInteractionKind, RootScaleMode, Slot, SlotAlign, SlotCrossSize,
+    SlotParams, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -160,6 +162,79 @@ fn node_push_through_threshold_px(curve_size: Size) -> i32 {
 
 fn curve_tension_pixel_scale(curve_size: Size) -> f32 {
     scaled_curve_tension_pixel_scale(curve_size)
+}
+
+fn curve_editor_style(theme: PumpTheme) -> CurveEditorStyle {
+    CurveEditorStyle {
+        background: theme.curve_bg,
+        border: theme.curve_border,
+        grid_vertical: theme.curve_grid_vertical,
+        grid_horizontal: theme.curve_grid_horizontal,
+        line: theme.curve_line,
+        line_highlight: theme.curve_line_highlight,
+        node_fill: theme.node_fill,
+        node_stroke: theme.node_stroke,
+        node_hover_fill: theme.node_hover_fill,
+        node_hover_stroke: theme.node_hover_stroke,
+        node_selected_fill: theme.node_selected_fill,
+        node_selected_stroke: theme.node_selected_stroke,
+        preview_fill: theme.preview_fill,
+        preview_stroke: theme.preview_stroke,
+        playhead_core: theme.playhead_dot_core,
+        playhead_stroke: theme.playhead_dot_stroke,
+        highlight_mode: CurveHighlightMode::BrightCircle,
+    }
+}
+
+fn curve_editor_interaction_options(curve_size: Size) -> CurveInteractionOptions {
+    CurveInteractionOptions {
+        max_points: MAX_EDITABLE_NODES,
+        min_point_spacing_x: NODE_X_MIN_SPACING,
+        drag_start_threshold_px: curve_drag_threshold_px(curve_size),
+        push_through_threshold_px: node_push_through_threshold_px(curve_size),
+        endpoint_mode: EndpointMode::CoupledY,
+        double_click_delete_interior: true,
+    }
+}
+
+fn curve_model_from_editable(editable_curve: &EditableCurve) -> CurveModel {
+    CurveModel::new(
+        editable_curve
+            .nodes
+            .iter()
+            .copied()
+            .map(|node| CurvePoint::new(node.x, node.y))
+            .collect(),
+        editable_curve
+            .segments
+            .iter()
+            .copied()
+            .map(|segment| CurveEditorSegment::new(segment.tension))
+            .collect(),
+    )
+}
+
+fn editable_curve_from_model(model: &CurveModel) -> EditableCurve {
+    EditableCurve {
+        nodes: model
+            .points
+            .iter()
+            .copied()
+            .map(|point| CurveNode {
+                x: point.x,
+                y: point.y,
+            })
+            .collect(),
+        segments: model
+            .segments
+            .iter()
+            .copied()
+            .map(|segment| CurveSegment {
+                tension: segment.tension,
+            })
+            .collect(),
+    }
+    .normalized()
 }
 
 /// Return the internal tension-sign multiplier that produces visual upward bend.
@@ -671,6 +746,7 @@ impl GuiState {
     }
 
     /// Snapshot runtime pointer/selection state and update curve dimensions.
+    #[allow(dead_code)]
     fn snapshot_curve_runtime(&self, curve_size: Size) -> (Option<usize>, bool, Point) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.curve_size = curve_size;
@@ -892,20 +968,17 @@ impl GuiState {
     }
 
     /// Build the spline/curve slot node.
-    fn build_spline_slot(
-        &self,
-        metrics: UiLayoutMetrics,
-        draw_commands: Vec<SurfaceCommand>,
-    ) -> Node {
-        let spline_content = surface(
-            CURVE_KEY,
-            Size {
-                width: metrics.content_w,
-                height: metrics.curve_h,
-            },
-            draw_commands,
-        )
-        .fill();
+    fn build_spline_slot(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
+        let editable_curve = self.params.editable_curve_snapshot();
+        let spline_content = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
+            .curve_style(curve_editor_style(theme))
+            .curve_interaction(curve_editor_interaction_options(metrics.curve_size))
+            .curve_playhead_x(
+                (self.status.has_host_beats_timeline() || self.status.is_playing())
+                    .then_some(self.status.phase()),
+            )
+            .widget_layout(fixed_box(metrics.content_w, metrics.curve_h))
+            .fill();
         panel("spline", spline_content).pad_all(0)
     }
 
@@ -1041,6 +1114,7 @@ impl GuiState {
     }
 
     /// Resolve curve-hover and preview state for frame rendering.
+    #[allow(dead_code)]
     fn compute_curve_render_state(
         &self,
         editable_curve: &EditableCurve,
@@ -1109,6 +1183,7 @@ impl GuiState {
     }
 
     /// Build curve draw commands for the current frame input and runtime state.
+    #[allow(dead_code)]
     fn build_curve_commands_for_frame(
         &self,
         input: &InputState,
@@ -1135,10 +1210,9 @@ impl GuiState {
         let theme = PumpTheme::main(metrics);
         let controls = self.snapshot_controls();
         let presets = self.snapshot_presets();
-        let draw_commands = self.build_curve_commands_for_frame(input, metrics, theme);
 
         let header_slot = self.build_header_slot(metrics, theme, &presets);
-        let spline_slot = self.build_spline_slot(metrics, draw_commands);
+        let spline_slot = self.build_spline_slot(metrics, theme);
         let controls_slot = self.build_controls_slot(metrics, controls);
 
         let content = column_slots(vec![
@@ -1197,6 +1271,14 @@ impl GuiState {
             }
             UiAction::TextBoxEditCanceled { key } if key == PRESET_RENAME_KEY => {
                 self.cancel_preset_rename();
+            }
+            UiAction::CurveEditorChanged { key, model } if key == CURVE_KEY => {
+                let editable_curve = editable_curve_from_model(&model);
+                self.params.set_editable_curve(&editable_curve);
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.drag_mode = None;
+                    runtime.selected_node = None;
+                }
             }
             UiAction::RegionHover {
                 key,
@@ -1651,6 +1733,7 @@ impl GuiState {
         }
     }
 
+    #[allow(dead_code)]
     fn build_curve_draw_commands(
         &self,
         editable_curve: &EditableCurve,
