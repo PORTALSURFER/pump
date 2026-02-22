@@ -150,6 +150,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (71184d4)
 
+- (changelog) Update changelog [skip ci] (5adfbc3)
+
 
 ### Features
 
@@ -639,4 +641,6 @@ All notable changes to this project are documented in this file.
 - Capture windows screenshots from live rendered window (c7b3c58)
 
 - Make windows screenshot capture rust-2021 compatible (5c86358)
+
+- (build) Cover config parsing and artifact path logic (dcc82d0)
 
