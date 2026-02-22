@@ -200,6 +200,6 @@ impl PluginStateImpl for PumpMainThread<'_> {
 
 pub use gui_status::{GuiStatus, GuiTransportTelemetry};
 use plugin_processor::PumpAudioProcessor;
-use transport::{gui_phase_from_transport, host_beat_phase};
+use transport::{gui_phase_from_transport, gui_transport_telemetry};
 
 toybox::clap_plugin_entry!(PumpPlugin);

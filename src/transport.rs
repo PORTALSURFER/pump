@@ -1,6 +1,7 @@
 //! Shared transport-phase helpers used by both CLAP and VST3 paths.
 
 use crate::dsp::DspSettings;
+use crate::GuiTransportTelemetry;
 use toybox::dsp::{phase_from_beats, TransportState};
 
 /// Resolve GUI phase from the latest host transport snapshot.
@@ -25,12 +26,38 @@ pub(crate) fn host_beat_phase(transport: TransportState) -> Option<f32> {
         .map(|beats| beats.rem_euclid(1.0) as f32)
 }
 
+/// Resolve whether GUI phase extrapolation should run this block.
+///
+/// When host beat timeline is unavailable, phase still advances while audio is
+/// flowing so visual feedback remains responsive.
+pub(crate) fn phase_running_from_transport(transport: TransportState) -> bool {
+    transport.is_playing || transport.song_pos_beats.is_none()
+}
+
+/// Build GUI transport telemetry from a host transport snapshot.
+pub(crate) fn gui_transport_telemetry(
+    transport: TransportState,
+    beats_per_cycle: f32,
+    fallback_beat_phase: f32,
+) -> GuiTransportTelemetry {
+    GuiTransportTelemetry {
+        is_playing: phase_running_from_transport(transport),
+        has_host_beats_timeline: transport.song_pos_beats.is_some(),
+        beat_phase: host_beat_phase(transport).unwrap_or(fallback_beat_phase),
+        tempo_bpm: transport.tempo_bpm,
+        beats_per_cycle,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::dsp::DspSettings;
     use toybox::dsp::{phase_from_beats, TransportState};
 
-    use super::{gui_phase_from_transport, host_beat_phase};
+    use super::{
+        gui_phase_from_transport, gui_transport_telemetry, host_beat_phase,
+        phase_running_from_transport,
+    };
 
     #[test]
     fn gui_phase_from_transport_prefers_host_song_position() {
@@ -83,5 +110,36 @@ mod tests {
         };
         assert!((host_beat_phase(positive).unwrap_or_default() - 0.75).abs() < 1.0e-6);
         assert!((host_beat_phase(negative).unwrap_or_default() - 0.8).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn phase_running_falls_back_when_song_position_missing() {
+        let stopped_without_timeline = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: false,
+            song_pos_beats: None,
+        };
+        let stopped_with_timeline = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: false,
+            song_pos_beats: Some(2.0),
+        };
+
+        assert!(phase_running_from_transport(stopped_without_timeline));
+        assert!(!phase_running_from_transport(stopped_with_timeline));
+    }
+
+    #[test]
+    fn gui_transport_telemetry_uses_fallback_beat_phase_without_timeline() {
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: None,
+        };
+        let telemetry = gui_transport_telemetry(transport, 4.0, 0.37);
+        assert!(telemetry.is_playing);
+        assert!(!telemetry.has_host_beats_timeline);
+        assert!((telemetry.beat_phase - 0.37).abs() < 1.0e-6);
+        assert!((telemetry.beats_per_cycle - 4.0).abs() < 1.0e-6);
     }
 }

@@ -22,8 +22,8 @@ use crate::params::{
     PARAM_SYNC_DIVISION_NUM,
 };
 use crate::plugin_metadata::PLUGIN_NAME;
-use crate::transport::{gui_phase_from_transport, host_beat_phase};
-use crate::{GuiStatus, GuiTransportTelemetry};
+use crate::transport::{gui_phase_from_transport, gui_transport_telemetry};
+use crate::GuiStatus;
 use toybox::dsp::TransportState;
 
 const PROCESSOR_CID: TUID = uid(0xE5A9A79F, 0xC4A94392, 0x97A8A8AA, 0xA9A90B3C);
@@ -313,20 +313,15 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             beats_per_cycle: self.shared.params.sync_beats_per_cycle(),
         };
         let transport = transport_state_from_vst3_process_context(process_data.processContext);
-        let phase_running = transport.is_playing || transport.song_pos_beats.is_none();
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
-        let beat_phase =
-            host_beat_phase(transport).unwrap_or_else(|| self.shared.status.beat_phase());
         self.shared.status.update(
             gui_phase,
             self.shared.status.gain(),
-            GuiTransportTelemetry {
-                is_playing: phase_running,
-                has_host_beats_timeline: transport.song_pos_beats.is_some(),
-                beat_phase,
-                tempo_bpm: transport.tempo_bpm,
-                beats_per_cycle: settings.beats_per_cycle,
-            },
+            gui_transport_telemetry(
+                transport,
+                settings.beats_per_cycle,
+                self.shared.status.beat_phase(),
+            ),
         );
 
         let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
@@ -354,14 +349,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         self.shared.status.update(
             last_phase,
             last_gain,
-            GuiTransportTelemetry {
-                is_playing: phase_running,
-                has_host_beats_timeline: transport.song_pos_beats.is_some(),
-                beat_phase: host_beat_phase(transport)
-                    .unwrap_or_else(|| self.shared.status.beat_phase()),
-                tempo_bpm: transport.tempo_bpm,
-                beats_per_cycle: settings.beats_per_cycle,
-            },
+            gui_transport_telemetry(
+                transport,
+                settings.beats_per_cycle,
+                self.shared.status.beat_phase(),
+            ),
         );
 
         process_ok()

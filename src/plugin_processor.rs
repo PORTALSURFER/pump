@@ -59,20 +59,15 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         };
 
         let transport = transport_state_from_transport(process.transport.copied());
-        let phase_running = transport.is_playing || transport.song_pos_beats.is_none();
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
-        let beat_phase =
-            host_beat_phase(transport).unwrap_or_else(|| self.shared.status.beat_phase());
         self.shared.status.update(
             gui_phase,
             self.shared.status.gain(),
-            GuiTransportTelemetry {
-                is_playing: phase_running,
-                has_host_beats_timeline: transport.song_pos_beats.is_some(),
-                beat_phase,
-                tempo_bpm: transport.tempo_bpm,
-                beats_per_cycle: settings.beats_per_cycle,
-            },
+            gui_transport_telemetry(
+                transport,
+                settings.beats_per_cycle,
+                self.shared.status.beat_phase(),
+            ),
         );
 
         for mut port_pair in &mut audio {
@@ -86,7 +81,7 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             let Some(right_pair) = iter.next() else {
                 continue;
             };
-            self.process_stereo_pair(left_pair, right_pair, settings, transport, phase_running);
+            self.process_stereo_pair(left_pair, right_pair, settings, transport);
         }
 
         let _stats = self
@@ -122,7 +117,6 @@ impl PumpAudioProcessor<'_> {
         right_pair: ChannelPair<'_, f32>,
         settings: DspSettings,
         transport: TransportState,
-        phase_running: bool,
     ) {
         let (left_input, left_output, left_in_place) = split_channel(left_pair);
         let (right_input, right_output, right_in_place) = split_channel(right_pair);
@@ -171,8 +165,6 @@ impl PumpAudioProcessor<'_> {
             };
         }
 
-        let host_is_playing = phase_running;
-        let host_has_beats_timeline = transport.song_pos_beats.is_some();
         let mut transport_for_sample = transport;
         let mut last_phase = 0.0_f32;
         let mut last_gain = 1.0_f32;
@@ -192,14 +184,11 @@ impl PumpAudioProcessor<'_> {
         self.shared.status.update(
             last_phase,
             last_gain,
-            GuiTransportTelemetry {
-                is_playing: host_is_playing,
-                has_host_beats_timeline: host_has_beats_timeline,
-                beat_phase: host_beat_phase(transport)
-                    .unwrap_or_else(|| self.shared.status.beat_phase()),
-                tempo_bpm: transport.tempo_bpm,
-                beats_per_cycle: settings.beats_per_cycle,
-            },
+            gui_transport_telemetry(
+                transport,
+                settings.beats_per_cycle,
+                self.shared.status.beat_phase(),
+            ),
         );
 
         if let Some(out_left) = left_output {
