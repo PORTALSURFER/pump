@@ -158,6 +158,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (5b9b7c9)
 
+- (changelog) Update changelog [skip ci] (a23d7ce)
+
 
 ### Features
 
@@ -655,4 +657,6 @@ All notable changes to this project are documented in this file.
 - Make windows screenshot capture rust-2021 compatible (5c86358)
 
 - (build) Cover config parsing and artifact path logic (dcc82d0)
+
+- (state) Add malformed payload decode coverage (ebed91c)
 
