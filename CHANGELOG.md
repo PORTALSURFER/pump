@@ -49,6 +49,8 @@ All notable changes to this project are documented in this file.
 
 - (build) Export windows vst3 bundle root with -win suffix (fe7be31)
 
+- (build) Emit windows artifacts as direct -win files (641eb40)
+
 
 ### CI
 
@@ -131,6 +133,8 @@ All notable changes to this project are documented in this file.
 - (handoff) Align wake-up portal and plan artifacts (0c9314f)
 
 - (changelog) Update changelog [skip ci] (e65f45a)
+
+- (changelog) Update changelog [skip ci] (4a4e726)
 
 
 ### Features
