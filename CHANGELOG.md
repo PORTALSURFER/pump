@@ -119,6 +119,8 @@ All notable changes to this project are documented in this file.
 
 - (release) Bump pump to v0.2.0 (76e1045)
 
+- (deps) Bump toybox for editable textbox fix (a8451c7)
+
 
 ### Documentation
 
