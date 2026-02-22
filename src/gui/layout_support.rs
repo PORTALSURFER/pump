@@ -1,0 +1,199 @@
+use super::*;
+pub(super) const fn u32_max(left: u32, right: u32) -> u32 {
+    if left > right {
+        left
+    } else {
+        right
+    }
+}
+
+/// Enforce Pump's host-negotiated minimum window size.
+pub(super) fn constrained_host_size(size: GuiSize) -> GuiSize {
+    GuiSize {
+        width: size.width.max(WINDOW_WIDTH),
+        height: size.height.max(WINDOW_HEIGHT),
+    }
+}
+
+pub(super) const fn resolve_vertical_slot_heights(total_height: u32) -> (u32, u32, u32) {
+    let clamped_total = u32_max(total_height, 1);
+    let header_h =
+        clamped_total.saturating_mul(HEADER_SECTION_WEIGHT as u32) / ROOT_SECTION_WEIGHT_SUM;
+    let controls_h =
+        clamped_total.saturating_mul(CONTROLS_SECTION_WEIGHT as u32) / ROOT_SECTION_WEIGHT_SUM;
+    let consumed = header_h.saturating_add(controls_h);
+    let curve_h = clamped_total.saturating_sub(consumed);
+    (header_h, curve_h, controls_h)
+}
+
+pub(super) fn resolve_runtime_controls_slot_widths(total_width: u32) -> (u32, u32) {
+    let widths = weighted_slot_lengths(
+        total_width.max(1),
+        &[KNOBS_SECTION_WEIGHT, DROPDOWN_SECTION_WEIGHT],
+    );
+    (
+        widths.first().copied().unwrap_or(1),
+        widths.get(1).copied().unwrap_or(1),
+    )
+}
+
+pub(super) fn scaled_line_height(text_scale: u32) -> u32 {
+    BASE_CONTROL_LINE_UNIT.saturating_mul(text_scale.max(1))
+}
+
+/// Resolve a stable parameter id for one knob action key.
+pub(super) fn knob_param_id(key: &str) -> Option<ClapId> {
+    match key {
+        MIX_KEY => Some(PARAM_MIX_ID),
+        DEPTH_KEY => Some(PARAM_DEPTH_ID),
+        PHASE_KEY => Some(PARAM_PHASE_OFFSET_ID),
+        OUTPUT_KEY => Some(PARAM_OUTPUT_GAIN_ID),
+        _ => None,
+    }
+}
+
+/// Shared Pump color/style tokens derived from the canonical Patchbay theme.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PumpTheme {
+    pub(super) tokens: ThemeTokens,
+    pub(super) preset_dirty_highlight: Color,
+    pub(super) curve_bg: Color,
+    pub(super) curve_border: Color,
+    pub(super) curve_grid_vertical: Color,
+    pub(super) curve_grid_horizontal: Color,
+    pub(super) curve_line: Color,
+    pub(super) curve_line_highlight: Color,
+    pub(super) curve_line_highlight_glow: Color,
+    pub(super) preview_fill: Color,
+    pub(super) preview_stroke: Color,
+    pub(super) node_fill: Color,
+    pub(super) node_hover_fill: Color,
+    pub(super) node_selected_fill: Color,
+    pub(super) node_stroke: Color,
+    pub(super) node_hover_stroke: Color,
+    pub(super) node_selected_stroke: Color,
+    pub(super) node_hover_ring: Color,
+    pub(super) node_selected_ring: Color,
+    pub(super) playhead_dot_core: Color,
+    pub(super) playhead_dot_glow: Color,
+    pub(super) playhead_dot_stroke: Color,
+    pub(super) meter_outline: Color,
+    pub(super) meter_fill: Color,
+}
+
+impl PumpTheme {
+    /// Return the canonical Pump GUI theme.
+    pub(super) fn main(metrics: UiLayoutMetrics) -> Self {
+        let palette = MainPalette::main();
+        let mut tokens = ThemeTokens::main();
+        tokens.typography.text_scale = metrics.text_scale;
+        tokens.controls.knob_diameter = metrics.knob_diameter;
+        tokens.controls.dropdown_height = metrics.dropdown_control_h;
+        tokens.controls.button_height = metrics.button_control_h;
+        Self {
+            tokens,
+            preset_dirty_highlight: palette.literals,
+            curve_bg: palette.background_primary,
+            curve_border: palette.ui_secondary,
+            curve_grid_vertical: palette.background_secondary,
+            curve_grid_horizontal: palette.ui_secondary,
+            curve_line: palette.syntax_emphasis,
+            curve_line_highlight: palette.accent_focus,
+            curve_line_highlight_glow: palette.text_primary,
+            preview_fill: palette.literals,
+            preview_stroke: palette.identifiers,
+            node_fill: palette.text_primary,
+            node_hover_fill: palette.identifiers,
+            node_selected_fill: palette.accent_focus,
+            node_stroke: palette.ui_secondary,
+            node_hover_stroke: palette.syntax_emphasis,
+            node_selected_stroke: palette.text_primary,
+            node_hover_ring: palette.syntax_emphasis,
+            node_selected_ring: palette.accent_focus,
+            playhead_dot_core: Color::rgba(255, 255, 255, 220),
+            playhead_dot_glow: Color::rgba(
+                palette.accent_focus.r,
+                palette.accent_focus.g,
+                palette.accent_focus.b,
+                180,
+            ),
+            playhead_dot_stroke: palette.accent_focus,
+            meter_outline: palette.ui_secondary,
+            meter_fill: palette.literals,
+        }
+    }
+}
+
+/// Layout dimensions used to author Pump controls in design space.
+///
+/// Pump authors all widget geometry at a fixed logical design resolution.
+/// Patchbay applies uniform root scaling at render time so host window size
+/// changes do not alter declarative layout structure.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct UiLayoutMetrics {
+    pub(super) content_w: u32,
+    pub(super) content_h: u32,
+    pub(super) curve_h: u32,
+    pub(super) meter_x_offset: i32,
+    pub(super) meter_y_offset: i32,
+    pub(super) meter_width: u32,
+    pub(super) meter_stroke: u32,
+    pub(super) dropdown_control_w: u32,
+    pub(super) dropdown_control_h: u32,
+    pub(super) button_control_h: u32,
+    pub(super) transport_indicator_size: u32,
+    pub(super) curve_size: Size,
+    pub(super) knob_track_w: u32,
+    pub(super) knob_diameter: u32,
+    pub(super) text_scale: u32,
+    pub(super) label_line_h: u32,
+}
+
+impl UiLayoutMetrics {
+    /// Resolve all layout dimensions from the fixed design resolution.
+    pub(super) fn design_space() -> Self {
+        let content_w = WINDOW_WIDTH;
+        let content_h = WINDOW_HEIGHT;
+        let (_header_h, curve_h, controls_h) = resolve_vertical_slot_heights(content_h);
+        let (knobs_slot_w, dropdown_slot_w) = resolve_runtime_controls_slot_widths(content_w);
+        let text_scale = BASE_TEXT_SCALE.max(1);
+        let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
+        let knob_diameter = BASE_KNOB_DIAMETER.min(knob_track_width.max(1));
+        let knob_track_w = knob_diameter.max(1);
+        let label_line_h = scaled_line_height(text_scale);
+        let expanded_control_h = controls_h
+            .saturating_sub(label_line_h)
+            .saturating_div(2)
+            .max(BASE_DROPDOWN_CONTROL_H.max(1));
+        let dropdown_control_h = expanded_control_h;
+        let button_control_h = expanded_control_h;
+        let dropdown_control_w = dropdown_slot_w.max(1);
+        let transport_indicator_size = TRANSPORT_INDICATOR_SIZE.max(1);
+        let curve_size = Size {
+            width: content_w,
+            height: curve_h,
+        };
+        let meter_x_offset = METER_X_OFFSET.max(0);
+        let meter_y_offset = METER_Y_OFFSET.max(0);
+        let meter_width = METER_WIDTH.max(0) as u32;
+        let meter_stroke = METER_STROKE.max(0) as u32;
+        Self {
+            content_w,
+            content_h,
+            curve_h,
+            meter_x_offset,
+            meter_y_offset,
+            meter_width,
+            meter_stroke,
+            dropdown_control_w,
+            dropdown_control_h,
+            button_control_h,
+            transport_indicator_size,
+            curve_size,
+            knob_track_w,
+            knob_diameter,
+            text_scale,
+            label_line_h,
+        }
+    }
+}
