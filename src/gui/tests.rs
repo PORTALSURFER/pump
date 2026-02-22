@@ -149,6 +149,7 @@
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
+            | Node::TabBar(_)
             | Node::Region(_)
             | Node::Indicator(_) => {}
         }
@@ -1651,6 +1652,7 @@
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
+            | Node::TabBar(_)
             | Node::Indicator(_)
             | Node::Absolute(_) => None,
         }
@@ -1703,6 +1705,7 @@
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
+            | Node::TabBar(_)
             | Node::Region(_)
             | Node::Indicator(_) => {}
         }
@@ -1750,6 +1753,7 @@
             | Node::CurveEditor(_)
             | Node::Toggle(_)
             | Node::Button(_)
+            | Node::TabBar(_)
             | Node::Region(_)
             | Node::Indicator(_)
             | Node::Absolute(_) => None,
@@ -1791,6 +1795,7 @@
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
+            | Node::TabBar(_)
             | Node::Region(_) => None,
         }
     }
@@ -1827,6 +1832,7 @@
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::Dropdown(_)
+            | Node::TabBar(_)
             | Node::Region(_) => None,
         }
     }
