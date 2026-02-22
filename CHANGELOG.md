@@ -154,6 +154,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (c4d7110)
 
+- (changelog) Update changelog [skip ci] (af57659)
+
 
 ### Features
 
@@ -628,6 +630,8 @@ All notable changes to this project are documented in this file.
 - (vst3) Share transport helpers and param mapping (143ba99)
 
 - (metadata) Centralize plugin id and vendor policy (4b978c1)
+
+- (params) Unify clap and vst3 mapping logic (242f757)
 
 
 ### Testing
