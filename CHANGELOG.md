@@ -140,6 +140,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (72def75)
 
+- (changelog) Update changelog [skip ci] (435e1d0)
+
 
 ### Features
 
@@ -606,6 +608,8 @@ All notable changes to this project are documented in this file.
 - (pump) Consume toybox shared transport/atomic primitives (cfae73f)
 
 - (gui) Migrate pump to structured sections and surface node (18c67a8)
+
+- (cleanup) Reduce dead gui paths and share timing util (d111837)
 
 
 ### Testing
