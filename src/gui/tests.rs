@@ -7,7 +7,7 @@
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY, PRESET_RENAME_BUTTON_KEY,
-        PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_INIT, RESET_KEY,
+        PRESET_RENAME_KEY, PRESET_SAVE_KEY, RESET_KEY,
         TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
@@ -1114,6 +1114,39 @@
     }
 
     #[test]
+    fn reset_applies_to_selected_init_preset_curve() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let custom_curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.45, y: 0.15 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.35 },
+                CurveSegment { tension: 0.2 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&custom_curve);
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: RESET_KEY.to_string(),
+        });
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            crate::curve::default_editable_curve(),
+            "reset should restore defaults while Init is selected"
+        );
+    }
+
+    #[test]
     fn preset_save_overwrites_existing_name_from_rename_draft() {
         let params = Arc::new(PumpParams::new());
         params
@@ -1182,7 +1215,7 @@
     }
 
     #[test]
-    fn init_preset_is_not_renamable_from_header_interaction() {
+    fn init_preset_is_renamable_from_header_interaction() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
             Arc::clone(&params),
@@ -1196,14 +1229,16 @@
         });
 
         let runtime = state.runtime.lock().expect("runtime lock should succeed");
-        assert!(!runtime.preset_rename_active);
-        assert_eq!(runtime.preset_warning_text, Some(PRESET_WARNING_INIT));
+        assert!(runtime.preset_rename_active);
+        assert_eq!(runtime.preset_name_draft, "Init");
+        assert_eq!(runtime.preset_warning_text, None);
         assert_eq!(params.preset_bank_snapshot().presets[0].name, "Init");
     }
 
     #[test]
-    fn init_save_warning_blinks_without_header_relayout() {
+    fn init_save_overwrites_without_warning_or_header_relayout() {
         let params = Arc::new(PumpParams::new());
+        params.set_mix(0.52);
         let mut state = GuiState::new(
             Arc::clone(&params),
             Arc::new(GuiStatus::default()),
@@ -1213,6 +1248,16 @@
         state.reduce_action(UiAction::ButtonPressed {
             key: PRESET_SAVE_KEY.to_string(),
         });
+
+        let bank = params.preset_bank_snapshot();
+        assert_eq!(bank.presets.len(), 1);
+        assert_eq!(bank.selected, 0);
+        assert_eq!(bank.presets[0].name, "Init");
+        assert!((bank.presets[0].mix - 0.52).abs() < 1.0e-6);
+        {
+            let runtime = state.runtime.lock().expect("runtime lock should succeed");
+            assert_eq!(runtime.preset_warning_text, None);
+        }
 
         let input = InputState {
             window_size: Size {
@@ -1224,10 +1269,7 @@
         let spec = state.build_ui(&input);
         let dropdown = find_dropdown_spec(spec.root.content(), PRESET_DROPDOWN_KEY)
             .expect("preset dropdown should exist");
-        assert_eq!(
-            dropdown.selected_option_background_override,
-            Some(MainPalette::main().literals)
-        );
+        assert_eq!(dropdown.selected_option_background_override, None);
 
         let root_grid = match expect_slot_child(spec.root.content(), "root") {
             Node::Grid(grid) => grid,

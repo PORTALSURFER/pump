@@ -321,7 +321,9 @@ pub fn sync_division_index_from_text(text: &str) -> Option<usize> {
 pub struct PumpPreset {
     /// User-facing preset name.
     pub name: String,
-    /// True when this preset is immutable (for built-in `Init`).
+    /// Reserved for state-payload compatibility with older releases.
+    ///
+    /// Pump now treats all presets, including `Init`, as writable.
     pub is_read_only: bool,
     /// Dry/wet mix amount.
     pub mix: f32,
@@ -349,7 +351,7 @@ pub struct PumpPresetBank {
 /// Outcome from saving current state into the preset bank.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SavePresetOutcome {
-    /// Existing non-read-only preset was overwritten.
+    /// Existing preset was overwritten.
     Overwritten {
         /// Index of the overwritten preset.
         index: usize,
@@ -359,8 +361,6 @@ pub enum SavePresetOutcome {
         /// Index of the created preset.
         index: usize,
     },
-    /// Save was blocked because target preset is immutable.
-    BlockedReadOnly,
     /// Save was blocked because the preset bank is at capacity.
     BlockedFull,
     /// Save was blocked due to an invalid name.
@@ -374,7 +374,7 @@ impl PumpPresetBank {
             selected: 0,
             presets: vec![PumpPreset {
                 name: DEFAULT_PRESET_NAME.to_string(),
-                is_read_only: true,
+                is_read_only: false,
                 mix: DEFAULT_MIX,
                 depth: DEFAULT_DEPTH,
                 phase_offset: DEFAULT_PHASE_OFFSET,
@@ -383,20 +383,6 @@ impl PumpPresetBank {
                 editable_curve: default_editable_curve(),
             }],
         }
-    }
-}
-
-/// Build the canonical read-only `Init` preset entry.
-fn default_init_preset() -> PumpPreset {
-    PumpPreset {
-        name: DEFAULT_PRESET_NAME.to_string(),
-        is_read_only: true,
-        mix: DEFAULT_MIX,
-        depth: DEFAULT_DEPTH,
-        phase_offset: DEFAULT_PHASE_OFFSET,
-        output_gain_db: DEFAULT_OUTPUT_GAIN_DB,
-        sync_division: DEFAULT_SYNC_DIVISION_INDEX,
-        editable_curve: default_editable_curve(),
     }
 }
 
@@ -620,45 +606,13 @@ impl PumpParams {
         if normalized.presets.len() > MAX_PRESETS {
             normalized.presets.truncate(MAX_PRESETS);
         }
-        let init_name = normalized_preset_name(DEFAULT_PRESET_NAME);
-        let mut first_read_only: Option<usize> = None;
         for (index, preset) in normalized.presets.iter_mut().enumerate() {
             preset.name = sanitize_preset_name(&preset.name, index);
-            if preset.is_read_only {
-                if first_read_only.is_some() {
-                    preset.is_read_only = false;
-                } else {
-                    first_read_only = Some(index);
-                }
-            }
+            // Persist the field for backward-compatible serialization, but keep
+            // runtime behavior fully writable across all presets.
+            preset.is_read_only = false;
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
             preset.editable_curve = preset.editable_curve.clone().normalized();
-            if !preset.is_read_only && normalized_preset_name(&preset.name) == init_name {
-                preset.name = sanitize_preset_name("", index);
-            }
-        }
-        if first_read_only.is_none() {
-            // Preserve user-authored presets exactly as loaded and prepend a
-            // canonical read-only Init entry instead of overwriting index 0.
-            normalized.presets.insert(0, default_init_preset());
-            normalized.selected = normalized.selected.saturating_add(1);
-            if normalized.presets.len() > MAX_PRESETS {
-                normalized.presets.truncate(MAX_PRESETS);
-            }
-        } else if let Some(read_only_index) = first_read_only {
-            if read_only_index != 0 {
-                let init_preset = normalized.presets.remove(read_only_index);
-                normalized.presets.insert(0, init_preset);
-                normalized.selected = if normalized.selected == read_only_index {
-                    0
-                } else if normalized.selected < read_only_index {
-                    normalized.selected + 1
-                } else {
-                    normalized.selected
-                };
-            }
-            normalized.presets[0].name = DEFAULT_PRESET_NAME.to_string();
-            normalized.presets[0].is_read_only = true;
         }
         normalized.selected = normalized
             .selected
@@ -666,15 +620,6 @@ impl PumpParams {
         if let Ok(mut guard) = self.preset_bank.write() {
             *guard = normalized;
         }
-    }
-
-    /// Return true when the preset at `index` is read-only.
-    pub fn is_preset_read_only(&self, index: usize) -> bool {
-        self.preset_bank
-            .read()
-            .ok()
-            .and_then(|bank| bank.presets.get(index).map(|preset| preset.is_read_only))
-            .unwrap_or(false)
     }
 
     /// Load one preset by index into the active parameter state.
@@ -719,13 +664,7 @@ impl PumpParams {
         let Some(preset) = guard.presets.get_mut(index) else {
             return false;
         };
-        if preset.is_read_only {
-            return false;
-        }
         let candidate = sanitize_preset_name(new_name, index);
-        if normalized_preset_name(&candidate) == normalized_preset_name(DEFAULT_PRESET_NAME) {
-            return false;
-        }
         preset.name = candidate;
         true
     }
@@ -741,7 +680,6 @@ impl PumpParams {
             return SavePresetOutcome::InvalidName;
         }
         let normalized_candidate = normalized_preset_name(&candidate_name);
-        let init_name = normalized_preset_name(DEFAULT_PRESET_NAME);
 
         let snapshot = self.current_preset_snapshot_with_name(candidate_name.clone());
         let Ok(mut guard) = self.preset_bank.write() else {
@@ -753,14 +691,6 @@ impl PumpParams {
             .iter()
             .position(|preset| normalized_preset_name(&preset.name) == normalized_candidate);
         if let Some(index) = matching_index {
-            if guard
-                .presets
-                .get(index)
-                .map(|preset| preset.is_read_only)
-                .unwrap_or(false)
-            {
-                return SavePresetOutcome::BlockedReadOnly;
-            }
             if let Some(existing) = guard.presets.get_mut(index) {
                 existing.mix = snapshot.mix;
                 existing.depth = snapshot.depth;
@@ -773,9 +703,6 @@ impl PumpParams {
             return SavePresetOutcome::Overwritten { index };
         }
 
-        if normalized_candidate == init_name {
-            return SavePresetOutcome::BlockedReadOnly;
-        }
         if guard.presets.len() >= MAX_PRESETS {
             return SavePresetOutcome::BlockedFull;
         }
@@ -895,7 +822,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
             selected: 0,
             presets: vec![PumpPreset {
                 name: DEFAULT_PRESET_NAME.to_string(),
-                is_read_only: true,
+                is_read_only: false,
                 mix,
                 depth,
                 phase_offset,
@@ -1014,22 +941,19 @@ fn decode_preset_bank(
         let Some(sync_division) = read_u32(cursor).map(|value| value as usize) else {
             return Err("invalid preset sync division");
         };
-        let is_read_only = if version >= 4 {
+        if version >= 4 {
             let Some(flag) = read_u8(cursor) else {
                 return Err("invalid preset read-only flag");
             };
-            flag != 0
-        } else {
-            index == 0
-                && normalized_preset_name(raw_name) == normalized_preset_name(DEFAULT_PRESET_NAME)
-        };
+            let _ = flag;
+        }
         let Some(node_count) = read_u32(cursor).map(|value| value as usize) else {
             return Err("invalid preset node count");
         };
         let editable_curve = decode_curve(cursor, node_count)?;
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
-            is_read_only,
+            is_read_only: false,
             mix,
             depth,
             phase_offset,
@@ -1088,7 +1012,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
         selected: 0,
         presets: vec![PumpPreset {
             name: DEFAULT_PRESET_NAME.to_string(),
-            is_read_only: true,
+            is_read_only: false,
             mix: params.mix(),
             depth: params.depth(),
             phase_offset: params.phase_offset(),
@@ -1306,11 +1230,11 @@ mod tests {
         assert_eq!(bank.presets.len(), 2);
         assert_eq!(bank.selected, 1);
         assert_eq!(bank.presets[1].name, "Verse");
-        assert!(bank.presets[0].is_read_only);
+        assert!(!bank.presets[0].is_read_only);
     }
 
     #[test]
-    fn set_preset_bank_inserts_init_without_overwriting_user_presets() {
+    fn set_preset_bank_preserves_user_presets_without_inserting_init() {
         let params = PumpParams::new();
         params.set_preset_bank(PumpPresetBank {
             selected: 1,
@@ -1339,17 +1263,12 @@ mod tests {
         });
 
         let bank = params.preset_bank_snapshot();
-        assert_eq!(bank.presets.len(), 3);
-        assert_eq!(
-            bank.selected, 2,
-            "selected index should shift with Init prepend"
-        );
-        assert_eq!(bank.presets[0].name, "Init");
-        assert!(bank.presets[0].is_read_only);
-        assert_eq!(bank.presets[1].name, "Live A");
-        assert!((bank.presets[1].mix - 0.11).abs() < 1.0e-6);
-        assert_eq!(bank.presets[2].name, "Live B");
-        assert!((bank.presets[2].mix - 0.77).abs() < 1.0e-6);
+        assert_eq!(bank.presets.len(), 2);
+        assert_eq!(bank.selected, 1);
+        assert_eq!(bank.presets[0].name, "Live A");
+        assert!((bank.presets[0].mix - 0.11).abs() < 1.0e-6);
+        assert_eq!(bank.presets[1].name, "Live B");
+        assert!((bank.presets[1].mix - 0.77).abs() < 1.0e-6);
     }
 
     #[test]
@@ -1385,16 +1304,18 @@ mod tests {
     }
 
     #[test]
-    fn init_preset_is_read_only_for_rename_and_save() {
+    fn init_preset_is_writable_for_rename_and_save() {
         let params = PumpParams::new();
-        assert!(params.is_preset_read_only(0));
-        assert!(!params.rename_preset(0, "Init2"));
+        params.set_mix(0.61);
+        assert!(params.rename_preset(0, "Init2"));
         assert_eq!(
-            params.save_current_state_by_name("Init"),
-            SavePresetOutcome::BlockedReadOnly
+            params.save_current_state_by_name("Init2"),
+            SavePresetOutcome::Overwritten { index: 0 }
         );
         let bank = params.preset_bank_snapshot();
-        assert_eq!(bank.presets[0].name, "Init");
+        assert_eq!(bank.presets[0].name, "Init2");
+        assert!((bank.presets[0].mix - 0.61).abs() < 1.0e-6);
+        assert!(!bank.presets[0].is_read_only);
     }
 
     #[test]

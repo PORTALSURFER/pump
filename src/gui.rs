@@ -90,7 +90,6 @@ const RESET_GUARD_AFTER_DROPDOWN_MICROS: u64 = 120_000;
 const PRESET_WARNING_FRAMES: u8 = 45;
 const PRESET_WARNING_BLINK_HALF_PERIOD_FRAMES: u8 = 6;
 const PRESET_WARNING_MAX: &str = "MAX";
-const PRESET_WARNING_INIT: &str = "INIT";
 const PRESET_WARNING_NAME: &str = "NAME";
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
@@ -1359,10 +1358,6 @@ impl GuiState {
             return;
         }
         let selected = bank.selected.min(bank.presets.len().saturating_sub(1));
-        if self.params.is_preset_read_only(selected) {
-            self.set_preset_warning(PRESET_WARNING_INIT);
-            return;
-        }
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.preset_rename_target = selected;
             runtime.preset_name_draft = bank.presets[runtime.preset_rename_target].name.clone();
@@ -1387,7 +1382,7 @@ impl GuiState {
             runtime.preset_warning_frames = 0;
             runtime.preset_warning_text = None;
         } else {
-            runtime.preset_warning_text = Some(PRESET_WARNING_INIT);
+            runtime.preset_warning_text = Some(PRESET_WARNING_NAME);
             runtime.preset_warning_frames = PRESET_WARNING_FRAMES;
         }
     }
@@ -1429,7 +1424,6 @@ impl GuiState {
                     runtime.preset_warning_text = None;
                 }
             }
-            SavePresetOutcome::BlockedReadOnly => self.set_preset_warning(PRESET_WARNING_INIT),
             SavePresetOutcome::BlockedFull => self.set_preset_warning(PRESET_WARNING_MAX),
             SavePresetOutcome::InvalidName => self.set_preset_warning(PRESET_WARNING_NAME),
         }
