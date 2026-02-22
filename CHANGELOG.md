@@ -156,6 +156,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (af57659)
 
+- (changelog) Update changelog [skip ci] (5b9b7c9)
+
 
 ### Features
 
@@ -632,6 +634,8 @@ All notable changes to this project are documented in this file.
 - (metadata) Centralize plugin id and vendor policy (4b978c1)
 
 - (params) Unify clap and vst3 mapping logic (242f757)
+
+- (transport) Unify gui phase telemetry helpers (c943368)
 
 
 ### Testing
