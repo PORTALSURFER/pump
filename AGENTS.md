@@ -1,3 +1,20 @@
+# Agent Wake-Up Portal
+
+Use this file as a fast entrypoint. Keep details in `docs/` and `MEMORY.md`.
+
+## 60-Second Wake-Up
+
+1. Run `bash scripts/run_agent_request.sh`.
+2. Read `MEMORY.md` for current state.
+3. Open `docs/plans/active/todo.md` and execute item `1`.
+
+## Source of Truth
+
+- Current status: `MEMORY.md`
+- Active queue: `docs/plans/active/todo.md`
+- Plan map: `docs/plans/index.md`
+- Documentation map: `docs/README.md`
+
 ## Core Framework Boundary
 
 - Reusable framework-level features must live in `toybox` when they can reasonably serve multiple plugins.
