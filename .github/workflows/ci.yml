@@ -68,3 +68,25 @@ jobs:
           VST3_SDK_DIR: ${{ vars.VST3_SDK_DIR }}
         shell: bash
         run: bash scripts/ci.sh --vst3
+
+  windows-gui-regressions:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run checks (default features)
+        shell: bash
+        run: bash scripts/ci.sh
+
+      - name: Run dropdown popup regression test
+        shell: bash
+        run: cargo test --features screenshot-test dropdown_popups_remain_usable_over_curve_content -- --nocapture
