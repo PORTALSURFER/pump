@@ -28,6 +28,8 @@ use crate::params::{
 };
 use crate::time_utils::monotonic_micros;
 
+#[cfg(test)]
+mod build_support;
 mod curve;
 mod dsp;
 mod gui;
