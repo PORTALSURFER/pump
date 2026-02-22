@@ -1,6 +1,6 @@
 # pump
 
-`pump` is a beat-synced gain-shaper plugin for sidechain-style ducking.
+`pump` is a node-based beat-synced gain-shaper plugin for sidechain-style ducking.
 
 ## Build
 
@@ -23,7 +23,7 @@ VST3_SDK_DIR=/mnt/e/lib/vst3sdk cargo test --features vst3
 
 ## Core idea
 
-Draw a freehand spline-like curve that defines gain over one sync cycle.
+Edit a node-based spline curve that defines gain over one sync cycle.
 The curve is sampled in real time and applied to stereo gain for controlled pumping.
 
 ## Main controls

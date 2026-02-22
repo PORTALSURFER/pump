@@ -1,10 +1,9 @@
-//! Pump: freehand beat-synced gain shaping for sidechain-style ducking.
+//! Pump: node-based beat-synced gain shaping for sidechain-style ducking.
 
 #![warn(missing_docs)]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::sync::Arc;
 
 use toybox::clack_extensions::audio_ports::*;
 use toybox::clack_extensions::gui::{PluginGui, PluginGuiImpl};
@@ -27,11 +26,13 @@ use crate::params::{
     apply_param_event, decode_state_payload, encode_state_payload, get_param_value, param_count,
     text_to_value, value_to_text, write_param_info, PumpParams,
 };
+use crate::time_utils::monotonic_micros;
 
 mod curve;
 mod dsp;
 mod gui;
 mod params;
+mod time_utils;
 #[cfg(feature = "vst3")]
 mod vst3;
 
@@ -64,7 +65,7 @@ impl DefaultPluginFactory for PumpPlugin {
         PluginDescriptor::new("com.portalsurfer.pump", "pump")
             .with_vendor("PORTALSURFER")
             .with_features([AUDIO_EFFECT, STEREO])
-            .with_description("Freehand beat-synced gain ducking effect")
+            .with_description("Node-based beat-synced gain ducking effect")
     }
 
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
@@ -431,13 +432,6 @@ fn host_beat_phase(transport: TransportState) -> Option<f32> {
     transport
         .song_pos_beats
         .map(|beats| beats.rem_euclid(1.0) as f32)
-}
-
-/// Return monotonic microseconds since plugin runtime epoch.
-fn monotonic_micros() -> u64 {
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
 /// Extrapolate normalized phase from an anchor phase and elapsed time.

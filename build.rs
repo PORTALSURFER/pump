@@ -22,14 +22,6 @@ enum ArtifactKind {
     Vst3,
 }
 
-/// Resolved output locations for one artifact build.
-struct ArtifactOutput {
-    /// Concrete binary path passed to the linker `/OUT:` argument.
-    link_output_path: PathBuf,
-    /// User-facing artifact export path.
-    export_path: PathBuf,
-}
-
 impl ArtifactKind {
     fn label(&self) -> &'static str {
         match self {
@@ -58,20 +50,21 @@ fn main() {
     }
 
     let artifact = select_artifact_for_invocation(&config);
-    let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.0".into());
+    let version =
+        env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION not set by cargo for build script");
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".into());
     let cargo_target_dir = cargo_target_dir(&manifest_dir);
-    let output = output_paths_for(&artifact, &version, &profile, &cargo_target_dir, &config);
+    let output_path = output_path_for(&artifact, &version, &profile, &cargo_target_dir, &config);
 
-    create_parent(&output.link_output_path);
+    create_parent(&output_path);
     println!(
         "cargo:rustc-cdylib-link-arg={}",
-        windows_link_out_arg(&output.link_output_path)
+        windows_link_out_arg(&output_path)
     );
     println!(
         "cargo:warning=writing {} artifact to {}",
         artifact.label(),
-        log_path(&output.export_path)
+        log_path(&output_path)
     );
 }
 
@@ -197,13 +190,13 @@ fn select_artifact_for_invocation(config: &BuildConfig) -> ArtifactKind {
     }
 }
 
-fn output_paths_for(
+fn output_path_for(
     artifact: &ArtifactKind,
     version: &str,
     profile: &str,
     cargo_target_dir: &Path,
     config: &BuildConfig,
-) -> ArtifactOutput {
+) -> PathBuf {
     let output_root = if profile == "release" {
         config.target_dir.clone()
     } else {
@@ -211,21 +204,8 @@ fn output_paths_for(
     };
 
     match artifact {
-        ArtifactKind::Clap => {
-            let clap_path = output_root.join(format!("pump-v{version}-win.clap"));
-            ArtifactOutput {
-                link_output_path: clap_path.clone(),
-                export_path: clap_path,
-            }
-        }
-        ArtifactKind::Vst3 => {
-            let bundle_name = format!("pump-v{version}-win.vst3");
-            let binary_path = output_root.join(&bundle_name);
-            ArtifactOutput {
-                link_output_path: binary_path,
-                export_path: output_root.join(&bundle_name),
-            }
-        }
+        ArtifactKind::Clap => output_root.join(format!("pump-v{version}-win.clap")),
+        ArtifactKind::Vst3 => output_root.join(format!("pump-v{version}-win.vst3")),
     }
 }
 
