@@ -160,6 +160,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (a23d7ce)
 
+- (changelog) Update changelog [skip ci] (2a7fc03)
+
 
 ### Features
 
@@ -659,4 +661,6 @@ All notable changes to this project are documented in this file.
 - (build) Cover config parsing and artifact path logic (dcc82d0)
 
 - (state) Add malformed payload decode coverage (ebed91c)
+
+- (gui) Add non-windows dropdown-over-curve coverage (dd87705)
 
