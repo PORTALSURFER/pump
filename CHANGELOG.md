@@ -47,6 +47,8 @@ All notable changes to this project are documented in this file.
 
 - (gui) Align dropdown panel to top-right (6ca25ee)
 
+- (build) Export windows vst3 bundle root with -win suffix (fe7be31)
+
 
 ### CI
 
@@ -127,6 +129,8 @@ All notable changes to this project are documented in this file.
 - Add core framework boundary guidance to AGENTS (01e9211)
 
 - (handoff) Align wake-up portal and plan artifacts (0c9314f)
+
+- (changelog) Update changelog [skip ci] (e65f45a)
 
 
 ### Features
