@@ -18,7 +18,7 @@ use toybox::clap::prelude::apply_param_events;
 use toybox::clap::process::{min_len, split_channel};
 use toybox::clap::state::{read_versioned_payload, write_versioned_payload};
 use toybox::clap::transport::transport_state_from_transport;
-use toybox::dsp::{phase_from_beats, AtomicF32, TransportState};
+use toybox::dsp::{AtomicF32, TransportState};
 
 use crate::dsp::{DspSettings, PumpEngine};
 use crate::gui::PumpGui;
@@ -35,6 +35,7 @@ mod gui_status;
 mod params;
 mod plugin_processor;
 mod time_utils;
+mod transport;
 #[cfg(feature = "vst3")]
 mod vst3;
 
@@ -193,8 +194,8 @@ impl PluginStateImpl for PumpMainThread<'_> {
     }
 }
 
-use gui_status::{gui_phase_from_transport, host_beat_phase};
 pub use gui_status::{GuiStatus, GuiTransportTelemetry};
 use plugin_processor::PumpAudioProcessor;
+use transport::{gui_phase_from_transport, host_beat_phase};
 
 toybox::clap_plugin_entry!(PumpPlugin);

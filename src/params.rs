@@ -265,6 +265,11 @@ mod host_api;
 mod runtime_impl;
 mod state_codec;
 
+#[cfg(feature = "vst3")]
+pub use host_api::{
+    apply_normalized_param_value, default_normalized_value, normalized_from_plain_value,
+    plain_from_normalized_value,
+};
 pub use host_api::{
     apply_param_event, get_param_value, param_count, text_to_value, value_to_text,
     write_param_info, MAX_SYNC_DIVISION,

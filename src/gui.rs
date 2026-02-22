@@ -197,12 +197,6 @@ impl PumpGui {
         self.window.request_resize(width, height);
     }
 
-    /// Inject one text character into the native editor window.
-    #[cfg(any(feature = "vst3", windows))]
-    pub fn post_text_char(&self, ch: char) -> bool {
-        self.window.post_text_char(ch)
-    }
-
     /// Inject one character tagged as host-injected key input.
     #[cfg(any(feature = "vst3", windows))]
     pub fn post_injected_text_char(&self, ch: char, modifiers: ShortcutModifiers) -> bool {

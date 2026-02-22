@@ -3,8 +3,6 @@
 //! This adapter shares parameter ranges/state with the CLAP implementation and
 //! processes the same gain-envelope DSP core.
 
-#![allow(clippy::missing_docs_in_private_items)]
-
 use std::ffi::{c_void, CStr};
 use std::ptr;
 use std::slice;
@@ -17,13 +15,14 @@ use toybox::vst3::prelude::*;
 use crate::dsp::{DspSettings, PumpEngine};
 use crate::gui::{preferred_window_size, PumpGui};
 use crate::params::{
-    decode_state_payload, encode_state_payload, sync_division_index_from_text, sync_division_label,
-    PumpParams, DEFAULT_DEPTH, DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET,
-    DEFAULT_SYNC_DIVISION_INDEX, MAX_DEPTH, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET,
-    MAX_SYNC_DIVISION, MIN_DEPTH, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET,
+    apply_normalized_param_value, decode_state_payload, default_normalized_value,
+    encode_state_payload, get_param_value, normalized_from_plain_value, param_count,
+    plain_from_normalized_value, sync_division_index_from_text, sync_division_label, PumpParams,
+    MAX_SYNC_DIVISION,
 };
+use crate::transport::{gui_phase_from_transport, host_beat_phase};
 use crate::{GuiStatus, GuiTransportTelemetry};
-use toybox::dsp::{phase_from_beats, TransportState};
+use toybox::dsp::TransportState;
 
 const PLUGIN_NAME: &str = "pump";
 const PROCESSOR_CID: TUID = uid(0xE5A9A79F, 0xC4A94392, 0x97A8A8AA, 0xA9A90B3C);
@@ -44,12 +43,12 @@ mod transport_utils;
 
 use param_bridge::{apply_normalized_param, from_normalized, read_plain_param, to_normalized};
 use shared_state::{
-    acquire_shared_for_role, release_shared_for_role, shared_registry, PumpVst3Runtime,
-    PumpVst3Shared, SharedRegistryEntry, SharedRole,
+    acquire_shared_for_role, release_shared_for_role, PumpVst3Runtime, PumpVst3Shared, SharedRole,
 };
-use transport_utils::{
-    gui_phase_from_transport, host_beat_phase, transport_state_from_vst3_process_context,
-};
+use transport_utils::transport_state_from_vst3_process_context;
+
+#[cfg(test)]
+use shared_state::{shared_registry, SharedRegistryEntry};
 
 mod controller;
 mod factory;
@@ -380,9 +379,9 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
 impl IProcessContextRequirementsTrait for PumpVst3Processor {
     unsafe fn getProcessContextRequirements(&self) -> u32 {
-        (IProcessContextRequirements_::Flags_::kNeedTempo
+        IProcessContextRequirements_::Flags_::kNeedTempo
             | IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic
-            | IProcessContextRequirements_::Flags_::kNeedTransportState) as u32
+            | IProcessContextRequirements_::Flags_::kNeedTransportState
     }
 }
 

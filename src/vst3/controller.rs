@@ -60,7 +60,7 @@ impl IEditControllerTrait for PumpVst3Controller {
     }
 
     unsafe fn getParameterCount(&self) -> int32 {
-        5
+        param_count() as int32
     }
 
     unsafe fn getParameterInfo(&self, param_index: int32, info: *mut ParameterInfo) -> tresult {
@@ -76,7 +76,10 @@ impl IEditControllerTrait for PumpVst3Controller {
                 copy_wstring("Mix", &mut info.shortTitle);
                 copy_wstring("%", &mut info.units);
                 info.stepCount = 0;
-                info.defaultNormalizedValue = to_normalized(PARAM_MIX_ID, DEFAULT_MIX as f64);
+                info.defaultNormalizedValue = default_normalized_value(
+                    toybox::clack_plugin::prelude::ClapId::new(PARAM_MIX_ID),
+                )
+                .unwrap_or(0.0);
                 info.unitId = 0;
                 info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk
@@ -87,7 +90,10 @@ impl IEditControllerTrait for PumpVst3Controller {
                 copy_wstring("Depth", &mut info.shortTitle);
                 copy_wstring("%", &mut info.units);
                 info.stepCount = 0;
-                info.defaultNormalizedValue = to_normalized(PARAM_DEPTH_ID, DEFAULT_DEPTH as f64);
+                info.defaultNormalizedValue = default_normalized_value(
+                    toybox::clack_plugin::prelude::ClapId::new(PARAM_DEPTH_ID),
+                )
+                .unwrap_or(0.0);
                 info.unitId = 0;
                 info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk
@@ -98,8 +104,10 @@ impl IEditControllerTrait for PumpVst3Controller {
                 copy_wstring("Phase", &mut info.shortTitle);
                 copy_wstring("%", &mut info.units);
                 info.stepCount = 0;
-                info.defaultNormalizedValue =
-                    to_normalized(PARAM_PHASE_OFFSET_ID, DEFAULT_PHASE_OFFSET as f64);
+                info.defaultNormalizedValue = default_normalized_value(
+                    toybox::clack_plugin::prelude::ClapId::new(PARAM_PHASE_OFFSET_ID),
+                )
+                .unwrap_or(0.0);
                 info.unitId = 0;
                 info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk
@@ -110,8 +118,10 @@ impl IEditControllerTrait for PumpVst3Controller {
                 copy_wstring("Output", &mut info.shortTitle);
                 copy_wstring("dB", &mut info.units);
                 info.stepCount = 0;
-                info.defaultNormalizedValue =
-                    to_normalized(PARAM_OUTPUT_GAIN_ID, DEFAULT_OUTPUT_GAIN_DB as f64);
+                info.defaultNormalizedValue = default_normalized_value(
+                    toybox::clack_plugin::prelude::ClapId::new(PARAM_OUTPUT_GAIN_ID),
+                )
+                .unwrap_or(0.0);
                 info.unitId = 0;
                 info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk
@@ -122,8 +132,10 @@ impl IEditControllerTrait for PumpVst3Controller {
                 copy_wstring("Division", &mut info.shortTitle);
                 copy_wstring("", &mut info.units);
                 info.stepCount = MAX_SYNC_DIVISION as i32;
-                info.defaultNormalizedValue =
-                    to_normalized(PARAM_SYNC_DIVISION_ID, DEFAULT_SYNC_DIVISION_INDEX as f64);
+                info.defaultNormalizedValue = default_normalized_value(
+                    toybox::clack_plugin::prelude::ClapId::new(PARAM_SYNC_DIVISION_ID),
+                )
+                .unwrap_or(0.0);
                 info.unitId = 0;
                 info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
                 kResultOk

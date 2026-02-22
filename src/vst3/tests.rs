@@ -39,7 +39,7 @@ fn transport_state_uses_vst3_process_context_when_available() {
     let context = ProcessContext {
         state: (ProcessContext_::StatesAndFlags_::kTempoValid
             | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid
-            | ProcessContext_::StatesAndFlags_::kPlaying) as u32,
+            | ProcessContext_::StatesAndFlags_::kPlaying),
         sampleRate: 48_000.0,
         projectTimeSamples: 0,
         systemTime: 0,
