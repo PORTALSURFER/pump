@@ -289,4 +289,6 @@ pub use host_api::{
 pub use state_codec::{decode_state_payload, encode_state_payload};
 
 #[cfg(test)]
+mod state_decode_tests;
+#[cfg(test)]
 mod tests;
