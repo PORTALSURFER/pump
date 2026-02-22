@@ -131,6 +131,44 @@ mod interaction_and_automation_tests {
     }
 
     #[test]
+    fn curve_editor_changed_with_deleted_interior_node_updates_params() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let before = params.editable_curve_snapshot();
+        let mut model = toybox::gui::declarative::CurveModel::new(
+            before
+                .nodes
+                .iter()
+                .map(|node| toybox::gui::declarative::CurvePoint::new(node.x, node.y))
+                .collect(),
+            before
+                .segments
+                .iter()
+                .map(|segment| toybox::gui::declarative::CurveSegment::new(segment.tension))
+                .collect(),
+        );
+        model.points.remove(1);
+        model.segments.remove(0);
+
+        state.reduce_action(UiAction::CurveEditorChanged {
+            key: CURVE_KEY.to_string(),
+            model,
+        });
+
+        let after = params.editable_curve_snapshot();
+        assert_eq!(
+            after.nodes.len() + 1,
+            before.nodes.len(),
+            "curve editor changed action should preserve interior deletion"
+        );
+    }
+
+    #[test]
     fn curve_press_on_segment_inserts_preview_node() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
