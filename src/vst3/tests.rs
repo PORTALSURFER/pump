@@ -28,8 +28,8 @@ fn controller_and_processor_share_param_state() {
     let shared = Arc::new(PumpVst3Shared::new());
     let controller = PumpVst3Controller::new(Arc::clone(&shared));
     let processor = PumpVst3Processor::new(Arc::clone(&shared));
-    let value = to_normalized(PARAM_DEPTH_ID, 0.25);
-    let result = unsafe { controller.setParamNormalized(PARAM_DEPTH_ID, value) };
+    let value = to_normalized(PARAM_DEPTH_NUM, 0.25);
+    let result = unsafe { controller.setParamNormalized(PARAM_DEPTH_NUM, value) };
     assert_eq!(result, kResultOk);
     assert!((processor.shared.params.depth() - 0.25).abs() < 1.0e-6);
 }

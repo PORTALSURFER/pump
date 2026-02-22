@@ -19,16 +19,27 @@ use crate::curve::{
 const STATE_MAGIC: &[u8; 4] = b"PMP2";
 const STATE_VERSION: u32 = 4;
 
+/// Host-visible numeric parameter id for dry/wet blend.
+pub const PARAM_MIX_NUM: u32 = 1;
+/// Host-visible numeric parameter id for duck amount.
+pub const PARAM_DEPTH_NUM: u32 = 2;
+/// Host-visible numeric parameter id for cycle phase offset.
+pub const PARAM_PHASE_OFFSET_NUM: u32 = 3;
+/// Host-visible numeric parameter id for output trim in decibels.
+pub const PARAM_OUTPUT_GAIN_NUM: u32 = 4;
+/// Host-visible numeric parameter id for beat-sync cycle division.
+pub const PARAM_SYNC_DIVISION_NUM: u32 = 5;
+
 /// Parameter id for dry/wet blend.
-pub const PARAM_MIX_ID: ClapId = ClapId::new(1);
+pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
 /// Parameter id for duck amount.
-pub const PARAM_DEPTH_ID: ClapId = ClapId::new(2);
+pub const PARAM_DEPTH_ID: ClapId = ClapId::new(PARAM_DEPTH_NUM);
 /// Parameter id for cycle phase offset.
-pub const PARAM_PHASE_OFFSET_ID: ClapId = ClapId::new(3);
+pub const PARAM_PHASE_OFFSET_ID: ClapId = ClapId::new(PARAM_PHASE_OFFSET_NUM);
 /// Parameter id for output trim in decibels.
-pub const PARAM_OUTPUT_GAIN_ID: ClapId = ClapId::new(4);
+pub const PARAM_OUTPUT_GAIN_ID: ClapId = ClapId::new(PARAM_OUTPUT_GAIN_NUM);
 /// Parameter id for beat-sync cycle division.
-pub const PARAM_SYNC_DIVISION_ID: ClapId = ClapId::new(5);
+pub const PARAM_SYNC_DIVISION_ID: ClapId = ClapId::new(PARAM_SYNC_DIVISION_NUM);
 
 /// Default dry/wet blend.
 pub const DEFAULT_MIX: f32 = 1.0;
@@ -267,8 +278,9 @@ mod state_codec;
 
 #[cfg(feature = "vst3")]
 pub use host_api::{
-    apply_normalized_param_value, default_normalized_value, normalized_from_plain_value,
-    plain_from_normalized_value,
+    apply_normalized_param_value, clap_id_from_vst3_param_id, format_plain_value_text,
+    normalized_from_plain_value, parse_plain_value_text, plain_from_normalized_value,
+    vst3_param_info_for_index,
 };
 pub use host_api::{
     apply_param_event, get_param_value, param_count, text_to_value, value_to_text,

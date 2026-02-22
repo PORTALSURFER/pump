@@ -15,10 +15,11 @@ use toybox::vst3::prelude::*;
 use crate::dsp::{DspSettings, PumpEngine};
 use crate::gui::{preferred_window_size, PumpGui};
 use crate::params::{
-    apply_normalized_param_value, decode_state_payload, default_normalized_value,
-    encode_state_payload, get_param_value, normalized_from_plain_value, param_count,
-    plain_from_normalized_value, sync_division_index_from_text, sync_division_label, PumpParams,
-    MAX_SYNC_DIVISION,
+    apply_normalized_param_value, clap_id_from_vst3_param_id, decode_state_payload,
+    encode_state_payload, format_plain_value_text, get_param_value, normalized_from_plain_value,
+    param_count, parse_plain_value_text, plain_from_normalized_value, vst3_param_info_for_index,
+    PumpParams, PARAM_DEPTH_NUM, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_NUM,
+    PARAM_SYNC_DIVISION_NUM,
 };
 use crate::plugin_metadata::PLUGIN_NAME;
 use crate::transport::{gui_phase_from_transport, host_beat_phase};
@@ -30,12 +31,6 @@ const CONTROLLER_CID: TUID = uid(0xB2EE267A, 0xE4314D5D, 0x96085F7A, 0x51681074)
 
 const STATE_MAGIC: u32 = u32::from_le_bytes(*b"PUMP");
 const STATE_VERSION: u32 = 1;
-
-const PARAM_MIX_ID: ParamID = 1;
-const PARAM_DEPTH_ID: ParamID = 2;
-const PARAM_PHASE_OFFSET_ID: ParamID = 3;
-const PARAM_OUTPUT_GAIN_ID: ParamID = 4;
-const PARAM_SYNC_DIVISION_ID: ParamID = 5;
 
 mod param_bridge;
 mod shared_state;
@@ -284,11 +279,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         let process_data = unsafe { &*data };
 
         for id in [
-            PARAM_MIX_ID,
-            PARAM_DEPTH_ID,
-            PARAM_PHASE_OFFSET_ID,
-            PARAM_OUTPUT_GAIN_ID,
-            PARAM_SYNC_DIVISION_ID,
+            PARAM_MIX_NUM,
+            PARAM_DEPTH_NUM,
+            PARAM_PHASE_OFFSET_NUM,
+            PARAM_OUTPUT_GAIN_NUM,
+            PARAM_SYNC_DIVISION_NUM,
         ] {
             if let Some((_, value)) =
                 unsafe { latest_param_point(process_data.inputParameterChanges, id) }

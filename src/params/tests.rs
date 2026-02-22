@@ -3,6 +3,13 @@ use super::{
     PumpParams, PumpPreset, PumpPresetBank, SavePresetOutcome, MAX_PRESET_NAME_CHARS,
     MAX_SYNC_DIVISION,
 };
+#[cfg(feature = "vst3")]
+use super::{
+    clap_id_from_vst3_param_id, format_plain_value_text, parse_plain_value_text,
+    vst3_param_info_for_index, PARAM_DEPTH_ID, PARAM_DEPTH_NUM, PARAM_MIX_ID, PARAM_MIX_NUM,
+    PARAM_OUTPUT_GAIN_ID, PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM,
+    PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
+};
 use crate::curve::{CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN};
 
 #[test]
@@ -269,6 +276,64 @@ fn init_preset_is_writable_for_rename_and_save() {
     assert_eq!(bank.presets[0].name, "Init2");
     assert!((bank.presets[0].mix - 0.61).abs() < 1.0e-6);
     assert!(!bank.presets[0].is_read_only);
+}
+
+#[cfg(feature = "vst3")]
+#[test]
+fn vst3_mapping_resolves_to_shared_clap_ids() {
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_MIX_NUM),
+        Some(PARAM_MIX_ID)
+    );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_DEPTH_NUM),
+        Some(PARAM_DEPTH_ID)
+    );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_PHASE_OFFSET_NUM),
+        Some(PARAM_PHASE_OFFSET_ID)
+    );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_OUTPUT_GAIN_NUM),
+        Some(PARAM_OUTPUT_GAIN_ID)
+    );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_SYNC_DIVISION_NUM),
+        Some(PARAM_SYNC_DIVISION_ID)
+    );
+    assert_eq!(clap_id_from_vst3_param_id(999), None);
+}
+
+#[cfg(feature = "vst3")]
+#[test]
+fn vst3_info_and_text_conversions_share_param_rules() {
+    let mix_info = vst3_param_info_for_index(0).expect("mix info should exist");
+    assert_eq!(mix_info.id, PARAM_MIX_NUM);
+    assert_eq!(mix_info.title, "Mix");
+    assert_eq!(mix_info.units, "%");
+
+    let division_info = vst3_param_info_for_index(4).expect("division info should exist");
+    assert_eq!(division_info.id, PARAM_SYNC_DIVISION_NUM);
+    assert_eq!(division_info.step_count, MAX_SYNC_DIVISION as i32);
+
+    let mix_text = format_plain_value_text(PARAM_MIX_ID, 0.5).expect("mix text");
+    assert_eq!(mix_text, "50%");
+    assert_eq!(parse_plain_value_text(PARAM_MIX_ID, "50%"), Some(0.5));
+
+    let output_text = format_plain_value_text(PARAM_OUTPUT_GAIN_ID, -3.5).expect("output text");
+    assert_eq!(output_text, "-3.5 dB");
+    assert_eq!(
+        parse_plain_value_text(PARAM_OUTPUT_GAIN_ID, "-3.5 dB"),
+        Some(-3.5)
+    );
+
+    let division_text =
+        format_plain_value_text(PARAM_SYNC_DIVISION_ID, 7.0).expect("division text");
+    assert_eq!(division_text, "2 Bars");
+    assert_eq!(
+        parse_plain_value_text(PARAM_SYNC_DIVISION_ID, "2 Bars"),
+        Some(7.0)
+    );
 }
 
 #[test]

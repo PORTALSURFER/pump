@@ -7,9 +7,15 @@ const AUTO_ENUM: u32 = AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags
 
 #[derive(Copy, Clone)]
 struct ParamDef {
+    #[cfg(feature = "vst3")]
+    vst3_id: u32,
     id: ClapId,
-    name: &'static [u8],
-    module: &'static [u8],
+    name: &'static str,
+    #[cfg(feature = "vst3")]
+    short_name: &'static str,
+    #[cfg(feature = "vst3")]
+    units: &'static str,
+    module: &'static str,
     min_value: f64,
     max_value: f64,
     default_value: f64,
@@ -19,7 +25,7 @@ struct ParamDef {
 impl ParamDef {
     fn to_spec(self) -> ParamSpec<'static> {
         let flags = ParamInfoFlags::from_bits_truncate(self.flags);
-        let mut builder = ParamBuilder::new(self.id, self.name, self.module)
+        let mut builder = ParamBuilder::new(self.id, self.name.as_bytes(), self.module.as_bytes())
             .range(self.min_value, self.max_value)
             .default(self.default_value);
 
@@ -37,47 +43,94 @@ impl ParamDef {
     }
 }
 
+#[cfg(feature = "vst3")]
+/// Parameter metadata used by the VST3 controller.
+pub struct Vst3ParamInfo {
+    /// Stable VST3 numeric parameter id.
+    pub id: u32,
+    /// Long host-facing parameter title.
+    pub title: &'static str,
+    /// Short host-facing parameter title.
+    pub short_title: &'static str,
+    /// Host-facing parameter unit label.
+    pub units: &'static str,
+    /// VST3 step count (`0` for continuous values).
+    pub step_count: i32,
+    /// Default value in normalized `[0.0, 1.0]` space.
+    pub default_normalized: f64,
+}
+
 const PARAM_DEFS: [ParamDef; 5] = [
     ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_MIX_NUM,
         id: PARAM_MIX_ID,
-        name: b"Mix",
-        module: b"Pump",
+        name: "Mix",
+        #[cfg(feature = "vst3")]
+        short_name: "Mix",
+        #[cfg(feature = "vst3")]
+        units: "%",
+        module: "Pump",
         min_value: MIN_MIX as f64,
         max_value: MAX_MIX as f64,
         default_value: DEFAULT_MIX as f64,
         flags: AUTO,
     },
     ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_DEPTH_NUM,
         id: PARAM_DEPTH_ID,
-        name: b"Depth",
-        module: b"Pump",
+        name: "Depth",
+        #[cfg(feature = "vst3")]
+        short_name: "Depth",
+        #[cfg(feature = "vst3")]
+        units: "%",
+        module: "Pump",
         min_value: MIN_DEPTH as f64,
         max_value: MAX_DEPTH as f64,
         default_value: DEFAULT_DEPTH as f64,
         flags: AUTO,
     },
     ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_PHASE_OFFSET_NUM,
         id: PARAM_PHASE_OFFSET_ID,
-        name: b"Phase Offset",
-        module: b"Pump",
+        name: "Phase Offset",
+        #[cfg(feature = "vst3")]
+        short_name: "Phase",
+        #[cfg(feature = "vst3")]
+        units: "%",
+        module: "Pump",
         min_value: MIN_PHASE_OFFSET as f64,
         max_value: MAX_PHASE_OFFSET as f64,
         default_value: DEFAULT_PHASE_OFFSET as f64,
         flags: AUTO,
     },
     ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_OUTPUT_GAIN_NUM,
         id: PARAM_OUTPUT_GAIN_ID,
-        name: b"Output",
-        module: b"Pump",
+        name: "Output",
+        #[cfg(feature = "vst3")]
+        short_name: "Output",
+        #[cfg(feature = "vst3")]
+        units: "dB",
+        module: "Pump",
         min_value: MIN_OUTPUT_GAIN_DB as f64,
         max_value: MAX_OUTPUT_GAIN_DB as f64,
         default_value: DEFAULT_OUTPUT_GAIN_DB as f64,
         flags: AUTO,
     },
     ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_SYNC_DIVISION_NUM,
         id: PARAM_SYNC_DIVISION_ID,
-        name: b"Division",
-        module: b"Pump",
+        name: "Division",
+        #[cfg(feature = "vst3")]
+        short_name: "Division",
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Pump",
         min_value: 0.0,
         max_value: MAX_SYNC_DIVISION as f64,
         default_value: DEFAULT_SYNC_DIVISION_INDEX as f64,
@@ -88,6 +141,23 @@ const PARAM_DEFS: [ParamDef; 5] = [
 #[cfg(feature = "vst3")]
 fn param_def_for_id(param_id: ClapId) -> Option<ParamDef> {
     PARAM_DEFS.iter().copied().find(|def| def.id == param_id)
+}
+
+#[cfg(feature = "vst3")]
+fn param_def_for_vst3_id(param_id: u32) -> Option<ParamDef> {
+    PARAM_DEFS
+        .iter()
+        .copied()
+        .find(|def| def.vst3_id == param_id)
+}
+
+#[cfg(feature = "vst3")]
+fn vst3_step_count(def: ParamDef) -> i32 {
+    if ParamInfoFlags::from_bits_truncate(def.flags).contains(ParamInfoFlags::IS_STEPPED) {
+        (def.max_value - def.min_value).round() as i32
+    } else {
+        0
+    }
 }
 
 #[cfg(feature = "vst3")]
@@ -102,12 +172,6 @@ fn plain_to_normalized(plain: f64, min: f64, max: f64) -> f64 {
 #[cfg(feature = "vst3")]
 fn normalized_to_plain(normalized: f64, min: f64, max: f64) -> f64 {
     min + normalized.clamp(0.0, 1.0) * (max - min)
-}
-
-/// Return one parameter's default plain value.
-#[cfg(feature = "vst3")]
-pub fn default_plain_value(param_id: ClapId) -> Option<f64> {
-    param_def_for_id(param_id).map(|def| def.default_value)
 }
 
 /// Convert a parameter plain value to normalized host value.
@@ -128,11 +192,25 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
     Some(plain)
 }
 
-/// Return a parameter default as normalized host value.
+/// Resolve a VST3 parameter id to the shared CLAP parameter id when recognized.
 #[cfg(feature = "vst3")]
-pub fn default_normalized_value(param_id: ClapId) -> Option<f64> {
-    let plain = default_plain_value(param_id)?;
-    normalized_from_plain_value(param_id, plain)
+pub fn clap_id_from_vst3_param_id(param_id: u32) -> Option<ClapId> {
+    param_def_for_vst3_id(param_id).map(|def| def.id)
+}
+
+/// Return VST3 metadata for one parameter index.
+#[cfg(feature = "vst3")]
+pub fn vst3_param_info_for_index(index: i32) -> Option<Vst3ParamInfo> {
+    let index = usize::try_from(index).ok()?;
+    let def = PARAM_DEFS.get(index).copied()?;
+    Some(Vst3ParamInfo {
+        id: def.vst3_id,
+        title: def.name,
+        short_title: def.short_name,
+        units: def.units,
+        step_count: vst3_step_count(def),
+        default_normalized: normalized_from_plain_value(def.id, def.default_value)?,
+    })
 }
 
 /// Return the number of host-visible scalar parameters.
@@ -198,23 +276,53 @@ pub fn value_to_text(
     writer: &mut ParamDisplayWriter,
 ) -> std::fmt::Result {
     let _ = params;
-    match param_id {
-        PARAM_MIX_ID | PARAM_DEPTH_ID => {
-            write!(writer, "{:.0}%", (value * 100.0).clamp(0.0, 100.0))
-        }
-        PARAM_PHASE_OFFSET_ID => write!(writer, "{:.0}%", (value * 100.0).rem_euclid(100.0)),
-        PARAM_OUTPUT_GAIN_ID => write!(writer, "{value:+.1} dB"),
-        PARAM_SYNC_DIVISION_ID => {
-            let index = clamp_sync_division(value as f32);
-            write!(writer, "{}", sync_division_label(index))
-        }
-        _ => Err(std::fmt::Error),
-    }
+    let Some(display) = format_plain_value_text(param_id, value) else {
+        return Err(std::fmt::Error);
+    };
+    write!(writer, "{display}")
 }
 
 /// Parse user-entered text into a host-visible parameter value.
 pub fn text_to_value(param_id: ClapId, text: &CStr) -> Option<f64> {
     let raw = text.to_str().ok()?.trim();
+    parse_plain_value_text(param_id, raw)
+}
+
+/// Format one plain parameter value into host-facing display text.
+#[cfg(feature = "vst3")]
+pub fn format_plain_value_text(param_id: ClapId, value: f64) -> Option<String> {
+    format_plain_value_text_impl(param_id, value)
+}
+
+#[cfg(not(feature = "vst3"))]
+fn format_plain_value_text(param_id: ClapId, value: f64) -> Option<String> {
+    format_plain_value_text_impl(param_id, value)
+}
+
+/// Parse host-facing parameter text into one plain parameter value.
+#[cfg(feature = "vst3")]
+pub fn parse_plain_value_text(param_id: ClapId, raw: &str) -> Option<f64> {
+    parse_plain_value_text_impl(param_id, raw)
+}
+
+#[cfg(not(feature = "vst3"))]
+fn parse_plain_value_text(param_id: ClapId, raw: &str) -> Option<f64> {
+    parse_plain_value_text_impl(param_id, raw)
+}
+
+fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> {
+    match param_id {
+        PARAM_MIX_ID | PARAM_DEPTH_ID => Some(format!("{:.0}%", (value * 100.0).clamp(0.0, 100.0))),
+        PARAM_PHASE_OFFSET_ID => Some(format!("{:.0}%", (value * 100.0).rem_euclid(100.0))),
+        PARAM_OUTPUT_GAIN_ID => Some(format!("{value:+.1} dB")),
+        PARAM_SYNC_DIVISION_ID => {
+            Some(sync_division_label(clamp_sync_division(value as f32)).to_string())
+        }
+        _ => None,
+    }
+}
+
+fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
     match param_id {
         PARAM_MIX_ID | PARAM_DEPTH_ID => {
             let stripped = raw.trim_end_matches('%').trim();

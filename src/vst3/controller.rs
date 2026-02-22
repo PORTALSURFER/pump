@@ -68,80 +68,20 @@ impl IEditControllerTrait for PumpVst3Controller {
             return kInvalidArgument;
         }
 
+        let Some(meta) = vst3_param_info_for_index(param_index) else {
+            return kInvalidArgument;
+        };
+
         let info = unsafe { &mut *info };
-        match param_index {
-            0 => {
-                info.id = PARAM_MIX_ID;
-                copy_wstring("Mix", &mut info.title);
-                copy_wstring("Mix", &mut info.shortTitle);
-                copy_wstring("%", &mut info.units);
-                info.stepCount = 0;
-                info.defaultNormalizedValue = default_normalized_value(
-                    toybox::clack_plugin::prelude::ClapId::new(PARAM_MIX_ID),
-                )
-                .unwrap_or(0.0);
-                info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
-                kResultOk
-            }
-            1 => {
-                info.id = PARAM_DEPTH_ID;
-                copy_wstring("Depth", &mut info.title);
-                copy_wstring("Depth", &mut info.shortTitle);
-                copy_wstring("%", &mut info.units);
-                info.stepCount = 0;
-                info.defaultNormalizedValue = default_normalized_value(
-                    toybox::clack_plugin::prelude::ClapId::new(PARAM_DEPTH_ID),
-                )
-                .unwrap_or(0.0);
-                info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
-                kResultOk
-            }
-            2 => {
-                info.id = PARAM_PHASE_OFFSET_ID;
-                copy_wstring("Phase Offset", &mut info.title);
-                copy_wstring("Phase", &mut info.shortTitle);
-                copy_wstring("%", &mut info.units);
-                info.stepCount = 0;
-                info.defaultNormalizedValue = default_normalized_value(
-                    toybox::clack_plugin::prelude::ClapId::new(PARAM_PHASE_OFFSET_ID),
-                )
-                .unwrap_or(0.0);
-                info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
-                kResultOk
-            }
-            3 => {
-                info.id = PARAM_OUTPUT_GAIN_ID;
-                copy_wstring("Output", &mut info.title);
-                copy_wstring("Output", &mut info.shortTitle);
-                copy_wstring("dB", &mut info.units);
-                info.stepCount = 0;
-                info.defaultNormalizedValue = default_normalized_value(
-                    toybox::clack_plugin::prelude::ClapId::new(PARAM_OUTPUT_GAIN_ID),
-                )
-                .unwrap_or(0.0);
-                info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
-                kResultOk
-            }
-            4 => {
-                info.id = PARAM_SYNC_DIVISION_ID;
-                copy_wstring("Division", &mut info.title);
-                copy_wstring("Division", &mut info.shortTitle);
-                copy_wstring("", &mut info.units);
-                info.stepCount = MAX_SYNC_DIVISION as i32;
-                info.defaultNormalizedValue = default_normalized_value(
-                    toybox::clack_plugin::prelude::ClapId::new(PARAM_SYNC_DIVISION_ID),
-                )
-                .unwrap_or(0.0);
-                info.unitId = 0;
-                info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
-                kResultOk
-            }
-            _ => kInvalidArgument,
-        }
+        info.id = meta.id;
+        copy_wstring(meta.title, &mut info.title);
+        copy_wstring(meta.short_title, &mut info.shortTitle);
+        copy_wstring(meta.units, &mut info.units);
+        info.stepCount = meta.step_count;
+        info.defaultNormalizedValue = meta.default_normalized;
+        info.unitId = 0;
+        info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
+        kResultOk
     }
 
     unsafe fn getParamStringByValue(
@@ -154,14 +94,12 @@ impl IEditControllerTrait for PumpVst3Controller {
             return kInvalidArgument;
         }
 
+        let Some(clap_id) = clap_id_from_vst3_param_id(id) else {
+            return kInvalidArgument;
+        };
         let plain = from_normalized(id, value_normalized);
-        let display = match id {
-            PARAM_MIX_ID | PARAM_DEPTH_ID | PARAM_PHASE_OFFSET_ID => {
-                format!("{:.0}%", plain * 100.0)
-            }
-            PARAM_OUTPUT_GAIN_ID => format!("{plain:+.1} dB"),
-            PARAM_SYNC_DIVISION_ID => sync_division_label(plain as usize).to_string(),
-            _ => String::new(),
+        let Some(display) = format_plain_value_text(clap_id, plain) else {
+            return kInvalidArgument;
         };
         copy_wstring(&display, unsafe { &mut *string });
         kResultOk
@@ -177,36 +115,17 @@ impl IEditControllerTrait for PumpVst3Controller {
             return kInvalidArgument;
         }
 
-        let value = match id {
-            PARAM_SYNC_DIVISION_ID => {
-                if string.is_null() {
-                    return kInvalidArgument;
-                }
-                let len = unsafe { tchar_len(string) };
-                let utf16 = unsafe { slice::from_raw_parts(string.cast::<u16>(), len) };
-                let Some(parsed) = String::from_utf16(utf16).ok() else {
-                    return kInvalidArgument;
-                };
-                let Some(index) = sync_division_index_from_text(parsed.trim()) else {
-                    return kInvalidArgument;
-                };
-                to_normalized(id, index as f64)
-            }
-            PARAM_MIX_ID | PARAM_DEPTH_ID | PARAM_PHASE_OFFSET_ID => {
-                let Some(parsed) = (unsafe { parse_tchar_f64(string) }) else {
-                    return kInvalidArgument;
-                };
-                to_normalized(id, (parsed / 100.0).clamp(0.0, 1.0))
-            }
-            _ => {
-                let Some(parsed) = (unsafe { parse_tchar_f64(string) }) else {
-                    return kInvalidArgument;
-                };
-                to_normalized(id, parsed)
-            }
+        let Some(clap_id) = clap_id_from_vst3_param_id(id) else {
+            return kInvalidArgument;
+        };
+        let Some(raw) = (unsafe { parse_tchar_string(string) }) else {
+            return kInvalidArgument;
+        };
+        let Some(plain) = parse_plain_value_text(clap_id, raw.trim()) else {
+            return kInvalidArgument;
         };
 
-        unsafe { *value_normalized = value };
+        unsafe { *value_normalized = to_normalized(id, plain) };
         kResultOk
     }
 
@@ -265,4 +184,13 @@ impl IEditControllerTrait for PumpVst3Controller {
         };
         ComPtr::into_raw(view)
     }
+}
+
+unsafe fn parse_tchar_string(string: *mut TChar) -> Option<String> {
+    if string.is_null() {
+        return None;
+    }
+    let len = unsafe { tchar_len(string) };
+    let utf16 = unsafe { slice::from_raw_parts(string.cast::<u16>(), len) };
+    String::from_utf16(utf16).ok()
 }
