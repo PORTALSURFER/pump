@@ -48,6 +48,11 @@ All notable changes to this project are documented in this file.
 - (gui) Align dropdown panel to top-right (6ca25ee)
 
 
+### CI
+
+- (changelog) Auto-update changelog on push (b5a9434)
+
+
 ### Chores
 
 - Follow toybox main branch (86b07cf)
