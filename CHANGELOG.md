@@ -148,6 +148,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (50a51c3)
 
+- (changelog) Update changelog [skip ci] (71184d4)
+
 
 ### Features
 
@@ -618,6 +620,8 @@ All notable changes to this project are documented in this file.
 - (cleanup) Reduce dead gui paths and share timing util (d111837)
 
 - (modules) Split core files into focused submodules (eb882eb)
+
+- (vst3) Share transport helpers and param mapping (143ba99)
 
 
 ### Testing
