@@ -127,6 +127,8 @@ All notable changes to this project are documented in this file.
 
 - (deps) Bump toybox for editable textbox fix (a8451c7)
 
+- (deps) Bump toybox to latest main (53c68f4)
+
 
 ### Documentation
 
@@ -141,6 +143,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (72def75)
 
 - (changelog) Update changelog [skip ci] (435e1d0)
+
+- (changelog) Update changelog [skip ci] (12a14e9)
 
 
 ### Features
