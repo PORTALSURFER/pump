@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-02-22 09:36:09 UTC
-- Active Mission: Keep handoff docs minimal, current, and reliable for stateless wake-up.
-- Current Workstream: Documentation hygiene only; no feature changes are in progress.
+- Last Updated (UTC): 2026-02-22 11:05:28 UTC
+- Active Mission: Keep changelog generation automatic and deterministic on every push to `main`.
+- Current Workstream: Changelog automation is active through local script + GitHub workflow.
 
 ## Current State
 
@@ -10,7 +10,9 @@
 - Active execution order lives in `docs/plans/active/todo.md`.
 - Detailed plan navigation lives in `docs/plans/index.md`.
 - Local preflight entrypoint is `scripts/run_agent_request.sh`.
+- Local changelog generator is `scripts/update_changelog.sh`.
+- Push-time changelog updater is `.github/workflows/changelog.yml`.
 
 ## Immediate Next Action
 
-- Start from `docs/plans/active/todo.md` item `1` and execute in order.
+- Run `bash scripts/update_changelog.sh` before pushing, then rely on push workflow for final sync.

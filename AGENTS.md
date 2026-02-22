@@ -14,6 +14,7 @@ Use this file as a fast entrypoint. Keep details in `docs/` and `MEMORY.md`.
 - Active queue: `docs/plans/active/todo.md`
 - Plan map: `docs/plans/index.md`
 - Documentation map: `docs/README.md`
+- Changelog automation: `scripts/update_changelog.sh` and `.github/workflows/changelog.yml`
 
 ## Core Framework Boundary
 
