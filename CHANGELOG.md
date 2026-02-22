@@ -162,6 +162,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (2a7fc03)
 
+- (changelog) Update changelog [skip ci] (4ba6fb8)
+
 
 ### Features
 
@@ -640,6 +642,8 @@ All notable changes to this project are documented in this file.
 - (params) Unify clap and vst3 mapping logic (242f757)
 
 - (transport) Unify gui phase telemetry helpers (c943368)
+
+- Decompose plugin entrypoint hotspots (08bf805)
 
 
 ### Testing
