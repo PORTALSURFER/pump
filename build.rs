@@ -212,7 +212,7 @@ fn output_paths_for(
 
     match artifact {
         ArtifactKind::Clap => {
-            let clap_path = output_root.join(format!("pump-v{version}.clap"));
+            let clap_path = output_root.join(format!("pump-v{version}-win.clap"));
             ArtifactOutput {
                 link_output_path: clap_path.clone(),
                 export_path: clap_path,
@@ -220,14 +220,10 @@ fn output_paths_for(
         }
         ArtifactKind::Vst3 => {
             let bundle_name = format!("pump-v{version}-win.vst3");
-            let bundle_root = output_root.join(&bundle_name);
-            let binary_path = bundle_root
-                .join("Contents")
-                .join("x86_64-win")
-                .join(&bundle_name);
+            let binary_path = output_root.join(&bundle_name);
             ArtifactOutput {
                 link_output_path: binary_path,
-                export_path: bundle_root,
+                export_path: output_root.join(&bundle_name),
             }
         }
     }
