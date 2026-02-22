@@ -51,6 +51,8 @@ All notable changes to this project are documented in this file.
 
 - (build) Emit windows artifacts as direct -win files (641eb40)
 
+- (metadata) Set creator name to PORTALSURFER (099986b)
+
 
 ### CI
 
@@ -135,6 +137,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (e65f45a)
 
 - (changelog) Update changelog [skip ci] (4a4e726)
+
+- (changelog) Update changelog [skip ci] (72def75)
 
 
 ### Features
