@@ -152,6 +152,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (5adfbc3)
 
+- (changelog) Update changelog [skip ci] (c4d7110)
+
 
 ### Features
 
@@ -624,6 +626,8 @@ All notable changes to this project are documented in this file.
 - (modules) Split core files into focused submodules (eb882eb)
 
 - (vst3) Share transport helpers and param mapping (143ba99)
+
+- (metadata) Centralize plugin id and vendor policy (4b978c1)
 
 
 ### Testing
