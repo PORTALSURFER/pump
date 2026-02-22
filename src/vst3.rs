@@ -20,11 +20,11 @@ use crate::params::{
     plain_from_normalized_value, sync_division_index_from_text, sync_division_label, PumpParams,
     MAX_SYNC_DIVISION,
 };
+use crate::plugin_metadata::PLUGIN_NAME;
 use crate::transport::{gui_phase_from_transport, host_beat_phase};
 use crate::{GuiStatus, GuiTransportTelemetry};
 use toybox::dsp::TransportState;
 
-const PLUGIN_NAME: &str = "pump";
 const PROCESSOR_CID: TUID = uid(0xE5A9A79F, 0xC4A94392, 0x97A8A8AA, 0xA9A90B3C);
 const CONTROLLER_CID: TUID = uid(0xB2EE267A, 0xE4314D5D, 0x96085F7A, 0x51681074);
 

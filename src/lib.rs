@@ -26,6 +26,7 @@ use crate::params::{
     apply_param_event, decode_state_payload, encode_state_payload, get_param_value, param_count,
     text_to_value, value_to_text, write_param_info, PumpParams,
 };
+use crate::plugin_metadata::{PLUGIN_ID, PLUGIN_NAME, VENDOR_NAME};
 use crate::time_utils::monotonic_micros;
 
 #[cfg(test)]
@@ -35,6 +36,7 @@ mod dsp;
 mod gui;
 mod gui_status;
 mod params;
+mod plugin_metadata;
 mod plugin_processor;
 mod time_utils;
 mod transport;
@@ -67,8 +69,8 @@ impl DefaultPluginFactory for PumpPlugin {
     fn get_descriptor() -> PluginDescriptor {
         use clack_plugin::plugin::features::*;
 
-        PluginDescriptor::new("com.portalsurfer.pump", "pump")
-            .with_vendor("PORTALSURFER")
+        PluginDescriptor::new(PLUGIN_ID, PLUGIN_NAME)
+            .with_vendor(VENDOR_NAME)
             .with_features([AUDIO_EFFECT, STEREO])
             .with_description("Node-based beat-synced gain ducking effect")
     }

@@ -1,4 +1,6 @@
 use super::*;
+use crate::plugin_metadata::{VENDOR_EMAIL, VENDOR_NAME, VENDOR_URL};
+
 #[derive(Default)]
 struct PumpVst3Factory;
 
@@ -13,9 +15,9 @@ impl IPluginFactoryTrait for PumpVst3Factory {
         }
 
         let info = unsafe { &mut *info };
-        copy_cstring("PORTALSURFER", &mut info.vendor);
-        copy_cstring("https://github.com/uhx/pump", &mut info.url);
-        copy_cstring("support@localhost", &mut info.email);
+        copy_cstring(VENDOR_NAME, &mut info.vendor);
+        copy_cstring(VENDOR_URL, &mut info.url);
+        copy_cstring(VENDOR_EMAIL, &mut info.email);
         info.flags = PFactoryInfo_::FactoryFlags_::kUnicode as int32;
 
         kResultOk
