@@ -320,8 +320,8 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
 impl IProcessContextRequirementsTrait for PumpVst3Processor {
     unsafe fn getProcessContextRequirements(&self) -> u32 {
-        IProcessContextRequirements_::Flags_::kNeedTempo
-            | IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic
-            | IProcessContextRequirements_::Flags_::kNeedTransportState
+        (IProcessContextRequirements_::Flags_::kNeedTempo as u32)
+            | (IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic as u32)
+            | (IProcessContextRequirements_::Flags_::kNeedTransportState as u32)
     }
 }
