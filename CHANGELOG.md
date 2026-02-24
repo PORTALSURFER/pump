@@ -53,6 +53,8 @@ All notable changes to this project are documented in this file.
 
 - (metadata) Set creator name to PORTALSURFER (099986b)
 
+- (vst3) Normalize process flag types to u32 (f0e4d72)
+
 
 ### CI
 
@@ -163,6 +165,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (2a7fc03)
 
 - (changelog) Update changelog [skip ci] (4ba6fb8)
+
+- (changelog) Update changelog [skip ci] (f65b685)
 
 
 ### Features
