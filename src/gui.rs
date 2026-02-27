@@ -75,7 +75,8 @@ const DROPDOWN_SECTION_WEIGHT: u16 = 30;
 const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
 const CURVE_W: u32 = WINDOW_WIDTH;
-const CURVE_H: u32 = resolve_vertical_slot_heights(WINDOW_HEIGHT).1;
+const CURVE_VERTICAL_MARGIN: u32 = 6;
+const CURVE_H: u32 = resolve_curve_editor_height(resolve_vertical_slot_heights(WINDOW_HEIGHT).1);
 const METER_X_OFFSET: i32 = 12;
 const METER_Y_OFFSET: i32 = 10;
 const METER_WIDTH: i32 = 6;
@@ -106,6 +107,10 @@ const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
 const fn fixed_box(width: u32, height: u32) -> LayoutBox {
     LayoutBox::fixed(width, height).max(width, height)
+}
+
+const fn resolve_curve_editor_height(curve_slot_h: u32) -> u32 {
+    curve_slot_h.saturating_sub(CURVE_VERTICAL_MARGIN.saturating_mul(2))
 }
 
 fn curve_scale_for_size(curve_size: Size) -> f32 {
@@ -646,9 +651,10 @@ impl UiLayoutMetrics {
         let button_control_h = expanded_control_h;
         let dropdown_control_w = dropdown_slot_w.max(1);
         let transport_indicator_size = TRANSPORT_INDICATOR_SIZE.max(1);
+        let curve_editor_h = resolve_curve_editor_height(curve_h).max(1);
         let curve_size = Size {
             width: content_w,
-            height: curve_h,
+            height: curve_editor_h,
         };
         let meter_x_offset = METER_X_OFFSET.max(0);
         let meter_y_offset = METER_Y_OFFSET.max(0);
@@ -970,13 +976,17 @@ impl GuiState {
     /// Build the spline/curve slot node.
     fn build_spline_slot(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
         let editable_curve = self.params.editable_curve_snapshot();
-        let spline_content = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
+        let curve_editor_view = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
             .curve_style(curve_editor_style(theme))
             .curve_interaction(curve_editor_interaction_options(metrics.curve_size))
             .curve_playhead_x(
                 (self.status.has_host_beats_timeline() || self.status.is_playing())
                     .then_some(self.status.phase()),
             )
+            .widget_layout(fixed_box(metrics.content_w, metrics.curve_size.height))
+            .fill();
+        let spline_content = Node::padding_box(curve_editor_view)
+            .pad_xy(0, CURVE_VERTICAL_MARGIN as i32)
             .widget_layout(fixed_box(metrics.content_w, metrics.curve_h))
             .fill();
         panel("spline", spline_content).pad_all(0)
