@@ -184,6 +184,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (8be65ee)
 
+- (changelog) Update changelog [skip ci] (91f7d69)
+
 
 ### Features
 
@@ -659,6 +661,8 @@ All notable changes to this project are documented in this file.
 - Coalesce knob drag undo and clear stale drag mode (a49c08e)
 
 - Skip no-op curve inserts at max node count (69d893a)
+
+- Remove depth control and run pump at full depth (70e36b0)
 
 
 ### Refactoring
