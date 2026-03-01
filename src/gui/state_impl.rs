@@ -1037,6 +1037,7 @@ impl GuiState {
                         runtime.curve_size,
                     )
                     .unwrap_or(normalized_pointer);
+                    let before_insert = editable.clone();
                     let inserted_index =
                         insert_node_for_size(&mut editable, preview_node, runtime.curve_size);
                     runtime.selected_node = Some(inserted_index);
@@ -1048,9 +1049,14 @@ impl GuiState {
                         dragging: false,
                     });
                     runtime.marquee_selection = None;
-                    Self::push_undo_snapshot_locked(&mut runtime, self.snapshot_history_state());
-                    enforce_wrapped_endpoints(&mut editable);
-                    self.params.set_editable_curve(&editable);
+                    if editable != before_insert {
+                        Self::push_undo_snapshot_locked(
+                            &mut runtime,
+                            self.snapshot_history_state(),
+                        );
+                        enforce_wrapped_endpoints(&mut editable);
+                        self.params.set_editable_curve(&editable);
+                    }
                     return;
                 }
 
@@ -1109,6 +1115,7 @@ impl GuiState {
                     return;
                 }
 
+                let before_insert = editable.clone();
                 let inserted_index =
                     insert_node_for_size(&mut editable, normalized_pointer, runtime.curve_size);
                 runtime.selected_node = Some(inserted_index);
@@ -1120,9 +1127,11 @@ impl GuiState {
                     dragging: false,
                 });
                 runtime.marquee_selection = None;
-                Self::push_undo_snapshot_locked(&mut runtime, self.snapshot_history_state());
-                enforce_wrapped_endpoints(&mut editable);
-                self.params.set_editable_curve(&editable);
+                if editable != before_insert {
+                    Self::push_undo_snapshot_locked(&mut runtime, self.snapshot_history_state());
+                    enforce_wrapped_endpoints(&mut editable);
+                    self.params.set_editable_curve(&editable);
+                }
             }
             RegionInteractionKind::Dragged => {
                 if let Some(mut drag_mode) = runtime.drag_mode.take() {

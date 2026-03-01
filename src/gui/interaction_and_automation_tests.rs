@@ -1,6 +1,7 @@
 mod interaction_and_automation_tests {
     use super::*;
     use super::super::RegionInteractionKind;
+    use crate::curve::MAX_EDITABLE_NODES;
     use toybox::clack_plugin::events::io::EventBuffer;
 
     fn frame_input(mouse_down: bool) -> InputState {
@@ -160,6 +161,49 @@ mod interaction_and_automation_tests {
             params.editable_curve_snapshot(),
             before,
             "one undo should revert the drag even when region release event was missed"
+        );
+    }
+
+    #[test]
+    fn max_node_insert_attempt_does_not_push_no_op_curve_revision() {
+        let mut nodes = Vec::with_capacity(MAX_EDITABLE_NODES);
+        for index in 0..MAX_EDITABLE_NODES {
+            nodes.push(CurveNode {
+                x: index as f32 / (MAX_EDITABLE_NODES - 1) as f32,
+                y: 1.0,
+            });
+        }
+        let dense_curve = EditableCurve {
+            nodes,
+            segments: vec![CurveSegment { tension: 0.0 }; MAX_EDITABLE_NODES - 1],
+        };
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&dense_curve);
+        let before_curve = params.editable_curve_snapshot();
+        let before_revision = params.curve_revision();
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+
+        let _ = state.build_ui(&frame_input(true));
+        let pointer = Point {
+            x: (CURVE_W as i32) / 2,
+            y: CURVE_H as i32 - 1,
+        };
+        state.reduce_curve_interaction(RegionInteractionKind::Pressed, pointer, pointer, false);
+
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            before_curve,
+            "insert attempts at max node count should preserve the existing curve"
+        );
+        assert_eq!(
+            params.curve_revision(),
+            before_revision,
+            "insert no-op must not bump curve revision or create an undo step"
         );
     }
 
