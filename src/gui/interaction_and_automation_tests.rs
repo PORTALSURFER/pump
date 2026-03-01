@@ -4,8 +4,13 @@ mod interaction_and_automation_tests {
     use toybox::clack_plugin::events::io::EventBuffer;
 
     fn frame_input(mouse_down: bool) -> InputState {
+        frame_input_with_buttons(mouse_down, false)
+    }
+
+    fn frame_input_with_buttons(mouse_down: bool, mouse_secondary_down: bool) -> InputState {
         InputState {
             mouse_down,
+            mouse_secondary_down,
             window_size: Size {
                 width: WINDOW_WIDTH,
                 height: WINDOW_HEIGHT,
@@ -267,6 +272,129 @@ mod interaction_and_automation_tests {
             params.editable_curve_snapshot(),
             edited,
             "redo should restore the final region drag result in one step"
+        );
+    }
+
+    #[test]
+    fn secondary_drag_marquee_selects_enclosed_curve_nodes() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let editable = params.editable_curve_snapshot();
+        let node_a = local_from_node(editable.nodes[1]);
+        let node_b = local_from_node(editable.nodes[2]);
+        let start = Point {
+            x: node_a.x.min(node_b.x) - 8,
+            y: node_a.y.min(node_b.y) - 8,
+        };
+        let end = Point {
+            x: node_a.x.max(node_b.x) + 8,
+            y: node_a.y.max(node_b.y) + 8,
+        };
+
+        let _ = state.build_ui(&frame_input_with_buttons(false, false));
+        state.reduce_action(UiAction::RegionHover {
+            key: CURVE_KEY.to_string(),
+            hovered: true,
+            local_pointer: start,
+        });
+        state.reduce_curve_interaction(RegionInteractionKind::SecondaryClicked, start, start, false);
+
+        let _ = state.build_ui(&frame_input_with_buttons(false, true));
+        state.reduce_action(UiAction::RegionHover {
+            key: CURVE_KEY.to_string(),
+            hovered: true,
+            local_pointer: end,
+        });
+
+        let _ = state.build_ui(&frame_input_with_buttons(false, false));
+        state.reduce_action(UiAction::RegionHover {
+            key: CURVE_KEY.to_string(),
+            hovered: true,
+            local_pointer: end,
+        });
+
+        let runtime = state.runtime.lock().expect("runtime lock should succeed");
+        assert_eq!(
+            runtime.selected_nodes,
+            vec![1, 2],
+            "secondary drag marquee should select enclosed interior nodes"
+        );
+    }
+
+    #[test]
+    fn dragging_one_marquee_selected_node_moves_the_whole_selection() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let before = params.editable_curve_snapshot();
+        let node_a = local_from_node(before.nodes[1]);
+        let node_b = local_from_node(before.nodes[2]);
+        let marquee_start = Point {
+            x: node_a.x.min(node_b.x) - 8,
+            y: node_a.y.min(node_b.y) - 8,
+        };
+        let marquee_end = Point {
+            x: node_a.x.max(node_b.x) + 8,
+            y: node_a.y.max(node_b.y) + 8,
+        };
+
+        let _ = state.build_ui(&frame_input_with_buttons(false, false));
+        state.reduce_action(UiAction::RegionHover {
+            key: CURVE_KEY.to_string(),
+            hovered: true,
+            local_pointer: marquee_start,
+        });
+        state.reduce_curve_interaction(
+            RegionInteractionKind::SecondaryClicked,
+            marquee_start,
+            marquee_start,
+            false,
+        );
+        let _ = state.build_ui(&frame_input_with_buttons(false, true));
+        state.reduce_action(UiAction::RegionHover {
+            key: CURVE_KEY.to_string(),
+            hovered: true,
+            local_pointer: marquee_end,
+        });
+        let _ = state.build_ui(&frame_input_with_buttons(false, false));
+        state.reduce_action(UiAction::RegionHover {
+            key: CURVE_KEY.to_string(),
+            hovered: true,
+            local_pointer: marquee_end,
+        });
+
+        let drag_start = local_from_node(before.nodes[1]);
+        let drag_end = Point {
+            x: drag_start.x + 12,
+            y: drag_start.y - 20,
+        };
+        state.reduce_curve_interaction(RegionInteractionKind::Pressed, drag_start, drag_start, false);
+        state.reduce_curve_interaction(RegionInteractionKind::Dragged, drag_end, drag_end, false);
+        state.reduce_curve_interaction(RegionInteractionKind::Released, drag_end, drag_end, false);
+        let edited = params.editable_curve_snapshot();
+        let node1_delta = edited.nodes[1].y - before.nodes[1].y;
+        let node2_delta = edited.nodes[2].y - before.nodes[2].y;
+        assert!(
+            node1_delta.abs() > 1.0e-4 && (node1_delta - node2_delta).abs() <= 1.0e-4,
+            "dragging one selected node should move both selected nodes together"
+        );
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: UNDO_KEY.to_string(),
+        });
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            before,
+            "one undo should revert the grouped marquee drag"
         );
     }
 

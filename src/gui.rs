@@ -135,7 +135,9 @@ struct GuiState {
 
 struct GuiRuntime {
     selected_node: Option<usize>,
+    selected_nodes: Vec<usize>,
     drag_mode: Option<CurveDragMode>,
+    marquee_selection: Option<CurveMarqueeSelection>,
     curve_hovered: bool,
     curve_local_pointer: Point,
     curve_size: Size,
@@ -146,6 +148,7 @@ struct GuiRuntime {
     preset_warning_frames: u8,
     preset_warning_text: Option<&'static str>,
     pointer_primary_down: bool,
+    pointer_secondary_down: bool,
     active_knob_gesture_param: Option<ClapId>,
     undo_history: Vec<UiHistorySnapshot>,
     redo_history: Vec<UiHistorySnapshot>,
@@ -156,6 +159,12 @@ struct GuiRuntime {
 enum CurveDragMode {
     MoveNode {
         origin_index: usize,
+        origin_curve: EditableCurve,
+        start_pointer: Point,
+        dragging: bool,
+    },
+    MoveNodeGroup {
+        origin_indices: Vec<usize>,
         origin_curve: EditableCurve,
         start_pointer: Point,
         dragging: bool,
@@ -175,6 +184,13 @@ enum CurveDragMode {
         start_tension: f32,
         dragging: bool,
     },
+}
+
+/// Runtime marquee-selection rectangle in curve-local coordinates.
+#[derive(Clone, Copy, Debug)]
+struct CurveMarqueeSelection {
+    start_pointer: Point,
+    current_pointer: Point,
 }
 
 /// Snapshot of host-automation control values used to build one UI frame.
@@ -211,9 +227,10 @@ struct PresetSnapshot {
 }
 
 /// Snapshot of curve-editor hover/selection state used for drawing.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct CurveRenderState {
     selected_node: Option<usize>,
+    selected_nodes: Vec<usize>,
     hovered_node: Option<usize>,
     hovered_segment: Option<usize>,
     preview_node: Option<CurveNode>,

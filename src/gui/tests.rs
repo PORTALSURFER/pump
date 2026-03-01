@@ -521,6 +521,7 @@
             metrics,
             CurveRenderState {
                 selected_node: None,
+                selected_nodes: Vec::new(),
                 hovered_node: None,
                 hovered_segment: None,
                 preview_node: None,

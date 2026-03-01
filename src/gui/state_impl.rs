@@ -3,7 +3,9 @@ impl GuiRuntime {
     pub(super) fn new() -> Self {
         Self {
             selected_node: None,
+            selected_nodes: Vec::new(),
             drag_mode: None,
+            marquee_selection: None,
             curve_hovered: false,
             curve_local_pointer: Point { x: 0, y: 0 },
             curve_size: Size {
@@ -17,6 +19,7 @@ impl GuiRuntime {
             preset_warning_frames: 0,
             preset_warning_text: None,
             pointer_primary_down: false,
+            pointer_secondary_down: false,
             active_knob_gesture_param: None,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
@@ -423,7 +426,7 @@ impl GuiState {
     }
 
     pub(super) fn build_ui(&self, input: &InputState) -> UiSpec {
-        self.sync_knob_gesture_state(input.mouse_down);
+        self.sync_knob_gesture_state(input.mouse_down, input.mouse_secondary_down);
         let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
         let controls = self.snapshot_controls();
@@ -478,7 +481,9 @@ impl GuiState {
                 self.params.reset_curve_to_default();
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.selected_node = None;
+                    runtime.selected_nodes.clear();
                     runtime.drag_mode = None;
+                    runtime.marquee_selection = None;
                 }
             }
             UiAction::ButtonPressed { key } if key == PRESET_ADD_KEY => {
@@ -517,6 +522,8 @@ impl GuiState {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.drag_mode = None;
                     runtime.selected_node = None;
+                    runtime.selected_nodes.clear();
+                    runtime.marquee_selection = None;
                 }
             }
             UiAction::RegionHover {
@@ -528,6 +535,15 @@ impl GuiState {
                     runtime.curve_hovered = hovered;
                     runtime.curve_local_pointer =
                         scale_point_to_design(local_pointer, runtime.curve_size);
+                    let curve_local_pointer = runtime.curve_local_pointer;
+                    let mut should_finalize_marquee = false;
+                    if let Some(marquee) = runtime.marquee_selection.as_mut() {
+                        marquee.current_pointer = curve_local_pointer;
+                        should_finalize_marquee = !runtime.pointer_secondary_down;
+                    }
+                    if should_finalize_marquee {
+                        self.finalize_curve_marquee_selection_locked(&mut runtime);
+                    }
                 }
             }
             UiAction::RegionHover { .. } => {}
@@ -612,6 +628,145 @@ impl GuiState {
         }
     }
 
+    fn normalized_selected_indices(indices: &[usize], node_count: usize) -> Vec<usize> {
+        let mut normalized: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|index| *index < node_count)
+            .collect();
+        normalized.sort_unstable();
+        normalized.dedup();
+        normalized
+    }
+
+    fn x_delta_bounds_for_selected_nodes(
+        origin_curve: &EditableCurve,
+        selected: &[usize],
+    ) -> (f32, f32) {
+        let node_count = origin_curve.nodes.len();
+        if node_count <= 2 {
+            return (0.0, 0.0);
+        }
+        let mut selected_mask = vec![false; node_count];
+        for index in selected.iter().copied() {
+            if index < node_count {
+                selected_mask[index] = true;
+            }
+        }
+        let mut min_delta = f32::NEG_INFINITY;
+        let mut max_delta = f32::INFINITY;
+        let mut has_movable = false;
+        let last_index = node_count.saturating_sub(1);
+        for index in 1..last_index {
+            if !selected_mask[index] {
+                continue;
+            }
+            has_movable = true;
+            if !selected_mask[index - 1] {
+                let min_x = origin_curve.nodes[index - 1].x + NODE_X_MIN_SPACING;
+                min_delta = min_delta.max(min_x - origin_curve.nodes[index].x);
+            }
+            if !selected_mask[index + 1] {
+                let max_x = origin_curve.nodes[index + 1].x - NODE_X_MIN_SPACING;
+                max_delta = max_delta.min(max_x - origin_curve.nodes[index].x);
+            }
+        }
+        if !has_movable || min_delta > max_delta {
+            return (0.0, 0.0);
+        }
+        (min_delta, max_delta)
+    }
+
+    fn move_selected_nodes_from_origin_for_size(
+        origin_curve: &EditableCurve,
+        selected_indices: &[usize],
+        start_pointer: Point,
+        raw_local_pointer: Point,
+        curve_size: Size,
+    ) -> EditableCurve {
+        let mut editable = origin_curve.clone();
+        let node_count = editable.nodes.len();
+        if node_count < 2 {
+            return editable;
+        }
+        let curve_width = curve_size.width.max(2);
+        let curve_height = curve_size.height.max(2);
+        let requested_delta_x =
+            (raw_local_pointer.x - start_pointer.x) as f32 / (curve_width - 1) as f32;
+        let delta_y = (start_pointer.y - raw_local_pointer.y) as f32 / (curve_height - 1) as f32;
+        let (min_delta_x, max_delta_x) =
+            Self::x_delta_bounds_for_selected_nodes(origin_curve, selected_indices);
+        let delta_x = requested_delta_x.clamp(min_delta_x, max_delta_x);
+        let last_index = node_count.saturating_sub(1);
+        for index in selected_indices.iter().copied() {
+            let Some(origin_node) = origin_curve.nodes.get(index).copied() else {
+                continue;
+            };
+            let x = if index == 0 {
+                0.0
+            } else if index == last_index {
+                1.0
+            } else {
+                (origin_node.x + delta_x).clamp(0.0, 1.0)
+            };
+            let y = (origin_node.y + delta_y).clamp(0.0, 1.0);
+            if let Some(node) = editable.nodes.get_mut(index) {
+                *node = CurveNode { x, y };
+            }
+        }
+        editable
+    }
+
+    fn marquee_selected_nodes_for_size(
+        curve: &EditableCurve,
+        start_pointer: Point,
+        current_pointer: Point,
+        curve_size: Size,
+    ) -> Vec<usize> {
+        let dx = (current_pointer.x - start_pointer.x).abs();
+        let dy = (current_pointer.y - start_pointer.y).abs();
+        if dx <= curve_drag_threshold_px(curve_size) && dy <= curve_drag_threshold_px(curve_size) {
+            return find_node_hit_for_size(
+                curve,
+                current_pointer,
+                node_hit_radius(curve_size),
+                curve_size,
+            )
+            .into_iter()
+            .collect();
+        }
+        let left = start_pointer.x.min(current_pointer.x);
+        let right = start_pointer.x.max(current_pointer.x);
+        let top = start_pointer.y.min(current_pointer.y);
+        let bottom = start_pointer.y.max(current_pointer.y);
+        curve
+            .nodes
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let local = local_from_node_for_size(node, curve_size);
+                ((left..=right).contains(&local.x) && (top..=bottom).contains(&local.y))
+                    .then_some(index)
+            })
+            .collect()
+    }
+
+    fn finalize_curve_marquee_selection_locked(&self, runtime: &mut GuiRuntime) {
+        let Some(marquee) = runtime.marquee_selection.take() else {
+            return;
+        };
+        let curve = self.params.editable_curve_snapshot();
+        let selected = Self::marquee_selected_nodes_for_size(
+            &curve,
+            marquee.start_pointer,
+            marquee.current_pointer,
+            runtime.curve_size,
+        );
+        runtime.selected_nodes = selected.clone();
+        runtime.selected_node = selected.last().copied();
+    }
+
     fn apply_undo(&self) {
         let current = self.snapshot_history_state();
         let mut target = None;
@@ -621,6 +776,8 @@ impl GuiState {
                 runtime.curve_history_anchor = None;
                 runtime.drag_mode = None;
                 runtime.selected_node = None;
+                runtime.selected_nodes.clear();
+                runtime.marquee_selection = None;
                 runtime.preset_rename_active = false;
                 runtime.preset_name_draft.clear();
                 runtime.preset_warning_frames = 0;
@@ -642,6 +799,8 @@ impl GuiState {
                 runtime.curve_history_anchor = None;
                 runtime.drag_mode = None;
                 runtime.selected_node = None;
+                runtime.selected_nodes.clear();
+                runtime.marquee_selection = None;
                 runtime.preset_rename_active = false;
                 runtime.preset_name_draft.clear();
                 runtime.preset_warning_frames = 0;
@@ -804,13 +963,33 @@ impl GuiState {
                     node_hit_radius(runtime.curve_size),
                     runtime.curve_size,
                 ) {
+                    let selected_nodes = Self::normalized_selected_indices(
+                        &runtime.selected_nodes,
+                        editable.nodes.len(),
+                    );
+                    let move_group = selected_nodes.len() > 1 && selected_nodes.contains(&index);
                     runtime.selected_node = Some(index);
-                    runtime.drag_mode = Some(CurveDragMode::MoveNode {
-                        origin_index: index,
-                        origin_curve: editable.clone(),
-                        start_pointer: local_pointer,
-                        dragging: false,
+                    runtime.selected_nodes = if move_group {
+                        selected_nodes.clone()
+                    } else {
+                        vec![index]
+                    };
+                    runtime.drag_mode = Some(if move_group {
+                        CurveDragMode::MoveNodeGroup {
+                            origin_indices: selected_nodes,
+                            origin_curve: editable.clone(),
+                            start_pointer: local_pointer,
+                            dragging: false,
+                        }
+                    } else {
+                        CurveDragMode::MoveNode {
+                            origin_index: index,
+                            origin_curve: editable.clone(),
+                            start_pointer: local_pointer,
+                            dragging: false,
+                        }
                     });
+                    runtime.marquee_selection = None;
                     return;
                 }
 
@@ -832,12 +1011,14 @@ impl GuiState {
                     let inserted_index =
                         insert_node_for_size(&mut editable, preview_node, runtime.curve_size);
                     runtime.selected_node = Some(inserted_index);
+                    runtime.selected_nodes = vec![inserted_index];
                     runtime.drag_mode = Some(CurveDragMode::MoveNode {
                         origin_index: inserted_index,
                         origin_curve: editable.clone(),
                         start_pointer: local_pointer,
                         dragging: false,
                     });
+                    runtime.marquee_selection = None;
                     Self::push_undo_snapshot_locked(&mut runtime, self.snapshot_history_state());
                     enforce_wrapped_endpoints(&mut editable);
                     self.params.set_editable_curve(&editable);
@@ -875,6 +1056,9 @@ impl GuiState {
                             dragging: false,
                         })
                     };
+                    runtime.selected_node = None;
+                    runtime.selected_nodes.clear();
+                    runtime.marquee_selection = None;
                     return;
                 }
 
@@ -885,24 +1069,28 @@ impl GuiState {
                     runtime.curve_size,
                 ) {
                     runtime.selected_node = Some(index);
+                    runtime.selected_nodes = vec![index];
                     runtime.drag_mode = Some(CurveDragMode::MoveNode {
                         origin_index: index,
                         origin_curve: editable.clone(),
                         start_pointer: local_pointer,
                         dragging: false,
                     });
+                    runtime.marquee_selection = None;
                     return;
                 }
 
                 let inserted_index =
                     insert_node_for_size(&mut editable, normalized_pointer, runtime.curve_size);
                 runtime.selected_node = Some(inserted_index);
+                runtime.selected_nodes = vec![inserted_index];
                 runtime.drag_mode = Some(CurveDragMode::MoveNode {
                     origin_index: inserted_index,
                     origin_curve: editable.clone(),
                     start_pointer: local_pointer,
                     dragging: false,
                 });
+                runtime.marquee_selection = None;
                 Self::push_undo_snapshot_locked(&mut runtime, self.snapshot_history_state());
                 enforce_wrapped_endpoints(&mut editable);
                 self.params.set_editable_curve(&editable);
@@ -944,8 +1132,47 @@ impl GuiState {
                                 );
                             editable = recomputed_curve;
                             runtime.selected_node = Some(moved_index);
+                            runtime.selected_nodes = vec![moved_index];
                             drag_mode = CurveDragMode::MoveNode {
                                 origin_index,
+                                origin_curve,
+                                start_pointer,
+                                dragging,
+                            };
+                            curve_changed = true;
+                        }
+                        CurveDragMode::MoveNodeGroup {
+                            origin_indices,
+                            origin_curve,
+                            start_pointer,
+                            mut dragging,
+                        } => {
+                            if !dragging
+                                && !drag_threshold_crossed(
+                                    start_pointer,
+                                    local_pointer,
+                                    curve_drag_threshold_px(runtime.curve_size),
+                                )
+                            {
+                                runtime.drag_mode = Some(CurveDragMode::MoveNodeGroup {
+                                    origin_indices,
+                                    origin_curve,
+                                    start_pointer,
+                                    dragging,
+                                });
+                                return;
+                            }
+                            dragging = true;
+                            editable = Self::move_selected_nodes_from_origin_for_size(
+                                &origin_curve,
+                                &origin_indices,
+                                start_pointer,
+                                raw_local_pointer,
+                                runtime.curve_size,
+                            );
+                            runtime.selected_nodes = origin_indices.clone();
+                            drag_mode = CurveDragMode::MoveNodeGroup {
+                                origin_indices,
                                 origin_curve,
                                 start_pointer,
                                 dragging,
@@ -1002,6 +1229,8 @@ impl GuiState {
                                 start_right_y,
                                 dragging,
                             };
+                            runtime.selected_node = None;
+                            runtime.selected_nodes.clear();
                             curve_changed = true;
                         }
                         CurveDragMode::AdjustSegmentCurve {
@@ -1044,6 +1273,8 @@ impl GuiState {
                                 start_tension,
                                 dragging,
                             };
+                            runtime.selected_node = None;
+                            runtime.selected_nodes.clear();
                         }
                     }
                     runtime.drag_mode = Some(drag_mode);
@@ -1062,6 +1293,11 @@ impl GuiState {
                 runtime.curve_history_anchor = None;
             }
             RegionInteractionKind::SecondaryClicked => {
+                runtime.drag_mode = None;
+                runtime.marquee_selection = Some(CurveMarqueeSelection {
+                    start_pointer: local_pointer,
+                    current_pointer: local_pointer,
+                });
                 runtime.curve_history_anchor = None;
             }
             RegionInteractionKind::DoubleClicked => {
@@ -1078,7 +1314,9 @@ impl GuiState {
                     }
                     enforce_wrapped_endpoints(&mut editable);
                     runtime.selected_node = None;
+                    runtime.selected_nodes.clear();
                     runtime.drag_mode = None;
+                    runtime.marquee_selection = None;
                     runtime.curve_history_anchor = None;
                     Self::push_undo_snapshot_locked(&mut runtime, self.snapshot_history_state());
                     self.params.set_editable_curve(&editable);
@@ -1230,7 +1468,8 @@ impl GuiState {
 
         for (index, node) in editable_curve.nodes.iter().copied().enumerate() {
             let center = to_canvas(local_from_node_for_size(node, curve_size));
-            let selected = state.selected_node == Some(index);
+            let selected =
+                state.selected_node == Some(index) || state.selected_nodes.contains(&index);
             let hovered = state.hovered_node == Some(index);
             let fill_color = if selected {
                 theme.node_selected_fill
@@ -1349,14 +1588,25 @@ impl GuiState {
     }
 
     /// Close any active knob automation gesture when pointer drag ends.
-    pub(super) fn sync_knob_gesture_state(&self, mouse_down: bool) {
+    pub(super) fn sync_knob_gesture_state(&self, mouse_down: bool, mouse_secondary_down: bool) {
         let mut ended_param = None;
+        let mut finalize_marquee = false;
         if let Ok(mut runtime) = self.runtime.lock() {
             if runtime.pointer_primary_down && !mouse_down {
                 ended_param = runtime.active_knob_gesture_param.take();
                 Self::commit_curve_history_anchor_locked(&mut runtime);
             }
+            if runtime.pointer_secondary_down
+                && !mouse_secondary_down
+                && runtime.marquee_selection.is_some()
+            {
+                finalize_marquee = true;
+            }
             runtime.pointer_primary_down = mouse_down;
+            runtime.pointer_secondary_down = mouse_secondary_down;
+            if finalize_marquee {
+                self.finalize_curve_marquee_selection_locked(&mut runtime);
+            }
         }
         if let Some(param_id) = ended_param {
             self.end_param_gesture(param_id);
