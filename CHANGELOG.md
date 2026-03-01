@@ -176,6 +176,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (bf82ce0)
 
+- (changelog) Update changelog [skip ci] (ea4bafd)
+
 
 ### Features
 
@@ -643,6 +645,8 @@ All notable changes to this project are documented in this file.
 - Persist presets across instances and coalesce curve drag undo (0105ab7)
 
 - Fix region drag undo coalescing and add regression test (d1199c5)
+
+- Add right-drag marquee node selection in curve editor (a5804a9)
 
 
 ### Refactoring
