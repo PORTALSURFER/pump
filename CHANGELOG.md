@@ -168,6 +168,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (f65b685)
 
+- (changelog) Update changelog [skip ci] (6ac65d5)
+
 
 ### Features
 
@@ -627,6 +629,8 @@ All notable changes to this project are documented in this file.
 - Migrate Pump curve UI to toybox curve editor widget (027937d)
 
 - Fix curve point double-click deletion regression (b1e0fd2)
+
+- Increase curve editor vertical safe margin (f758160)
 
 
 ### Refactoring
