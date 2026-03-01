@@ -172,6 +172,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (d0ca5fb)
 
+- (changelog) Update changelog [skip ci] (ab63caf)
+
 
 ### Features
 
@@ -635,6 +637,8 @@ All notable changes to this project are documented in this file.
 - Increase curve editor vertical safe margin (f758160)
 
 - Add U/u hotkeys for redo and undo (917b2cc)
+
+- Persist presets across instances and coalesce curve drag undo (0105ab7)
 
 
 ### Refactoring
