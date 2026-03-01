@@ -23,6 +23,7 @@ impl GuiRuntime {
             active_knob_gesture_param: None,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
+            knob_history_anchor: None,
             curve_history_anchor: None,
         }
     }
@@ -454,7 +455,7 @@ impl GuiState {
         match action {
             UiAction::KnobChanged { key, value } => {
                 if matches!(key.as_str(), MIX_KEY | DEPTH_KEY | PHASE_KEY | OUTPUT_KEY) {
-                    self.capture_undo_snapshot();
+                    self.capture_knob_undo_anchor();
                 }
                 self.reduce_knob(key.as_str(), value);
             }
@@ -605,12 +606,38 @@ impl GuiState {
         }
     }
 
+    fn commit_knob_history_anchor_locked(runtime: &mut GuiRuntime) {
+        if let Some(snapshot) = runtime.knob_history_anchor.take() {
+            Self::push_undo_snapshot_locked(runtime, snapshot);
+        }
+    }
+
+    fn commit_history_anchors_locked(runtime: &mut GuiRuntime) {
+        Self::commit_curve_history_anchor_locked(runtime);
+        Self::commit_knob_history_anchor_locked(runtime);
+    }
+
     fn capture_undo_snapshot(&self) {
         let snapshot = self.snapshot_history_state();
         if let Ok(mut runtime) = self.runtime.lock() {
-            Self::commit_curve_history_anchor_locked(&mut runtime);
+            Self::commit_history_anchors_locked(&mut runtime);
             Self::push_undo_snapshot_locked(&mut runtime, snapshot);
+            runtime.knob_history_anchor = None;
             runtime.curve_history_anchor = None;
+        }
+    }
+
+    fn capture_knob_undo_anchor(&self) {
+        let snapshot = self.snapshot_history_state();
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.pointer_primary_down {
+                if runtime.knob_history_anchor.is_none() {
+                    runtime.knob_history_anchor = Some(snapshot);
+                }
+            } else {
+                Self::push_undo_snapshot_locked(&mut runtime, snapshot);
+                runtime.knob_history_anchor = None;
+            }
         }
     }
 
@@ -773,6 +800,7 @@ impl GuiState {
         if let Ok(mut runtime) = self.runtime.lock() {
             if let Some(snapshot) = runtime.undo_history.pop() {
                 Self::push_history_snapshot(&mut runtime.redo_history, current);
+                runtime.knob_history_anchor = None;
                 runtime.curve_history_anchor = None;
                 runtime.drag_mode = None;
                 runtime.selected_node = None;
@@ -796,6 +824,7 @@ impl GuiState {
         if let Ok(mut runtime) = self.runtime.lock() {
             if let Some(snapshot) = runtime.redo_history.pop() {
                 Self::push_history_snapshot(&mut runtime.undo_history, current);
+                runtime.knob_history_anchor = None;
                 runtime.curve_history_anchor = None;
                 runtime.drag_mode = None;
                 runtime.selected_node = None;
@@ -1594,7 +1623,8 @@ impl GuiState {
         if let Ok(mut runtime) = self.runtime.lock() {
             if runtime.pointer_primary_down && !mouse_down {
                 ended_param = runtime.active_knob_gesture_param.take();
-                Self::commit_curve_history_anchor_locked(&mut runtime);
+                runtime.drag_mode = None;
+                Self::commit_history_anchors_locked(&mut runtime);
             }
             if runtime.pointer_secondary_down
                 && !mouse_secondary_down

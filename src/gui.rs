@@ -152,6 +152,7 @@ struct GuiRuntime {
     active_knob_gesture_param: Option<ClapId>,
     undo_history: Vec<UiHistorySnapshot>,
     redo_history: Vec<UiHistorySnapshot>,
+    knob_history_anchor: Option<UiHistorySnapshot>,
     curve_history_anchor: Option<UiHistorySnapshot>,
 }
 

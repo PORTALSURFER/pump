@@ -84,6 +84,86 @@ mod interaction_and_automation_tests {
     }
 
     #[test]
+    fn knob_drag_updates_commit_one_undo_step_on_release() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let before = params.mix();
+        let _ = state.build_ui(&frame_input(true));
+
+        state.reduce_action(UiAction::KnobChanged {
+            key: super::super::MIX_KEY.to_string(),
+            value: 0.26,
+        });
+        state.reduce_action(UiAction::KnobChanged {
+            key: super::super::MIX_KEY.to_string(),
+            value: 0.59,
+        });
+        let _ = state.build_ui(&frame_input(false));
+        assert!((params.mix() - 0.59).abs() < 1.0e-6);
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: UNDO_KEY.to_string(),
+        });
+        assert!(
+            (params.mix() - before).abs() < 1.0e-6,
+            "one undo should revert the entire knob drag gesture"
+        );
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: REDO_KEY.to_string(),
+        });
+        assert!(
+            (params.mix() - 0.59).abs() < 1.0e-6,
+            "redo should restore the final drag result in one step"
+        );
+    }
+
+    #[test]
+    fn primary_release_without_region_release_clears_curve_drag_mode() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let before = params.editable_curve_snapshot();
+        let start = local_from_node(before.nodes[1]);
+        let moved = Point {
+            x: start.x + 18,
+            y: start.y - 12,
+        };
+
+        let _ = state.build_ui(&frame_input(true));
+        state.reduce_curve_interaction(RegionInteractionKind::Pressed, start, start, false);
+        state.reduce_curve_interaction(RegionInteractionKind::Dragged, moved, moved, false);
+        let _ = state.build_ui(&frame_input(false));
+        let edited = params.editable_curve_snapshot();
+        assert_ne!(edited, before, "drag should modify curve before undo");
+
+        let runtime = state.runtime.lock().expect("runtime lock should succeed");
+        assert!(
+            runtime.drag_mode.is_none(),
+            "global primary release should clear stale curve drag mode"
+        );
+        drop(runtime);
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: UNDO_KEY.to_string(),
+        });
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            before,
+            "one undo should revert the drag even when region release event was missed"
+        );
+    }
+
+    #[test]
     fn curve_press_drag_release_updates_curve_and_resets_drag_mode() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
