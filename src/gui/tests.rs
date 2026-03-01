@@ -1015,7 +1015,7 @@
         let mut texts = Vec::new();
         collect_textbox_texts(spec.root.content(), &mut texts);
 
-        for expected in ["Mix", "Depth", "Phase", "Output"] {
+        for expected in ["Mix", "Phase", "Output"] {
             assert!(
                 texts.iter().any(|text| text == expected),
                 "expected textbox caption `{expected}` in {:?}",

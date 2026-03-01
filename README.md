@@ -29,7 +29,6 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 ## Main controls
 
 - `Mix`: dry/wet blend of ducking intensity.
-- `Depth`: how deep the gain reduction follows the curve.
 - `Phase Offset`: shifts where the curve starts in the sync cycle.
 - `Output Gain`: level trim after ducking.
 - `Division`: beat-synced cycle length from `1/16` to `2 Bars`.
@@ -49,7 +48,7 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 ## Troubleshooting
 
 - If curve edits are visible but audio does not change:
-  - Verify `Mix` and `Depth` are above `0%`.
+  - Verify `Mix` is above `0%`.
   - Verify the plugin is not bypassed.
   - For VST3 hosts, ensure you are on a build that includes shared processor/controller state sync.
 - If the transport indicator never lights:

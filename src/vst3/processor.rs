@@ -234,7 +234,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
         for id in [
             PARAM_MIX_NUM,
-            PARAM_DEPTH_NUM,
             PARAM_PHASE_OFFSET_NUM,
             PARAM_OUTPUT_GAIN_NUM,
             PARAM_SYNC_DIVISION_NUM,
@@ -261,7 +260,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
         let settings = DspSettings {
             mix: self.shared.params.mix(),
-            depth: self.shared.params.depth(),
             phase_offset: self.shared.params.phase_offset(),
             output_gain_db: self.shared.params.output_gain_db(),
             beats_per_cycle: self.shared.params.sync_beats_per_cycle(),

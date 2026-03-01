@@ -6,9 +6,9 @@ use super::{
 #[cfg(feature = "vst3")]
 use super::{
     clap_id_from_vst3_param_id, format_plain_value_text, parse_plain_value_text,
-    vst3_param_info_for_index, PARAM_DEPTH_ID, PARAM_DEPTH_NUM, PARAM_MIX_ID, PARAM_MIX_NUM,
-    PARAM_OUTPUT_GAIN_ID, PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM,
-    PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
+    vst3_param_info_for_index, PARAM_MIX_ID, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_ID,
+    PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SYNC_DIVISION_ID,
+    PARAM_SYNC_DIVISION_NUM,
 };
 use crate::curve::{CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN};
 use std::path::PathBuf;
@@ -41,7 +41,6 @@ fn sync_division_clamping_is_bounded() {
 fn state_roundtrip_preserves_values() {
     let params = PumpParams::new();
     params.set_mix(0.23);
-    params.set_depth(0.81);
     params.set_phase_offset(0.42);
     params.set_output_gain_db(-3.0);
     params.set_sync_division(6.0);
@@ -63,7 +62,7 @@ fn state_roundtrip_preserves_values() {
     decode_state_payload(&restored, &payload).expect("state should decode");
 
     assert!((restored.mix() - 0.23).abs() < 1.0e-6);
-    assert!((restored.depth() - 0.81).abs() < 1.0e-6);
+    assert!((restored.depth() - 1.0).abs() < 1.0e-6);
     assert!((restored.phase_offset() - 0.42).abs() < 1.0e-6);
     assert!((restored.output_gain_db() + 3.0).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 6);
@@ -88,7 +87,7 @@ fn legacy_payload_still_decodes() {
     let restored = PumpParams::new();
     decode_state_payload(&restored, &legacy).expect("legacy state should decode");
     assert!((restored.mix() - 0.4).abs() < 1.0e-6);
-    assert!((restored.depth() - 0.6).abs() < 1.0e-6);
+    assert!((restored.depth() - 1.0).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 4);
     let editable = restored.editable_curve_snapshot();
     assert!(editable.nodes.len() >= 2);
@@ -150,7 +149,6 @@ fn sync_division_change_does_not_mutate_curve_or_revision() {
 fn preset_add_rename_and_load_roundtrip_current_state() {
     let params = PumpParams::new();
     params.set_mix(0.31);
-    params.set_depth(0.91);
     params.set_phase_offset(0.27);
     params.set_output_gain_db(-6.0);
     params.set_sync_division(6.0);
@@ -178,11 +176,9 @@ fn preset_add_rename_and_load_roundtrip_current_state() {
     assert!(bank.presets[1].name.chars().count() <= MAX_PRESET_NAME_CHARS);
 
     params.set_mix(0.05);
-    params.set_depth(0.1);
     params.set_sync_division(1.0);
     params.load_preset(1).expect("preset load should succeed");
     assert!((params.mix() - bank.presets[1].mix).abs() < 1.0e-6);
-    assert!((params.depth() - bank.presets[1].depth).abs() < 1.0e-6);
     assert_eq!(params.sync_division(), bank.presets[1].sync_division);
 }
 
@@ -275,8 +271,10 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
     assert_eq!(bank.selected, 1);
     assert_eq!(bank.presets[0].name, "Live A");
     assert!((bank.presets[0].mix - 0.11).abs() < 1.0e-6);
+    assert!((bank.presets[0].depth - 1.0).abs() < 1.0e-6);
     assert_eq!(bank.presets[1].name, "Live B");
     assert!((bank.presets[1].mix - 0.77).abs() < 1.0e-6);
+    assert!((bank.presets[1].depth - 1.0).abs() < 1.0e-6);
 }
 
 #[test]
@@ -287,7 +285,6 @@ fn save_by_name_overwrites_case_insensitive_match() {
         .expect("preset insertion should succeed");
     assert!(params.rename_preset(1, "Verse"));
     params.set_mix(0.12);
-    params.set_depth(0.33);
 
     let outcome = params.save_current_state_by_name(" verse ");
     assert_eq!(outcome, SavePresetOutcome::Overwritten { index: 1 });
@@ -295,7 +292,7 @@ fn save_by_name_overwrites_case_insensitive_match() {
     assert_eq!(bank.selected, 1);
     assert_eq!(bank.presets[1].name, "Verse");
     assert!((bank.presets[1].mix - 0.12).abs() < 1.0e-6);
-    assert!((bank.presets[1].depth - 0.33).abs() < 1.0e-6);
+    assert!((bank.presets[1].depth - 1.0).abs() < 1.0e-6);
 }
 
 #[test]
@@ -334,10 +331,6 @@ fn vst3_mapping_resolves_to_shared_clap_ids() {
         Some(PARAM_MIX_ID)
     );
     assert_eq!(
-        clap_id_from_vst3_param_id(PARAM_DEPTH_NUM),
-        Some(PARAM_DEPTH_ID)
-    );
-    assert_eq!(
         clap_id_from_vst3_param_id(PARAM_PHASE_OFFSET_NUM),
         Some(PARAM_PHASE_OFFSET_ID)
     );
@@ -360,7 +353,7 @@ fn vst3_info_and_text_conversions_share_param_rules() {
     assert_eq!(mix_info.title, "Mix");
     assert_eq!(mix_info.units, "%");
 
-    let division_info = vst3_param_info_for_index(4).expect("division info should exist");
+    let division_info = vst3_param_info_for_index(3).expect("division info should exist");
     assert_eq!(division_info.id, PARAM_SYNC_DIVISION_NUM);
     assert_eq!(division_info.step_count, MAX_SYNC_DIVISION as i32);
 

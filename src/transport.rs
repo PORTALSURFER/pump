@@ -63,7 +63,6 @@ mod tests {
     fn gui_phase_from_transport_prefers_host_song_position() {
         let settings = DspSettings {
             mix: 1.0,
-            depth: 1.0,
             phase_offset: 0.2,
             output_gain_db: 0.0,
             beats_per_cycle: 4.0,
@@ -82,7 +81,6 @@ mod tests {
     fn gui_phase_from_transport_uses_fallback_without_song_position() {
         let settings = DspSettings {
             mix: 1.0,
-            depth: 1.0,
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,

@@ -26,11 +26,11 @@ use crate::curve::{
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    sync_division_label, PumpParams, PumpPresetBank, SavePresetOutcome, DEFAULT_DEPTH, DEFAULT_MIX,
-    DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET, DEFAULT_PRESET_NAME, MAX_DEPTH, MAX_MIX,
-    MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_DEPTH,
-    MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
+    sync_division_label, PumpParams, PumpPresetBank, SavePresetOutcome, DEFAULT_MIX,
+    DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET, DEFAULT_PRESET_NAME, MAX_MIX, MAX_OUTPUT_GAIN_DB,
+    MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_MIX, MIN_OUTPUT_GAIN_DB,
+    MIN_PHASE_OFFSET, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
+    PARAM_SYNC_DIVISION_ID,
 };
 use crate::time_utils::monotonic_micros;
 use crate::GuiStatus;
@@ -60,7 +60,6 @@ const DESIGN_ASPECT_RATIO: f32 = WINDOW_WIDTH as f32 / WINDOW_HEIGHT as f32;
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
 const MIX_KEY: &str = "mix";
-const DEPTH_KEY: &str = "depth";
 const PHASE_KEY: &str = "phase";
 const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
@@ -96,7 +95,7 @@ const METER_WIDTH: i32 = 6;
 const METER_STROKE: i32 = 1;
 const BASE_KNOB_DIAMETER: u32 = 92;
 const BASE_TEXT_SCALE: u32 = 2;
-const KNOBS_PER_ROW: usize = 4;
+const KNOBS_PER_ROW: usize = 3;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const TRANSPORT_INDICATOR_SIZE: u32 = 10;
@@ -198,7 +197,6 @@ struct CurveMarqueeSelection {
 #[derive(Clone, Copy, Debug)]
 struct ControlSnapshot {
     mix: f32,
-    depth: f32,
     phase_offset: f32,
     output_gain_db: f32,
     division: usize,
@@ -208,7 +206,6 @@ struct ControlSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 struct UiHistorySnapshot {
     mix: f32,
-    depth: f32,
     phase_offset: f32,
     output_gain_db: f32,
     sync_division: usize,

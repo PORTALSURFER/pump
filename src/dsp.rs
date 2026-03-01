@@ -8,8 +8,6 @@ use toybox::dsp::{TransportClock, TransportState};
 pub struct DspSettings {
     /// Dry/wet blend of gain modulation.
     pub mix: f32,
-    /// Duck amount scale.
-    pub depth: f32,
     /// Cycle phase offset.
     pub phase_offset: f32,
     /// Post-gain trim in decibels.
@@ -31,7 +29,6 @@ pub struct DspTelemetry {
 pub struct PumpEngine {
     clock: TransportClock,
     mix: OnePole,
-    depth: OnePole,
     phase_offset: OnePole,
     output_gain_db: OnePole,
     curve_current: [f32; CURVE_TABLE_LEN],
@@ -46,7 +43,6 @@ impl PumpEngine {
         Self {
             clock: TransportClock::new(sample_rate),
             mix: OnePole::new(1.0, sample_rate, 0.01),
-            depth: OnePole::new(0.7, sample_rate, 0.01),
             phase_offset: OnePole::new(0.0, sample_rate, 0.01),
             output_gain_db: OnePole::new(0.0, sample_rate, 0.01),
             curve_current: curve,
@@ -73,7 +69,6 @@ impl PumpEngine {
         let frame = self.clock.tick(resolve_effective_transport(transport));
 
         let mix = self.mix.next(settings.mix.clamp(0.0, 1.0));
-        let depth = self.depth.next(settings.depth.clamp(0.0, 1.0));
         let phase_offset = self
             .phase_offset
             .next(settings.phase_offset.rem_euclid(1.0).clamp(0.0, 1.0));
@@ -83,9 +78,7 @@ impl PumpEngine {
 
         let phase = frame.phase_for_cycle(settings.beats_per_cycle, phase_offset);
         let shape = self.sample_active_curve(phase);
-
-        let duck = depth * (1.0 - shape);
-        let wet_gain = 1.0 - duck;
+        let wet_gain = shape;
         let blend_gain = (mix * wet_gain) + (1.0 - mix);
         let output_gain = db_to_linear(output_gain_db);
         let gain = (blend_gain * output_gain).clamp(0.0, 4.0);
@@ -170,7 +163,6 @@ mod tests {
 
         let settings = DspSettings {
             mix: 1.0,
-            depth: 1.0,
             phase_offset: 0.0,
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
@@ -208,7 +200,6 @@ mod tests {
         let mut engine = PumpEngine::new(48_000.0, curve);
         let settings = DspSettings {
             mix: 1.0,
-            depth: 1.0,
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,

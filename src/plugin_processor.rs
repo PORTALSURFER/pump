@@ -52,7 +52,6 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
 
         let settings = DspSettings {
             mix: self.shared.params.mix(),
-            depth: self.shared.params.depth(),
             phase_offset: self.shared.params.phase_offset(),
             output_gain_db: self.shared.params.output_gain_db(),
             beats_per_cycle: self.shared.params.sync_beats_per_cycle(),

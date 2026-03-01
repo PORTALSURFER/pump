@@ -5,7 +5,7 @@ use std::mem;
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 5);
+    assert_eq!(count, 4);
 }
 
 #[test]
@@ -28,10 +28,10 @@ fn controller_and_processor_share_param_state() {
     let shared = Arc::new(PumpVst3Shared::new());
     let controller = PumpVst3Controller::new(Arc::clone(&shared));
     let processor = PumpVst3Processor::new(Arc::clone(&shared));
-    let value = to_normalized(PARAM_DEPTH_NUM, 0.25);
-    let result = unsafe { controller.setParamNormalized(PARAM_DEPTH_NUM, value) };
+    let value = to_normalized(PARAM_MIX_NUM, 0.25);
+    let result = unsafe { controller.setParamNormalized(PARAM_MIX_NUM, value) };
     assert_eq!(result, kResultOk);
-    assert!((processor.shared.params.depth() - 0.25).abs() < 1.0e-6);
+    assert!((processor.shared.params.mix() - 0.25).abs() < 1.0e-6);
 }
 
 #[test]

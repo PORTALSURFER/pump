@@ -50,7 +50,6 @@ impl GuiState {
     pub(super) fn snapshot_controls(&self) -> ControlSnapshot {
         ControlSnapshot {
             mix: self.params.mix(),
-            depth: self.params.depth(),
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
             division: self.params.sync_division(),
@@ -340,14 +339,6 @@ impl GuiState {
                     format!("{:.0}%", controls.mix * 100.0),
                 ),
                 knob_cell(
-                    DEPTH_KEY,
-                    "Depth",
-                    controls.depth,
-                    DEFAULT_DEPTH,
-                    (MIN_DEPTH, MAX_DEPTH),
-                    format!("{:.0}%", controls.depth * 100.0),
-                ),
-                knob_cell(
                     PHASE_KEY,
                     "Phase",
                     controls.phase_offset,
@@ -454,7 +445,7 @@ impl GuiState {
     pub(super) fn reduce_action(&mut self, action: UiAction) {
         match action {
             UiAction::KnobChanged { key, value } => {
-                if matches!(key.as_str(), MIX_KEY | DEPTH_KEY | PHASE_KEY | OUTPUT_KEY) {
+                if matches!(key.as_str(), MIX_KEY | PHASE_KEY | OUTPUT_KEY) {
                     self.capture_knob_undo_anchor();
                 }
                 self.reduce_knob(key.as_str(), value);
@@ -565,7 +556,6 @@ impl GuiState {
     fn snapshot_history_state(&self) -> UiHistorySnapshot {
         UiHistorySnapshot {
             mix: self.params.mix(),
-            depth: self.params.depth(),
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
             sync_division: self.params.sync_division(),
@@ -577,7 +567,6 @@ impl GuiState {
     fn apply_history_state(&self, snapshot: &UiHistorySnapshot) {
         self.params.set_preset_bank(snapshot.preset_bank.clone());
         self.params.set_mix(snapshot.mix);
-        self.params.set_depth(snapshot.depth);
         self.params.set_phase_offset(snapshot.phase_offset);
         self.params.set_output_gain_db(snapshot.output_gain_db);
         self.params.set_sync_division(snapshot.sync_division as f32);
@@ -849,9 +838,6 @@ impl GuiState {
         match key {
             MIX_KEY => {
                 self.params.set_mix(value);
-            }
-            DEPTH_KEY => {
-                self.params.set_depth(value);
             }
             PHASE_KEY => {
                 self.params.set_phase_offset(value);
@@ -1654,7 +1640,6 @@ impl GuiState {
 
     pub(super) fn push_all_param_updates(&self) {
         self.push_single_value_update(PARAM_MIX_ID, self.params.mix() as f64);
-        self.push_single_value_update(PARAM_DEPTH_ID, self.params.depth() as f64);
         self.push_single_value_update(PARAM_PHASE_OFFSET_ID, self.params.phase_offset() as f64);
         self.push_single_value_update(PARAM_OUTPUT_GAIN_ID, self.params.output_gain_db() as f64);
         self.push_single_value_update(PARAM_SYNC_DIVISION_ID, self.params.sync_division() as f64);

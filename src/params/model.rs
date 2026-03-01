@@ -11,7 +11,10 @@ pub(crate) const STATE_VERSION: u32 = 4;
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
-/// Host-visible numeric parameter id for duck amount.
+/// Reserved numeric parameter id kept for backward compatibility.
+///
+/// Depth is no longer exposed as a runtime control.
+#[allow(dead_code)]
 pub const PARAM_DEPTH_NUM: u32 = 2;
 /// Host-visible numeric parameter id for cycle phase offset.
 pub const PARAM_PHASE_OFFSET_NUM: u32 = 3;
@@ -22,7 +25,10 @@ pub const PARAM_SYNC_DIVISION_NUM: u32 = 5;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
-/// Parameter id for duck amount.
+/// Reserved parameter id kept for backward compatibility.
+///
+/// Depth is no longer exposed as a runtime control.
+#[allow(dead_code)]
 pub const PARAM_DEPTH_ID: ClapId = ClapId::new(PARAM_DEPTH_NUM);
 /// Parameter id for cycle phase offset.
 pub const PARAM_PHASE_OFFSET_ID: ClapId = ClapId::new(PARAM_PHASE_OFFSET_NUM);
@@ -33,8 +39,8 @@ pub const PARAM_SYNC_DIVISION_ID: ClapId = ClapId::new(PARAM_SYNC_DIVISION_NUM);
 
 /// Default dry/wet blend.
 pub const DEFAULT_MIX: f32 = 1.0;
-/// Default duck depth.
-pub const DEFAULT_DEPTH: f32 = 0.7;
+/// Fixed depth value used for compatibility payloads/presets.
+pub const DEFAULT_DEPTH: f32 = 1.0;
 /// Default cycle phase offset.
 pub const DEFAULT_PHASE_OFFSET: f32 = 0.0;
 /// Default output gain.
@@ -52,9 +58,10 @@ pub const DEFAULT_PRESET_NAME: &str = "Init";
 pub const MIN_MIX: f32 = 0.0;
 /// Maximum mix value.
 pub const MAX_MIX: f32 = 1.0;
-/// Minimum depth value.
+/// Minimum depth value kept for compatibility helpers.
+#[allow(dead_code)]
 pub const MIN_DEPTH: f32 = 0.0;
-/// Maximum depth value.
+/// Maximum depth value kept for compatibility helpers.
 pub const MAX_DEPTH: f32 = 1.0;
 /// Minimum phase offset value.
 pub const MIN_PHASE_OFFSET: f32 = 0.0;
@@ -159,7 +166,7 @@ pub struct PumpPreset {
     pub is_read_only: bool,
     /// Dry/wet mix amount.
     pub mix: f32,
-    /// Duck depth amount.
+    /// Legacy depth field preserved for backward-compatible state payloads.
     pub depth: f32,
     /// Cycle phase offset.
     pub phase_offset: f32,
@@ -252,7 +259,6 @@ pub(crate) fn curve_near_eq(left: &EditableCurve, right: &EditableCurve) -> bool
 /// Shared atomic parameter/state storage across threads.
 pub struct PumpParams {
     pub(super) mix: AtomicF32,
-    pub(super) depth: AtomicF32,
     pub(super) phase_offset: AtomicF32,
     pub(super) output_gain_db: AtomicF32,
     pub(super) sync_division: AtomicU32,

@@ -60,7 +60,7 @@ pub struct Vst3ParamInfo {
     pub default_normalized: f64,
 }
 
-const PARAM_DEFS: [ParamDef; 5] = [
+const PARAM_DEFS: [ParamDef; 4] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -74,21 +74,6 @@ const PARAM_DEFS: [ParamDef; 5] = [
         min_value: MIN_MIX as f64,
         max_value: MAX_MIX as f64,
         default_value: DEFAULT_MIX as f64,
-        flags: AUTO,
-    },
-    ParamDef {
-        #[cfg(feature = "vst3")]
-        vst3_id: PARAM_DEPTH_NUM,
-        id: PARAM_DEPTH_ID,
-        name: "Depth",
-        #[cfg(feature = "vst3")]
-        short_name: "Depth",
-        #[cfg(feature = "vst3")]
-        units: "%",
-        module: "Pump",
-        min_value: MIN_DEPTH as f64,
-        max_value: MAX_DEPTH as f64,
-        default_value: DEFAULT_DEPTH as f64,
         flags: AUTO,
     },
     ParamDef {
@@ -230,7 +215,6 @@ pub fn write_param_info(index: u32, info: &mut ParamInfoWriter) {
 pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
     match param_id {
         PARAM_MIX_ID => Some(params.mix() as f64),
-        PARAM_DEPTH_ID => Some(params.depth() as f64),
         PARAM_PHASE_OFFSET_ID => Some(params.phase_offset() as f64),
         PARAM_OUTPUT_GAIN_ID => Some(params.output_gain_db() as f64),
         PARAM_SYNC_DIVISION_ID => Some(params.sync_division() as f64),
@@ -244,7 +228,6 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
 fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) -> bool {
     match param_id {
         PARAM_MIX_ID => params.set_mix(value as f32),
-        PARAM_DEPTH_ID => params.set_depth(value as f32),
         PARAM_PHASE_OFFSET_ID => params.set_phase_offset(value as f32),
         PARAM_OUTPUT_GAIN_ID => params.set_output_gain_db(value as f32),
         PARAM_SYNC_DIVISION_ID => params.set_sync_division(value as f32),
@@ -312,7 +295,7 @@ fn parse_plain_value_text(param_id: ClapId, raw: &str) -> Option<f64> {
 
 fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> {
     match param_id {
-        PARAM_MIX_ID | PARAM_DEPTH_ID => Some(format!("{:.0}%", (value * 100.0).clamp(0.0, 100.0))),
+        PARAM_MIX_ID => Some(format!("{:.0}%", (value * 100.0).clamp(0.0, 100.0))),
         PARAM_PHASE_OFFSET_ID => Some(format!("{:.0}%", (value * 100.0).rem_euclid(100.0))),
         PARAM_OUTPUT_GAIN_ID => Some(format!("{value:+.1} dB")),
         PARAM_SYNC_DIVISION_ID => {
@@ -324,7 +307,7 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
 
 fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
     match param_id {
-        PARAM_MIX_ID | PARAM_DEPTH_ID => {
+        PARAM_MIX_ID => {
             let stripped = raw.trim_end_matches('%').trim();
             let value: f64 = stripped.parse().ok()?;
             Some((value / 100.0).clamp(0.0, 1.0))

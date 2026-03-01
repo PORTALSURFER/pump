@@ -18,7 +18,7 @@ use crate::params::{
     apply_normalized_param_value, clap_id_from_vst3_param_id, decode_state_payload,
     encode_state_payload, format_plain_value_text, get_param_value, normalized_from_plain_value,
     param_count, parse_plain_value_text, plain_from_normalized_value, vst3_param_info_for_index,
-    PumpParams, PARAM_DEPTH_NUM, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_NUM,
+    PumpParams, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_NUM,
     PARAM_SYNC_DIVISION_NUM,
 };
 use crate::plugin_metadata::PLUGIN_NAME;

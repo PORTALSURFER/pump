@@ -6,7 +6,6 @@ impl PumpParams {
         let default_curve = editable_curve_to_table(&editable_curve);
         let params = Self {
             mix: AtomicF32::new(DEFAULT_MIX),
-            depth: AtomicF32::new(DEFAULT_DEPTH),
             phase_offset: AtomicF32::new(DEFAULT_PHASE_OFFSET),
             output_gain_db: AtomicF32::new(DEFAULT_OUTPUT_GAIN_DB),
             sync_division: AtomicU32::new(DEFAULT_SYNC_DIVISION_INDEX as u32),
@@ -28,9 +27,11 @@ impl PumpParams {
         self.mix.load(Ordering::Relaxed)
     }
 
-    /// Get duck depth amount.
+    /// Get legacy depth amount.
+    ///
+    /// Depth is no longer user-controllable; Pump now runs at full depth.
     pub fn depth(&self) -> f32 {
-        self.depth.load(Ordering::Relaxed)
+        MAX_DEPTH
     }
 
     /// Get cycle phase offset.
@@ -59,11 +60,11 @@ impl PumpParams {
             .store(value.clamp(MIN_MIX, MAX_MIX), Ordering::Relaxed);
     }
 
-    /// Set duck depth amount.
-    pub fn set_depth(&self, value: f32) {
-        self.depth
-            .store(value.clamp(MIN_DEPTH, MAX_DEPTH), Ordering::Relaxed);
-    }
+    /// Set legacy depth amount.
+    ///
+    /// Depth is retained only for backward-compatible state decoding and is
+    /// intentionally ignored at runtime.
+    pub fn set_depth(&self, _value: f32) {}
 
     /// Set cycle phase offset.
     pub fn set_phase_offset(&self, value: f32) {
@@ -177,6 +178,7 @@ impl PumpParams {
             // Persist the field for backward-compatible serialization, but keep
             // runtime behavior fully writable across all presets.
             preset.is_read_only = false;
+            preset.depth = MAX_DEPTH;
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
             preset.editable_curve = preset.editable_curve.clone().normalized();
         }
@@ -186,7 +188,6 @@ impl PumpParams {
 
     fn apply_preset_snapshot(&self, preset: &PumpPreset) {
         self.set_mix(preset.mix);
-        self.set_depth(preset.depth);
         self.set_phase_offset(preset.phase_offset);
         self.set_output_gain_db(preset.output_gain_db);
         self.set_sync_division(preset.sync_division as f32);
@@ -336,7 +337,6 @@ impl PumpParams {
         };
         let current = self.current_preset_snapshot_with_name(String::new());
         !float_near_eq(current.mix, selected.mix)
-            || !float_near_eq(current.depth, selected.depth)
             || !float_near_eq(current.phase_offset, selected.phase_offset)
             || !float_near_eq(current.output_gain_db, selected.output_gain_db)
             || current.sync_division != selected.sync_division
