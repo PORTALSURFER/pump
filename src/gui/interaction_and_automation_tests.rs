@@ -230,6 +230,47 @@ mod interaction_and_automation_tests {
     }
 
     #[test]
+    fn region_drag_updates_commit_one_undo_step_on_release() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let before = params.editable_curve_snapshot();
+        let start = local_from_node(before.nodes[1]);
+        let moved = Point {
+            x: start.x + 16,
+            y: start.y + 12,
+        };
+
+        state.reduce_curve_interaction(RegionInteractionKind::Pressed, start, start, false);
+        state.reduce_curve_interaction(RegionInteractionKind::Dragged, moved, moved, false);
+        state.reduce_curve_interaction(RegionInteractionKind::Released, moved, moved, false);
+        let edited = params.editable_curve_snapshot();
+        assert_ne!(edited, before, "drag should modify curve before undo");
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: UNDO_KEY.to_string(),
+        });
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            before,
+            "one undo should revert the entire region drag gesture"
+        );
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: REDO_KEY.to_string(),
+        });
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            edited,
+            "redo should restore the final region drag result in one step"
+        );
+    }
+
+    #[test]
     fn curve_press_on_segment_inserts_preview_node() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(

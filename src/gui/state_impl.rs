@@ -592,6 +592,7 @@ impl GuiState {
     fn capture_undo_snapshot(&self) {
         let snapshot = self.snapshot_history_state();
         if let Ok(mut runtime) = self.runtime.lock() {
+            Self::commit_curve_history_anchor_locked(&mut runtime);
             Self::push_undo_snapshot_locked(&mut runtime, snapshot);
             runtime.curve_history_anchor = None;
         }
@@ -796,7 +797,6 @@ impl GuiState {
 
         match kind {
             RegionInteractionKind::Pressed => {
-                runtime.curve_history_anchor = Some(self.snapshot_history_state());
                 let mut editable = self.params.editable_curve_snapshot();
                 if let Some(index) = find_node_hit_for_size(
                     &editable,
@@ -838,7 +838,7 @@ impl GuiState {
                         start_pointer: local_pointer,
                         dragging: false,
                     });
-                    Self::commit_curve_history_anchor_locked(&mut runtime);
+                    Self::push_undo_snapshot_locked(&mut runtime, self.snapshot_history_state());
                     enforce_wrapped_endpoints(&mut editable);
                     self.params.set_editable_curve(&editable);
                     return;
@@ -903,7 +903,7 @@ impl GuiState {
                     start_pointer: local_pointer,
                     dragging: false,
                 });
-                Self::commit_curve_history_anchor_locked(&mut runtime);
+                Self::push_undo_snapshot_locked(&mut runtime, self.snapshot_history_state());
                 enforce_wrapped_endpoints(&mut editable);
                 self.params.set_editable_curve(&editable);
             }
@@ -1048,7 +1048,9 @@ impl GuiState {
                     }
                     runtime.drag_mode = Some(drag_mode);
                     if curve_changed {
-                        Self::commit_curve_history_anchor_locked(&mut runtime);
+                        if runtime.curve_history_anchor.is_none() {
+                            runtime.curve_history_anchor = Some(self.snapshot_history_state());
+                        }
                         enforce_wrapped_endpoints(&mut editable);
                         self.params.set_editable_curve(&editable);
                     }
@@ -1056,6 +1058,7 @@ impl GuiState {
             }
             RegionInteractionKind::Released => {
                 runtime.drag_mode = None;
+                Self::commit_curve_history_anchor_locked(&mut runtime);
                 runtime.curve_history_anchor = None;
             }
             RegionInteractionKind::SecondaryClicked => {

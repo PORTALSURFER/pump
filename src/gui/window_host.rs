@@ -26,11 +26,7 @@ impl PumpGui {
                 SHORTCUT_KEY_SAVE,
                 ShortcutModifiers::default(),
             ),
-            ShortcutBinding::new(
-                UNDO_KEY,
-                SHORTCUT_KEY_UNDO,
-                ShortcutModifiers::default(),
-            ),
+            ShortcutBinding::new(UNDO_KEY, SHORTCUT_KEY_UNDO, ShortcutModifiers::default()),
             ShortcutBinding::new(
                 REDO_KEY,
                 SHORTCUT_KEY_UNDO,
