@@ -182,6 +182,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (abfd1ec)
 
+- (changelog) Update changelog [skip ci] (8be65ee)
+
 
 ### Features
 
@@ -655,6 +657,8 @@ All notable changes to this project are documented in this file.
 - Fix preset selection persistence on load (b97cfd2)
 
 - Coalesce knob drag undo and clear stale drag mode (a49c08e)
+
+- Skip no-op curve inserts at max node count (69d893a)
 
 
 ### Refactoring
