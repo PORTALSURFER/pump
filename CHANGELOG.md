@@ -178,6 +178,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (ea4bafd)
 
+- (changelog) Update changelog [skip ci] (70c18ee)
+
 
 ### Features
 
@@ -647,6 +649,8 @@ All notable changes to this project are documented in this file.
 - Fix region drag undo coalescing and add regression test (d1199c5)
 
 - Add right-drag marquee node selection in curve editor (a5804a9)
+
+- Fix preset selection persistence on load (b97cfd2)
 
 
 ### Refactoring
