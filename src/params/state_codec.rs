@@ -100,7 +100,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
     params.set_editable_curve(&editable_curve);
-    params.set_preset_bank(preset_bank);
+    params.set_preset_bank_without_persistence(preset_bank);
 
     Ok(())
 }
@@ -265,7 +265,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
     params.set_curve(&curve);
-    params.set_preset_bank(PumpPresetBank {
+    params.set_preset_bank_without_persistence(PumpPresetBank {
         selected: 0,
         presets: vec![PumpPreset {
             name: DEFAULT_PRESET_NAME.to_string(),

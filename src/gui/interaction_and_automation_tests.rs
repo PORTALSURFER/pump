@@ -169,6 +169,67 @@ mod interaction_and_automation_tests {
     }
 
     #[test]
+    fn curve_drag_updates_commit_one_undo_step_on_release() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let before = params.editable_curve_snapshot();
+
+        let _ = state.build_ui(&frame_input(true));
+        let mut model = toybox::gui::declarative::CurveModel::new(
+            before
+                .nodes
+                .iter()
+                .map(|node| toybox::gui::declarative::CurvePoint::new(node.x, node.y))
+                .collect(),
+            before
+                .segments
+                .iter()
+                .map(|segment| toybox::gui::declarative::CurveSegment::new(segment.tension))
+                .collect(),
+        );
+        model.points[1].x = 0.24;
+        model.points[1].y = 0.16;
+        state.reduce_action(UiAction::CurveEditorChanged {
+            key: CURVE_KEY.to_string(),
+            model: model.clone(),
+        });
+
+        model.points[1].x = 0.31;
+        model.points[1].y = 0.29;
+        state.reduce_action(UiAction::CurveEditorChanged {
+            key: CURVE_KEY.to_string(),
+            model,
+        });
+
+        let _ = state.build_ui(&frame_input(false));
+        let edited = params.editable_curve_snapshot();
+        assert_ne!(edited, before, "drag should modify curve before undo");
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: UNDO_KEY.to_string(),
+        });
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            before,
+            "one undo should revert the entire drag gesture"
+        );
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: REDO_KEY.to_string(),
+        });
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            edited,
+            "redo should restore the final drag result in one step"
+        );
+    }
+
+    #[test]
     fn curve_press_on_segment_inserts_preview_node() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(

@@ -18,6 +18,7 @@ use crate::curve::{
 
 mod host_api;
 mod model;
+mod preset_store;
 mod runtime_impl;
 mod state_codec;
 

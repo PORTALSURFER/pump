@@ -511,7 +511,7 @@ impl GuiState {
                 self.cancel_preset_rename();
             }
             UiAction::CurveEditorChanged { key, model } if key == CURVE_KEY => {
-                self.capture_undo_snapshot();
+                self.capture_curve_undo_anchor();
                 let editable_curve = editable_curve_from_model(&model);
                 self.params.set_editable_curve(&editable_curve);
                 if let Ok(mut runtime) = self.runtime.lock() {
@@ -594,6 +594,20 @@ impl GuiState {
         if let Ok(mut runtime) = self.runtime.lock() {
             Self::push_undo_snapshot_locked(&mut runtime, snapshot);
             runtime.curve_history_anchor = None;
+        }
+    }
+
+    fn capture_curve_undo_anchor(&self) {
+        let snapshot = self.snapshot_history_state();
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.pointer_primary_down {
+                if runtime.curve_history_anchor.is_none() {
+                    runtime.curve_history_anchor = Some(snapshot);
+                }
+            } else {
+                Self::push_undo_snapshot_locked(&mut runtime, snapshot);
+                runtime.curve_history_anchor = None;
+            }
         }
     }
 
@@ -1337,6 +1351,7 @@ impl GuiState {
         if let Ok(mut runtime) = self.runtime.lock() {
             if runtime.pointer_primary_down && !mouse_down {
                 ended_param = runtime.active_knob_gesture_param.take();
+                Self::commit_curve_history_anchor_locked(&mut runtime);
             }
             runtime.pointer_primary_down = mouse_down;
         }

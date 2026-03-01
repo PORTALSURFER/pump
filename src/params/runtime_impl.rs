@@ -4,7 +4,7 @@ impl PumpParams {
     pub fn new() -> Self {
         let editable_curve = default_editable_curve();
         let default_curve = editable_curve_to_table(&editable_curve);
-        Self {
+        let params = Self {
             mix: AtomicF32::new(DEFAULT_MIX),
             depth: AtomicF32::new(DEFAULT_DEPTH),
             phase_offset: AtomicF32::new(DEFAULT_PHASE_OFFSET),
@@ -14,7 +14,13 @@ impl PumpParams {
             curve: std::array::from_fn(|index| AtomicF32::new(default_curve[index])),
             curve_revision: AtomicU32::new(1),
             preset_bank: RwLock::new(PumpPresetBank::default_init()),
+        };
+        match super::preset_store::load_persisted_preset_bank() {
+            Ok(Some(bank)) => params.set_preset_bank_without_persistence(bank),
+            Ok(None) => {}
+            Err(error) => Self::log_preset_persistence_error("load", error.as_str()),
         }
+        params
     }
 
     /// Get dry/wet mix amount.
@@ -149,6 +155,35 @@ impl PumpParams {
         }
     }
 
+    fn log_preset_persistence_error(context: &str, error: &str) {
+        eprintln!("pump preset persistence {context} failed: {error}");
+    }
+
+    fn persist_preset_bank_snapshot(&self, bank: &PumpPresetBank) {
+        if let Err(error) = super::preset_store::persist_preset_bank(bank) {
+            Self::log_preset_persistence_error("save", error.as_str());
+        }
+    }
+
+    fn normalized_preset_bank(&self, mut bank: PumpPresetBank) -> PumpPresetBank {
+        if bank.presets.is_empty() {
+            bank = PumpPresetBank::default_init();
+        }
+        if bank.presets.len() > MAX_PRESETS {
+            bank.presets.truncate(MAX_PRESETS);
+        }
+        for (index, preset) in bank.presets.iter_mut().enumerate() {
+            preset.name = sanitize_preset_name(&preset.name, index);
+            // Persist the field for backward-compatible serialization, but keep
+            // runtime behavior fully writable across all presets.
+            preset.is_read_only = false;
+            preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
+            preset.editable_curve = preset.editable_curve.clone().normalized();
+        }
+        bank.selected = bank.selected.min(bank.presets.len().saturating_sub(1));
+        bank
+    }
+
     fn apply_preset_snapshot(&self, preset: &PumpPreset) {
         self.set_mix(preset.mix);
         self.set_depth(preset.depth);
@@ -168,24 +203,16 @@ impl PumpParams {
 
     /// Replace the full preset bank, clamping to supported limits.
     pub fn set_preset_bank(&self, bank: PumpPresetBank) {
-        let mut normalized = bank;
-        if normalized.presets.is_empty() {
-            normalized = PumpPresetBank::default_init();
+        let normalized = self.normalized_preset_bank(bank);
+        if let Ok(mut guard) = self.preset_bank.write() {
+            *guard = normalized.clone();
         }
-        if normalized.presets.len() > MAX_PRESETS {
-            normalized.presets.truncate(MAX_PRESETS);
-        }
-        for (index, preset) in normalized.presets.iter_mut().enumerate() {
-            preset.name = sanitize_preset_name(&preset.name, index);
-            // Persist the field for backward-compatible serialization, but keep
-            // runtime behavior fully writable across all presets.
-            preset.is_read_only = false;
-            preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
-            preset.editable_curve = preset.editable_curve.clone().normalized();
-        }
-        normalized.selected = normalized
-            .selected
-            .min(normalized.presets.len().saturating_sub(1));
+        self.persist_preset_bank_snapshot(&normalized);
+    }
+
+    /// Replace the full preset bank without touching persistent disk storage.
+    pub(crate) fn set_preset_bank_without_persistence(&self, bank: PumpPresetBank) {
+        let normalized = self.normalized_preset_bank(bank);
         if let Ok(mut guard) = self.preset_bank.write() {
             *guard = normalized;
         }
@@ -222,6 +249,9 @@ impl PumpParams {
         inserted.is_read_only = false;
         guard.presets.insert(insert_at, inserted);
         guard.selected = insert_at;
+        let persisted = guard.clone();
+        drop(guard);
+        self.persist_preset_bank_snapshot(&persisted);
         Some(insert_at)
     }
 
@@ -235,6 +265,9 @@ impl PumpParams {
         };
         let candidate = sanitize_preset_name(new_name, index);
         preset.name = candidate;
+        let persisted = guard.clone();
+        drop(guard);
+        self.persist_preset_bank_snapshot(&persisted);
         true
     }
 
@@ -269,6 +302,9 @@ impl PumpParams {
                 existing.editable_curve = snapshot.editable_curve;
             }
             guard.selected = index;
+            let persisted = guard.clone();
+            drop(guard);
+            self.persist_preset_bank_snapshot(&persisted);
             return SavePresetOutcome::Overwritten { index };
         }
 
@@ -278,6 +314,9 @@ impl PumpParams {
         let created_index = guard.presets.len();
         guard.presets.push(snapshot);
         guard.selected = created_index;
+        let persisted = guard.clone();
+        drop(guard);
+        self.persist_preset_bank_snapshot(&persisted);
         SavePresetOutcome::Created {
             index: created_index,
         }
