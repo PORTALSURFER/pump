@@ -180,6 +180,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (70c18ee)
 
+- (changelog) Update changelog [skip ci] (abfd1ec)
+
 
 ### Features
 
@@ -651,6 +653,8 @@ All notable changes to this project are documented in this file.
 - Add right-drag marquee node selection in curve editor (a5804a9)
 
 - Fix preset selection persistence on load (b97cfd2)
+
+- Coalesce knob drag undo and clear stale drag mode (a49c08e)
 
 
 ### Refactoring
