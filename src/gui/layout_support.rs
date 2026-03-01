@@ -26,6 +26,11 @@ pub(super) const fn resolve_vertical_slot_heights(total_height: u32) -> (u32, u3
     (header_h, curve_h, controls_h)
 }
 
+/// Resolve curve editor height from the full curve slot height.
+pub(super) const fn resolve_curve_editor_height(curve_slot_h: u32) -> u32 {
+    curve_slot_h.saturating_sub(CURVE_VERTICAL_MARGIN.saturating_mul(2))
+}
+
 pub(super) fn resolve_runtime_controls_slot_widths(total_width: u32) -> (u32, u32) {
     let widths = weighted_slot_lengths(
         total_width.max(1),
@@ -169,9 +174,10 @@ impl UiLayoutMetrics {
         let button_control_h = expanded_control_h;
         let dropdown_control_w = dropdown_slot_w.max(1);
         let transport_indicator_size = TRANSPORT_INDICATOR_SIZE.max(1);
+        let curve_editor_h = resolve_curve_editor_height(curve_h).max(1);
         let curve_size = Size {
             width: content_w,
-            height: curve_h,
+            height: curve_editor_h,
         };
         let meter_x_offset = METER_X_OFFSET.max(0);
         let meter_y_offset = METER_Y_OFFSET.max(0);

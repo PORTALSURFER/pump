@@ -249,13 +249,17 @@ impl GuiState {
     /// Build the spline/curve slot node.
     pub(super) fn build_spline_slot(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
         let editable_curve = self.params.editable_curve_snapshot();
-        let spline_content = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
+        let curve_editor_view = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
             .curve_style(curve_editor_style(theme))
             .curve_interaction(curve_editor_interaction_options(metrics.curve_size))
             .curve_playhead_x(
                 (self.status.has_host_beats_timeline() || self.status.is_playing())
                     .then_some(self.status.phase()),
             )
+            .widget_layout(fixed_box(metrics.content_w, metrics.curve_size.height))
+            .fill();
+        let spline_content = Node::padding_box(curve_editor_view)
+            .pad_xy(0, CURVE_VERTICAL_MARGIN as i32)
             .widget_layout(fixed_box(metrics.content_w, metrics.curve_h))
             .fill();
         panel("spline", spline_content).pad_all(0)
