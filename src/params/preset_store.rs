@@ -3,11 +3,35 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
 const PRESET_STORE_VERSION: u32 = 1;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PERSISTENCE_PATH_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Run one closure with a thread-local preset-store path override enabled.
+///
+/// This helper keeps persistence tests isolated without touching process-global
+/// environment variables.
+#[cfg(test)]
+pub(crate) fn with_test_persistence_path<R>(path: PathBuf, f: impl FnOnce() -> R) -> R {
+    TEST_PERSISTENCE_PATH_OVERRIDE.with(|slot| {
+        let previous = slot.replace(Some(path));
+        let result = std::panic::catch_unwind(AssertUnwindSafe(f));
+        slot.replace(previous);
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::resume_unwind(error),
+        }
+    })
+}
 
 /// Load the persisted preset bank from disk when available.
 ///
@@ -35,6 +59,10 @@ pub(crate) fn persist_preset_bank(bank: &PumpPresetBank) -> Result<(), String> {
 }
 
 fn persistence_file_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_PERSISTENCE_PATH_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return Some(path);
+    }
     if cfg!(test) && std::env::var_os(PRESET_STORE_PATH_ENV).is_none() {
         return None;
     }

@@ -11,6 +11,18 @@ use super::{
     PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
 };
 use crate::curve::{CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+fn temp_preset_store_path(label: &str) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "pump-runtime-preset-store-{label}-{}-{stamp}.bin",
+        std::process::id()
+    ))
+}
 
 #[test]
 fn sync_division_parser_accepts_labels() {
@@ -191,6 +203,42 @@ fn preset_bank_roundtrips_through_state_payload() {
     assert_eq!(bank.selected, 1);
     assert_eq!(bank.presets[1].name, "Verse");
     assert!(!bank.presets[0].is_read_only);
+}
+
+#[test]
+fn load_preset_persists_selected_index_for_new_instances() {
+    let path = temp_preset_store_path("selection-persistence");
+    super::preset_store::with_test_persistence_path(path.clone(), || {
+        let params = PumpParams::new();
+        params
+            .add_preset_from_current_state()
+            .expect("first preset insertion should succeed");
+        params
+            .add_preset_from_current_state()
+            .expect("second preset insertion should succeed");
+        assert_eq!(
+            params.preset_bank_snapshot().selected,
+            2,
+            "second insertion should leave selection on index 2"
+        );
+
+        params
+            .load_preset(1)
+            .expect("preset selection should succeed");
+        assert_eq!(
+            params.preset_bank_snapshot().selected,
+            1,
+            "active runtime selection should move to index 1"
+        );
+
+        let restored = PumpParams::new();
+        assert_eq!(
+            restored.preset_bank_snapshot().selected,
+            1,
+            "new instance should restore persisted selected preset index"
+        );
+    });
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]

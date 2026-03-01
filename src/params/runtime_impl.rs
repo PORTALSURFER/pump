@@ -226,9 +226,15 @@ impl PumpParams {
             .ok()
             .and_then(|bank| bank.presets.get(index).cloned())?;
         self.apply_preset_snapshot(&preset);
+        let mut persisted = None;
         if let Ok(mut guard) = self.preset_bank.write() {
             guard.selected = index.min(guard.presets.len().saturating_sub(1));
-            return Some(guard.selected);
+            let selected = guard.selected;
+            persisted = Some((selected, guard.clone()));
+        }
+        if let Some((selected, persisted_bank)) = persisted {
+            self.persist_preset_bank_snapshot(&persisted_bank);
+            return Some(selected);
         }
         Some(index)
     }
