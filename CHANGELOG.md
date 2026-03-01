@@ -174,6 +174,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (ab63caf)
 
+- (changelog) Update changelog [skip ci] (bf82ce0)
+
 
 ### Features
 
@@ -639,6 +641,8 @@ All notable changes to this project are documented in this file.
 - Add U/u hotkeys for redo and undo (917b2cc)
 
 - Persist presets across instances and coalesce curve drag undo (0105ab7)
+
+- Fix region drag undo coalescing and add regression test (d1199c5)
 
 
 ### Refactoring
