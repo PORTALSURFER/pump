@@ -7,7 +7,7 @@
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY, PRESET_RENAME_BUTTON_KEY,
-        PRESET_RENAME_KEY, PRESET_SAVE_KEY, RESET_KEY,
+        PRESET_RENAME_KEY, PRESET_SAVE_KEY, REDO_KEY, RESET_KEY, UNDO_KEY,
         TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
@@ -1145,6 +1145,34 @@
             crate::curve::default_editable_curve(),
             "reset should restore defaults while Init is selected"
         );
+    }
+
+    #[test]
+    fn undo_and_redo_hotkeys_restore_previous_mix_value() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let original_mix = params.mix();
+
+        state.reduce_action(UiAction::KnobChanged {
+            key: "mix".to_string(),
+            value: 0.17,
+        });
+        assert!((params.mix() - 0.17).abs() < 1.0e-6);
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: UNDO_KEY.to_string(),
+        });
+        assert!((params.mix() - original_mix).abs() < 1.0e-6);
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: REDO_KEY.to_string(),
+        });
+        assert!((params.mix() - 0.17).abs() < 1.0e-6);
     }
 
     #[test]

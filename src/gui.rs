@@ -26,7 +26,7 @@ use crate::curve::{
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    sync_division_label, PumpParams, SavePresetOutcome, DEFAULT_DEPTH, DEFAULT_MIX,
+    sync_division_label, PumpParams, PumpPresetBank, SavePresetOutcome, DEFAULT_DEPTH, DEFAULT_MIX,
     DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET, DEFAULT_PRESET_NAME, MAX_DEPTH, MAX_MIX,
     MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_DEPTH,
     MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_MIX_ID,
@@ -70,10 +70,13 @@ const PRESET_ADD_KEY: &str = "preset-add";
 const PRESET_SAVE_KEY: &str = "preset-save";
 const PRESET_RENAME_BUTTON_KEY: &str = "preset-rename-button";
 const PRESET_RENAME_KEY: &str = "preset-rename";
+const UNDO_KEY: &str = "undo";
+const REDO_KEY: &str = "redo";
 const SHORTCUT_KEY_RENAME: char = 'r';
 const SHORTCUT_KEY_SAVE: char = 's';
 const SHORTCUT_KEY_ADD: char = '+';
 const SHORTCUT_KEY_ADD_ALT: char = '=';
+const SHORTCUT_KEY_UNDO: char = 'u';
 
 const HEADER_SECTION_WEIGHT: u16 = 7;
 const CURVE_SECTION_WEIGHT: u16 = 63;
@@ -102,6 +105,7 @@ const PRESET_WARNING_FRAMES: u8 = 45;
 const PRESET_WARNING_BLINK_HALF_PERIOD_FRAMES: u8 = 6;
 const PRESET_WARNING_MAX: &str = "MAX";
 const PRESET_WARNING_NAME: &str = "NAME";
+const HISTORY_STEP_LIMIT: usize = 128;
 const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const PLAYHEAD_DOT_CORE_RADIUS: i32 = 4;
@@ -143,6 +147,9 @@ struct GuiRuntime {
     preset_warning_text: Option<&'static str>,
     pointer_primary_down: bool,
     active_knob_gesture_param: Option<ClapId>,
+    undo_history: Vec<UiHistorySnapshot>,
+    redo_history: Vec<UiHistorySnapshot>,
+    curve_history_anchor: Option<UiHistorySnapshot>,
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +185,18 @@ struct ControlSnapshot {
     phase_offset: f32,
     output_gain_db: f32,
     division: usize,
+}
+
+/// Snapshot of mutable GUI/parameter state used for undo/redo history.
+#[derive(Clone, Debug, PartialEq)]
+struct UiHistorySnapshot {
+    mix: f32,
+    depth: f32,
+    phase_offset: f32,
+    output_gain_db: f32,
+    sync_division: usize,
+    editable_curve: EditableCurve,
+    preset_bank: PumpPresetBank,
 }
 
 /// Snapshot of preset-bank state needed for header rendering.

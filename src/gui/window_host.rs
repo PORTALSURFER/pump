@@ -27,6 +27,16 @@ impl PumpGui {
                 ShortcutModifiers::default(),
             ),
             ShortcutBinding::new(
+                UNDO_KEY,
+                SHORTCUT_KEY_UNDO,
+                ShortcutModifiers::default(),
+            ),
+            ShortcutBinding::new(
+                REDO_KEY,
+                SHORTCUT_KEY_UNDO,
+                ShortcutModifiers::new(true, false, false),
+            ),
+            ShortcutBinding::new(
                 PRESET_ADD_KEY,
                 SHORTCUT_KEY_ADD,
                 ShortcutModifiers::new(true, false, false),
@@ -153,4 +163,24 @@ pub(crate) fn preferred_window_size() -> (u32, u32) {
         );
         state.measured_open_size()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_shortcuts_include_undo_and_redo_bindings() {
+        let shortcuts = PumpGui::default_shortcuts();
+        assert!(shortcuts.iter().any(|binding| {
+            binding.action_key == UNDO_KEY
+                && binding.matches('u', ShortcutModifiers::default())
+                && binding.matches('U', ShortcutModifiers::default())
+        }));
+        assert!(shortcuts.iter().any(|binding| {
+            binding.action_key == REDO_KEY
+                && binding.matches('u', ShortcutModifiers::new(true, false, false))
+                && binding.matches('U', ShortcutModifiers::new(true, false, false))
+        }));
+    }
 }

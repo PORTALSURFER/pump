@@ -18,6 +18,9 @@ impl GuiRuntime {
             preset_warning_text: None,
             pointer_primary_down: false,
             active_knob_gesture_param: None,
+            undo_history: Vec::new(),
+            redo_history: Vec::new(),
+            curve_history_anchor: None,
         }
     }
 }
@@ -446,8 +449,24 @@ impl GuiState {
 
     pub(super) fn reduce_action(&mut self, action: UiAction) {
         match action {
-            UiAction::KnobChanged { key, value } => self.reduce_knob(key.as_str(), value),
-            UiAction::DropdownSelected { key, index } => self.reduce_dropdown(key.as_str(), index),
+            UiAction::KnobChanged { key, value } => {
+                if matches!(key.as_str(), MIX_KEY | DEPTH_KEY | PHASE_KEY | OUTPUT_KEY) {
+                    self.capture_undo_snapshot();
+                }
+                self.reduce_knob(key.as_str(), value);
+            }
+            UiAction::DropdownSelected { key, index } => {
+                if matches!(key.as_str(), PRESET_DROPDOWN_KEY | DIVISION_KEY) {
+                    self.capture_undo_snapshot();
+                }
+                self.reduce_dropdown(key.as_str(), index);
+            }
+            UiAction::ButtonPressed { key } if key == UNDO_KEY => {
+                self.apply_undo();
+            }
+            UiAction::ButtonPressed { key } if key == REDO_KEY => {
+                self.apply_redo();
+            }
             UiAction::ButtonPressed { key } if key == PRESET_RENAME_BUTTON_KEY => {
                 self.begin_preset_rename();
             }
@@ -455,6 +474,7 @@ impl GuiState {
                 if self.consume_recent_division_change_guard() {
                     return;
                 }
+                self.capture_undo_snapshot();
                 self.params.reset_curve_to_default();
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.selected_node = None;
@@ -462,6 +482,7 @@ impl GuiState {
                 }
             }
             UiAction::ButtonPressed { key } if key == PRESET_ADD_KEY => {
+                self.capture_undo_snapshot();
                 if self.params.add_preset_from_current_state().is_some() {
                     if let Ok(mut runtime) = self.runtime.lock() {
                         runtime.preset_rename_active = false;
@@ -474,6 +495,7 @@ impl GuiState {
                 }
             }
             UiAction::ButtonPressed { key } if key == PRESET_SAVE_KEY => {
+                self.capture_undo_snapshot();
                 self.save_current_preset_by_name();
             }
             UiAction::TextBoxEdited { key, text } if key == PRESET_RENAME_KEY => {
@@ -482,12 +504,14 @@ impl GuiState {
                 }
             }
             UiAction::TextBoxEditCommitted { key, text } if key == PRESET_RENAME_KEY => {
+                self.capture_undo_snapshot();
                 self.commit_preset_rename(text.as_str());
             }
             UiAction::TextBoxEditCanceled { key } if key == PRESET_RENAME_KEY => {
                 self.cancel_preset_rename();
             }
             UiAction::CurveEditorChanged { key, model } if key == CURVE_KEY => {
+                self.capture_undo_snapshot();
                 let editable_curve = editable_curve_from_model(&model);
                 self.params.set_editable_curve(&editable_curve);
                 if let Ok(mut runtime) = self.runtime.lock() {
@@ -518,6 +542,100 @@ impl GuiState {
             }
             UiAction::RegionInteracted { .. } => {}
             _ => {}
+        }
+    }
+
+    fn snapshot_history_state(&self) -> UiHistorySnapshot {
+        UiHistorySnapshot {
+            mix: self.params.mix(),
+            depth: self.params.depth(),
+            phase_offset: self.params.phase_offset(),
+            output_gain_db: self.params.output_gain_db(),
+            sync_division: self.params.sync_division(),
+            editable_curve: self.params.editable_curve_snapshot(),
+            preset_bank: self.params.preset_bank_snapshot(),
+        }
+    }
+
+    fn apply_history_state(&self, snapshot: &UiHistorySnapshot) {
+        self.params.set_preset_bank(snapshot.preset_bank.clone());
+        self.params.set_mix(snapshot.mix);
+        self.params.set_depth(snapshot.depth);
+        self.params.set_phase_offset(snapshot.phase_offset);
+        self.params.set_output_gain_db(snapshot.output_gain_db);
+        self.params.set_sync_division(snapshot.sync_division as f32);
+        self.params.set_editable_curve(&snapshot.editable_curve);
+        self.push_all_param_updates();
+    }
+
+    fn push_history_snapshot(stack: &mut Vec<UiHistorySnapshot>, snapshot: UiHistorySnapshot) {
+        if stack.last() == Some(&snapshot) {
+            return;
+        }
+        stack.push(snapshot);
+        if stack.len() > HISTORY_STEP_LIMIT {
+            stack.remove(0);
+        }
+    }
+
+    fn push_undo_snapshot_locked(runtime: &mut GuiRuntime, snapshot: UiHistorySnapshot) {
+        Self::push_history_snapshot(&mut runtime.undo_history, snapshot);
+        runtime.redo_history.clear();
+    }
+
+    fn commit_curve_history_anchor_locked(runtime: &mut GuiRuntime) {
+        if let Some(snapshot) = runtime.curve_history_anchor.take() {
+            Self::push_undo_snapshot_locked(runtime, snapshot);
+        }
+    }
+
+    fn capture_undo_snapshot(&self) {
+        let snapshot = self.snapshot_history_state();
+        if let Ok(mut runtime) = self.runtime.lock() {
+            Self::push_undo_snapshot_locked(&mut runtime, snapshot);
+            runtime.curve_history_anchor = None;
+        }
+    }
+
+    fn apply_undo(&self) {
+        let current = self.snapshot_history_state();
+        let mut target = None;
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if let Some(snapshot) = runtime.undo_history.pop() {
+                Self::push_history_snapshot(&mut runtime.redo_history, current);
+                runtime.curve_history_anchor = None;
+                runtime.drag_mode = None;
+                runtime.selected_node = None;
+                runtime.preset_rename_active = false;
+                runtime.preset_name_draft.clear();
+                runtime.preset_warning_frames = 0;
+                runtime.preset_warning_text = None;
+                target = Some(snapshot);
+            }
+        }
+        if let Some(snapshot) = target {
+            self.apply_history_state(&snapshot);
+        }
+    }
+
+    fn apply_redo(&self) {
+        let current = self.snapshot_history_state();
+        let mut target = None;
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if let Some(snapshot) = runtime.redo_history.pop() {
+                Self::push_history_snapshot(&mut runtime.undo_history, current);
+                runtime.curve_history_anchor = None;
+                runtime.drag_mode = None;
+                runtime.selected_node = None;
+                runtime.preset_rename_active = false;
+                runtime.preset_name_draft.clear();
+                runtime.preset_warning_frames = 0;
+                runtime.preset_warning_text = None;
+                target = Some(snapshot);
+            }
+        }
+        if let Some(snapshot) = target {
+            self.apply_history_state(&snapshot);
         }
     }
 
@@ -664,6 +782,7 @@ impl GuiState {
 
         match kind {
             RegionInteractionKind::Pressed => {
+                runtime.curve_history_anchor = Some(self.snapshot_history_state());
                 let mut editable = self.params.editable_curve_snapshot();
                 if let Some(index) = find_node_hit_for_size(
                     &editable,
@@ -705,6 +824,7 @@ impl GuiState {
                         start_pointer: local_pointer,
                         dragging: false,
                     });
+                    Self::commit_curve_history_anchor_locked(&mut runtime);
                     enforce_wrapped_endpoints(&mut editable);
                     self.params.set_editable_curve(&editable);
                     return;
@@ -769,6 +889,7 @@ impl GuiState {
                     start_pointer: local_pointer,
                     dragging: false,
                 });
+                Self::commit_curve_history_anchor_locked(&mut runtime);
                 enforce_wrapped_endpoints(&mut editable);
                 self.params.set_editable_curve(&editable);
             }
@@ -913,6 +1034,7 @@ impl GuiState {
                     }
                     runtime.drag_mode = Some(drag_mode);
                     if curve_changed {
+                        Self::commit_curve_history_anchor_locked(&mut runtime);
                         enforce_wrapped_endpoints(&mut editable);
                         self.params.set_editable_curve(&editable);
                     }
@@ -920,8 +1042,11 @@ impl GuiState {
             }
             RegionInteractionKind::Released => {
                 runtime.drag_mode = None;
+                runtime.curve_history_anchor = None;
             }
-            RegionInteractionKind::SecondaryClicked => {}
+            RegionInteractionKind::SecondaryClicked => {
+                runtime.curve_history_anchor = None;
+            }
             RegionInteractionKind::DoubleClicked => {
                 let mut editable = self.params.editable_curve_snapshot();
                 if let Some(index) =
@@ -937,6 +1062,8 @@ impl GuiState {
                     enforce_wrapped_endpoints(&mut editable);
                     runtime.selected_node = None;
                     runtime.drag_mode = None;
+                    runtime.curve_history_anchor = None;
+                    Self::push_undo_snapshot_locked(&mut runtime, self.snapshot_history_state());
                     self.params.set_editable_curve(&editable);
                 }
             }
