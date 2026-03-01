@@ -170,6 +170,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (6ac65d5)
 
+- (changelog) Update changelog [skip ci] (d0ca5fb)
+
 
 ### Features
 
@@ -631,6 +633,8 @@ All notable changes to this project are documented in this file.
 - Fix curve point double-click deletion regression (b1e0fd2)
 
 - Increase curve editor vertical safe margin (f758160)
+
+- Add U/u hotkeys for redo and undo (917b2cc)
 
 
 ### Refactoring
