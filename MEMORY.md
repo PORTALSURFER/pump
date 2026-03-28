@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-03-28 14:23:20 UTC
+- Last Updated (UTC): 2026-03-28 16:42:59 UTC
 - Active Mission: Keep Pump's editor UX moving forward without expanding preset/state scope unnecessarily.
-- Current Workstream: Beat-grid emphasis, snap controls, temporary snap inversion, and grid override UI are implemented with green local validation.
+- Current Workstream: Beat-grid emphasis, snap controls, temporary snap inversion, and grid override UI are implemented, and the VST3 GUI adapter now builds cleanly against the new snap shortcut constant.
 
 ## Current State
 
