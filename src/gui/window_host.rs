@@ -24,7 +24,7 @@ impl PumpGui {
             ShortcutBinding::new(
                 PRESET_SAVE_KEY,
                 SHORTCUT_KEY_SAVE,
-                ShortcutModifiers::default(),
+                ShortcutModifiers::new(true, false, false),
             ),
             ShortcutBinding::new(UNDO_KEY, SHORTCUT_KEY_UNDO, ShortcutModifiers::default()),
             ShortcutBinding::new(
@@ -99,6 +99,13 @@ impl PumpGui {
     #[allow(dead_code)]
     pub fn post_injected_text_char(&self, ch: char, modifiers: ShortcutModifiers) -> bool {
         self.window.post_injected_text_char(ch, modifiers)
+    }
+
+    /// Inject one key-up event tagged as host-injected key input.
+    #[cfg(any(feature = "vst3", windows))]
+    #[allow(dead_code)]
+    pub fn post_injected_key_up(&self, ch: char, modifiers: ShortcutModifiers) -> bool {
+        self.window.post_injected_key_up(ch, modifiers)
     }
 
     /// Return `true` when preset rename text editing is active.
@@ -176,6 +183,11 @@ mod tests {
             binding.action_key == UNDO_KEY
                 && binding.matches('u', ShortcutModifiers::default())
                 && binding.matches('U', ShortcutModifiers::default())
+        }));
+        assert!(shortcuts.iter().any(|binding| {
+            binding.action_key == PRESET_SAVE_KEY
+                && binding.matches('s', ShortcutModifiers::new(true, false, false))
+                && binding.matches('S', ShortcutModifiers::new(true, false, false))
         }));
         assert!(shortcuts.iter().any(|binding| {
             binding.action_key == REDO_KEY

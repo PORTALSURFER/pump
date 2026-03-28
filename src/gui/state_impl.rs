@@ -12,7 +12,9 @@ impl GuiRuntime {
                 width: CURVE_W,
                 height: CURVE_H,
             },
-            last_division_change_micros: None,
+            snap_enabled: false,
+            grid_override: None,
+            shortcut_snap_invert_held: false,
             preset_rename_active: false,
             preset_rename_target: 0,
             preset_name_draft: String::new(),
@@ -50,11 +52,25 @@ impl GuiState {
 
     /// Snapshot current plugin control values for UI rendering.
     pub(super) fn snapshot_controls(&self) -> ControlSnapshot {
+        let (snap_enabled, grid_override, shortcut_snap_invert_held) = self
+            .runtime
+            .lock()
+            .map(|runtime| {
+                (
+                    runtime.snap_enabled,
+                    runtime.grid_override,
+                    runtime.shortcut_snap_invert_held,
+                )
+            })
+            .unwrap_or((false, None, false));
         ControlSnapshot {
             mix: self.params.mix(),
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
             division: self.params.sync_division(),
+            snap_enabled,
+            grid_override,
+            shortcut_snap_invert_held,
         }
     }
 
@@ -102,34 +118,11 @@ impl GuiState {
         }
     }
 
-    pub(super) fn mark_division_change(&self) {
-        if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.last_division_change_micros = Some(monotonic_micros());
-        }
-    }
-
     pub(super) fn set_preset_warning(&self, text: &'static str) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.preset_warning_text = Some(text);
             runtime.preset_warning_frames = PRESET_WARNING_FRAMES;
         }
-    }
-
-    pub(super) fn consume_recent_division_change_guard(&self) -> bool {
-        let Ok(mut runtime) = self.runtime.lock() else {
-            return false;
-        };
-        let Some(last_division_change_micros) = runtime.last_division_change_micros else {
-            return false;
-        };
-        let elapsed = monotonic_micros().saturating_sub(last_division_change_micros);
-        if elapsed <= RESET_GUARD_AFTER_DROPDOWN_MICROS {
-            // Swallow one immediate reset press after dropdown selection to avoid
-            // accidental click-through while popup selection closes.
-            runtime.last_division_change_micros = None;
-            return true;
-        }
-        false
     }
 
     /// Build the top header slot node.
@@ -255,11 +248,22 @@ impl GuiState {
     }
 
     /// Build the spline/curve slot node.
-    pub(super) fn build_spline_slot(&self, metrics: UiLayoutMetrics, theme: PumpTheme) -> Node {
+    pub(super) fn build_spline_slot(
+        &self,
+        metrics: UiLayoutMetrics,
+        theme: PumpTheme,
+        controls: ControlSnapshot,
+    ) -> Node {
         let editable_curve = self.params.editable_curve_snapshot();
+        let effective_grid = effective_grid_division(controls.division, controls.grid_override);
         let curve_editor_view = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
             .curve_style(curve_editor_style(theme))
-            .curve_interaction(curve_editor_interaction_options(metrics.curve_size))
+            .curve_grid(curve_editor_grid_config(effective_grid))
+            .curve_interaction(curve_editor_interaction_options(
+                metrics.curve_size,
+                effective_grid,
+                controls.effective_snap_enabled(),
+            ))
             .curve_playhead_x(
                 (self.status.has_host_beats_timeline() || self.status.is_playing())
                     .then_some(self.status.phase()),
@@ -476,6 +480,32 @@ impl GuiState {
         .container_overflow(OverflowPolicy::Compress);
 
         let knobs_slot = panel("knobs", knobs_grid.fill()).pad_all(0);
+        let snap_row = row_slots(vec![
+            weighted_slot(
+                Node::align_box(textbox("Snap").widget_layout(fixed_box(
+                    metrics.dropdown_control_w.saturating_sub(40).max(1),
+                    metrics.button_control_h,
+                )))
+                .slot_align(SlotAlign::Start, SlotAlign::Center)
+                .fill(),
+                2,
+            ),
+            weighted_slot(
+                Node::align_box(
+                    toggle(SNAP_KEY, controls.snap_enabled)
+                        .control_size(Size {
+                            width: 36,
+                            height: metrics.button_control_h,
+                        })
+                        .widget_layout(fixed_box(36, metrics.button_control_h)),
+                )
+                .slot_align(SlotAlign::End, SlotAlign::Center)
+                .fill(),
+                1,
+            ),
+        ])
+        .container_overflow(OverflowPolicy::Compress)
+        .fill();
         let dropdown_slot_content = column(vec![
             dropdown(
                 DIVISION_KEY,
@@ -492,13 +522,31 @@ impl GuiState {
                 height: metrics.dropdown_control_h,
             })
             .fill(),
-            button(RESET_KEY)
-                .button_label("Reset")
-                .control_size(Size {
-                    width: metrics.dropdown_control_w,
-                    height: metrics.button_control_h,
-                })
-                .fill(),
+            row_slots(vec![
+                weighted_slot(snap_row, 2),
+                weighted_slot(
+                    dropdown(
+                        GRID_OVERRIDE_KEY,
+                        MAX_SYNC_DIVISION as usize + 2,
+                        controls
+                            .grid_override
+                            .map(|index| index.saturating_add(1))
+                            .unwrap_or(0),
+                    )
+                    .dropdown_option_labels(grid_override_option_labels())
+                    .control_size(Size {
+                        width: metrics
+                            .dropdown_control_w
+                            .saturating_mul(2)
+                            .saturating_div(3),
+                        height: metrics.button_control_h,
+                    })
+                    .fill(),
+                    3,
+                ),
+            ])
+            .container_overflow(OverflowPolicy::Compress)
+            .fill(),
         ])
         .pad_all(0)
         .fill()
@@ -535,13 +583,16 @@ impl GuiState {
 
     pub(super) fn build_ui(&self, input: &InputState) -> UiSpec {
         self.sync_knob_gesture_state(input.mouse_down, input.mouse_secondary_down);
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.shortcut_snap_invert_held = input.shortcut_key_down(SHORTCUT_KEY_SNAP_INVERT);
+        }
         let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
         let controls = self.snapshot_controls();
         let presets = self.snapshot_presets();
 
         let header_slot = self.build_header_slot(metrics, theme, &presets);
-        let spline_slot = self.build_spline_slot(metrics, theme);
+        let spline_slot = self.build_spline_slot(metrics, theme, controls);
         let quick_shapes_slot = self.build_quick_shapes_slot(metrics, theme);
         let controls_slot = self.build_controls_slot(metrics, controls);
 
@@ -574,6 +625,11 @@ impl GuiState {
                 }
                 self.reduce_dropdown(key.as_str(), index);
             }
+            UiAction::ToggleChanged { key, value } if key == SNAP_KEY => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.snap_enabled = value;
+                }
+            }
             UiAction::ButtonPressed { key } if key == UNDO_KEY => {
                 self.apply_undo();
             }
@@ -582,19 +638,6 @@ impl GuiState {
             }
             UiAction::ButtonPressed { key } if key == PRESET_RENAME_BUTTON_KEY => {
                 self.begin_preset_rename();
-            }
-            UiAction::ButtonPressed { key } if key == RESET_KEY => {
-                if self.consume_recent_division_change_guard() {
-                    return;
-                }
-                self.capture_undo_snapshot();
-                self.params.reset_curve_to_default();
-                if let Ok(mut runtime) = self.runtime.lock() {
-                    runtime.selected_node = None;
-                    runtime.selected_nodes.clear();
-                    runtime.drag_mode = None;
-                    runtime.marquee_selection = None;
-                }
             }
             UiAction::ButtonPressed { key } if key == PRESET_ADD_KEY => {
                 self.capture_undo_snapshot();
@@ -1008,14 +1051,22 @@ impl GuiState {
             return;
         }
 
-        if key != DIVISION_KEY {
-            return;
+        match key {
+            DIVISION_KEY => {
+                let clamped = index.min(MAX_SYNC_DIVISION as usize);
+                self.params.set_sync_division(clamped as f32);
+                self.push_single_value_update(PARAM_SYNC_DIVISION_ID, clamped as f64);
+            }
+            GRID_OVERRIDE_KEY => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.grid_override = match index {
+                        0 => None,
+                        selected => Some((selected - 1).min(MAX_SYNC_DIVISION as usize)),
+                    };
+                }
+            }
+            _ => {}
         }
-
-        let clamped = index.min(MAX_SYNC_DIVISION as usize);
-        self.mark_division_change();
-        self.params.set_sync_division(clamped as f32);
-        self.push_single_value_update(PARAM_SYNC_DIVISION_ID, clamped as f64);
     }
 
     pub(super) fn begin_preset_rename(&self) {

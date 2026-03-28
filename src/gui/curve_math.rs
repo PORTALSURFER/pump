@@ -58,6 +58,7 @@ pub(super) fn curve_editor_style(theme: PumpTheme) -> CurveEditorStyle {
         background: theme.curve_bg,
         border: theme.curve_border,
         grid_vertical: theme.curve_grid_vertical,
+        grid_vertical_emphasis: theme.curve_grid_emphasis,
         grid_horizontal: theme.curve_grid_horizontal,
         line: theme.curve_line,
         line_highlight: theme.curve_line_highlight,
@@ -75,7 +76,17 @@ pub(super) fn curve_editor_style(theme: PumpTheme) -> CurveEditorStyle {
     }
 }
 
-pub(super) fn curve_editor_interaction_options(curve_size: Size) -> CurveInteractionOptions {
+pub(super) fn curve_editor_grid_config(grid_division: usize) -> CurveGridConfig {
+    CurveGridConfig {
+        emphasized_verticals: vertical_grid_positions_for_division(grid_division),
+    }
+}
+
+pub(super) fn curve_editor_interaction_options(
+    curve_size: Size,
+    grid_division: usize,
+    snap_enabled: bool,
+) -> CurveInteractionOptions {
     CurveInteractionOptions {
         max_points: MAX_EDITABLE_NODES,
         min_point_spacing_x: NODE_X_MIN_SPACING,
@@ -83,7 +94,45 @@ pub(super) fn curve_editor_interaction_options(curve_size: Size) -> CurveInterac
         push_through_threshold_px: node_push_through_threshold_px(curve_size),
         endpoint_mode: EndpointMode::CoupledY,
         double_click_delete_interior: true,
+        snap: CurveSnapConfig {
+            enabled: snap_enabled,
+            vertical_positions: snap_vertical_positions_for_division(grid_division),
+            horizontal_positions: vec![0.0, 0.25, 0.5, 0.75, 1.0],
+        },
     }
+}
+
+pub(super) fn effective_grid_division(sync_division: usize, grid_override: Option<usize>) -> usize {
+    grid_override
+        .unwrap_or(sync_division)
+        .min(MAX_SYNC_DIVISION as usize)
+}
+
+pub(super) fn grid_override_option_labels() -> Vec<String> {
+    std::iter::once("Auto".to_string())
+        .chain((0..=MAX_SYNC_DIVISION as usize).map(|index| sync_division_label(index).to_string()))
+        .collect()
+}
+
+fn snap_vertical_positions_for_division(grid_division: usize) -> Vec<f32> {
+    let mut positions = Vec::with_capacity(beat_grid_subdivision_count(grid_division) + 1);
+    positions.push(0.0);
+    positions.extend(vertical_grid_positions_for_division(grid_division));
+    positions.push(1.0);
+    positions
+}
+
+fn vertical_grid_positions_for_division(grid_division: usize) -> Vec<f32> {
+    let beat_count = beat_grid_subdivision_count(grid_division).max(1);
+    (1..beat_count)
+        .map(|step| step as f32 / beat_count as f32)
+        .collect()
+}
+
+fn beat_grid_subdivision_count(grid_division: usize) -> usize {
+    let beats = crate::params::sync_division_beats(grid_division);
+    let subdivisions = (4.0 / beats.max(1.0e-6)).round() as usize;
+    subdivisions.max(1)
 }
 
 pub(super) fn curve_model_from_editable(editable_curve: &EditableCurve) -> CurveModel {
