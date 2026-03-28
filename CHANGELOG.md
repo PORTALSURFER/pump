@@ -186,6 +186,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (91f7d69)
 
+- (changelog) Update changelog [skip ci] (24e5f1f)
+
 
 ### Features
 
@@ -663,6 +665,8 @@ All notable changes to this project are documented in this file.
 - Skip no-op curve inserts at max node count (69d893a)
 
 - Remove depth control and run pump at full depth (70e36b0)
+
+- Add Pump quick shape strip presets (bbd56cd)
 
 
 ### Refactoring
