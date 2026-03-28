@@ -18,6 +18,8 @@ impl GuiRuntime {
             preset_name_draft: String::new(),
             preset_warning_frames: 0,
             preset_warning_text: None,
+            quick_slot_hovered: None,
+            quick_slot_pressed: None,
             pointer_primary_down: false,
             pointer_secondary_down: false,
             active_knob_gesture_param: None,
@@ -271,19 +273,110 @@ impl GuiState {
         panel("spline", spline_content).pad_all(0)
     }
 
-    /// Build the quick-shape preset strip shown below the curve editor.
-    pub(super) fn build_quick_shapes_slot(&self, metrics: UiLayoutMetrics) -> Node {
-        let buttons = quick_shape_presets()
+    fn quick_slot_key(index: usize) -> String {
+        format!("{QUICK_SLOT_KEY_PREFIX}{index}")
+    }
+
+    fn quick_slot_index_from_key(key: &str) -> Option<usize> {
+        key.strip_prefix(QUICK_SLOT_KEY_PREFIX)
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+            .filter(|index| *index < QUICK_SLOT_COUNT)
+    }
+
+    fn build_quick_slot_draw_commands(
+        curve: &EditableCurve,
+        size: Size,
+        theme: PumpTheme,
+        hovered: bool,
+        active: bool,
+    ) -> Vec<SurfaceCommand> {
+        let rect = Rect {
+            origin: Point { x: 0, y: 0 },
+            size,
+        };
+        let fill = if active {
+            theme.quick_slot_active_bg
+        } else if hovered {
+            theme.quick_slot_hover_bg
+        } else {
+            theme.quick_slot_bg
+        };
+        let outline = if hovered || active {
+            theme.quick_slot_outline_hover
+        } else {
+            theme.quick_slot_outline
+        };
+        let margin = QUICK_SLOT_PREVIEW_MARGIN
+            .min((size.width as i32).saturating_div(4))
+            .min((size.height as i32).saturating_div(4))
+            .max(1);
+        let inner_w = (size.width as i32 - margin * 2).max(1);
+        let inner_h = (size.height as i32 - margin * 2).max(1);
+        let steps = QUICK_SLOT_PREVIEW_STEPS.max(2);
+        let points = (0..steps)
+            .map(|step| {
+                let t = if steps <= 1 {
+                    0.0
+                } else {
+                    step as f32 / (steps - 1) as f32
+                };
+                let x = margin + (t * inner_w as f32).round() as i32;
+                let y = margin
+                    + ((1.0 - sample_editable_curve(curve, t).clamp(0.0, 1.0)) * inner_h as f32)
+                        .round() as i32;
+                Point { x, y }
+            })
+            .collect();
+        vec![
+            SurfaceCommand::FillRect { rect, color: fill },
+            SurfaceCommand::StrokeRect {
+                rect,
+                thickness: 1,
+                color: outline,
+            },
+            SurfaceCommand::Polyline {
+                points,
+                thickness: if hovered || active { 2.0 } else { 1.0 },
+                color: theme.quick_slot_curve,
+            },
+        ]
+    }
+
+    /// Build the quick-slot strip shown below the curve editor.
+    pub(super) fn build_quick_shapes_slot(
+        &self,
+        metrics: UiLayoutMetrics,
+        theme: PumpTheme,
+    ) -> Node {
+        let quick_slots = self.params.selected_quick_slots_snapshot();
+        let (hovered_slot, pressed_slot) = self
+            .runtime
+            .lock()
+            .ok()
+            .map(|runtime| (runtime.quick_slot_hovered, runtime.quick_slot_pressed))
+            .unwrap_or((None, None));
+        let buttons = quick_slots
             .iter()
-            .map(|preset| {
+            .enumerate()
+            .map(|(index, slot)| {
                 weighted_slot(
-                    button(preset.key)
-                        .button_label(preset.label)
-                        .control_size(Size {
+                    surface(
+                        Self::quick_slot_key(index),
+                        Size {
                             width: metrics.quick_shape_button_w,
                             height: metrics.quick_shape_button_h,
-                        })
-                        .fill(),
+                        },
+                        Self::build_quick_slot_draw_commands(
+                            &slot.curve,
+                            Size {
+                                width: metrics.quick_shape_button_w,
+                                height: metrics.quick_shape_button_h,
+                            },
+                            theme,
+                            hovered_slot == Some(index),
+                            pressed_slot == Some(index),
+                        ),
+                    ),
                     1,
                 )
             })
@@ -449,7 +542,7 @@ impl GuiState {
 
         let header_slot = self.build_header_slot(metrics, theme, &presets);
         let spline_slot = self.build_spline_slot(metrics, theme);
-        let quick_shapes_slot = self.build_quick_shapes_slot(metrics);
+        let quick_shapes_slot = self.build_quick_shapes_slot(metrics, theme);
         let controls_slot = self.build_controls_slot(metrics, controls);
 
         let content = column_slots(vec![
@@ -489,14 +582,6 @@ impl GuiState {
             }
             UiAction::ButtonPressed { key } if key == PRESET_RENAME_BUTTON_KEY => {
                 self.begin_preset_rename();
-            }
-            UiAction::ButtonPressed { key }
-                if quick_shape_preset_by_key(key.as_str()).is_some() =>
-            {
-                self.capture_undo_snapshot();
-                if let Some(preset) = quick_shape_preset_by_key(key.as_str()) {
-                    self.apply_quick_shape_preset(preset);
-                }
             }
             UiAction::ButtonPressed { key } if key == RESET_KEY => {
                 if self.consume_recent_division_change_guard() {
@@ -571,6 +656,18 @@ impl GuiState {
                     }
                 }
             }
+            UiAction::RegionHover { key, hovered, .. }
+                if Self::quick_slot_index_from_key(key.as_str()).is_some() =>
+            {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    let index = Self::quick_slot_index_from_key(key.as_str());
+                    if hovered {
+                        runtime.quick_slot_hovered = index;
+                    } else if runtime.quick_slot_hovered == index {
+                        runtime.quick_slot_hovered = None;
+                    }
+                }
+            }
             UiAction::RegionHover { .. } => {}
             UiAction::RegionInteracted {
                 key,
@@ -578,8 +675,19 @@ impl GuiState {
                 local_pointer,
                 raw_local_pointer,
                 alt_down,
+                ..
             } if key == CURVE_KEY => {
                 self.reduce_curve_interaction(kind, local_pointer, raw_local_pointer, alt_down)
+            }
+            UiAction::RegionInteracted {
+                key,
+                kind,
+                shift_down,
+                ..
+            } if Self::quick_slot_index_from_key(key.as_str()).is_some() => {
+                if let Some(index) = Self::quick_slot_index_from_key(key.as_str()) {
+                    self.reduce_quick_slot_interaction(index, kind, shift_down);
+                }
             }
             UiAction::RegionInteracted { .. } => {}
             _ => {}
@@ -828,6 +936,7 @@ impl GuiState {
                 runtime.selected_node = None;
                 runtime.selected_nodes.clear();
                 runtime.marquee_selection = None;
+                runtime.quick_slot_pressed = None;
                 runtime.preset_rename_active = false;
                 runtime.preset_name_draft.clear();
                 runtime.preset_warning_frames = 0;
@@ -852,6 +961,7 @@ impl GuiState {
                 runtime.selected_node = None;
                 runtime.selected_nodes.clear();
                 runtime.marquee_selection = None;
+                runtime.quick_slot_pressed = None;
                 runtime.preset_rename_active = false;
                 runtime.preset_name_draft.clear();
                 runtime.preset_warning_frames = 0;
@@ -985,16 +1095,61 @@ impl GuiState {
         }
     }
 
-    /// Apply one built-in quick-shape curve plus its curated timing.
-    pub(super) fn apply_quick_shape_preset(&self, preset: &crate::curve_presets::QuickShapePreset) {
-        self.params.set_editable_curve(&preset.curve);
-        self.params.set_sync_division(preset.sync_division as f32);
-        self.push_single_value_update(PARAM_SYNC_DIVISION_ID, preset.sync_division as f64);
+    fn clear_curve_transient_state(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.selected_node = None;
             runtime.selected_nodes.clear();
             runtime.drag_mode = None;
             runtime.marquee_selection = None;
+        }
+    }
+
+    /// Load one quick-slot curve into the main editable curve.
+    pub(super) fn apply_quick_slot_curve(&self, index: usize) {
+        let Some(curve) = self.params.selected_quick_slot_curve(index) else {
+            return;
+        };
+        self.params.set_editable_curve(&curve);
+        self.clear_curve_transient_state();
+    }
+
+    /// Store the current editable curve into one quick slot on the selected preset.
+    pub(super) fn store_quick_slot_curve(&self, index: usize) {
+        let editable_curve = self.params.editable_curve_snapshot();
+        let _stored = self
+            .params
+            .set_selected_quick_slot_curve(index, &editable_curve);
+    }
+
+    /// Apply one quick-slot interaction from the preview row.
+    pub(super) fn reduce_quick_slot_interaction(
+        &mut self,
+        index: usize,
+        kind: RegionInteractionKind,
+        shift_down: bool,
+    ) {
+        match kind {
+            RegionInteractionKind::Pressed => {
+                self.capture_undo_snapshot();
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.quick_slot_pressed = Some(index);
+                }
+                if shift_down {
+                    self.store_quick_slot_curve(index);
+                } else {
+                    self.apply_quick_slot_curve(index);
+                }
+            }
+            RegionInteractionKind::Released => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    if runtime.quick_slot_pressed == Some(index) {
+                        runtime.quick_slot_pressed = None;
+                    }
+                }
+            }
+            RegionInteractionKind::Dragged
+            | RegionInteractionKind::SecondaryClicked
+            | RegionInteractionKind::DoubleClicked => {}
         }
     }
 
@@ -1665,6 +1820,7 @@ impl GuiState {
             if runtime.pointer_primary_down && !mouse_down {
                 ended_param = runtime.active_knob_gesture_param.take();
                 runtime.drag_mode = None;
+                runtime.quick_slot_pressed = None;
                 Self::commit_history_anchors_locked(&mut runtime);
             }
             if runtime.pointer_secondary_down

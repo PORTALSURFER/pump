@@ -153,6 +153,7 @@ impl PumpParams {
             output_gain_db: self.output_gain_db(),
             sync_division: self.sync_division(),
             editable_curve: self.editable_curve_snapshot(),
+            quick_slots: self.selected_quick_slots_snapshot(),
         }
     }
 
@@ -181,6 +182,20 @@ impl PumpParams {
             preset.depth = MAX_DEPTH;
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
             preset.editable_curve = preset.editable_curve.clone().normalized();
+            let mut normalized_slots = preset.quick_slots.clone();
+            if normalized_slots.len() > QUICK_SLOT_COUNT {
+                normalized_slots.truncate(QUICK_SLOT_COUNT);
+            }
+            let seed_slots = seeded_quick_shape_slots();
+            for (slot_index, seed_slot) in seed_slots.into_iter().enumerate() {
+                let slot = normalized_slots.get_mut(slot_index);
+                if let Some(slot) = slot {
+                    slot.curve = slot.curve.clone().normalized();
+                } else {
+                    normalized_slots.push(seed_slot);
+                }
+            }
+            preset.quick_slots = normalized_slots;
         }
         bank.selected = bank.selected.min(bank.presets.len().saturating_sub(1));
         bank
@@ -200,6 +215,43 @@ impl PumpParams {
             .read()
             .map(|bank| bank.clone())
             .unwrap_or_else(|_| PumpPresetBank::default_init())
+    }
+
+    /// Snapshot the selected preset's quick slots.
+    pub fn selected_quick_slots_snapshot(&self) -> Vec<QuickShapeSlot> {
+        let bank = self.preset_bank_snapshot();
+        bank.presets
+            .get(bank.selected)
+            .map(|preset| preset.quick_slots.clone())
+            .unwrap_or_else(seeded_quick_shape_slots)
+    }
+
+    /// Snapshot one quick-slot curve from the selected preset.
+    pub fn selected_quick_slot_curve(&self, index: usize) -> Option<EditableCurve> {
+        let bank = self.preset_bank_snapshot();
+        bank.presets
+            .get(bank.selected)
+            .and_then(|preset| preset.quick_slots.get(index))
+            .map(|slot| slot.curve.clone())
+    }
+
+    /// Replace one quick-slot curve on the selected preset and persist it.
+    pub fn set_selected_quick_slot_curve(&self, index: usize, curve: &EditableCurve) -> bool {
+        let Ok(mut guard) = self.preset_bank.write() else {
+            return false;
+        };
+        let selected = guard.selected.min(guard.presets.len().saturating_sub(1));
+        let Some(preset) = guard.presets.get_mut(selected) else {
+            return false;
+        };
+        let Some(slot) = preset.quick_slots.get_mut(index) else {
+            return false;
+        };
+        slot.curve = curve.clone().normalized();
+        let persisted = guard.clone();
+        drop(guard);
+        self.persist_preset_bank_snapshot(&persisted);
+        true
     }
 
     /// Replace the full preset bank, clamping to supported limits.
@@ -307,6 +359,7 @@ impl PumpParams {
                 existing.output_gain_db = snapshot.output_gain_db;
                 existing.sync_division = snapshot.sync_division;
                 existing.editable_curve = snapshot.editable_curve;
+                existing.quick_slots = snapshot.quick_slots;
             }
             guard.selected = index;
             let persisted = guard.clone();

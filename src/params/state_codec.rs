@@ -86,6 +86,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 output_gain_db,
                 sync_division: clamp_sync_division(sync_division),
                 editable_curve: editable_curve.clone(),
+                quick_slots: seeded_quick_shape_slots(),
             }],
         }
     };
@@ -115,8 +116,15 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.output_gain_db.to_le_bytes());
     payload.extend_from_slice(&(preset.sync_division as u32).to_le_bytes());
     payload.push(u8::from(preset.is_read_only));
+    encode_curve(payload, &preset.editable_curve);
+    payload.extend_from_slice(&(preset.quick_slots.len() as u32).to_le_bytes());
+    for slot in &preset.quick_slots {
+        encode_curve(payload, &slot.curve);
+    }
+}
 
-    let normalized_curve = preset.editable_curve.clone().normalized();
+fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
+    let normalized_curve = curve.clone().normalized();
     let node_count = normalized_curve.nodes.len().min(MAX_EDITABLE_NODES);
     payload.extend_from_slice(&(node_count as u32).to_le_bytes());
     for node in normalized_curve.nodes.iter().take(node_count) {
@@ -208,6 +216,11 @@ fn decode_preset_bank(
             return Err("invalid preset node count");
         };
         let editable_curve = decode_curve(cursor, node_count)?;
+        let quick_slots = if version >= 5 {
+            decode_quick_slots(cursor)?
+        } else {
+            seeded_quick_shape_slots()
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -217,12 +230,28 @@ fn decode_preset_bank(
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
             editable_curve: editable_curve.normalized(),
+            quick_slots,
         });
     }
     Ok(PumpPresetBank {
         selected: selected.min(count.saturating_sub(1)),
         presets,
     })
+}
+
+fn decode_quick_slots(cursor: &mut Cursor<&[u8]>) -> Result<Vec<QuickShapeSlot>, &'static str> {
+    let Some(count) = read_u32(cursor).map(|value| value as usize) else {
+        return Err("invalid preset quick slot count");
+    };
+    let mut slots = Vec::with_capacity(count);
+    for _ in 0..count {
+        let Some(node_count) = read_u32(cursor).map(|value| value as usize) else {
+            return Err("invalid preset quick slot node count");
+        };
+        let curve = decode_curve(cursor, node_count)?;
+        slots.push(QuickShapeSlot { curve });
+    }
+    Ok(slots)
 }
 
 fn legacy_payload_len() -> usize {
@@ -276,6 +305,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             output_gain_db: params.output_gain_db(),
             sync_division: params.sync_division(),
             editable_curve: params.editable_curve_snapshot(),
+            quick_slots: seeded_quick_shape_slots(),
         }],
     });
 

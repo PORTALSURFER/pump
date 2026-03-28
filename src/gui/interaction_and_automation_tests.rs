@@ -1,8 +1,10 @@
 mod interaction_and_automation_tests {
     use super::*;
-    use super::super::{CurveDragMode, CurveMarqueeSelection, RegionInteractionKind};
+    use super::super::{
+        CurveDragMode, CurveMarqueeSelection, RegionInteractionKind, QUICK_SLOT_KEY_PREFIX,
+    };
     use crate::curve::MAX_EDITABLE_NODES;
-    use crate::curve_presets::quick_shape_preset_by_key;
+    use crate::curve_presets::quick_slot_seeds;
     use toybox::clack_plugin::events::io::EventBuffer;
 
     fn frame_input(mouse_down: bool) -> InputState {
@@ -599,7 +601,7 @@ mod interaction_and_automation_tests {
     }
 
     #[test]
-    fn quick_shape_button_applies_curve_and_division_and_clears_selection_state() {
+    fn quick_slot_press_loads_curve_and_clears_selection_state() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
             Arc::clone(&params),
@@ -607,8 +609,9 @@ mod interaction_and_automation_tests {
             Arc::new(AutomationQueue::default()),
             None,
         );
-        let preset = quick_shape_preset_by_key("shape-cut").expect("shape should exist");
+        let slot_curve = quick_slot_seeds()[4].curve.clone();
         let origin_curve = params.editable_curve_snapshot();
+        let before_division = params.sync_division();
         {
             let mut runtime = state.runtime.lock().expect("runtime lock should succeed");
             runtime.selected_node = Some(1);
@@ -625,12 +628,17 @@ mod interaction_and_automation_tests {
             });
         }
 
-        state.reduce_action(UiAction::ButtonPressed {
-            key: preset.key.to_string(),
+        state.reduce_action(UiAction::RegionInteracted {
+            key: format!("{QUICK_SLOT_KEY_PREFIX}4"),
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: Point { x: 0, y: 0 },
+            raw_local_pointer: Point { x: 0, y: 0 },
+            alt_down: false,
+            shift_down: false,
         });
 
-        assert_eq!(params.editable_curve_snapshot(), preset.curve);
-        assert_eq!(params.sync_division(), preset.sync_division);
+        assert_eq!(params.editable_curve_snapshot(), slot_curve);
+        assert_eq!(params.sync_division(), before_division);
         let runtime = state.runtime.lock().expect("runtime lock should succeed");
         assert_eq!(runtime.selected_node, None);
         assert!(runtime.selected_nodes.is_empty());
@@ -639,7 +647,7 @@ mod interaction_and_automation_tests {
     }
 
     #[test]
-    fn quick_shape_button_commits_curve_and_division_as_one_undo_step() {
+    fn quick_slot_press_commits_curve_load_as_one_undo_step() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
             Arc::clone(&params),
@@ -647,15 +655,20 @@ mod interaction_and_automation_tests {
             Arc::new(AutomationQueue::default()),
             None,
         );
-        let preset = quick_shape_preset_by_key("shape-trip").expect("shape should exist");
+        let slot_curve = quick_slot_seeds()[7].curve.clone();
         let before_curve = params.editable_curve_snapshot();
         let before_division = params.sync_division();
 
-        state.reduce_action(UiAction::ButtonPressed {
-            key: preset.key.to_string(),
+        state.reduce_action(UiAction::RegionInteracted {
+            key: format!("{QUICK_SLOT_KEY_PREFIX}7"),
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: Point { x: 0, y: 0 },
+            raw_local_pointer: Point { x: 0, y: 0 },
+            alt_down: false,
+            shift_down: false,
         });
-        assert_eq!(params.editable_curve_snapshot(), preset.curve);
-        assert_eq!(params.sync_division(), preset.sync_division);
+        assert_eq!(params.editable_curve_snapshot(), slot_curve);
+        assert_eq!(params.sync_division(), before_division);
 
         state.reduce_action(UiAction::ButtonPressed {
             key: UNDO_KEY.to_string(),
@@ -666,12 +679,12 @@ mod interaction_and_automation_tests {
         state.reduce_action(UiAction::ButtonPressed {
             key: REDO_KEY.to_string(),
         });
-        assert_eq!(params.editable_curve_snapshot(), preset.curve);
-        assert_eq!(params.sync_division(), preset.sync_division);
+        assert_eq!(params.editable_curve_snapshot(), slot_curve);
+        assert_eq!(params.sync_division(), before_division);
     }
 
     #[test]
-    fn quick_shape_button_marks_selected_preset_dirty_until_saved() {
+    fn quick_slot_shift_press_stores_curve_without_changing_live_curve() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
             Arc::clone(&params),
@@ -679,12 +692,70 @@ mod interaction_and_automation_tests {
             Arc::new(AutomationQueue::default()),
             None,
         );
-        let preset = quick_shape_preset_by_key("shape-gate").expect("shape should exist");
+        let stored_curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.08, y: 0.04 },
+                CurveNode { x: 0.22, y: 0.68 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.5 },
+                CurveSegment { tension: 0.42 },
+                CurveSegment { tension: -0.04 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&stored_curve);
+
+        state.reduce_action(UiAction::RegionInteracted {
+            key: format!("{QUICK_SLOT_KEY_PREFIX}5"),
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: Point { x: 0, y: 0 },
+            raw_local_pointer: Point { x: 0, y: 0 },
+            alt_down: false,
+            shift_down: true,
+        });
+        let bank = params.preset_bank_snapshot();
+        assert_eq!(bank.presets[bank.selected].quick_slots[5].curve, stored_curve);
+        assert_eq!(params.editable_curve_snapshot(), stored_curve);
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: UNDO_KEY.to_string(),
+        });
+        assert_eq!(
+            params.preset_bank_snapshot().presets[0].quick_slots[5].curve,
+            quick_slot_seeds()[5].curve
+        );
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            stored_curve,
+            "storing a slot should leave the live curve untouched even after undo"
+        );
+    }
+
+    #[test]
+    fn quick_slot_shift_press_does_not_mark_selected_preset_dirty() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
 
         assert!(!params.current_state_differs_from_selected_preset());
-        state.reduce_action(UiAction::ButtonPressed {
-            key: preset.key.to_string(),
+        state.reduce_action(UiAction::RegionInteracted {
+            key: format!("{QUICK_SLOT_KEY_PREFIX}2"),
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: Point { x: 0, y: 0 },
+            raw_local_pointer: Point { x: 0, y: 0 },
+            alt_down: false,
+            shift_down: true,
         });
-        assert!(params.current_state_differs_from_selected_preset());
+        assert!(
+            !params.current_state_differs_from_selected_preset(),
+            "slot edits should not participate in the live dirty-state comparison"
+        );
     }
 }

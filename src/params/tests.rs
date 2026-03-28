@@ -1,7 +1,7 @@
 use super::{
-    clamp_sync_division, decode_state_payload, encode_state_payload, sync_division_index_from_text,
-    PumpParams, PumpPreset, PumpPresetBank, SavePresetOutcome, MAX_PRESET_NAME_CHARS,
-    MAX_SYNC_DIVISION,
+    clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
+    sync_division_index_from_text, PumpParams, PumpPreset, PumpPresetBank, SavePresetOutcome,
+    MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION,
 };
 #[cfg(feature = "vst3")]
 use super::{
@@ -22,6 +22,29 @@ fn temp_preset_store_path(label: &str) -> PathBuf {
         "pump-runtime-preset-store-{label}-{}-{stamp}.bin",
         std::process::id()
     ))
+}
+
+fn test_quick_slot_curve(offset: f32) -> EditableCurve {
+    EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 1.0 },
+            CurveNode {
+                x: (0.12 + offset).clamp(0.05, 0.3),
+                y: 0.05,
+            },
+            CurveNode {
+                x: (0.32 + offset).clamp(0.2, 0.6),
+                y: 0.62,
+            },
+            CurveNode { x: 1.0, y: 1.0 },
+        ],
+        segments: vec![
+            CurveSegment { tension: -0.48 },
+            CurveSegment { tension: 0.31 },
+            CurveSegment { tension: -0.04 },
+        ],
+    }
+    .normalized()
 }
 
 #[test]
@@ -92,6 +115,8 @@ fn legacy_payload_still_decodes() {
     let editable = restored.editable_curve_snapshot();
     assert!(editable.nodes.len() >= 2);
     assert_eq!(editable.segments.len(), editable.nodes.len() - 1);
+    let bank = restored.preset_bank_snapshot();
+    assert_eq!(bank.presets[0].quick_slots, seeded_quick_shape_slots());
 }
 
 #[test]
@@ -189,6 +214,8 @@ fn preset_bank_roundtrips_through_state_payload() {
         .add_preset_from_current_state()
         .expect("preset insertion should succeed");
     assert!(params.rename_preset(1, "Verse"));
+    let slot_curve = test_quick_slot_curve(0.08);
+    assert!(params.set_selected_quick_slot_curve(3, &slot_curve));
     params.load_preset(1).expect("preset load should succeed");
     let payload = encode_state_payload(&params);
 
@@ -199,6 +226,7 @@ fn preset_bank_roundtrips_through_state_payload() {
     assert_eq!(bank.selected, 1);
     assert_eq!(bank.presets[1].name, "Verse");
     assert!(!bank.presets[0].is_read_only);
+    assert_eq!(bank.presets[1].quick_slots[3].curve, slot_curve);
 }
 
 #[test]
@@ -252,6 +280,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                 output_gain_db: -1.0,
                 sync_division: 2,
                 editable_curve: params.editable_curve_snapshot(),
+                quick_slots: seeded_quick_shape_slots(),
             },
             PumpPreset {
                 name: "Live B".to_string(),
@@ -262,6 +291,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                 output_gain_db: -2.0,
                 sync_division: 4,
                 editable_curve: params.editable_curve_snapshot(),
+                quick_slots: seeded_quick_shape_slots(),
             },
         ],
     });
@@ -293,6 +323,48 @@ fn save_by_name_overwrites_case_insensitive_match() {
     assert_eq!(bank.presets[1].name, "Verse");
     assert!((bank.presets[1].mix - 0.12).abs() < 1.0e-6);
     assert!((bank.presets[1].depth - 1.0).abs() < 1.0e-6);
+}
+
+#[test]
+fn quick_slot_edits_switch_with_selected_preset() {
+    let params = PumpParams::new();
+    let curve_a = test_quick_slot_curve(0.02);
+    let curve_b = test_quick_slot_curve(0.11);
+    assert!(params.set_selected_quick_slot_curve(0, &curve_a));
+
+    let inserted = params
+        .add_preset_from_current_state()
+        .expect("preset insertion should succeed");
+    assert_eq!(inserted, 1);
+    assert!(params.set_selected_quick_slot_curve(0, &curve_b));
+
+    params.load_preset(0).expect("preset load should succeed");
+    assert_eq!(
+        params
+            .selected_quick_slot_curve(0)
+            .expect("slot should exist"),
+        curve_a
+    );
+
+    params.load_preset(1).expect("preset load should succeed");
+    assert_eq!(
+        params
+            .selected_quick_slot_curve(0)
+            .expect("slot should exist"),
+        curve_b
+    );
+}
+
+#[test]
+fn save_by_name_preserves_selected_preset_quick_slots() {
+    let params = PumpParams::new();
+    let slot_curve = test_quick_slot_curve(0.05);
+    assert!(params.set_selected_quick_slot_curve(2, &slot_curve));
+
+    let outcome = params.save_current_state_by_name("Transients");
+    assert_eq!(outcome, SavePresetOutcome::Created { index: 1 });
+    let bank = params.preset_bank_snapshot();
+    assert_eq!(bank.presets[1].quick_slots[2].curve, slot_curve);
 }
 
 #[test]

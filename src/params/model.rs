@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 4;
+pub(crate) const STATE_VERSION: u32 = 5;
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
@@ -49,6 +49,8 @@ pub const DEFAULT_OUTPUT_GAIN_DB: f32 = 0.0;
 pub const DEFAULT_SYNC_DIVISION_INDEX: usize = 4;
 /// Maximum number of stored user presets.
 pub const MAX_PRESETS: usize = 16;
+/// Fixed number of overwriteable quick slots stored inside each preset.
+pub const QUICK_SLOT_COUNT: usize = 8;
 /// Maximum preset-name length in characters.
 pub const MAX_PRESET_NAME_CHARS: usize = 24;
 /// Default preset name for the initialized plugin state.
@@ -155,6 +157,13 @@ pub fn sync_division_index_from_text(text: &str) -> Option<usize> {
         .map(clamp_sync_division)
 }
 
+/// Serializable snapshot of one overwriteable quick slot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuickShapeSlot {
+    /// Stored quick-slot curve shown in the per-preset micro-preview tile.
+    pub curve: EditableCurve,
+}
+
 /// Serializable snapshot of one Pump preset.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PumpPreset {
@@ -176,6 +185,8 @@ pub struct PumpPreset {
     pub sync_division: usize,
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
+    /// Overwriteable quick-slot curves shown below the editor for this preset.
+    pub quick_slots: Vec<QuickShapeSlot>,
 }
 
 /// Ordered preset collection with a selected index.
@@ -220,9 +231,20 @@ impl PumpPresetBank {
                 output_gain_db: DEFAULT_OUTPUT_GAIN_DB,
                 sync_division: DEFAULT_SYNC_DIVISION_INDEX,
                 editable_curve: default_editable_curve(),
+                quick_slots: seeded_quick_shape_slots(),
             }],
         }
     }
+}
+
+/// Return the canonical seeded quick-slot contents for one preset.
+pub(crate) fn seeded_quick_shape_slots() -> Vec<QuickShapeSlot> {
+    crate::curve_presets::quick_slot_seeds()
+        .iter()
+        .map(|seed| QuickShapeSlot {
+            curve: seed.curve.clone(),
+        })
+        .collect()
 }
 
 pub(crate) fn sanitize_preset_name(raw: &str, fallback_index: usize) -> String {

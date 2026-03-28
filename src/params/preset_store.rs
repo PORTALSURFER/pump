@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 1;
+const PRESET_STORE_VERSION: u32 = 2;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 
@@ -173,8 +173,15 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.phase_offset.to_le_bytes());
     payload.extend_from_slice(&preset.output_gain_db.to_le_bytes());
     payload.extend_from_slice(&(preset.sync_division as u32).to_le_bytes());
+    encode_curve(payload, &preset.editable_curve);
+    payload.extend_from_slice(&(preset.quick_slots.len() as u32).to_le_bytes());
+    for slot in &preset.quick_slots {
+        encode_curve(payload, &slot.curve);
+    }
+}
 
-    let normalized_curve = preset.editable_curve.clone().normalized();
+fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
+    let normalized_curve = curve.clone().normalized();
     let node_count = normalized_curve.nodes.len().clamp(2, MAX_EDITABLE_NODES);
     payload.extend_from_slice(&(node_count as u32).to_le_bytes());
     for node in normalized_curve.nodes.iter().take(node_count) {
@@ -198,7 +205,7 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
     }
     let version =
         read_u32(&mut cursor).ok_or_else(|| "invalid preset store version".to_string())?;
-    if version != PRESET_STORE_VERSION {
+    if !(1..=PRESET_STORE_VERSION).contains(&version) {
         return Err(format!("unsupported preset store version `{version}`"));
     }
     let selected = read_u32(&mut cursor)
@@ -236,6 +243,11 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             .map(|value| value as usize)
             .ok_or_else(|| "invalid preset node count".to_string())?;
         let editable_curve = decode_curve(&mut cursor, node_count)?;
+        let quick_slots = if version >= 2 {
+            decode_quick_slots(&mut cursor)?
+        } else {
+            seeded_quick_shape_slots()
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -245,6 +257,7 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
             editable_curve,
+            quick_slots,
         });
     }
     if cursor.position() != payload.len() as u64 {
@@ -272,6 +285,21 @@ fn decode_curve(cursor: &mut Cursor<&[u8]>, node_count: usize) -> Result<Editabl
         segments.push(CurveSegment { tension });
     }
     Ok(EditableCurve { nodes, segments }.normalized())
+}
+
+fn decode_quick_slots(cursor: &mut Cursor<&[u8]>) -> Result<Vec<QuickShapeSlot>, String> {
+    let count = read_u32(cursor)
+        .map(|value| value as usize)
+        .ok_or_else(|| "invalid preset quick slot count".to_string())?;
+    let mut slots = Vec::with_capacity(count);
+    for _ in 0..count {
+        let node_count = read_u32(cursor)
+            .map(|value| value as usize)
+            .ok_or_else(|| "invalid preset quick slot node count".to_string())?;
+        let curve = decode_curve(cursor, node_count)?;
+        slots.push(QuickShapeSlot { curve });
+    }
+    Ok(slots)
 }
 
 fn read_f32(cursor: &mut Cursor<&[u8]>) -> Option<f32> {
@@ -316,6 +344,7 @@ mod tests {
                     output_gain_db: 0.0,
                     sync_division: 4,
                     editable_curve: default_editable_curve(),
+                    quick_slots: seeded_quick_shape_slots(),
                 },
                 PumpPreset {
                     name: "Verse".to_string(),
@@ -337,6 +366,7 @@ mod tests {
                         ],
                     }
                     .normalized(),
+                    quick_slots: seeded_quick_shape_slots(),
                 },
             ],
         };
@@ -356,5 +386,34 @@ mod tests {
         let error =
             decode_preset_bank_payload(&payload).expect_err("invalid magic should be rejected");
         assert_eq!(error, "unknown preset store format");
+    }
+
+    #[test]
+    fn preset_store_v1_decode_seeds_quick_slots() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(PRESET_STORE_MAGIC);
+        payload.extend_from_slice(&1_u32.to_le_bytes());
+        payload.extend_from_slice(&0_u32.to_le_bytes());
+        payload.extend_from_slice(&1_u32.to_le_bytes());
+        payload.extend_from_slice(&4_u32.to_le_bytes());
+        payload.extend_from_slice(b"Init");
+        payload.extend_from_slice(&1.0_f32.to_le_bytes());
+        payload.extend_from_slice(&1.0_f32.to_le_bytes());
+        payload.extend_from_slice(&0.0_f32.to_le_bytes());
+        payload.extend_from_slice(&0.0_f32.to_le_bytes());
+        payload.extend_from_slice(&4_u32.to_le_bytes());
+        payload.extend_from_slice(&3_u32.to_le_bytes());
+        payload.extend_from_slice(&0.0_f32.to_le_bytes());
+        payload.extend_from_slice(&1.0_f32.to_le_bytes());
+        payload.extend_from_slice(&0.5_f32.to_le_bytes());
+        payload.extend_from_slice(&0.2_f32.to_le_bytes());
+        payload.extend_from_slice(&1.0_f32.to_le_bytes());
+        payload.extend_from_slice(&1.0_f32.to_le_bytes());
+        payload.extend_from_slice(&(-0.3_f32).to_le_bytes());
+        payload.extend_from_slice(&(0.2_f32).to_le_bytes());
+
+        let decoded =
+            decode_preset_bank_payload(&payload).expect("v1 preset store payload should decode");
+        assert_eq!(decoded.presets[0].quick_slots, seeded_quick_shape_slots());
     }
 }
