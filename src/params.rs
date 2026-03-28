@@ -24,8 +24,8 @@ mod state_codec;
 
 pub use model::*;
 pub(crate) use model::{
-    curve_near_eq, float_near_eq, normalized_preset_name, sanitize_preset_name, STATE_MAGIC,
-    STATE_VERSION,
+    curve_near_eq, float_near_eq, normalized_preset_name, sanitize_preset_name,
+    seeded_quick_shape_slots, STATE_MAGIC, STATE_VERSION,
 };
 
 #[cfg(feature = "vst3")]

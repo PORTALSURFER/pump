@@ -7,11 +7,10 @@
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY, PRESET_RENAME_BUTTON_KEY,
-        PRESET_RENAME_KEY, PRESET_SAVE_KEY, REDO_KEY, RESET_KEY, UNDO_KEY,
-        TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
+        PRESET_RENAME_KEY, PRESET_SAVE_KEY, QUICK_SLOT_COUNT, QUICK_SLOT_KEY_PREFIX, REDO_KEY,
+        RESET_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
-    use crate::curve_presets::quick_shape_presets;
     use crate::params::{PumpParams, MAX_SYNC_DIVISION};
     use crate::{GuiStatus, GuiTransportTelemetry};
     use std::sync::Arc;
@@ -151,6 +150,7 @@
             | Node::Button(_)
             | Node::Dropdown(_)
             | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
             | Node::Region(_)
             | Node::Indicator(_) => {}
         }
@@ -1029,7 +1029,7 @@
     }
 
     #[test]
-    fn build_ui_includes_all_quick_shape_button_labels() {
+    fn build_ui_includes_all_quick_slot_regions() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -1043,15 +1043,15 @@
             },
             ..InputState::default()
         });
-        let mut labels = Vec::new();
-        collect_button_labels(spec.root.content(), &mut labels);
+        let mut keys = Vec::new();
+        collect_region_keys(spec.root.content(), &mut keys);
 
-        for preset in quick_shape_presets() {
+        for index in 0..QUICK_SLOT_COUNT {
+            let expected = format!("{QUICK_SLOT_KEY_PREFIX}{index}");
             assert!(
-                labels.iter().any(|label| label == preset.label),
-                "expected quick-shape button label `{}` in {:?}",
-                preset.label,
-                labels
+                keys.iter().any(|key| key == &expected),
+                "expected quick-slot region `{expected}` in {:?}",
+                keys
             );
         }
     }
@@ -1717,6 +1717,7 @@
             | Node::Button(_)
             | Node::Dropdown(_)
             | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
             | Node::Indicator(_)
             | Node::Absolute(_) => None,
         }
@@ -1770,54 +1771,51 @@
             | Node::Button(_)
             | Node::Dropdown(_)
             | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
             | Node::Region(_)
             | Node::Indicator(_) => {}
         }
     }
 
-    fn collect_button_labels(node: &Node, labels: &mut Vec<String>) {
+    fn collect_region_keys(node: &Node, keys: &mut Vec<String>) {
         match node {
-            Node::Slot(slot) => collect_button_labels(slot.child(), labels),
-            Node::Button(button) => {
-                if let Some(label) = button.label.as_ref() {
-                    labels.push(label.clone());
-                }
-            }
-            Node::Panel(panel) => collect_button_labels(panel.content(), labels),
-            Node::PaddingBox(padding_box) => collect_button_labels(padding_box.content(), labels),
-            Node::AlignBox(align_box) => collect_button_labels(align_box.content(), labels),
-            Node::AspectBox(aspect_box) => collect_button_labels(aspect_box.content(), labels),
+            Node::Slot(slot) => collect_region_keys(slot.child(), keys),
+            Node::Region(region) => keys.push(region.key.clone()),
+            Node::Panel(panel) => collect_region_keys(panel.content(), keys),
+            Node::PaddingBox(padding_box) => collect_region_keys(padding_box.content(), keys),
+            Node::AlignBox(align_box) => collect_region_keys(align_box.content(), keys),
+            Node::AspectBox(aspect_box) => collect_region_keys(aspect_box.content(), keys),
             Node::Row(flex) | Node::Column(flex) => {
                 for child in flex.children() {
-                    collect_button_labels(child, labels);
+                    collect_region_keys(child, keys);
                 }
             }
             Node::Grid(grid) => {
                 for child in grid.children() {
-                    collect_button_labels(child, labels);
+                    collect_region_keys(child, keys);
                 }
             }
             Node::Absolute(absolute) => {
                 for child in absolute.children() {
-                    collect_button_labels(child.node(), labels);
+                    collect_region_keys(child.node(), keys);
                 }
             }
             Node::Stack(stack) => {
                 for child in stack.children() {
-                    collect_button_labels(child, labels);
+                    collect_region_keys(child, keys);
                 }
             }
-            Node::ScrollView(scroll_view) => collect_button_labels(scroll_view.content(), labels),
+            Node::ScrollView(scroll_view) => collect_region_keys(scroll_view.content(), keys),
             Node::Wrap(wrap) => {
                 for child in wrap.children() {
-                    collect_button_labels(child, labels);
+                    collect_region_keys(child, keys);
                 }
             }
             Node::SwitchLayout(switch_layout) => {
                 for case_entry in switch_layout.cases() {
-                    collect_button_labels(case_entry.child(), labels);
+                    collect_region_keys(case_entry.child(), keys);
                 }
-                collect_button_labels(switch_layout.fallback(), labels);
+                collect_region_keys(switch_layout.fallback(), keys);
             }
             Node::TextBox(_)
             | Node::Spacer(_)
@@ -1825,9 +1823,10 @@
             | Node::Slider(_)
             | Node::CurveEditor(_)
             | Node::Toggle(_)
+            | Node::Button(_)
             | Node::Dropdown(_)
             | Node::TabBar(_)
-            | Node::Region(_)
+            | Node::EqAttractorSurface(_)
             | Node::Indicator(_) => {}
         }
     }
@@ -1875,6 +1874,7 @@
             | Node::Toggle(_)
             | Node::Button(_)
             | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
             | Node::Region(_)
             | Node::Indicator(_)
             | Node::Absolute(_) => None,
@@ -1917,6 +1917,7 @@
             | Node::Button(_)
             | Node::Dropdown(_)
             | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
             | Node::Region(_) => None,
         }
     }
@@ -1954,6 +1955,7 @@
             | Node::Button(_)
             | Node::Dropdown(_)
             | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
             | Node::Region(_) => None,
         }
     }

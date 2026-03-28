@@ -12,7 +12,7 @@ use toybox::clap::gui::{
 };
 use toybox::gui::declarative::{
     button, column, column_slots, curve_editor, dropdown, grid, indicator, knob, panel,
-    root_frame_sized, row_slots, spacer, textbox, weighted_slot, weighted_slot_lengths,
+    root_frame_sized, row_slots, spacer, surface, textbox, weighted_slot, weighted_slot_lengths,
     CurveEditorStyle, CurveHighlightMode, CurveInteractionOptions, CurveModel, CurvePoint,
     CurveSegment as CurveEditorSegment, EndpointMode, GridTemplate, LayoutBox, Node,
     OverflowPolicy, RegionInteractionKind, RootScaleMode, Slot, SlotAlign, SlotCrossSize,
@@ -30,7 +30,7 @@ use crate::params::{
     DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET, DEFAULT_PRESET_NAME, MAX_MIX, MAX_OUTPUT_GAIN_DB,
     MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_MIX, MIN_OUTPUT_GAIN_DB,
     MIN_PHASE_OFFSET, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
-    PARAM_SYNC_DIVISION_ID,
+    PARAM_SYNC_DIVISION_ID, QUICK_SLOT_COUNT,
 };
 use crate::time_utils::monotonic_micros;
 use crate::GuiStatus;
@@ -40,7 +40,6 @@ mod layout_support;
 mod state_impl;
 mod window_host;
 
-pub(super) use crate::curve_presets::{quick_shape_preset_by_key, quick_shape_presets};
 use curve_math::*;
 use layout_support::*;
 pub(crate) use window_host::preferred_window_size;
@@ -72,6 +71,7 @@ const PRESET_RENAME_BUTTON_KEY: &str = "preset-rename-button";
 const PRESET_RENAME_KEY: &str = "preset-rename";
 const UNDO_KEY: &str = "undo";
 const REDO_KEY: &str = "redo";
+const QUICK_SLOT_KEY_PREFIX: &str = "quick-slot-";
 const SHORTCUT_KEY_RENAME: char = 'r';
 const SHORTCUT_KEY_SAVE: char = 's';
 const SHORTCUT_KEY_ADD: char = '+';
@@ -114,6 +114,8 @@ const NODE_DRAW_RADIUS: i32 = 4;
 const NODE_HIT_RADIUS: i32 = 8;
 const PLAYHEAD_DOT_CORE_RADIUS: i32 = 4;
 const PLAYHEAD_DOT_GLOW_RADIUS: i32 = 10;
+const QUICK_SLOT_PREVIEW_MARGIN: i32 = 3;
+const QUICK_SLOT_PREVIEW_STEPS: usize = 24;
 const SEGMENT_NEAR_HIT_RADIUS: i32 = 16;
 const SEGMENT_DIRECT_HIT_RADIUS: i32 = 6;
 const NODE_INSERT_GUARD_RADIUS: i32 = 12;
@@ -151,6 +153,8 @@ struct GuiRuntime {
     preset_name_draft: String,
     preset_warning_frames: u8,
     preset_warning_text: Option<&'static str>,
+    quick_slot_hovered: Option<usize>,
+    quick_slot_pressed: Option<usize>,
     pointer_primary_down: bool,
     pointer_secondary_down: bool,
     active_knob_gesture_param: Option<ClapId>,

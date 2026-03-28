@@ -87,6 +87,12 @@ pub(super) struct PumpTheme {
     pub(super) playhead_dot_stroke: Color,
     pub(super) meter_outline: Color,
     pub(super) meter_fill: Color,
+    pub(super) quick_slot_bg: Color,
+    pub(super) quick_slot_hover_bg: Color,
+    pub(super) quick_slot_active_bg: Color,
+    pub(super) quick_slot_outline: Color,
+    pub(super) quick_slot_outline_hover: Color,
+    pub(super) quick_slot_curve: Color,
 }
 
 impl PumpTheme {
@@ -128,6 +134,12 @@ impl PumpTheme {
             playhead_dot_stroke: palette.accent_focus,
             meter_outline: palette.ui_secondary,
             meter_fill: palette.literals,
+            quick_slot_bg: palette.background_primary,
+            quick_slot_hover_bg: palette.background_secondary,
+            quick_slot_active_bg: palette.ui_secondary,
+            quick_slot_outline: palette.ui_secondary,
+            quick_slot_outline_hover: palette.accent_focus,
+            quick_slot_curve: palette.identifiers,
         }
     }
 }
