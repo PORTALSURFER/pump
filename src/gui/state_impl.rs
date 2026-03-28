@@ -287,12 +287,13 @@ impl GuiState {
             .filter(|index| *index < QUICK_SLOT_COUNT)
     }
 
-    fn build_quick_slot_draw_commands(
+    pub(super) fn build_quick_slot_draw_commands(
         curve: &EditableCurve,
         size: Size,
         theme: PumpTheme,
         hovered: bool,
         active: bool,
+        store_hovered: bool,
     ) -> Vec<SurfaceCommand> {
         let rect = Rect {
             origin: Point { x: 0, y: 0 },
@@ -300,12 +301,16 @@ impl GuiState {
         };
         let fill = if active {
             theme.quick_slot_active_bg
+        } else if store_hovered {
+            theme.quick_slot_store_hover_bg
         } else if hovered {
             theme.quick_slot_hover_bg
         } else {
             theme.quick_slot_bg
         };
-        let outline = if hovered || active {
+        let outline = if store_hovered {
+            theme.quick_slot_outline_store_hover
+        } else if hovered || active {
             theme.quick_slot_outline_hover
         } else {
             theme.quick_slot_outline
@@ -346,11 +351,37 @@ impl GuiState {
         ]
     }
 
+    fn quick_slot_surface(
+        index: usize,
+        curve: &EditableCurve,
+        size: Size,
+        theme: PumpTheme,
+        hovered: bool,
+        active: bool,
+        store_hovered: bool,
+    ) -> Node {
+        Node::align_box(surface(
+            Self::quick_slot_key(index),
+            size,
+            Self::build_quick_slot_draw_commands(
+                curve,
+                size,
+                theme,
+                hovered,
+                active,
+                store_hovered,
+            ),
+        ))
+        .slot_align(SlotAlign::Start, SlotAlign::Center)
+        .fill()
+    }
+
     /// Build the quick-slot strip shown below the curve editor.
     pub(super) fn build_quick_shapes_slot(
         &self,
         metrics: UiLayoutMetrics,
         theme: PumpTheme,
+        shift_down: bool,
     ) -> Node {
         let quick_slots = self.params.selected_quick_slots_snapshot();
         let (hovered_slot, pressed_slot) = self
@@ -359,27 +390,28 @@ impl GuiState {
             .ok()
             .map(|runtime| (runtime.quick_slot_hovered, runtime.quick_slot_pressed))
             .unwrap_or((None, None));
+        let slot_widths = weighted_slot_lengths(metrics.content_w.max(1), &[1; QUICK_SLOT_COUNT]);
         let buttons = quick_slots
             .iter()
             .enumerate()
             .map(|(index, slot)| {
+                let size = Size {
+                    width: slot_widths
+                        .get(index)
+                        .copied()
+                        .unwrap_or(metrics.quick_shape_button_w)
+                        .max(1),
+                    height: metrics.quick_shape_button_h,
+                };
                 weighted_slot(
-                    surface(
-                        Self::quick_slot_key(index),
-                        Size {
-                            width: metrics.quick_shape_button_w,
-                            height: metrics.quick_shape_button_h,
-                        },
-                        Self::build_quick_slot_draw_commands(
-                            &slot.curve,
-                            Size {
-                                width: metrics.quick_shape_button_w,
-                                height: metrics.quick_shape_button_h,
-                            },
-                            theme,
-                            hovered_slot == Some(index),
-                            pressed_slot == Some(index),
-                        ),
+                    Self::quick_slot_surface(
+                        index,
+                        &slot.curve,
+                        size,
+                        theme,
+                        hovered_slot == Some(index),
+                        pressed_slot == Some(index),
+                        hovered_slot == Some(index) && shift_down,
                     ),
                     1,
                 )
@@ -593,7 +625,7 @@ impl GuiState {
 
         let header_slot = self.build_header_slot(metrics, theme, &presets);
         let spline_slot = self.build_spline_slot(metrics, theme, controls);
-        let quick_shapes_slot = self.build_quick_shapes_slot(metrics, theme);
+        let quick_shapes_slot = self.build_quick_shapes_slot(metrics, theme, input.shift_down);
         let controls_slot = self.build_controls_slot(metrics, controls);
 
         let content = column_slots(vec![
