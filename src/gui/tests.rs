@@ -6,9 +6,10 @@
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
-        HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY, PRESET_RENAME_BUTTON_KEY,
-        PRESET_RENAME_KEY, PRESET_SAVE_KEY, QUICK_SLOT_COUNT, QUICK_SLOT_KEY_PREFIX, REDO_KEY,
-        RESET_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
+        GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY,
+        PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, QUICK_SLOT_COUNT,
+        QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
+        WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{PumpParams, MAX_SYNC_DIVISION};
@@ -18,8 +19,9 @@
     use toybox::clap::automation::AutomationQueue;
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
-        measure_checked, ContainerLayout, ContainerLength, DropdownSpec, GridKind, LayoutBox,
-        Node, PanelSpec, RootScaleMode, SurfaceCommand, UiAction, UiSpec,
+        measure_checked, ContainerLayout, ContainerLength, CurveEditorSpec, DropdownSpec,
+        GridKind, LayoutBox, Node, PanelSpec, RootScaleMode, SurfaceCommand, ToggleSpec,
+        UiAction, UiSpec,
     };
     use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
@@ -796,6 +798,106 @@
     }
 
     #[test]
+    fn build_ui_exposes_snap_toggle_and_grid_override_controls() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
+
+        let snap_toggle =
+            find_toggle_spec(spec.root.content(), SNAP_KEY).expect("snap toggle should exist");
+        assert!(!snap_toggle.value, "snap should default to off");
+        let grid_dropdown = find_dropdown_spec(spec.root.content(), GRID_OVERRIDE_KEY)
+            .expect("grid override dropdown should exist");
+        assert_eq!(grid_dropdown.selected, 0, "grid override should default to Auto");
+    }
+
+    #[test]
+    fn build_ui_uses_effective_grid_for_curve_overlay_and_snap() {
+        let params = Arc::new(PumpParams::new());
+        params.set_sync_division(4.0);
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        state.reduce_action(UiAction::ToggleChanged {
+            key: SNAP_KEY.to_string(),
+            value: true,
+        });
+        state.reduce_action(UiAction::DropdownSelected {
+            key: GRID_OVERRIDE_KEY.to_string(),
+            index: 3,
+        });
+
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
+        let curve_editor = find_curve_editor_spec(spec.root.content(), CURVE_KEY)
+            .expect("curve editor should exist");
+        assert_eq!(
+            curve_editor.grid.emphasized_verticals,
+            vec![0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875],
+            "1/8 grid override should brighten seven inner guide lines"
+        );
+        assert!(curve_editor.interaction.snap.enabled);
+        assert_eq!(
+            curve_editor.interaction.snap.vertical_positions,
+            vec![0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
+        );
+        assert_eq!(
+            curve_editor.interaction.snap.horizontal_positions,
+            vec![0.0, 0.25, 0.5, 0.75, 1.0]
+        );
+    }
+
+    #[test]
+    fn build_ui_temporary_snap_invert_uses_held_s_key() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        state.reduce_action(UiAction::ToggleChanged {
+            key: SNAP_KEY.to_string(),
+            value: true,
+        });
+
+        let mut input = InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        };
+        input.held_shortcut_keys.push('s');
+
+        let spec = state.build_ui(&input);
+        let curve_editor = find_curve_editor_spec(spec.root.content(), CURVE_KEY)
+            .expect("curve editor should exist");
+        assert!(
+            !curve_editor.interaction.snap.enabled,
+            "holding s should temporarily invert the global snap state"
+        );
+    }
+
+    #[test]
     fn build_ui_keeps_design_sized_root_across_host_resize_sequences() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
@@ -1057,7 +1159,7 @@
     }
 
     #[test]
-    fn dropdown_change_preserves_curve_and_swallows_immediate_reset_press() {
+    fn dropdown_change_preserves_curve() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
             Arc::clone(&params),
@@ -1084,9 +1186,6 @@
             key: DIVISION_KEY.to_string(),
             index: (previous_division + 1).min(MAX_SYNC_DIVISION as usize),
         });
-        state.reduce_action(UiAction::ButtonPressed {
-            key: RESET_KEY.to_string(),
-        });
 
         assert_ne!(
             params.sync_division(),
@@ -1096,12 +1195,12 @@
         assert_eq!(
             params.editable_curve_snapshot(),
             custom_curve,
-            "division changes must not reset the editable curve"
+            "division changes must not mutate the editable curve"
         );
     }
 
     #[test]
-    fn second_reset_press_after_dropdown_still_resets_curve() {
+    fn snap_toggle_updates_editor_local_state_only() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
             Arc::clone(&params),
@@ -1109,74 +1208,40 @@
             Arc::new(AutomationQueue::default()),
             None,
         );
-        let custom_curve = EditableCurve {
-            nodes: vec![
-                CurveNode { x: 0.0, y: 1.0 },
-                CurveNode { x: 0.4, y: 0.1 },
-                CurveNode { x: 1.0, y: 0.9 },
-            ],
-            segments: vec![
-                CurveSegment { tension: -0.5 },
-                CurveSegment { tension: 0.4 },
-            ],
-        }
-        .normalized();
-        params.set_editable_curve(&custom_curve);
+
+        state.reduce_action(UiAction::ToggleChanged {
+            key: SNAP_KEY.to_string(),
+            value: true,
+        });
+        let controls = state.snapshot_controls();
+        assert!(controls.snap_enabled, "snap toggle should update GUI runtime state");
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            crate::curve::default_editable_curve(),
+            "toggling snap should not mutate the stored curve"
+        );
+    }
+
+    #[test]
+    fn grid_override_dropdown_updates_editor_local_state_only() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
 
         state.reduce_action(UiAction::DropdownSelected {
-            key: DIVISION_KEY.to_string(),
-            index: 2,
+            key: GRID_OVERRIDE_KEY.to_string(),
+            index: 3,
         });
-        state.reduce_action(UiAction::ButtonPressed {
-            key: RESET_KEY.to_string(),
-        });
+        let controls = state.snapshot_controls();
+        assert_eq!(controls.grid_override, Some(2));
         assert_eq!(
-            params.editable_curve_snapshot(),
-            custom_curve,
-            "first reset press after dropdown should be guarded"
-        );
-
-        state.reduce_action(UiAction::ButtonPressed {
-            key: RESET_KEY.to_string(),
-        });
-        let reset_curve = params.editable_curve_snapshot();
-        assert_eq!(
-            reset_curve,
-            crate::curve::default_editable_curve(),
-            "second reset press should perform an intentional curve reset"
-        );
-    }
-
-    #[test]
-    fn reset_applies_to_selected_init_preset_curve() {
-        let params = Arc::new(PumpParams::new());
-        let mut state = GuiState::new(
-            Arc::clone(&params),
-            Arc::new(GuiStatus::default()),
-            Arc::new(AutomationQueue::default()),
-            None,
-        );
-        let custom_curve = EditableCurve {
-            nodes: vec![
-                CurveNode { x: 0.0, y: 1.0 },
-                CurveNode { x: 0.45, y: 0.15 },
-                CurveNode { x: 1.0, y: 0.8 },
-            ],
-            segments: vec![
-                CurveSegment { tension: -0.35 },
-                CurveSegment { tension: 0.2 },
-            ],
-        }
-        .normalized();
-        params.set_editable_curve(&custom_curve);
-
-        state.reduce_action(UiAction::ButtonPressed {
-            key: RESET_KEY.to_string(),
-        });
-        assert_eq!(
-            params.editable_curve_snapshot(),
-            crate::curve::default_editable_curve(),
-            "reset should restore defaults while Init is selected"
+            params.sync_division(),
+            crate::params::DEFAULT_SYNC_DIVISION_INDEX,
+            "grid override should not change the audio sync division"
         );
     }
 
@@ -1831,6 +1896,51 @@
         }
     }
 
+    fn find_curve_editor_spec<'a>(node: &'a Node, key: &str) -> Option<&'a CurveEditorSpec> {
+        match node {
+            Node::Slot(slot) => find_curve_editor_spec(slot.child(), key),
+            Node::CurveEditor(curve_editor) if curve_editor.key == key => Some(curve_editor),
+            Node::Panel(panel) => find_curve_editor_spec(panel.content(), key),
+            Node::PaddingBox(padding_box) => find_curve_editor_spec(padding_box.content(), key),
+            Node::AlignBox(align_box) => find_curve_editor_spec(align_box.content(), key),
+            Node::AspectBox(aspect_box) => find_curve_editor_spec(aspect_box.content(), key),
+            Node::Row(flex) | Node::Column(flex) => {
+                flex.children().iter().find_map(|child| find_curve_editor_spec(child, key))
+            }
+            Node::Grid(grid) => grid
+                .children()
+                .iter()
+                .find_map(|child| find_curve_editor_spec(child, key)),
+            Node::Stack(stack) => stack
+                .children()
+                .iter()
+                .find_map(|child| find_curve_editor_spec(child, key)),
+            Node::ScrollView(scroll_view) => find_curve_editor_spec(scroll_view.content(), key),
+            Node::Wrap(wrap) => wrap
+                .children()
+                .iter()
+                .find_map(|child| find_curve_editor_spec(child, key)),
+            Node::SwitchLayout(switch_layout) => switch_layout
+                .cases()
+                .iter()
+                .find_map(|case_entry| find_curve_editor_spec(case_entry.child(), key))
+                .or_else(|| find_curve_editor_spec(switch_layout.fallback(), key)),
+            Node::CurveEditor(_) => None,
+            Node::TextBox(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
+            | Node::Region(_)
+            | Node::Indicator(_)
+            | Node::Absolute(_) => None,
+        }
+    }
+
     fn find_dropdown_control_size(node: &Node, key: &str) -> Option<Size> {
         find_dropdown_spec(node, key).and_then(|dropdown| dropdown.control_size)
     }
@@ -1873,6 +1983,51 @@
             | Node::CurveEditor(_)
             | Node::Toggle(_)
             | Node::Button(_)
+            | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
+            | Node::Region(_)
+            | Node::Indicator(_)
+            | Node::Absolute(_) => None,
+        }
+    }
+
+    fn find_toggle_spec<'a>(node: &'a Node, key: &str) -> Option<&'a ToggleSpec> {
+        match node {
+            Node::Slot(slot) => find_toggle_spec(slot.child(), key),
+            Node::Toggle(toggle) if toggle.key == key => Some(toggle),
+            Node::Panel(panel) => find_toggle_spec(panel.content(), key),
+            Node::PaddingBox(padding_box) => find_toggle_spec(padding_box.content(), key),
+            Node::AlignBox(align_box) => find_toggle_spec(align_box.content(), key),
+            Node::AspectBox(aspect_box) => find_toggle_spec(aspect_box.content(), key),
+            Node::Row(flex) | Node::Column(flex) => {
+                flex.children().iter().find_map(|child| find_toggle_spec(child, key))
+            }
+            Node::Grid(grid) => grid
+                .children()
+                .iter()
+                .find_map(|child| find_toggle_spec(child, key)),
+            Node::Stack(stack) => stack
+                .children()
+                .iter()
+                .find_map(|child| find_toggle_spec(child, key)),
+            Node::ScrollView(scroll_view) => find_toggle_spec(scroll_view.content(), key),
+            Node::Wrap(wrap) => wrap
+                .children()
+                .iter()
+                .find_map(|child| find_toggle_spec(child, key)),
+            Node::SwitchLayout(switch_layout) => switch_layout
+                .cases()
+                .iter()
+                .find_map(|case_entry| find_toggle_spec(case_entry.child(), key))
+                .or_else(|| find_toggle_spec(switch_layout.fallback(), key)),
+            Node::Toggle(_) => None,
+            Node::TextBox(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::CurveEditor(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
             | Node::TabBar(_)
             | Node::EqAttractorSurface(_)
             | Node::Region(_)

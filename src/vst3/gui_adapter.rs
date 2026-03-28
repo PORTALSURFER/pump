@@ -29,6 +29,16 @@ impl PumpVst3GuiAdapter {
     pub(super) fn key_char(key: char16, key_code: int16) -> Option<char> {
         toybox::vst3::gui::vst3_key_down_to_input_char(key, key_code)
     }
+
+    fn should_consume_key(
+        &self,
+        ch: char,
+        modifiers: toybox::clap::gui::ShortcutModifiers,
+    ) -> bool {
+        self.gui.text_edit_active()
+            || self.gui.shortcut_action_for_input(ch, modifiers).is_some()
+            || ch.eq_ignore_ascii_case(&SHORTCUT_KEY_SNAP_INVERT)
+    }
 }
 
 impl Vst3HostedGui for PumpVst3GuiAdapter {
@@ -64,14 +74,20 @@ impl Vst3HostedGui for PumpVst3GuiAdapter {
             return false;
         };
         let shortcut_modifiers = Self::shortcut_modifiers(modifiers);
-        let should_consume = self.gui.text_edit_active()
-            || self
-                .gui
-                .shortcut_action_for_input(ch, shortcut_modifiers)
-                .is_some();
-        if !should_consume {
+        if !self.should_consume_key(ch, shortcut_modifiers) {
             return false;
         }
         self.gui.post_injected_text_char(ch, shortcut_modifiers)
+    }
+
+    fn on_key_up(&self, key: char16, key_code: int16, modifiers: int16) -> bool {
+        let Some(ch) = Self::key_char(key, key_code) else {
+            return false;
+        };
+        let shortcut_modifiers = Self::shortcut_modifiers(modifiers);
+        if !self.should_consume_key(ch, shortcut_modifiers) {
+            return false;
+        }
+        self.gui.post_injected_key_up(ch, shortcut_modifiers)
     }
 }

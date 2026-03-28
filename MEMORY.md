@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-02-22 12:21:07 UTC
-- Active Mission: Keep routine cleanup and handoff quality high without expanding scope.
-- Current Workstream: One-shot code-quality cleanup completed with green local CI.
+- Last Updated (UTC): 2026-03-28 14:23:20 UTC
+- Active Mission: Keep Pump's editor UX moving forward without expanding preset/state scope unnecessarily.
+- Current Workstream: Beat-grid emphasis, snap controls, temporary snap inversion, and grid override UI are implemented with green local validation.
 
 ## Current State
 
@@ -13,7 +13,11 @@
 - Local changelog generator is `scripts/update_changelog.sh`.
 - Push-time changelog updater is `.github/workflows/changelog.yml`.
 - Shared monotonic timing utility is `src/time_utils.rs`.
+- The Pump curve editor now exposes an editor-local `Snap` toggle and `Auto`/override grid dropdown in place of the old reset row.
+- Effective grid lines are rendered brighter for the selected musical division while the faint background micro-grid remains visible.
+- Curve point insertion, dragging, and segment translation now snap to the active vertical beat guides plus quarter-step horizontal bands when snap is effectively enabled.
+- Holding `s` temporarily inverts snapping, while preset save moved to `Shift+S`.
 
 ## Immediate Next Action
 
-- Continue from `docs/plans/active/todo.md` item `1` for the next request.
+- Continue from `docs/plans/active/todo.md` item `1` for the next request, keeping Pump on the pinned `toybox` revision `ec53c316c6212e474db3ae81c269b5b5c9fcf177`.

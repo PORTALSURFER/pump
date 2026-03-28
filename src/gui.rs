@@ -12,11 +12,12 @@ use toybox::clap::gui::{
 };
 use toybox::gui::declarative::{
     button, column, column_slots, curve_editor, dropdown, grid, indicator, knob, panel,
-    root_frame_sized, row_slots, spacer, surface, textbox, weighted_slot, weighted_slot_lengths,
-    CurveEditorStyle, CurveHighlightMode, CurveInteractionOptions, CurveModel, CurvePoint,
-    CurveSegment as CurveEditorSegment, EndpointMode, GridTemplate, LayoutBox, Node,
-    OverflowPolicy, RegionInteractionKind, RootScaleMode, Slot, SlotAlign, SlotCrossSize,
-    SlotParams, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
+    root_frame_sized, row_slots, spacer, surface, textbox, toggle, weighted_slot,
+    weighted_slot_lengths, CurveEditorStyle, CurveGridConfig, CurveHighlightMode,
+    CurveInteractionOptions, CurveModel, CurvePoint, CurveSegment as CurveEditorSegment,
+    CurveSnapConfig, EndpointMode, GridTemplate, LayoutBox, Node, OverflowPolicy,
+    RegionInteractionKind, RootScaleMode, Slot, SlotAlign, SlotCrossSize, SlotParams,
+    SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -32,7 +33,6 @@ use crate::params::{
     MIN_PHASE_OFFSET, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
     PARAM_SYNC_DIVISION_ID, QUICK_SLOT_COUNT,
 };
-use crate::time_utils::monotonic_micros;
 use crate::GuiStatus;
 
 mod curve_math;
@@ -63,7 +63,8 @@ const MIX_KEY: &str = "mix";
 const PHASE_KEY: &str = "phase";
 const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
-const RESET_KEY: &str = "reset";
+const SNAP_KEY: &str = "snap";
+const GRID_OVERRIDE_KEY: &str = "grid-override";
 const PRESET_DROPDOWN_KEY: &str = "preset-dropdown";
 const PRESET_ADD_KEY: &str = "preset-add";
 const PRESET_SAVE_KEY: &str = "preset-save";
@@ -74,6 +75,7 @@ const REDO_KEY: &str = "redo";
 const QUICK_SLOT_KEY_PREFIX: &str = "quick-slot-";
 const SHORTCUT_KEY_RENAME: char = 'r';
 const SHORTCUT_KEY_SAVE: char = 's';
+const SHORTCUT_KEY_SNAP_INVERT: char = 's';
 const SHORTCUT_KEY_ADD: char = '+';
 const SHORTCUT_KEY_ADD_ALT: char = '=';
 const SHORTCUT_KEY_UNDO: char = 'u';
@@ -104,7 +106,6 @@ const KNOBS_PER_ROW: usize = 3;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const TRANSPORT_INDICATOR_SIZE: u32 = 10;
-const RESET_GUARD_AFTER_DROPDOWN_MICROS: u64 = 120_000;
 const PRESET_WARNING_FRAMES: u8 = 45;
 const PRESET_WARNING_BLINK_HALF_PERIOD_FRAMES: u8 = 6;
 const PRESET_WARNING_MAX: &str = "MAX";
@@ -147,7 +148,9 @@ struct GuiRuntime {
     curve_hovered: bool,
     curve_local_pointer: Point,
     curve_size: Size,
-    last_division_change_micros: Option<u64>,
+    snap_enabled: bool,
+    grid_override: Option<usize>,
+    shortcut_snap_invert_held: bool,
     preset_rename_active: bool,
     preset_rename_target: usize,
     preset_name_draft: String,
@@ -209,6 +212,15 @@ struct ControlSnapshot {
     phase_offset: f32,
     output_gain_db: f32,
     division: usize,
+    snap_enabled: bool,
+    grid_override: Option<usize>,
+    shortcut_snap_invert_held: bool,
+}
+
+impl ControlSnapshot {
+    fn effective_snap_enabled(self) -> bool {
+        self.snap_enabled ^ self.shortcut_snap_invert_held
+    }
 }
 
 /// Snapshot of mutable GUI/parameter state used for undo/redo history.
