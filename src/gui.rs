@@ -75,7 +75,7 @@ const REDO_KEY: &str = "redo";
 const QUICK_SLOT_KEY_PREFIX: &str = "quick-slot-";
 const SHORTCUT_KEY_RENAME: char = 'r';
 const SHORTCUT_KEY_SAVE: char = 's';
-const SHORTCUT_KEY_SNAP_INVERT: char = 's';
+pub(crate) const SHORTCUT_KEY_SNAP_INVERT: char = 's';
 const SHORTCUT_KEY_ADD: char = '+';
 const SHORTCUT_KEY_ADD_ALT: char = '=';
 const SHORTCUT_KEY_UNDO: char = 'u';

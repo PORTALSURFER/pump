@@ -37,7 +37,7 @@ impl PumpVst3GuiAdapter {
     ) -> bool {
         self.gui.text_edit_active()
             || self.gui.shortcut_action_for_input(ch, modifiers).is_some()
-            || ch.eq_ignore_ascii_case(&SHORTCUT_KEY_SNAP_INVERT)
+            || ch.eq_ignore_ascii_case(&crate::gui::SHORTCUT_KEY_SNAP_INVERT)
     }
 }
 
