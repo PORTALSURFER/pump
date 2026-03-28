@@ -32,6 +32,7 @@ use crate::time_utils::monotonic_micros;
 #[cfg(test)]
 mod build_support;
 mod curve;
+mod curve_presets;
 mod dsp;
 mod gui;
 mod gui_status;

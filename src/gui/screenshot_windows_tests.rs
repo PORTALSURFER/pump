@@ -235,7 +235,7 @@
         let division_dropdown = find_dropdown_rect(&diagnostics, DIVISION_KEY)
             .ok_or_else(|| "missing division diagnostics rectangle".to_string())?;
         let curve_region = find_curve_rect(&diagnostics).unwrap_or_else(|| {
-            let (header_h, curve_h, _) = resolve_vertical_slot_heights(height);
+            let (header_h, curve_h, _, _) = resolve_vertical_slot_heights(height);
             Rect {
                 origin: Point {
                     x: 0,
@@ -393,4 +393,4 @@
         Err("failed to capture any frame before timeout".to_string())
     }
 
-    include!("gui/screenshot_windows_interaction_helpers.rs");
+    include!("screenshot_windows_interaction_helpers.rs");

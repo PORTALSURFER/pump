@@ -1,7 +1,8 @@
 mod interaction_and_automation_tests {
     use super::*;
-    use super::super::RegionInteractionKind;
+    use super::super::{CurveDragMode, CurveMarqueeSelection, RegionInteractionKind};
     use crate::curve::MAX_EDITABLE_NODES;
+    use crate::curve_presets::quick_shape_preset_by_key;
     use toybox::clack_plugin::events::io::EventBuffer;
 
     fn frame_input(mouse_down: bool) -> InputState {
@@ -595,5 +596,95 @@ mod interaction_and_automation_tests {
         );
 
         state.reduce_curve_interaction(RegionInteractionKind::Released, drag_back, drag_back, false);
+    }
+
+    #[test]
+    fn quick_shape_button_applies_curve_and_division_and_clears_selection_state() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let preset = quick_shape_preset_by_key("shape-cut").expect("shape should exist");
+        let origin_curve = params.editable_curve_snapshot();
+        {
+            let mut runtime = state.runtime.lock().expect("runtime lock should succeed");
+            runtime.selected_node = Some(1);
+            runtime.selected_nodes = vec![1, 2];
+            runtime.drag_mode = Some(CurveDragMode::MoveNode {
+                origin_index: 1,
+                origin_curve,
+                start_pointer: Point { x: 24, y: 24 },
+                dragging: true,
+            });
+            runtime.marquee_selection = Some(CurveMarqueeSelection {
+                start_pointer: Point { x: 10, y: 10 },
+                current_pointer: Point { x: 30, y: 30 },
+            });
+        }
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: preset.key.to_string(),
+        });
+
+        assert_eq!(params.editable_curve_snapshot(), preset.curve);
+        assert_eq!(params.sync_division(), preset.sync_division);
+        let runtime = state.runtime.lock().expect("runtime lock should succeed");
+        assert_eq!(runtime.selected_node, None);
+        assert!(runtime.selected_nodes.is_empty());
+        assert!(runtime.drag_mode.is_none());
+        assert!(runtime.marquee_selection.is_none());
+    }
+
+    #[test]
+    fn quick_shape_button_commits_curve_and_division_as_one_undo_step() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let preset = quick_shape_preset_by_key("shape-trip").expect("shape should exist");
+        let before_curve = params.editable_curve_snapshot();
+        let before_division = params.sync_division();
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: preset.key.to_string(),
+        });
+        assert_eq!(params.editable_curve_snapshot(), preset.curve);
+        assert_eq!(params.sync_division(), preset.sync_division);
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: UNDO_KEY.to_string(),
+        });
+        assert_eq!(params.editable_curve_snapshot(), before_curve);
+        assert_eq!(params.sync_division(), before_division);
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: REDO_KEY.to_string(),
+        });
+        assert_eq!(params.editable_curve_snapshot(), preset.curve);
+        assert_eq!(params.sync_division(), preset.sync_division);
+    }
+
+    #[test]
+    fn quick_shape_button_marks_selected_preset_dirty_until_saved() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let preset = quick_shape_preset_by_key("shape-gate").expect("shape should exist");
+
+        assert!(!params.current_state_differs_from_selected_preset());
+        state.reduce_action(UiAction::ButtonPressed {
+            key: preset.key.to_string(),
+        });
+        assert!(params.current_state_differs_from_selected_preset());
     }
 }

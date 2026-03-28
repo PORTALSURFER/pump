@@ -144,7 +144,7 @@ fn dropdown_geometry_from_diagnostics(
     let division_dropdown = find_dropdown_rect(diagnostics, DIVISION_KEY)
         .ok_or_else(|| "missing division diagnostics rectangle".to_string())?;
     let curve_region = find_curve_rect(diagnostics).unwrap_or_else(|| {
-        let (header_h, curve_h, _) = resolve_vertical_slot_heights(height);
+        let (header_h, curve_h, _, _) = resolve_vertical_slot_heights(height);
         Rect {
             origin: Point {
                 x: 0,

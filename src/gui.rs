@@ -40,6 +40,7 @@ mod layout_support;
 mod state_impl;
 mod window_host;
 
+pub(super) use crate::curve_presets::{quick_shape_preset_by_key, quick_shape_presets};
 use curve_math::*;
 use layout_support::*;
 pub(crate) use window_host::preferred_window_size;
@@ -54,7 +55,7 @@ pub const WINDOW_WIDTH: u32 = 420;
 ///
 /// Patchbay owns runtime scaling and resize policy; Pump only publishes this
 /// baseline logical size.
-pub const WINDOW_HEIGHT: u32 = 258;
+pub const WINDOW_HEIGHT: u32 = 282;
 const DESIGN_ASPECT_RATIO: f32 = WINDOW_WIDTH as f32 / WINDOW_HEIGHT as f32;
 
 const ROOT_KEY: &str = "pump-root";
@@ -78,12 +79,16 @@ const SHORTCUT_KEY_ADD_ALT: char = '=';
 const SHORTCUT_KEY_UNDO: char = 'u';
 
 const HEADER_SECTION_WEIGHT: u16 = 7;
-const CURVE_SECTION_WEIGHT: u16 = 63;
-const CONTROLS_SECTION_WEIGHT: u16 = 30;
-const ROOT_SECTION_WEIGHT_SUM: u32 =
-    HEADER_SECTION_WEIGHT as u32 + CURVE_SECTION_WEIGHT as u32 + CONTROLS_SECTION_WEIGHT as u32;
+const CURVE_SECTION_WEIGHT: u16 = 58;
+const QUICK_SHAPES_SECTION_WEIGHT: u16 = 9;
+const CONTROLS_SECTION_WEIGHT: u16 = 26;
+const ROOT_SECTION_WEIGHT_SUM: u32 = HEADER_SECTION_WEIGHT as u32
+    + CURVE_SECTION_WEIGHT as u32
+    + QUICK_SHAPES_SECTION_WEIGHT as u32
+    + CONTROLS_SECTION_WEIGHT as u32;
 const KNOBS_SECTION_WEIGHT: u16 = 70;
 const DROPDOWN_SECTION_WEIGHT: u16 = 30;
+const QUICK_SHAPE_BUTTONS_PER_ROW: usize = 8;
 const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
 const CURVE_W: u32 = WINDOW_WIDTH;

@@ -15,15 +15,19 @@ pub(super) fn constrained_host_size(size: GuiSize) -> GuiSize {
     }
 }
 
-pub(super) const fn resolve_vertical_slot_heights(total_height: u32) -> (u32, u32, u32) {
+pub(super) const fn resolve_vertical_slot_heights(total_height: u32) -> (u32, u32, u32, u32) {
     let clamped_total = u32_max(total_height, 1);
     let header_h =
         clamped_total.saturating_mul(HEADER_SECTION_WEIGHT as u32) / ROOT_SECTION_WEIGHT_SUM;
+    let quick_shapes_h =
+        clamped_total.saturating_mul(QUICK_SHAPES_SECTION_WEIGHT as u32) / ROOT_SECTION_WEIGHT_SUM;
     let controls_h =
         clamped_total.saturating_mul(CONTROLS_SECTION_WEIGHT as u32) / ROOT_SECTION_WEIGHT_SUM;
-    let consumed = header_h.saturating_add(controls_h);
+    let consumed = header_h
+        .saturating_add(quick_shapes_h)
+        .saturating_add(controls_h);
     let curve_h = clamped_total.saturating_sub(consumed);
-    (header_h, curve_h, controls_h)
+    (header_h, curve_h, quick_shapes_h, controls_h)
 }
 
 /// Resolve curve editor height from the full curve slot height.
@@ -145,6 +149,8 @@ pub(super) struct UiLayoutMetrics {
     pub(super) dropdown_control_w: u32,
     pub(super) dropdown_control_h: u32,
     pub(super) button_control_h: u32,
+    pub(super) quick_shape_button_w: u32,
+    pub(super) quick_shape_button_h: u32,
     pub(super) transport_indicator_size: u32,
     pub(super) curve_size: Size,
     pub(super) knob_track_w: u32,
@@ -158,7 +164,8 @@ impl UiLayoutMetrics {
     pub(super) fn design_space() -> Self {
         let content_w = WINDOW_WIDTH;
         let content_h = WINDOW_HEIGHT;
-        let (_header_h, curve_h, controls_h) = resolve_vertical_slot_heights(content_h);
+        let (_header_h, curve_h, quick_shapes_h, controls_h) =
+            resolve_vertical_slot_heights(content_h);
         let (knobs_slot_w, dropdown_slot_w) = resolve_runtime_controls_slot_widths(content_w);
         let text_scale = BASE_TEXT_SCALE.max(1);
         let knob_track_width = knobs_slot_w.saturating_div(KNOBS_PER_ROW as u32);
@@ -172,6 +179,10 @@ impl UiLayoutMetrics {
         let dropdown_control_h = expanded_control_h;
         let button_control_h = expanded_control_h;
         let dropdown_control_w = dropdown_slot_w.max(1);
+        let quick_shape_button_w = content_w
+            .saturating_div(QUICK_SHAPE_BUTTONS_PER_ROW as u32)
+            .max(1);
+        let quick_shape_button_h = quick_shapes_h.max(1);
         let transport_indicator_size = TRANSPORT_INDICATOR_SIZE.max(1);
         let curve_editor_h = resolve_curve_editor_height(curve_h).max(1);
         let curve_size = Size {
@@ -193,6 +204,8 @@ impl UiLayoutMetrics {
             dropdown_control_w,
             dropdown_control_h,
             button_control_h,
+            quick_shape_button_w,
+            quick_shape_button_h,
             transport_indicator_size,
             curve_size,
             knob_track_w,

@@ -33,6 +33,15 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 - `Output Gain`: level trim after ducking.
 - `Division`: beat-synced cycle length from `1/16` to `2 Bars`.
 
+## Quick Shape Strip
+
+- The row between the curve editor and knobs provides 8 fast starting shapes:
+  `Sine`, `Soft`, `Tght`, `Long`, `Cut`, `Gate`, `Ramp`, and `Trip`.
+- Clicking a quick shape replaces only the editable curve and also applies that
+  shape's curated sync division.
+- Quick shapes do not create or overwrite saved presets on their own; they mark
+  the current preset dirty until you save.
+
 ## Notes
 
 - v1 is envelope-only (no external sidechain input).

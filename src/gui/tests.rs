@@ -11,6 +11,7 @@
         TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
+    use crate::curve_presets::quick_shape_presets;
     use crate::params::{PumpParams, MAX_SYNC_DIVISION};
     use crate::{GuiStatus, GuiTransportTelemetry};
     use std::sync::Arc;
@@ -748,11 +749,13 @@
 
     #[test]
     fn slot_height_split_matches_expected_ratios() {
-        let (header_h, curve_h, controls_h) = resolve_vertical_slot_heights(WINDOW_HEIGHT);
-        assert_eq!(header_h, 18);
-        assert_eq!(curve_h, 163);
-        assert_eq!(controls_h, 77);
-        assert_eq!(header_h + curve_h + controls_h, WINDOW_HEIGHT);
+        let (header_h, curve_h, quick_shapes_h, controls_h) =
+            resolve_vertical_slot_heights(WINDOW_HEIGHT);
+        assert_eq!(header_h, 19);
+        assert_eq!(curve_h, 165);
+        assert_eq!(quick_shapes_h, 25);
+        assert_eq!(controls_h, 73);
+        assert_eq!(header_h + curve_h + quick_shapes_h + controls_h, WINDOW_HEIGHT);
     }
 
     #[test]
@@ -765,8 +768,8 @@
 
     #[test]
     fn runtime_slot_splits_consume_full_parent_extent() {
-        let (header_h, curve_h, controls_h) = resolve_vertical_slot_heights(259);
-        assert_eq!(header_h + curve_h + controls_h, 259);
+        let (header_h, curve_h, quick_shapes_h, controls_h) = resolve_vertical_slot_heights(259);
+        assert_eq!(header_h + curve_h + quick_shapes_h + controls_h, 259);
 
         let (knobs_w, dropdown_w) = resolve_runtime_controls_slot_widths(799);
         assert_eq!(knobs_w + dropdown_w, 799);
@@ -959,7 +962,7 @@
     }
 
     #[test]
-    fn build_ui_root_content_is_three_slot_column() {
+    fn build_ui_root_content_is_four_slot_column() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -977,9 +980,10 @@
             Node::Grid(grid) => grid,
             other => panic!("expected root content grid, got {other:?}"),
         };
-        assert_eq!(root_grid.children().len(), 3);
+        assert_eq!(root_grid.children().len(), 4);
         let header_panel = expect_slot_panel(&root_grid.children()[0], "header");
         let _curve_panel = expect_slot_panel(&root_grid.children()[1], "curve");
+        let _quick_shapes_panel = expect_slot_panel(&root_grid.children()[2], "quick-shapes");
         let header_grid = match expect_slot_child(header_panel.content(), "header") {
             Node::Grid(grid) => grid,
             other => panic!("expected header row grid in panel, got {other:?}"),
@@ -987,7 +991,7 @@
         assert_eq!(header_grid.kind(), GridKind::SlotRow);
         assert_eq!(header_grid.children().len(), 2);
 
-        let controls_panel = expect_slot_panel(&root_grid.children()[2], "controls");
+        let controls_panel = expect_slot_panel(&root_grid.children()[3], "controls");
         let controls_grid = match expect_slot_child(controls_panel.content(), "controls") {
             Node::Grid(grid) => grid,
             other => panic!("expected controls grid in panel, got {other:?}"),
@@ -1020,6 +1024,34 @@
                 texts.iter().any(|text| text == expected),
                 "expected textbox caption `{expected}` in {:?}",
                 texts
+            );
+        }
+    }
+
+    #[test]
+    fn build_ui_includes_all_quick_shape_button_labels() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
+        let mut labels = Vec::new();
+        collect_button_labels(spec.root.content(), &mut labels);
+
+        for preset in quick_shape_presets() {
+            assert!(
+                labels.iter().any(|label| label == preset.label),
+                "expected quick-shape button label `{}` in {:?}",
+                preset.label,
+                labels
             );
         }
     }
@@ -1608,8 +1640,11 @@
         )
         .expect("pump frame should render");
 
-        let (header_h, curve_h, controls_h) = resolve_vertical_slot_heights(WINDOW_HEIGHT);
-        let controls_top = header_h.saturating_add(curve_h);
+        let (header_h, curve_h, quick_shapes_h, controls_h) =
+            resolve_vertical_slot_heights(WINDOW_HEIGHT);
+        let controls_top = header_h
+            .saturating_add(curve_h)
+            .saturating_add(quick_shapes_h);
         let base_row = controls_top.min(frame.height.saturating_sub(1));
         let (knobs_w, _) = resolve_runtime_controls_slot_widths(WINDOW_WIDTH);
         let border = MainPalette::main().text_primary;
@@ -1733,6 +1768,63 @@
             | Node::CurveEditor(_)
             | Node::Toggle(_)
             | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::TabBar(_)
+            | Node::Region(_)
+            | Node::Indicator(_) => {}
+        }
+    }
+
+    fn collect_button_labels(node: &Node, labels: &mut Vec<String>) {
+        match node {
+            Node::Slot(slot) => collect_button_labels(slot.child(), labels),
+            Node::Button(button) => {
+                if let Some(label) = button.label.as_ref() {
+                    labels.push(label.clone());
+                }
+            }
+            Node::Panel(panel) => collect_button_labels(panel.content(), labels),
+            Node::PaddingBox(padding_box) => collect_button_labels(padding_box.content(), labels),
+            Node::AlignBox(align_box) => collect_button_labels(align_box.content(), labels),
+            Node::AspectBox(aspect_box) => collect_button_labels(aspect_box.content(), labels),
+            Node::Row(flex) | Node::Column(flex) => {
+                for child in flex.children() {
+                    collect_button_labels(child, labels);
+                }
+            }
+            Node::Grid(grid) => {
+                for child in grid.children() {
+                    collect_button_labels(child, labels);
+                }
+            }
+            Node::Absolute(absolute) => {
+                for child in absolute.children() {
+                    collect_button_labels(child.node(), labels);
+                }
+            }
+            Node::Stack(stack) => {
+                for child in stack.children() {
+                    collect_button_labels(child, labels);
+                }
+            }
+            Node::ScrollView(scroll_view) => collect_button_labels(scroll_view.content(), labels),
+            Node::Wrap(wrap) => {
+                for child in wrap.children() {
+                    collect_button_labels(child, labels);
+                }
+            }
+            Node::SwitchLayout(switch_layout) => {
+                for case_entry in switch_layout.cases() {
+                    collect_button_labels(case_entry.child(), labels);
+                }
+                collect_button_labels(switch_layout.fallback(), labels);
+            }
+            Node::TextBox(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::CurveEditor(_)
+            | Node::Toggle(_)
             | Node::Dropdown(_)
             | Node::TabBar(_)
             | Node::Region(_)

@@ -92,7 +92,7 @@
     fn send_mouse_move(hwnd: HWND, point: Point) {
         let lparam = LPARAM(pack_mouse_lparam(point));
         unsafe {
-            let _ = SendMessageW(hwnd, WM_MOUSEMOVE, WPARAM(0), lparam);
+            let _ = SendMessageW(hwnd, WM_MOUSEMOVE, Some(WPARAM(0)), Some(lparam));
         }
     }
 
@@ -100,8 +100,8 @@
         let lparam = LPARAM(pack_mouse_lparam(point));
         send_mouse_move(hwnd, point);
         unsafe {
-            let _ = SendMessageW(hwnd, WM_LBUTTONDOWN, WPARAM(1), lparam);
-            let _ = SendMessageW(hwnd, WM_LBUTTONUP, WPARAM(0), lparam);
+            let _ = SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(1)), Some(lparam));
+            let _ = SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(lparam));
         }
     }
 
@@ -109,7 +109,7 @@
         let lparam = LPARAM(pack_mouse_lparam(point));
         let wparam = WPARAM(((delta as u16 as usize) << 16) & 0xFFFF_0000usize);
         unsafe {
-            let _ = SendMessageW(hwnd, WM_MOUSEWHEEL, wparam, lparam);
+            let _ = SendMessageW(hwnd, WM_MOUSEWHEEL, Some(wparam), Some(lparam));
         }
     }
 

@@ -79,7 +79,7 @@ fn persistence_file_path() -> Option<PathBuf> {
                     .join(PRESET_STORE_FILE_NAME),
             );
         }
-        return None;
+        None
     }
     #[cfg(not(target_os = "windows"))]
     {

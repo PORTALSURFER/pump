@@ -9,7 +9,7 @@ use super::*;
 /// Host-window wrapper for the Pump editor.
 #[derive(Default)]
 pub struct PumpGui {
-    window: GuiHostWindow,
+    pub(super) window: GuiHostWindow,
 }
 
 impl PumpGui {
@@ -89,24 +89,28 @@ impl PumpGui {
 
     /// Request a logical resize from the GUI thread.
     #[cfg(any(feature = "vst3", windows))]
+    #[allow(dead_code)]
     pub fn request_resize(&self, width: u32, height: u32) {
         self.window.request_resize(width, height);
     }
 
     /// Inject one character tagged as host-injected key input.
     #[cfg(any(feature = "vst3", windows))]
+    #[allow(dead_code)]
     pub fn post_injected_text_char(&self, ch: char, modifiers: ShortcutModifiers) -> bool {
         self.window.post_injected_text_char(ch, modifiers)
     }
 
     /// Return `true` when preset rename text editing is active.
     #[cfg(any(feature = "vst3", windows))]
+    #[allow(dead_code)]
     pub fn text_edit_active(&self) -> bool {
         self.window.text_edit_active()
     }
 
     /// Resolve one registered shortcut action key from input.
     #[cfg(any(feature = "vst3", windows))]
+    #[allow(dead_code)]
     pub fn shortcut_action_for_input(
         &self,
         ch: char,

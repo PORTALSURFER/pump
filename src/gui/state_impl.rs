@@ -271,6 +271,29 @@ impl GuiState {
         panel("spline", spline_content).pad_all(0)
     }
 
+    /// Build the quick-shape preset strip shown below the curve editor.
+    pub(super) fn build_quick_shapes_slot(&self, metrics: UiLayoutMetrics) -> Node {
+        let buttons = quick_shape_presets()
+            .iter()
+            .map(|preset| {
+                weighted_slot(
+                    button(preset.key)
+                        .button_label(preset.label)
+                        .control_size(Size {
+                            width: metrics.quick_shape_button_w,
+                            height: metrics.quick_shape_button_h,
+                        })
+                        .fill(),
+                    1,
+                )
+            })
+            .collect();
+        let quick_shapes_row = row_slots(buttons)
+            .container_overflow(OverflowPolicy::Compress)
+            .fill();
+        panel("quick-shapes", quick_shapes_row).pad_all(0)
+    }
+
     /// Build the controls slot node.
     pub(super) fn build_controls_slot(
         &self,
@@ -426,11 +449,13 @@ impl GuiState {
 
         let header_slot = self.build_header_slot(metrics, theme, &presets);
         let spline_slot = self.build_spline_slot(metrics, theme);
+        let quick_shapes_slot = self.build_quick_shapes_slot(metrics);
         let controls_slot = self.build_controls_slot(metrics, controls);
 
         let content = column_slots(vec![
             weighted_slot(header_slot, HEADER_SECTION_WEIGHT),
             weighted_slot(spline_slot, CURVE_SECTION_WEIGHT),
+            weighted_slot(quick_shapes_slot, QUICK_SHAPES_SECTION_WEIGHT),
             weighted_slot(controls_slot, CONTROLS_SECTION_WEIGHT),
         ])
         .container_overflow(OverflowPolicy::Compress);
@@ -464,6 +489,14 @@ impl GuiState {
             }
             UiAction::ButtonPressed { key } if key == PRESET_RENAME_BUTTON_KEY => {
                 self.begin_preset_rename();
+            }
+            UiAction::ButtonPressed { key }
+                if quick_shape_preset_by_key(key.as_str()).is_some() =>
+            {
+                self.capture_undo_snapshot();
+                if let Some(preset) = quick_shape_preset_by_key(key.as_str()) {
+                    self.apply_quick_shape_preset(preset);
+                }
             }
             UiAction::ButtonPressed { key } if key == RESET_KEY => {
                 if self.consume_recent_division_change_guard() {
@@ -949,6 +982,19 @@ impl GuiState {
             }
             SavePresetOutcome::BlockedFull => self.set_preset_warning(PRESET_WARNING_MAX),
             SavePresetOutcome::InvalidName => self.set_preset_warning(PRESET_WARNING_NAME),
+        }
+    }
+
+    /// Apply one built-in quick-shape curve plus its curated timing.
+    pub(super) fn apply_quick_shape_preset(&self, preset: &crate::curve_presets::QuickShapePreset) {
+        self.params.set_editable_curve(&preset.curve);
+        self.params.set_sync_division(preset.sync_division as f32);
+        self.push_single_value_update(PARAM_SYNC_DIVISION_ID, preset.sync_division as f64);
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.selected_node = None;
+            runtime.selected_nodes.clear();
+            runtime.drag_mode = None;
+            runtime.marquee_selection = None;
         }
     }
 
