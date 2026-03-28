@@ -20,8 +20,8 @@
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
         measure_checked, ContainerLayout, ContainerLength, CurveEditorSpec, DropdownSpec,
-        GridKind, LayoutBox, Node, PanelSpec, RootScaleMode, SurfaceCommand, ToggleSpec,
-        UiAction, UiSpec,
+        GridKind, LayoutBox, Length, Node, PanelSpec, RootScaleMode, SurfaceCommand,
+        ToggleSpec, UiAction, UiSpec, weighted_slot_lengths,
     };
     use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
@@ -1159,6 +1159,64 @@
     }
 
     #[test]
+    fn build_ui_uses_exact_weighted_widths_for_quick_slot_regions() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
+        let expected_widths = weighted_slot_lengths(WINDOW_WIDTH, &[1; QUICK_SLOT_COUNT]);
+        let expected_height = UiLayoutMetrics::design_space().quick_shape_button_h;
+
+        for (index, expected_width) in expected_widths.iter().copied().enumerate() {
+            let key = format!("{QUICK_SLOT_KEY_PREFIX}{index}");
+            let region =
+                find_region_node(spec.root.content(), &key).expect("quick-slot region should exist");
+            let Node::Region(region) = region else {
+                panic!("expected quick-slot node to be a region");
+            };
+            assert_eq!(region.layout.width(), Length::Px(expected_width));
+            assert_eq!(region.layout.min_width(), Some(expected_width));
+            assert_eq!(region.layout.height(), Length::Px(expected_height));
+            assert_eq!(region.layout.min_height(), Some(expected_height));
+        }
+    }
+
+    #[test]
+    fn quick_slot_draw_commands_use_store_hover_palette_when_shift_is_held() {
+        let metrics = UiLayoutMetrics::design_space();
+        let theme = PumpTheme::main(metrics);
+        let size = Size {
+            width: metrics.quick_shape_button_w,
+            height: metrics.quick_shape_button_h,
+        };
+        let curve = PumpParams::new().selected_quick_slots_snapshot()[0]
+            .curve
+            .clone();
+        let commands =
+            GuiState::build_quick_slot_draw_commands(&curve, size, theme, true, false, true);
+
+        assert!(matches!(
+            commands.first(),
+            Some(SurfaceCommand::FillRect { color, .. })
+                if *color == theme.quick_slot_store_hover_bg
+        ));
+        assert!(matches!(
+            commands.get(1),
+            Some(SurfaceCommand::StrokeRect { color, .. })
+                if *color == theme.quick_slot_outline_store_hover
+        ));
+    }
+
+    #[test]
     fn dropdown_change_preserves_curve() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
@@ -1893,6 +1951,54 @@
             | Node::TabBar(_)
             | Node::EqAttractorSurface(_)
             | Node::Indicator(_) => {}
+        }
+    }
+
+    fn find_region_node<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
+        match node {
+            Node::Slot(slot) => find_region_node(slot.child(), key),
+            Node::Region(region) if region.key == key => Some(node),
+            Node::Panel(panel) => find_region_node(panel.content(), key),
+            Node::PaddingBox(padding_box) => find_region_node(padding_box.content(), key),
+            Node::AlignBox(align_box) => find_region_node(align_box.content(), key),
+            Node::AspectBox(aspect_box) => find_region_node(aspect_box.content(), key),
+            Node::Row(flex) | Node::Column(flex) => {
+                flex.children().iter().find_map(|child| find_region_node(child, key))
+            }
+            Node::Grid(grid) => grid
+                .children()
+                .iter()
+                .find_map(|child| find_region_node(child, key)),
+            Node::Absolute(absolute) => absolute
+                .children()
+                .iter()
+                .find_map(|child| find_region_node(child.node(), key)),
+            Node::Stack(stack) => stack
+                .children()
+                .iter()
+                .find_map(|child| find_region_node(child, key)),
+            Node::ScrollView(scroll_view) => find_region_node(scroll_view.content(), key),
+            Node::Wrap(wrap) => wrap
+                .children()
+                .iter()
+                .find_map(|child| find_region_node(child, key)),
+            Node::SwitchLayout(switch_layout) => switch_layout
+                .cases()
+                .iter()
+                .find_map(|case_entry| find_region_node(case_entry.child(), key))
+                .or_else(|| find_region_node(switch_layout.fallback(), key)),
+            Node::Region(_)
+            | Node::TextBox(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::CurveEditor(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
+            | Node::Indicator(_) => None,
         }
     }
 
