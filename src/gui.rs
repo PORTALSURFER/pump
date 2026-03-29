@@ -12,12 +12,11 @@ use toybox::clap::gui::{
 };
 use toybox::gui::declarative::{
     button, column, column_slots, curve_editor, dropdown, grid, indicator, knob, panel,
-    root_frame_sized, row_slots, spacer, surface, textbox, toggle, weighted_slot,
-    weighted_slot_lengths, CurveEditorStyle, CurveGridConfig, CurveHighlightMode,
-    CurveInteractionOptions, CurveModel, CurvePoint, CurveSegment as CurveEditorSegment,
-    CurveSnapConfig, EndpointMode, GridTemplate, LayoutBox, Node, OverflowPolicy,
-    RegionInteractionKind, RootScaleMode, Slot, SlotAlign, SlotCrossSize, SlotParams,
-    SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
+    root_frame_sized, row_slots, spacer, surface, textbox, weighted_slot, weighted_slot_lengths,
+    CurveEditorStyle, CurveGridConfig, CurveHighlightMode, CurveInteractionOptions, CurveModel,
+    CurvePoint, CurveSegment as CurveEditorSegment, CurveSnapConfig, EndpointMode, GridTemplate,
+    LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, Slot, SlotAlign,
+    SlotCrossSize, SlotParams, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -149,6 +148,7 @@ struct GuiRuntime {
     curve_local_pointer: Point,
     curve_size: Size,
     snap_enabled: bool,
+    snap_hovered: bool,
     grid_override: Option<usize>,
     shortcut_snap_invert_held: bool,
     preset_rename_active: bool,
@@ -213,6 +213,7 @@ struct ControlSnapshot {
     output_gain_db: f32,
     division: usize,
     snap_enabled: bool,
+    snap_hovered: bool,
     grid_override: Option<usize>,
     shortcut_snap_invert_held: bool,
 }

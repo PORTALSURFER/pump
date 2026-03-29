@@ -13,6 +13,7 @@ impl GuiRuntime {
                 height: CURVE_H,
             },
             snap_enabled: false,
+            snap_hovered: false,
             grid_override: None,
             shortcut_snap_invert_held: false,
             preset_rename_active: false,
@@ -52,23 +53,25 @@ impl GuiState {
 
     /// Snapshot current plugin control values for UI rendering.
     pub(super) fn snapshot_controls(&self) -> ControlSnapshot {
-        let (snap_enabled, grid_override, shortcut_snap_invert_held) = self
+        let (snap_enabled, snap_hovered, grid_override, shortcut_snap_invert_held) = self
             .runtime
             .lock()
             .map(|runtime| {
                 (
                     runtime.snap_enabled,
+                    runtime.snap_hovered,
                     runtime.grid_override,
                     runtime.shortcut_snap_invert_held,
                 )
             })
-            .unwrap_or((false, None, false));
+            .unwrap_or((false, false, None, false));
         ControlSnapshot {
             mix: self.params.mix(),
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
             division: self.params.sync_division(),
             snap_enabled,
+            snap_hovered,
             grid_override,
             shortcut_snap_invert_held,
         }
@@ -376,6 +379,48 @@ impl GuiState {
         .fill()
     }
 
+    pub(super) fn build_snap_checkbox_draw_commands(
+        size: Size,
+        theme: PumpTheme,
+        enabled: bool,
+        hovered: bool,
+    ) -> Vec<SurfaceCommand> {
+        let rect = Rect {
+            origin: Point { x: 0, y: 0 },
+            size,
+        };
+        let fill = if enabled {
+            theme.snap_checkbox_active_bg
+        } else if hovered {
+            theme.snap_checkbox_hover_bg
+        } else {
+            theme.snap_checkbox_bg
+        };
+        let outline = if hovered || enabled {
+            theme.snap_checkbox_outline_hover
+        } else {
+            theme.snap_checkbox_outline
+        };
+        vec![
+            SurfaceCommand::FillRect { rect, color: fill },
+            SurfaceCommand::StrokeRect {
+                rect,
+                thickness: 1,
+                color: outline,
+            },
+        ]
+    }
+
+    fn snap_checkbox_surface(size: Size, theme: PumpTheme, enabled: bool, hovered: bool) -> Node {
+        Node::align_box(surface(
+            SNAP_KEY,
+            size,
+            Self::build_snap_checkbox_draw_commands(size, theme, enabled, hovered),
+        ))
+        .slot_align(SlotAlign::End, SlotAlign::Center)
+        .fill()
+    }
+
     /// Build the quick-slot strip shown below the curve editor.
     pub(super) fn build_quick_shapes_slot(
         &self,
@@ -427,10 +472,12 @@ impl GuiState {
     pub(super) fn build_controls_slot(
         &self,
         metrics: UiLayoutMetrics,
+        theme: PumpTheme,
         controls: ControlSnapshot,
     ) -> Node {
         const KNOB_TEXT_MAX_CHARS: u32 = 8;
         const MONO_CHAR_CELL_WIDTH_PX: u32 = 6;
+        let snap_checkbox_size = metrics.button_control_h.saturating_sub(8).max(12);
         let knob_text_scale = metrics
             .knob_track_w
             .saturating_div(KNOB_TEXT_MAX_CHARS.saturating_mul(MONO_CHAR_CELL_WIDTH_PX))
@@ -514,25 +561,29 @@ impl GuiState {
         let knobs_slot = panel("knobs", knobs_grid.fill()).pad_all(0);
         let snap_row = row_slots(vec![
             weighted_slot(
-                Node::align_box(textbox("Snap").widget_layout(fixed_box(
-                    metrics.dropdown_control_w.saturating_sub(40).max(1),
-                    metrics.button_control_h,
-                )))
+                Node::align_box(
+                    textbox("Snap").widget_layout(fixed_box(
+                        metrics
+                            .dropdown_control_w
+                            .saturating_sub(snap_checkbox_size.saturating_add(8))
+                            .max(1),
+                        metrics.button_control_h,
+                    )),
+                )
                 .slot_align(SlotAlign::Start, SlotAlign::Center)
                 .fill(),
                 2,
             ),
             weighted_slot(
-                Node::align_box(
-                    toggle(SNAP_KEY, controls.snap_enabled)
-                        .control_size(Size {
-                            width: 36,
-                            height: metrics.button_control_h,
-                        })
-                        .widget_layout(fixed_box(36, metrics.button_control_h)),
-                )
-                .slot_align(SlotAlign::End, SlotAlign::Center)
-                .fill(),
+                Self::snap_checkbox_surface(
+                    Size {
+                        width: snap_checkbox_size,
+                        height: snap_checkbox_size,
+                    },
+                    theme,
+                    controls.snap_enabled,
+                    controls.snap_hovered,
+                ),
                 1,
             ),
         ])
@@ -626,7 +677,7 @@ impl GuiState {
         let header_slot = self.build_header_slot(metrics, theme, &presets);
         let spline_slot = self.build_spline_slot(metrics, theme, controls);
         let quick_shapes_slot = self.build_quick_shapes_slot(metrics, theme, input.shift_down);
-        let controls_slot = self.build_controls_slot(metrics, controls);
+        let controls_slot = self.build_controls_slot(metrics, theme, controls);
 
         let content = column_slots(vec![
             weighted_slot(header_slot, HEADER_SECTION_WEIGHT),
@@ -660,6 +711,11 @@ impl GuiState {
             UiAction::ToggleChanged { key, value } if key == SNAP_KEY => {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.snap_enabled = value;
+                }
+            }
+            UiAction::RegionHover { key, hovered, .. } if key == SNAP_KEY => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.snap_hovered = hovered;
                 }
             }
             UiAction::ButtonPressed { key } if key == UNDO_KEY => {
@@ -744,6 +800,15 @@ impl GuiState {
                 }
             }
             UiAction::RegionHover { .. } => {}
+            UiAction::RegionInteracted {
+                key,
+                kind: RegionInteractionKind::Pressed,
+                ..
+            } if key == SNAP_KEY => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.snap_enabled = !runtime.snap_enabled;
+                }
+            }
             UiAction::RegionInteracted {
                 key,
                 kind,

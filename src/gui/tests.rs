@@ -20,8 +20,8 @@
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{
         measure_checked, ContainerLayout, ContainerLength, CurveEditorSpec, DropdownSpec,
-        GridKind, LayoutBox, Length, Node, PanelSpec, RootScaleMode, SurfaceCommand,
-        ToggleSpec, UiAction, UiSpec, weighted_slot_lengths,
+        GridKind, LayoutBox, Length, Node, PanelSpec, RegionInteractionKind, RootScaleMode,
+        SurfaceCommand, UiAction, UiSpec, weighted_slot_lengths,
     };
     use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
@@ -798,7 +798,7 @@
     }
 
     #[test]
-    fn build_ui_exposes_snap_toggle_and_grid_override_controls() {
+    fn build_ui_exposes_snap_checkbox_and_grid_override_controls() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -813,9 +813,16 @@
             ..InputState::default()
         });
 
-        let snap_toggle =
-            find_toggle_spec(spec.root.content(), SNAP_KEY).expect("snap toggle should exist");
-        assert!(!snap_toggle.value, "snap should default to off");
+        let snap_region =
+            find_region_node(spec.root.content(), SNAP_KEY).expect("snap checkbox should exist");
+        let Node::Region(snap_region) = snap_region else {
+            panic!("expected snap control node to be a region");
+        };
+        let theme = PumpTheme::main(UiLayoutMetrics::design_space());
+        assert!(matches!(
+            snap_region.draw.first(),
+            Some(SurfaceCommand::FillRect { color, .. }) if *color == theme.snap_checkbox_bg
+        ));
         let grid_dropdown = find_dropdown_spec(spec.root.content(), GRID_OVERRIDE_KEY)
             .expect("grid override dropdown should exist");
         assert_eq!(grid_dropdown.selected, 0, "grid override should default to Auto");
@@ -1258,7 +1265,29 @@
     }
 
     #[test]
-    fn snap_toggle_updates_editor_local_state_only() {
+    fn snap_checkbox_draw_commands_light_when_enabled() {
+        let metrics = UiLayoutMetrics::design_space();
+        let theme = PumpTheme::main(metrics);
+        let size = Size {
+            width: metrics.button_control_h.saturating_sub(8).max(12),
+            height: metrics.button_control_h.saturating_sub(8).max(12),
+        };
+        let commands = GuiState::build_snap_checkbox_draw_commands(size, theme, true, false);
+
+        assert!(matches!(
+            commands.first(),
+            Some(SurfaceCommand::FillRect { color, .. })
+                if *color == theme.snap_checkbox_active_bg
+        ));
+        assert!(matches!(
+            commands.get(1),
+            Some(SurfaceCommand::StrokeRect { color, .. })
+                if *color == theme.snap_checkbox_outline_hover
+        ));
+    }
+
+    #[test]
+    fn snap_checkbox_press_updates_editor_local_state_only() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
             Arc::clone(&params),
@@ -1267,16 +1296,20 @@
             None,
         );
 
-        state.reduce_action(UiAction::ToggleChanged {
+        state.reduce_action(UiAction::RegionInteracted {
             key: SNAP_KEY.to_string(),
-            value: true,
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: Point { x: 0, y: 0 },
+            raw_local_pointer: Point { x: 0, y: 0 },
+            alt_down: false,
+            shift_down: false,
         });
         let controls = state.snapshot_controls();
-        assert!(controls.snap_enabled, "snap toggle should update GUI runtime state");
+        assert!(controls.snap_enabled, "snap checkbox should update GUI runtime state");
         assert_eq!(
             params.editable_curve_snapshot(),
             crate::curve::default_editable_curve(),
-            "toggling snap should not mutate the stored curve"
+            "pressing the snap checkbox should not mutate the stored curve"
         );
     }
 
@@ -2089,51 +2122,6 @@
             | Node::CurveEditor(_)
             | Node::Toggle(_)
             | Node::Button(_)
-            | Node::TabBar(_)
-            | Node::EqAttractorSurface(_)
-            | Node::Region(_)
-            | Node::Indicator(_)
-            | Node::Absolute(_) => None,
-        }
-    }
-
-    fn find_toggle_spec<'a>(node: &'a Node, key: &str) -> Option<&'a ToggleSpec> {
-        match node {
-            Node::Slot(slot) => find_toggle_spec(slot.child(), key),
-            Node::Toggle(toggle) if toggle.key == key => Some(toggle),
-            Node::Panel(panel) => find_toggle_spec(panel.content(), key),
-            Node::PaddingBox(padding_box) => find_toggle_spec(padding_box.content(), key),
-            Node::AlignBox(align_box) => find_toggle_spec(align_box.content(), key),
-            Node::AspectBox(aspect_box) => find_toggle_spec(aspect_box.content(), key),
-            Node::Row(flex) | Node::Column(flex) => {
-                flex.children().iter().find_map(|child| find_toggle_spec(child, key))
-            }
-            Node::Grid(grid) => grid
-                .children()
-                .iter()
-                .find_map(|child| find_toggle_spec(child, key)),
-            Node::Stack(stack) => stack
-                .children()
-                .iter()
-                .find_map(|child| find_toggle_spec(child, key)),
-            Node::ScrollView(scroll_view) => find_toggle_spec(scroll_view.content(), key),
-            Node::Wrap(wrap) => wrap
-                .children()
-                .iter()
-                .find_map(|child| find_toggle_spec(child, key)),
-            Node::SwitchLayout(switch_layout) => switch_layout
-                .cases()
-                .iter()
-                .find_map(|case_entry| find_toggle_spec(case_entry.child(), key))
-                .or_else(|| find_toggle_spec(switch_layout.fallback(), key)),
-            Node::Toggle(_) => None,
-            Node::TextBox(_)
-            | Node::Spacer(_)
-            | Node::Knob(_)
-            | Node::Slider(_)
-            | Node::CurveEditor(_)
-            | Node::Button(_)
-            | Node::Dropdown(_)
             | Node::TabBar(_)
             | Node::EqAttractorSurface(_)
             | Node::Region(_)
