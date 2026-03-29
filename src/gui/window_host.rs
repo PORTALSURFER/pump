@@ -26,11 +26,15 @@ impl PumpGui {
                 SHORTCUT_KEY_SAVE,
                 ShortcutModifiers::new(true, false, false),
             ),
-            ShortcutBinding::new(UNDO_KEY, SHORTCUT_KEY_UNDO, ShortcutModifiers::default()),
+            ShortcutBinding::new(
+                UNDO_KEY,
+                SHORTCUT_KEY_UNDO,
+                ShortcutModifiers::new(false, false, true),
+            ),
             ShortcutBinding::new(
                 REDO_KEY,
-                SHORTCUT_KEY_UNDO,
-                ShortcutModifiers::new(true, false, false),
+                SHORTCUT_KEY_REDO,
+                ShortcutModifiers::new(false, false, true),
             ),
             ShortcutBinding::new(
                 PRESET_ADD_KEY,
@@ -181,8 +185,8 @@ mod tests {
         let shortcuts = PumpGui::default_shortcuts();
         assert!(shortcuts.iter().any(|binding| {
             binding.action_key == UNDO_KEY
-                && binding.matches('u', ShortcutModifiers::default())
-                && binding.matches('U', ShortcutModifiers::default())
+                && binding.matches('z', ShortcutModifiers::new(false, false, true))
+                && binding.matches('Z', ShortcutModifiers::new(false, false, true))
         }));
         assert!(shortcuts.iter().any(|binding| {
             binding.action_key == PRESET_SAVE_KEY
@@ -191,8 +195,15 @@ mod tests {
         }));
         assert!(shortcuts.iter().any(|binding| {
             binding.action_key == REDO_KEY
+                && binding.matches('y', ShortcutModifiers::new(false, false, true))
+                && binding.matches('Y', ShortcutModifiers::new(false, false, true))
+        }));
+        assert!(!shortcuts.iter().any(|binding| {
+            binding.action_key == UNDO_KEY && binding.matches('u', ShortcutModifiers::default())
+        }));
+        assert!(!shortcuts.iter().any(|binding| {
+            binding.action_key == REDO_KEY
                 && binding.matches('u', ShortcutModifiers::new(true, false, false))
-                && binding.matches('U', ShortcutModifiers::new(true, false, false))
         }));
     }
 }

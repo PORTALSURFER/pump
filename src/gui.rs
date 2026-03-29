@@ -77,7 +77,8 @@ const SHORTCUT_KEY_SAVE: char = 's';
 pub(crate) const SHORTCUT_KEY_SNAP_INVERT: char = 's';
 const SHORTCUT_KEY_ADD: char = '+';
 const SHORTCUT_KEY_ADD_ALT: char = '=';
-const SHORTCUT_KEY_UNDO: char = 'u';
+const SHORTCUT_KEY_UNDO: char = 'z';
+const SHORTCUT_KEY_REDO: char = 'y';
 
 const HEADER_SECTION_WEIGHT: u16 = 7;
 const CURVE_SECTION_WEIGHT: u16 = 58;

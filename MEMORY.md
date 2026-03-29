@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-03-29 09:49:04 UTC
+- Last Updated (UTC): 2026-03-29 14:42:26 UTC
 - Active Mission: Keep Pump's editor UX moving forward without expanding preset/state scope unnecessarily.
-- Current Workstream: Beat-grid emphasis, snap controls, temporary snap inversion, and grid override UI are implemented, and the snap control now renders as a lit/unlit checkbox square instead of a switch-style toggle.
+- Current Workstream: Beat-grid emphasis, snap controls, temporary snap inversion, and Windows-style undo/redo hotkeys are implemented directly on `main`.
 
 ## Current State
 
@@ -17,7 +17,8 @@
 - Effective grid lines are rendered brighter for the selected musical division while the faint background micro-grid remains visible.
 - Curve point insertion, dragging, and segment translation now snap to the active vertical beat guides plus quarter-step horizontal bands when snap is effectively enabled.
 - Holding `s` temporarily inverts snapping, while preset save moved to `Shift+S`.
+- Undo and redo are now bound to `Ctrl+Z` and `Ctrl+Y` instead of the older `u` / `Shift+u` shortcuts.
 
 ## Immediate Next Action
 
-- No active Pump-specific task is currently running; continue from `docs/plans/active/todo.md` item `1` when the next request arrives, keeping Pump on the pinned `toybox` revision `ec53c316c6212e474db3ae81c269b5b5c9fcf177`.
+- Continue from `docs/plans/active/todo.md` item `1` for the next request, keeping Pump pinned to the updated `toybox/main` shortcut-handling behavior.
