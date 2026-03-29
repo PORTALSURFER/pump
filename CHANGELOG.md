@@ -188,6 +188,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (24e5f1f)
 
+- (changelog) Update changelog [skip ci] (5a74360)
+
 
 ### Features
 
@@ -667,6 +669,18 @@ All notable changes to this project are documented in this file.
 - Remove depth control and run pump at full depth (70e36b0)
 
 - Add Pump quick shape strip presets (bbd56cd)
+
+- Add per-preset quick slot previews (9d7b442)
+
+- Add Pump grid override and snap controls (e15f0bd)
+
+- Fix VST3 snap shortcut visibility (4dec26c)
+
+- Fix quick slot hit targets and shift hover (9c0eea4)
+
+- Render snap as checkbox control (c874d72)
+
+- Use Ctrl-Z and Ctrl-Y for Pump undo (c6f924b)
 
 
 ### Refactoring
