@@ -595,4 +595,44 @@ mod tests {
             let _: () = msg_send![parent.as_ptr(), release];
         }
     }
+
+    #[test]
+    fn hosted_vst3_view_contains_drawable_radiant_content() {
+        unsafe {
+            let parent: *mut Object = msg_send![class!(NSView), alloc];
+            let parent: *mut Object =
+                msg_send![parent, initWithFrame: ns_rect(0.0, 0.0, 640.0, 460.0)];
+            let parent = NonNull::new(parent).expect("NSView allocation should succeed");
+
+            let (width, height) = preferred_window_size();
+            let view = HostedVst3View::new(
+                PumpVst3GuiAdapter::new(Arc::new(PumpVst3Shared::new())),
+                width,
+                height,
+            );
+
+            assert_eq!(
+                view.attached(parent.as_ptr().cast(), kPlatformTypeNSView),
+                kResultOk
+            );
+            let subviews: *mut Object = msg_send![parent.as_ptr(), subviews];
+            let root_view: *mut Object = msg_send![subviews, objectAtIndex: 0_usize];
+            let runtime = runtime_mut(root_view).expect("Radiant runtime should be attached");
+            let paint_plan = runtime.paint_plan();
+
+            assert!(paint_plan.primitives.iter().any(|primitive| {
+                matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
+            }));
+            assert!(paint_plan.primitives.iter().any(|primitive| {
+                matches!(primitive, PaintPrimitive::StrokePolyline(polyline) if polyline.points.len() > 16)
+            }));
+            assert!(paint_plan
+                .primitives
+                .iter()
+                .any(|primitive| matches!(primitive, PaintPrimitive::FillRect(_))));
+
+            assert_eq!(view.removed(), kResultOk);
+            let _: () = msg_send![parent.as_ptr(), release];
+        }
+    }
 }
