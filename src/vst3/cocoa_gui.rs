@@ -523,3 +523,76 @@ unsafe fn drop_runtime(view: *const Object) {
     (*view).set_ivar("runtime", 0_usize);
     drop(Box::from_raw(runtime));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::*;
+    use super::*;
+    use toybox::raw_window_handle::{AppKitWindowHandle, RawWindowHandle};
+
+    #[test]
+    fn cocoa_editor_opens_against_local_appkit_parent() {
+        unsafe {
+            let parent: *mut Object = msg_send![class!(NSView), alloc];
+            let parent: *mut Object =
+                msg_send![parent, initWithFrame: ns_rect(0.0, 0.0, 640.0, 460.0)];
+            let parent = NonNull::new(parent).expect("NSView allocation should succeed");
+
+            let mut handle = AppKitWindowHandle::empty();
+            handle.ns_view = parent.as_ptr().cast();
+            let mut editor = CocoaPumpEditor::default();
+            editor.set_parent_raw(RawWindowHandle::AppKit(handle));
+
+            assert!(editor.open(Arc::new(PumpParams::new())));
+            assert_eq!(editor.last_size(), Some(preferred_window_size()));
+
+            let subviews: *mut Object = msg_send![parent.as_ptr(), subviews];
+            let count: usize = msg_send![subviews, count];
+            assert_eq!(count, 1);
+
+            editor.close();
+            let subviews: *mut Object = msg_send![parent.as_ptr(), subviews];
+            let count: usize = msg_send![subviews, count];
+            assert_eq!(count, 0);
+
+            let _: () = msg_send![parent.as_ptr(), release];
+        }
+    }
+
+    #[test]
+    fn hosted_vst3_view_attaches_to_local_appkit_parent() {
+        unsafe {
+            let parent: *mut Object = msg_send![class!(NSView), alloc];
+            let parent: *mut Object =
+                msg_send![parent, initWithFrame: ns_rect(0.0, 0.0, 640.0, 460.0)];
+            let parent = NonNull::new(parent).expect("NSView allocation should succeed");
+
+            let (width, height) = preferred_window_size();
+            let view = HostedVst3View::new(
+                PumpVst3GuiAdapter::new(Arc::new(PumpVst3Shared::new())),
+                width,
+                height,
+            );
+
+            assert_eq!(
+                view.attached(parent.as_ptr().cast(), kPlatformTypeNSView),
+                kResultOk
+            );
+            let subviews: *mut Object = msg_send![parent.as_ptr(), subviews];
+            let count: usize = msg_send![subviews, count];
+            assert_eq!(count, 1);
+
+            let mut rect = view_rect(1, 1);
+            assert_eq!(view.getSize(&mut rect), kResultOk);
+            assert_eq!(rect.right - rect.left, width as i32);
+            assert_eq!(rect.bottom - rect.top, height as i32);
+
+            assert_eq!(view.removed(), kResultOk);
+            let subviews: *mut Object = msg_send![parent.as_ptr(), subviews];
+            let count: usize = msg_send![subviews, count];
+            assert_eq!(count, 0);
+
+            let _: () = msg_send![parent.as_ptr(), release];
+        }
+    }
+}

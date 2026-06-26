@@ -9,6 +9,17 @@ fn controller_reports_expected_parameter_count() {
 }
 
 #[test]
+fn controller_creates_editor_view_for_host_editor_request() {
+    let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
+    let view = unsafe { controller.createView(ViewType::kEditor) };
+    assert!(!view.is_null(), "editor view should be creatable");
+    unsafe {
+        let unknown = view.cast::<FUnknown>();
+        ((*(*unknown).vtbl).release)(unknown);
+    }
+}
+
+#[test]
 fn view_enforces_minimum_size() {
     let (preferred_width, preferred_height) = preferred_window_size();
     let view = HostedVst3View::new(
