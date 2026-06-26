@@ -752,7 +752,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2042,7 +2042,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "patchbay-gui"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=ec53c316c6212e474db3ae81c269b5b5c9fcf177#ec53c316c6212e474db3ae81c269b5b5c9fcf177"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=49d49747d83086ee3683f1951227413663c4c8e0#49d49747d83086ee3683f1951227413663c4c8e0"
 dependencies = [
  "pollster 0.3.0",
  "raw-window-handle 0.5.2",
@@ -2494,7 +2494,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2811,7 +2811,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2960,7 +2960,7 @@ dependencies = [
 [[package]]
 name = "toybox"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=ec53c316c6212e474db3ae81c269b5b5c9fcf177#ec53c316c6212e474db3ae81c269b5b5c9fcf177"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=49d49747d83086ee3683f1951227413663c4c8e0#49d49747d83086ee3683f1951227413663c4c8e0"
 dependencies = [
  "clack-common",
  "clack-extensions",
@@ -2976,12 +2976,12 @@ dependencies = [
 [[package]]
 name = "toybox-process-log"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=ec53c316c6212e474db3ae81c269b5b5c9fcf177#ec53c316c6212e474db3ae81c269b5b5c9fcf177"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=49d49747d83086ee3683f1951227413663c4c8e0#49d49747d83086ee3683f1951227413663c4c8e0"
 
 [[package]]
 name = "toybox-vst3-ffi"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=ec53c316c6212e474db3ae81c269b5b5c9fcf177#ec53c316c6212e474db3ae81c269b5b5c9fcf177"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=49d49747d83086ee3683f1951227413663c4c8e0#49d49747d83086ee3683f1951227413663c4c8e0"
 dependencies = [
  "vst3",
 ]
@@ -3034,7 +3034,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3595,7 +3595,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

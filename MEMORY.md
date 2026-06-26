@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-06-26 12:42:15 UTC
-- Active Mission: Update Pump's GUI dependency surface to track the latest pinned Radiant revision.
-- Current Workstream: Radiant is pinned at `119f95cfebab84687b7af870f3bf6e385f365346`, Pump has a GUI embedded-surface smoke test for that API, and the local CI harness handles the default no-feature lane on macOS Bash.
+- Last Updated (UTC): 2026-06-26 14:14:43 UTC
+- Active Mission: Produce a Pump macOS VST3 bundle that Ableton Live can scan from the audiodev `dist/` folder.
+- Current Workstream: Pump is bumped to Toybox `49d49747d83086ee3683f1951227413663c4c8e0`, the VST3 CI lane is fixed, and `dist/pump-v0.2.0-macos.vst3` exports Ableton-required `_bundleEntry`, `_bundleExit`, and `_GetPluginFactory`.
 
 ## Current State
 
@@ -19,8 +19,9 @@
 - Holding `s` temporarily inverts snapping, while preset save moved to `Shift+S`.
 - Undo and redo are now bound to `Ctrl+Z` and `Ctrl+Y` instead of the older `u` / `Shift+u` shortcuts.
 - Pump now depends on the latest `PORTALSURFER/radiant` main revision with a full `rev` pin, and `gui::tests::radiant_embedded_gui_surface_renders_at_pump_design_size` verifies Radiant can emit a frame for Pump-sized GUI content.
+- Pump now depends on a Toybox revision with Ableton-compatible macOS VST3 bundle entry symbols.
 - `scripts/ci.sh` now avoids the macOS Bash `set -u` empty-array failure when no feature flags are requested.
 
 ## Immediate Next Action
 
-- Run changelog/local verification, then commit and push the Pump branch before updating the audiodev superproject pointer.
+- Commit and push the Pump rev bump and VST3 CI/test cleanup, then update the audiodev superproject pointers.

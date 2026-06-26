@@ -131,6 +131,8 @@ All notable changes to this project are documented in this file.
 
 - (deps) Bump toybox to latest main (53c68f4)
 
+- (gui) Pin radiant for pump gui surface smoke (709219c)
+
 
 ### Documentation
 

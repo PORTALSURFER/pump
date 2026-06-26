@@ -46,7 +46,7 @@ fi
 
 features=()
 if [[ "${want_vst3}" == "1" ]]; then
-  if grep -qE '^\\s*vst3\\s*=' Cargo.toml; then
+  if grep -qE '^[[:space:]]*vst3[[:space:]]*=' Cargo.toml; then
     : "${VST3_SDK_DIR:?VST3_SDK_DIR must be set when running with --vst3}"
     features=(--features vst3)
   else

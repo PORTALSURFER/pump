@@ -27,11 +27,11 @@ fn view_enforces_minimum_size() {
 fn controller_and_processor_share_param_state() {
     let shared = Arc::new(PumpVst3Shared::new());
     let controller = PumpVst3Controller::new(Arc::clone(&shared));
-    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let _processor = PumpVst3Processor::new(Arc::clone(&shared));
     let value = to_normalized(PARAM_MIX_NUM, 0.25);
     let result = unsafe { controller.setParamNormalized(PARAM_MIX_NUM, value) };
     assert_eq!(result, kResultOk);
-    assert!((processor.shared.params.mix() - 0.25).abs() < 1.0e-6);
+    assert!((shared.params.mix() - 0.25).abs() < 1.0e-6);
 }
 
 #[test]
