@@ -2,22 +2,37 @@
 
 use std::sync::Arc;
 
-use radiant::gui::types::Vector2;
-use radiant::prelude::{column, row, slider, spacer, text, IntoView, UiSurface, ViewNode};
-use radiant::runtime::DeclarativeSurfaceRuntime;
+use radiant::gui::types::{Point, Rect, Vector2};
+use radiant::layout::LayoutOutput;
+use radiant::prelude::{column, row, slider, text, widget, IntoView, UiSurface, ViewNode};
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
+use radiant::runtime::{
+    DeclarativeSurfaceRuntime, PaintFillRect, PaintPrimitive, PaintStrokePolyline, PaintStrokeRect,
+};
 #[cfg(feature = "vst3")]
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
+use radiant::widgets::{Widget, WidgetCommon, WidgetInput, WidgetOutput};
 
+use crate::curve::{sample_editable_curve, CurveNode, EditableCurve};
 use crate::params::{
     sync_division_label, PumpParams, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB,
 };
 
 use super::{WINDOW_HEIGHT, WINDOW_WIDTH};
 
-const CONTROL_ROW_HEIGHT: f32 = 28.0;
+const TITLE_HEIGHT: f32 = 24.0;
+const CURVE_PREVIEW_HEIGHT: f32 = 96.0;
+const CONTROL_ROW_HEIGHT: f32 = 22.0;
+const CONTROL_LABEL_WIDTH: f32 = 54.0;
+const CONTROL_VALUE_WIDTH: f32 = 60.0;
+const SURFACE_PADDING: f32 = 12.0;
+const SURFACE_SPACING: f32 = 6.0;
+const CURVE_GRID_COLUMNS: usize = 8;
+const CURVE_GRID_ROWS: usize = 4;
+const CURVE_SAMPLE_COUNT: usize = 96;
+const CURVE_NODE_SIZE: f32 = 5.0;
 
 #[derive(Clone)]
 struct RadiantEditorState {
@@ -110,9 +125,10 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let sync = params.sync_division();
     Arc::new(
         column([
-            text("PUMP").height(30.0).fill_width(),
-            text("Beat-synced gain shaper").height(18.0).fill_width(),
-            spacer().height(8.0),
+            text("PUMP").height(TITLE_HEIGHT).fill_width(),
+            widget(CurvePreviewWidget::new(params.editable_curve_snapshot()))
+                .fill_width()
+                .height(CURVE_PREVIEW_HEIGHT),
             control_row(
                 "Mix",
                 format!("{:.0}%", params.mix() * 100.0),
@@ -138,8 +154,8 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 RadiantEditorMessage::SyncDivision,
             ),
         ])
-        .padding(16.0)
-        .spacing(8.0)
+        .padding(SURFACE_PADDING)
+        .spacing(SURFACE_SPACING)
         .size(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32)
         .into_surface(),
     )
@@ -152,12 +168,16 @@ fn control_row(
     message: fn(f32) -> RadiantEditorMessage,
 ) -> ViewNode<RadiantEditorMessage> {
     row([
-        text(label).width(72.0).height(CONTROL_ROW_HEIGHT),
+        text(label)
+            .width(CONTROL_LABEL_WIDTH)
+            .height(CONTROL_ROW_HEIGHT),
         slider(value.clamp(0.0, 1.0))
             .message(message)
             .fill_width()
             .height(CONTROL_ROW_HEIGHT),
-        text(value_label).width(74.0).height(CONTROL_ROW_HEIGHT),
+        text(value_label)
+            .width(CONTROL_VALUE_WIDTH)
+            .height(CONTROL_ROW_HEIGHT),
     ])
     .spacing(8.0)
     .fill_width()
@@ -191,6 +211,145 @@ fn denormalize_output_gain(value: f32) -> f32 {
 
 fn normalize_sync_division(value: usize) -> f32 {
     (value as f32 / MAX_SYNC_DIVISION).clamp(0.0, 1.0)
+}
+
+#[derive(Clone)]
+struct CurvePreviewWidget {
+    common: WidgetCommon,
+    curve: EditableCurve,
+}
+
+impl CurvePreviewWidget {
+    fn new(curve: EditableCurve) -> Self {
+        Self {
+            common: WidgetCommon::fixed(
+                0,
+                (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0),
+                CURVE_PREVIEW_HEIGHT,
+            )
+            .without_default_chrome(),
+            curve: curve.normalized(),
+        }
+    }
+
+    fn curve_point(bounds: Rect, node: CurveNode) -> Point {
+        let width = bounds.width().max(1.0) - 1.0;
+        let height = bounds.height().max(1.0) - 1.0;
+        Point::new(
+            bounds.min.x + node.x.clamp(0.0, 1.0) * width,
+            bounds.min.y + (1.0 - node.y.clamp(0.0, 1.0)) * height,
+        )
+    }
+
+    fn push_grid(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.common.id,
+            rect: bounds,
+            color: theme.bg_secondary,
+        }));
+        for step in 1..CURVE_GRID_COLUMNS {
+            let x = bounds.min.x + bounds.width() * (step as f32 / CURVE_GRID_COLUMNS as f32);
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from([Point::new(x, bounds.min.y), Point::new(x, bounds.max.y)]),
+                color: theme.grid_soft,
+                width: 1.0,
+            }));
+        }
+        for step in 1..CURVE_GRID_ROWS {
+            let y = bounds.min.y + bounds.height() * (step as f32 / CURVE_GRID_ROWS as f32);
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from([Point::new(bounds.min.x, y), Point::new(bounds.max.x, y)]),
+                color: theme.grid_soft,
+                width: 1.0,
+            }));
+        }
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.common.id,
+            rect: bounds,
+            color: theme.border_emphasis,
+            width: 1.0,
+        }));
+    }
+
+    fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
+        let mut points = Vec::with_capacity(CURVE_SAMPLE_COUNT + 1);
+        for step in 0..=CURVE_SAMPLE_COUNT {
+            let phase = step as f32 / CURVE_SAMPLE_COUNT as f32;
+            points.push(Self::curve_point(
+                bounds,
+                CurveNode {
+                    x: phase,
+                    y: sample_editable_curve(&self.curve, phase),
+                },
+            ));
+        }
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: Arc::from(points),
+            color: theme.accent_mint,
+            width: 2.0,
+        }));
+    }
+
+    fn push_nodes(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
+        let radius = CURVE_NODE_SIZE * 0.5;
+        for node in self.curve.nodes.iter().copied() {
+            let center = Self::curve_point(bounds, node);
+            let rect = Rect::from_xy_size(
+                center.x - radius,
+                center.y - radius,
+                CURVE_NODE_SIZE,
+                CURVE_NODE_SIZE,
+            );
+            primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+                widget_id: self.common.id,
+                rect,
+                color: theme.surface_raised,
+            }));
+            primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+                widget_id: self.common.id,
+                rect,
+                color: theme.accent_copper,
+                width: 1.0,
+            }));
+        }
+    }
+}
+
+impl Widget for CurvePreviewWidget {
+    fn common(&self) -> &WidgetCommon {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        &mut self.common
+    }
+
+    fn handle_input(&mut self, _bounds: Rect, _input: WidgetInput) -> Option<WidgetOutput> {
+        None
+    }
+
+    fn accepts_pointer_move(&self) -> bool {
+        false
+    }
+
+    fn needs_state_synchronization(&self) -> bool {
+        false
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        self.push_grid(primitives, bounds, theme);
+        self.push_curve(primitives, bounds, theme);
+        self.push_nodes(primitives, bounds, theme);
+    }
 }
 
 #[cfg(test)]
@@ -231,5 +390,8 @@ mod tests {
             .primitives
             .iter()
             .any(|primitive| matches!(primitive, PaintPrimitive::FillRect(_))));
+        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::StrokePolyline(polyline) if polyline.points.len() > 16)
+        }));
     }
 }

@@ -194,6 +194,9 @@ unsafe fn render_paint_plan(plan: &SurfacePaintPlan, bounds: NSRect) {
                     stroke_ns_rect(ns_rect_from_ui(rect), batch.color, batch.width);
                 }
             }
+            PaintPrimitive::StrokePolyline(polyline) => {
+                stroke_ns_polyline(&polyline.points, polyline.color, polyline.width);
+            }
             PaintPrimitive::Text(text_run) => draw_text_run(text_run),
             PaintPrimitive::OverlayPanel(panel) => {
                 fill_ns_rect(ns_rect_from_ui(panel.rect), Rgba8::new(32, 32, 32, 238));
@@ -226,7 +229,6 @@ unsafe fn render_paint_plan(plan: &SurfacePaintPlan, bounds: NSRect) {
             | PaintPrimitive::Svg(_)
             | PaintPrimitive::FillPolygon(_)
             | PaintPrimitive::StrokePolygon(_)
-            | PaintPrimitive::StrokePolyline(_)
             | PaintPrimitive::Image(_)
             | PaintPrimitive::GpuSurface(_)
             | PaintPrimitive::CustomSurface(_) => {}
@@ -299,6 +301,21 @@ unsafe fn stroke_ns_rect(rect: NSRect, color: Rgba8, width: f32) {
     let _: () = msg_send![path, stroke];
 }
 
+unsafe fn stroke_ns_polyline(points: &[Point], color: Rgba8, width: f32) {
+    let Some(first) = points.first().copied() else {
+        return;
+    };
+    let color = ns_color(color);
+    let _: () = msg_send![color, setStroke];
+    let path: *mut Object = msg_send![class!(NSBezierPath), bezierPath];
+    let _: () = msg_send![path, setLineWidth: width.max(0.5) as f64];
+    let _: () = msg_send![path, moveToPoint: ns_point_from_ui(first)];
+    for point in points.iter().copied().skip(1) {
+        let _: () = msg_send![path, lineToPoint: ns_point_from_ui(point)];
+    }
+    let _: () = msg_send![path, stroke];
+}
+
 unsafe fn ns_color(color: Rgba8) -> *mut Object {
     msg_send![
         class!(NSColor),
@@ -320,6 +337,13 @@ fn ns_rect_from_ui(rect: UiRect) -> NSRect {
         rect.width().max(1.0) as f64,
         rect.height().max(1.0) as f64,
     )
+}
+
+fn ns_point_from_ui(point: Point) -> NSPoint {
+    NSPoint {
+        x: point.x as f64,
+        y: point.y as f64,
+    }
 }
 
 fn ns_rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
