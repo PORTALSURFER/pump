@@ -190,6 +190,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (5a74360)
 
+- (changelog) Update changelog [skip ci] (e12df21)
+
 
 ### Features
 

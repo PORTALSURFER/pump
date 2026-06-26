@@ -716,6 +716,57 @@
     }
 
     #[test]
+    fn radiant_embedded_gui_surface_renders_at_pump_design_size() {
+        use radiant::gui::types::Vector2;
+        use radiant::prelude::{self as ui, IntoView};
+
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        enum RadiantGuiMessage {
+            Snap(bool),
+            Mix,
+            Phase,
+            Output,
+        }
+
+        let frame = ui::column([
+            ui::row([
+                ui::text("PUMP").height(24.0).fill_width(),
+                ui::toggle("Snap", true)
+                    .message(RadiantGuiMessage::Snap)
+                    .width(86.0)
+                    .height(24.0),
+            ])
+            .spacing(8.0),
+            ui::text("Curve editor surface").fill_width().height(160.0),
+            ui::row([
+                ui::button("Mix")
+                    .message(RadiantGuiMessage::Mix)
+                    .width(72.0)
+                    .height(28.0),
+                ui::button("Phase")
+                    .message(RadiantGuiMessage::Phase)
+                    .width(72.0)
+                    .height(28.0),
+                ui::button("Output")
+                    .message(RadiantGuiMessage::Output)
+                    .width(72.0)
+                    .height(28.0),
+            ])
+            .spacing(8.0),
+        ])
+        .padding(12.0)
+        .spacing(10.0)
+        .view_frame_at_size_with_default_theme(Vector2::new(
+            WINDOW_WIDTH as f32,
+            WINDOW_HEIGHT as f32,
+        ));
+
+        let stats = frame.paint_plan.stats();
+        assert!(stats.total > 0, "Radiant frame should emit paint primitives");
+        assert!(stats.text > 0, "Radiant frame should emit text primitives");
+    }
+
+    #[test]
     fn constrained_host_size_enforces_baseline_minimums() {
         assert_eq!(
             constrained_host_size(GuiSize {

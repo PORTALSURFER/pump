@@ -56,8 +56,13 @@ if [[ "${want_vst3}" == "1" ]]; then
 fi
 
 cargo fmt --all -- --check
-cargo clippy --all-targets "${features[@]}" -- -D warnings
-cargo test --all "${features[@]}"
+if [[ ${#features[@]} -gt 0 ]]; then
+  cargo clippy --all-targets "${features[@]}" -- -D warnings
+  cargo test --all "${features[@]}"
+else
+  cargo clippy --all-targets -- -D warnings
+  cargo test --all
+fi
 
 if [[ "${want_screenshots}" == "1" ]]; then
   if ! grep -qE '^[[:space:]]*screenshot-test[[:space:]]*=' Cargo.toml; then
