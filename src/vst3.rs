@@ -46,6 +46,8 @@ use transport_utils::transport_state_from_vst3_process_context;
 #[cfg(test)]
 use shared_state::{shared_registry, SharedRegistryEntry};
 
+#[cfg(target_os = "macos")]
+mod cocoa_gui;
 mod controller;
 mod factory;
 mod gui_adapter;

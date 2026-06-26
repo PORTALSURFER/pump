@@ -11,7 +11,13 @@ crate-type = ["cdylib"]
 
 [dependencies]
 radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "119f95cfebab84687b7af870f3bf6e385f365346", default-features = false }
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "49d49747d83086ee3683f1951227413663c4c8e0", features = ["gui"] }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "593b67a91d25ee22668047714a54e9f521d125e1", features = ["gui"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2.7"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 
 [features]
 # Default to CLAP-only builds so CI does not require the VST3 SDK. Enable VST3
