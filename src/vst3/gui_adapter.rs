@@ -96,7 +96,7 @@ impl Vst3HostedGui for PumpVst3GuiAdapter {
     fn request_resize(&self, width: u32, height: u32) {
         #[cfg(target_os = "macos")]
         {
-            let _ = (width, height);
+            self.cocoa_gui.request_resize(width, height);
         }
 
         #[cfg(not(target_os = "macos"))]
