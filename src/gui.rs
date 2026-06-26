@@ -36,11 +36,17 @@ use crate::GuiStatus;
 
 mod curve_math;
 mod layout_support;
+#[cfg(any(feature = "vst3", test))]
+mod radiant_editor;
 mod state_impl;
 mod window_host;
 
 use curve_math::*;
 use layout_support::*;
+#[cfg(test)]
+pub(crate) use radiant_editor::radiant_editor_frame_for_params;
+#[cfg(feature = "vst3")]
+pub(crate) use radiant_editor::RadiantPumpEditor;
 pub(crate) use window_host::preferred_window_size;
 pub use window_host::PumpGui;
 

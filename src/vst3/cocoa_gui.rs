@@ -9,23 +9,14 @@ use std::sync::OnceLock;
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel, BOOL, YES};
 use objc::{class, msg_send, sel, sel_impl, Encode, Encoding};
-use radiant::gui::types::{Point, Rect as UiRect, Rgba8, Vector2};
-use radiant::prelude::{column, row, slider, spacer, text, IntoView, UiSurface, ViewNode};
-use radiant::runtime::{
-    DeclarativeSurfaceRuntime, Event, PaintPrimitive, PaintTextAlign, SurfacePaintPlan,
-};
-use radiant::theme::ThemeTokens;
+use radiant::gui::types::{Point, Rect as UiRect, Rgba8};
+use radiant::runtime::{Event, PaintPrimitive, PaintTextAlign, SurfacePaintPlan};
 use radiant::widgets::PointerButton;
 
-use crate::gui::preferred_window_size;
-use crate::params::{
-    sync_division_label, PumpParams, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB,
-};
+use crate::gui::{preferred_window_size, RadiantPumpEditor};
+use crate::params::PumpParams;
 
 const NS_UTF8_STRING_ENCODING: usize = 4;
-const DEFAULT_WIDTH: f32 = 408.0;
-const DEFAULT_HEIGHT: f32 = 280.0;
-const CONTROL_ROW_HEIGHT: f32 = 28.0;
 
 #[link(name = "AppKit", kind = "framework")]
 extern "C" {
@@ -70,73 +61,6 @@ struct NSRect {
 unsafe impl Encode for NSRect {
     fn encode() -> Encoding {
         unsafe { Encoding::from_str("{CGRect={CGPoint=dd}{CGSize=dd}}") }
-    }
-}
-
-#[derive(Clone)]
-struct RadiantEditorState {
-    params: Arc<PumpParams>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum RadiantEditorMessage {
-    Mix(f32),
-    Phase(f32),
-    OutputGain(f32),
-    SyncDivision(f32),
-}
-
-type EditorProjector = fn(&mut RadiantEditorState) -> Arc<UiSurface<RadiantEditorMessage>>;
-type EditorReducer = fn(&mut RadiantEditorState, RadiantEditorMessage);
-type EditorSurfaceRuntime = DeclarativeSurfaceRuntime<
-    RadiantEditorState,
-    RadiantEditorMessage,
-    EditorProjector,
-    EditorReducer,
->;
-
-struct RadiantEditorRuntime {
-    runtime: EditorSurfaceRuntime,
-    theme: ThemeTokens,
-    paint_plan: SurfacePaintPlan,
-}
-
-impl RadiantEditorRuntime {
-    fn new(params: Arc<PumpParams>, width: u32, height: u32) -> Self {
-        let theme = ThemeTokens::default();
-        let viewport = Vector2::new(width as f32, height as f32);
-        Self {
-            runtime: EditorSurfaceRuntime::new_declarative(
-                RadiantEditorState { params },
-                viewport,
-                project_editor_surface,
-                reduce_editor_message,
-            ),
-            paint_plan: SurfacePaintPlan::empty(&theme),
-            theme,
-        }
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        self.runtime.dispatch_event(Event::resize(Vector2::new(
-            width.max(1) as f32,
-            height.max(1) as f32,
-        )));
-    }
-
-    fn draw(&mut self, bounds: NSRect) {
-        {
-            let _frame = self
-                .runtime
-                .borrowed_frame_into(&self.theme, &mut self.paint_plan);
-        }
-        unsafe {
-            render_paint_plan(&self.paint_plan, bounds);
-        }
-    }
-
-    fn pointer_event(&mut self, event: Event) {
-        let _ = self.runtime.dispatch_event(event);
     }
 }
 
@@ -221,18 +145,14 @@ unsafe fn create_editor_view(
     width: u32,
     height: u32,
 ) -> Option<NonNull<Object>> {
-    let root_view = new_radiant_view(
-        RadiantEditorRuntime::new(params, width, height),
-        width,
-        height,
-    )?;
+    let root_view = new_radiant_view(RadiantPumpEditor::new(params, width, height), width, height)?;
     let parent = parent.as_ptr().cast::<Object>();
     let _: () = msg_send![parent, addSubview: root_view.as_ptr()];
     Some(root_view)
 }
 
 unsafe fn new_radiant_view(
-    runtime: RadiantEditorRuntime,
+    runtime: RadiantPumpEditor,
     width: u32,
     height: u32,
 ) -> Option<NonNull<Object>> {
@@ -242,95 +162,6 @@ unsafe fn new_radiant_view(
     let view = NonNull::new(view)?;
     (*view.as_ptr()).set_ivar("runtime", Box::into_raw(Box::new(runtime)) as usize);
     Some(view)
-}
-
-fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<RadiantEditorMessage>> {
-    let params = state.params.as_ref();
-    let output = params.output_gain_db();
-    let sync = params.sync_division();
-    Arc::new(
-        column([
-            text("PUMP").height(30.0).fill_width(),
-            text("Beat-synced gain shaper").height(18.0).fill_width(),
-            spacer().height(8.0),
-            control_row(
-                "Mix",
-                format!("{:.0}%", params.mix() * 100.0),
-                params.mix(),
-                RadiantEditorMessage::Mix,
-            ),
-            control_row(
-                "Phase",
-                format!("{:.0}%", params.phase_offset() * 100.0),
-                params.phase_offset(),
-                RadiantEditorMessage::Phase,
-            ),
-            control_row(
-                "Output",
-                format!("{output:+.1} dB"),
-                normalize_output_gain(output),
-                RadiantEditorMessage::OutputGain,
-            ),
-            control_row(
-                "Sync",
-                sync_division_label(sync).to_string(),
-                normalize_sync_division(sync),
-                RadiantEditorMessage::SyncDivision,
-            ),
-        ])
-        .padding(16.0)
-        .spacing(8.0)
-        .size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        .into_surface(),
-    )
-}
-
-fn control_row(
-    label: &'static str,
-    value_label: String,
-    value: f32,
-    message: fn(f32) -> RadiantEditorMessage,
-) -> ViewNode<RadiantEditorMessage> {
-    row([
-        text(label).width(72.0).height(CONTROL_ROW_HEIGHT),
-        slider(value.clamp(0.0, 1.0))
-            .message(message)
-            .fill_width()
-            .height(CONTROL_ROW_HEIGHT),
-        text(value_label).width(74.0).height(CONTROL_ROW_HEIGHT),
-    ])
-    .spacing(8.0)
-    .fill_width()
-    .height(CONTROL_ROW_HEIGHT)
-}
-
-fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorMessage) {
-    match message {
-        RadiantEditorMessage::Mix(value) => state.params.set_mix(value),
-        RadiantEditorMessage::Phase(value) => state.params.set_phase_offset(value),
-        RadiantEditorMessage::OutputGain(value) => {
-            state
-                .params
-                .set_output_gain_db(denormalize_output_gain(value));
-        }
-        RadiantEditorMessage::SyncDivision(value) => {
-            state
-                .params
-                .set_sync_division((value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round());
-        }
-    }
-}
-
-fn normalize_output_gain(value: f32) -> f32 {
-    ((value - MIN_OUTPUT_GAIN_DB) / (MAX_OUTPUT_GAIN_DB - MIN_OUTPUT_GAIN_DB)).clamp(0.0, 1.0)
-}
-
-fn denormalize_output_gain(value: f32) -> f32 {
-    MIN_OUTPUT_GAIN_DB + value.clamp(0.0, 1.0) * (MAX_OUTPUT_GAIN_DB - MIN_OUTPUT_GAIN_DB)
-}
-
-fn normalize_sync_division(value: usize) -> f32 {
-    (value as f32 / MAX_SYNC_DIVISION).clamp(0.0, 1.0)
 }
 
 unsafe fn render_paint_plan(plan: &SurfacePaintPlan, bounds: NSRect) {
@@ -574,7 +405,7 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _dirty: NSRect) {
     unsafe {
         let bounds: NSRect = msg_send![this, bounds];
         if let Some(runtime) = runtime_mut(this) {
-            runtime.draw(bounds);
+            render_paint_plan(runtime.paint_plan(), bounds);
         } else {
             fill_ns_rect(bounds, Rgba8::new(24, 24, 24, 255));
         }
@@ -640,7 +471,7 @@ fn dispatch_mouse_event(
             MouseEventKind::Move => Event::pointer_move(position),
             MouseEventKind::Release => Event::pointer_release(position, button, Default::default()),
         };
-        runtime.pointer_event(event);
+        runtime.dispatch_event(event);
         let _: () = msg_send![this, setNeedsDisplay: YES];
     }
 }
@@ -652,8 +483,8 @@ unsafe fn event_position(this: &Object, event: *mut Object) -> Point {
     Point::new(local_point.x as f32, local_point.y as f32)
 }
 
-unsafe fn runtime_mut(view: *const Object) -> Option<&'static mut RadiantEditorRuntime> {
-    let runtime = *(view.as_ref()?.get_ivar::<usize>("runtime")) as *mut RadiantEditorRuntime;
+unsafe fn runtime_mut(view: *const Object) -> Option<&'static mut RadiantPumpEditor> {
+    let runtime = *(view.as_ref()?.get_ivar::<usize>("runtime")) as *mut RadiantPumpEditor;
     runtime.as_mut()
 }
 
@@ -661,54 +492,10 @@ unsafe fn drop_runtime(view: *const Object) {
     let Some(view) = view.cast_mut().as_mut() else {
         return;
     };
-    let runtime = *view.get_ivar::<usize>("runtime") as *mut RadiantEditorRuntime;
+    let runtime = *view.get_ivar::<usize>("runtime") as *mut RadiantPumpEditor;
     if runtime.is_null() {
         return;
     }
     (*view).set_ivar("runtime", 0_usize);
     drop(Box::from_raw(runtime));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn radiant_editor_reduces_slider_messages_to_params() {
-        let params = Arc::new(PumpParams::new());
-        let mut state = RadiantEditorState {
-            params: Arc::clone(&params),
-        };
-
-        reduce_editor_message(&mut state, RadiantEditorMessage::Mix(0.25));
-        reduce_editor_message(&mut state, RadiantEditorMessage::Phase(0.5));
-        reduce_editor_message(&mut state, RadiantEditorMessage::OutputGain(0.5));
-        reduce_editor_message(&mut state, RadiantEditorMessage::SyncDivision(1.0));
-
-        assert!((params.mix() - 0.25).abs() < f32::EPSILON);
-        assert!((params.phase_offset() - 0.5).abs() < f32::EPSILON);
-        assert!((params.output_gain_db() + 6.0).abs() < f32::EPSILON);
-        assert_eq!(params.sync_division(), MAX_SYNC_DIVISION as usize);
-    }
-
-    #[test]
-    fn radiant_editor_surface_emits_visible_paint() {
-        let params = Arc::new(PumpParams::new());
-        let runtime = EditorSurfaceRuntime::new_declarative(
-            RadiantEditorState { params },
-            Vector2::new(DEFAULT_WIDTH, DEFAULT_HEIGHT),
-            project_editor_surface,
-            reduce_editor_message,
-        );
-
-        let frame = runtime.frame(&ThemeTokens::default());
-        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
-            matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
-        }));
-        assert!(frame
-            .paint_plan
-            .primitives
-            .iter()
-            .any(|primitive| matches!(primitive, PaintPrimitive::FillRect(_))));
-    }
 }

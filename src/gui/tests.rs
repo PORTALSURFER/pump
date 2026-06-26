@@ -1,8 +1,8 @@
     use super::{
         constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
         local_from_node, move_node_with_push_through, move_segment_translated,
-        preferred_window_size, preview_node_on_curve, resolve_runtime_controls_slot_widths,
-        recompute_move_node_from_origin_for_size,
+        preferred_window_size, preview_node_on_curve, radiant_editor_frame_for_params,
+        resolve_runtime_controls_slot_widths, recompute_move_node_from_origin_for_size,
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
@@ -718,52 +718,18 @@
     #[test]
     fn radiant_embedded_gui_surface_renders_at_pump_design_size() {
         use radiant::gui::types::Vector2;
-        use radiant::prelude::{self as ui, IntoView};
 
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        enum RadiantGuiMessage {
-            Snap(bool),
-            Mix,
-            Phase,
-            Output,
-        }
-
-        let frame = ui::column([
-            ui::row([
-                ui::text("PUMP").height(24.0).fill_width(),
-                ui::toggle("Snap", true)
-                    .message(RadiantGuiMessage::Snap)
-                    .width(86.0)
-                    .height(24.0),
-            ])
-            .spacing(8.0),
-            ui::text("Curve editor surface").fill_width().height(160.0),
-            ui::row([
-                ui::button("Mix")
-                    .message(RadiantGuiMessage::Mix)
-                    .width(72.0)
-                    .height(28.0),
-                ui::button("Phase")
-                    .message(RadiantGuiMessage::Phase)
-                    .width(72.0)
-                    .height(28.0),
-                ui::button("Output")
-                    .message(RadiantGuiMessage::Output)
-                    .width(72.0)
-                    .height(28.0),
-            ])
-            .spacing(8.0),
-        ])
-        .padding(12.0)
-        .spacing(10.0)
-        .view_frame_at_size_with_default_theme(Vector2::new(
-            WINDOW_WIDTH as f32,
-            WINDOW_HEIGHT as f32,
-        ));
+        let frame = radiant_editor_frame_for_params(
+            Arc::new(PumpParams::new()),
+            Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+        );
 
         let stats = frame.paint_plan.stats();
         assert!(stats.total > 0, "Radiant frame should emit paint primitives");
         assert!(stats.text > 0, "Radiant frame should emit text primitives");
+        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, radiant::runtime::PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
+        }));
     }
 
     #[test]
