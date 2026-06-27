@@ -686,6 +686,22 @@ All notable changes to this project are documented in this file.
 
 - Use Ctrl-Z and Ctrl-Y for Pump undo (c6f924b)
 
+- Fix macOS VST3 release compatibility (7d645c0)
+
+- Fix macOS VST3 editor attach (4a359ec)
+
+- Use Radiant surface for macOS VST3 editor (6649983)
+
+- Share Pump Radiant editor surface (33b129b)
+
+- Render Pump curve in Radiant editor (5db497c)
+
+- Harden Pump Radiant VST3 editor open path (91f17cd)
+
+- Assert hosted VST3 Radiant content (ae6c09f)
+
+- Add Radiant curve point insertion (f12c742)
+
 
 ### Refactoring
 
