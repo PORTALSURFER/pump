@@ -580,7 +580,12 @@ fn dispatch_mouse_event(
         match kind {
             MouseEventKind::Press => {
                 runtime.dispatch_event(Event::pointer_modifiers_changed(modifiers));
-                runtime.dispatch_event(Event::pointer_press(position, button, modifiers));
+                runtime.dispatch_event(pointer_press_event_for_click_count(
+                    position,
+                    button,
+                    modifiers,
+                    event_click_count(event),
+                ));
             }
             MouseEventKind::Move => {
                 runtime.dispatch_event(Event::pointer_move(position));
@@ -595,6 +600,19 @@ fn dispatch_mouse_event(
     }
 }
 
+fn pointer_press_event_for_click_count(
+    position: Point,
+    button: PointerButton,
+    modifiers: PointerModifiers,
+    click_count: usize,
+) -> Event {
+    if click_count >= 2 {
+        Event::pointer_double_click(position, button, modifiers)
+    } else {
+        Event::pointer_press(position, button, modifiers)
+    }
+}
+
 unsafe fn event_modifiers(event: *mut Object) -> PointerModifiers {
     let flags: u64 = msg_send![event, modifierFlags];
     PointerModifiers {
@@ -602,6 +620,10 @@ unsafe fn event_modifiers(event: *mut Object) -> PointerModifiers {
         shift: flags & NSEVENT_MODIFIER_FLAG_SHIFT != 0,
         alt: flags & NSEVENT_MODIFIER_FLAG_OPTION != 0,
     }
+}
+
+unsafe fn event_click_count(event: *mut Object) -> usize {
+    msg_send![event, clickCount]
 }
 
 unsafe fn event_position(this: &Object, event: *mut Object) -> Point {
@@ -648,6 +670,32 @@ mod tests {
     use super::super::*;
     use super::*;
     use toybox::raw_window_handle::{AppKitWindowHandle, RawWindowHandle};
+
+    #[test]
+    fn pointer_press_event_uses_double_click_for_repeated_appkit_press() {
+        let position = Point::new(24.0, 48.0);
+        let modifiers = PointerModifiers {
+            alt: true,
+            ..PointerModifiers::default()
+        };
+
+        assert!(matches!(
+            pointer_press_event_for_click_count(position, PointerButton::Primary, modifiers, 1),
+            radiant::runtime::Event::PointerPress {
+                position: pressed,
+                button: PointerButton::Primary,
+                modifiers: pressed_modifiers,
+            } if pressed == position && pressed_modifiers == modifiers
+        ));
+        assert!(matches!(
+            pointer_press_event_for_click_count(position, PointerButton::Primary, modifiers, 2),
+            radiant::runtime::Event::PointerDoubleClick {
+                position: clicked,
+                button: PointerButton::Primary,
+                modifiers: clicked_modifiers,
+            } if clicked == position && clicked_modifiers == modifiers
+        ));
+    }
 
     #[test]
     fn cocoa_editor_opens_against_local_appkit_parent() {
