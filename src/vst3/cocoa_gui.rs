@@ -11,12 +11,20 @@ use objc::runtime::{Class, Object, Sel, BOOL, YES};
 use objc::{class, msg_send, sel, sel_impl, Encode, Encoding};
 use radiant::gui::types::{Point, Rect as UiRect, Rgba8};
 use radiant::runtime::{Event, PaintPrimitive, PaintTextAlign, SurfacePaintPlan};
-use radiant::widgets::PointerButton;
+use radiant::widgets::{PointerButton, PointerModifiers};
 
 use crate::gui::{preferred_window_size, RadiantPumpEditor};
 use crate::params::PumpParams;
 
 const NS_UTF8_STRING_ENCODING: usize = 4;
+const NSEVENT_MODIFIER_FLAG_SHIFT: u64 = 1 << 17;
+const NSEVENT_MODIFIER_FLAG_OPTION: u64 = 1 << 19;
+const NSEVENT_MODIFIER_FLAG_COMMAND: u64 = 1 << 20;
+const NSTRACKING_MOUSE_ENTERED_AND_EXITED: usize = 0x01;
+const NSTRACKING_MOUSE_MOVED: usize = 0x02;
+const NSTRACKING_ACTIVE_ALWAYS: usize = 0x80;
+const NSTRACKING_IN_VISIBLE_RECT: usize = 0x200;
+const NSTRACKING_ENABLED_DURING_MOUSE_DRAG: usize = 0x400;
 
 #[link(name = "AppKit", kind = "framework")]
 extern "C" {
@@ -161,6 +169,7 @@ unsafe fn new_radiant_view(
         msg_send![view, initWithFrame: ns_rect(0.0, 0.0, width as f64, height as f64)];
     let view = NonNull::new(view)?;
     (*view.as_ptr()).set_ivar("runtime", Box::into_raw(Box::new(runtime)) as usize);
+    let _: () = msg_send![view.as_ptr(), updateTrackingAreas];
     Some(view)
 }
 
@@ -370,10 +379,23 @@ fn editor_view_class() -> *const Class {
         let mut decl =
             ClassDecl::new("PumpRadiantEditorView", superclass).expect("unique class name");
         decl.add_ivar::<usize>("runtime");
+        decl.add_ivar::<usize>("tracking_area");
         unsafe {
             decl.add_method(
                 sel!(drawRect:),
                 draw_rect as extern "C" fn(&Object, Sel, NSRect),
+            );
+            decl.add_method(
+                sel!(updateTrackingAreas),
+                update_tracking_areas as extern "C" fn(&Object, Sel),
+            );
+            decl.add_method(
+                sel!(mouseMoved:),
+                mouse_moved as extern "C" fn(&Object, Sel, *mut Object),
+            );
+            decl.add_method(
+                sel!(mouseExited:),
+                mouse_exited as extern "C" fn(&Object, Sel, *mut Object),
             );
             decl.add_method(
                 sel!(mouseDown:),
@@ -396,6 +418,10 @@ fn editor_view_class() -> *const Class {
                 right_mouse_up as extern "C" fn(&Object, Sel, *mut Object),
             );
             decl.add_method(
+                sel!(flagsChanged:),
+                flags_changed as extern "C" fn(&Object, Sel, *mut Object),
+            );
+            decl.add_method(
                 sel!(isFlipped),
                 is_flipped as extern "C" fn(&Object, Sel) -> BOOL,
             );
@@ -411,6 +437,35 @@ fn editor_view_class() -> *const Class {
         }
         decl.register() as *const Class as usize
     }) as *const Class
+}
+
+extern "C" fn update_tracking_areas(this: &Object, _cmd: Sel) {
+    unsafe {
+        let superclass = class!(NSView);
+        let _: () = msg_send![super(this, superclass), updateTrackingAreas];
+        remove_tracking_area(this);
+
+        let options = NSTRACKING_MOUSE_ENTERED_AND_EXITED
+            | NSTRACKING_MOUSE_MOVED
+            | NSTRACKING_ACTIVE_ALWAYS
+            | NSTRACKING_IN_VISIBLE_RECT
+            | NSTRACKING_ENABLED_DURING_MOUSE_DRAG;
+        let area: *mut Object = msg_send![class!(NSTrackingArea), alloc];
+        let area: *mut Object = msg_send![
+            area,
+            initWithRect: ns_rect(0.0, 0.0, 0.0, 0.0)
+            options: options
+            owner: this
+            userInfo: ptr::null_mut::<Object>()
+        ];
+        if !area.is_null() {
+            let _: () = msg_send![this, addTrackingArea: area];
+            let Some(view) = (this as *const Object as *mut Object).as_mut() else {
+                return;
+            };
+            view.set_ivar("tracking_area", area as usize);
+        }
+    }
 }
 
 extern "C" fn is_flipped(_this: &Object, _cmd: Sel) -> BOOL {
@@ -433,6 +488,23 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _dirty: NSRect) {
         } else {
             fill_ns_rect(bounds, Rgba8::new(24, 24, 24, 255));
         }
+    }
+}
+
+extern "C" fn mouse_moved(this: &Object, _cmd: Sel, event: *mut Object) {
+    dispatch_mouse_event(this, event, PointerButton::Primary, MouseEventKind::Move);
+}
+
+extern "C" fn mouse_exited(this: &Object, _cmd: Sel, event: *mut Object) {
+    unsafe {
+        let Some(runtime) = runtime_mut(this) else {
+            return;
+        };
+        if !event.is_null() {
+            runtime.dispatch_event(Event::pointer_modifiers_changed(event_modifiers(event)));
+        }
+        runtime.dispatch_event(Event::pointer_move(Point::new(-1.0, -1.0)));
+        let _: () = msg_send![this, setNeedsDisplay: YES];
     }
 }
 
@@ -461,8 +533,22 @@ extern "C" fn right_mouse_up(this: &Object, _cmd: Sel, event: *mut Object) {
     );
 }
 
+extern "C" fn flags_changed(this: &Object, _cmd: Sel, event: *mut Object) {
+    unsafe {
+        if event.is_null() {
+            return;
+        }
+        let Some(runtime) = runtime_mut(this) else {
+            return;
+        };
+        runtime.dispatch_event(Event::pointer_modifiers_changed(event_modifiers(event)));
+        let _: () = msg_send![this, setNeedsDisplay: YES];
+    }
+}
+
 extern "C" fn dealloc(this: &Object, _cmd: Sel) {
     unsafe {
+        remove_tracking_area(this);
         drop_runtime(this);
         let superclass = class!(NSView);
         let _: () = msg_send![super(this, superclass), dealloc];
@@ -490,13 +576,31 @@ fn dispatch_mouse_event(
             return;
         };
         let position = event_position(this, event);
-        let event = match kind {
-            MouseEventKind::Press => Event::pointer_press(position, button, Default::default()),
-            MouseEventKind::Move => Event::pointer_move(position),
-            MouseEventKind::Release => Event::pointer_release(position, button, Default::default()),
-        };
-        runtime.dispatch_event(event);
+        let modifiers = event_modifiers(event);
+        match kind {
+            MouseEventKind::Press => {
+                runtime.dispatch_event(Event::pointer_modifiers_changed(modifiers));
+                runtime.dispatch_event(Event::pointer_press(position, button, modifiers));
+            }
+            MouseEventKind::Move => {
+                runtime.dispatch_event(Event::pointer_move(position));
+                runtime.dispatch_event(Event::pointer_modifiers_changed(modifiers));
+            }
+            MouseEventKind::Release => {
+                runtime.dispatch_event(Event::pointer_modifiers_changed(modifiers));
+                runtime.dispatch_event(Event::pointer_release(position, button, modifiers));
+            }
+        }
         let _: () = msg_send![this, setNeedsDisplay: YES];
+    }
+}
+
+unsafe fn event_modifiers(event: *mut Object) -> PointerModifiers {
+    let flags: u64 = msg_send![event, modifierFlags];
+    PointerModifiers {
+        command: flags & NSEVENT_MODIFIER_FLAG_COMMAND != 0,
+        shift: flags & NSEVENT_MODIFIER_FLAG_SHIFT != 0,
+        alt: flags & NSEVENT_MODIFIER_FLAG_OPTION != 0,
     }
 }
 
@@ -505,6 +609,21 @@ unsafe fn event_position(this: &Object, event: *mut Object) -> Point {
     let local_point: NSPoint =
         msg_send![this, convertPoint: window_point fromView: ptr::null_mut::<Object>()];
     Point::new(local_point.x as f32, local_point.y as f32)
+}
+
+unsafe fn remove_tracking_area(view: *const Object) {
+    let Some(view_ref) = view.as_ref() else {
+        return;
+    };
+    let area = *view_ref.get_ivar::<usize>("tracking_area") as *mut Object;
+    if area.is_null() {
+        return;
+    }
+    let _: () = msg_send![view_ref, removeTrackingArea: area];
+    let _: () = msg_send![area, release];
+    if let Some(view_mut) = view.cast_mut().as_mut() {
+        view_mut.set_ivar("tracking_area", 0_usize);
+    }
 }
 
 unsafe fn runtime_mut(view: *const Object) -> Option<&'static mut RadiantPumpEditor> {
@@ -633,6 +752,38 @@ mod tests {
 
             assert_eq!(view.removed(), kResultOk);
             let _: () = msg_send![parent.as_ptr(), release];
+        }
+    }
+
+    #[test]
+    fn radiant_editor_view_accepts_hover_and_modifier_events() {
+        unsafe {
+            let (width, height) = preferred_window_size();
+            let view = new_radiant_view(
+                RadiantPumpEditor::new(Arc::new(PumpParams::new()), width, height),
+                width,
+                height,
+            )
+            .expect("Radiant editor view should be created");
+
+            let responds_mouse_moved: BOOL =
+                msg_send![view.as_ptr(), respondsToSelector: sel!(mouseMoved:)];
+            let responds_flags_changed: BOOL =
+                msg_send![view.as_ptr(), respondsToSelector: sel!(flagsChanged:)];
+            assert_eq!(responds_mouse_moved, YES);
+            assert_eq!(responds_flags_changed, YES);
+
+            let tracking_area = *view
+                .as_ptr()
+                .as_ref()
+                .expect("view pointer should be valid")
+                .get_ivar::<usize>("tracking_area") as *mut Object;
+            assert!(
+                !tracking_area.is_null(),
+                "hover tracking area should be installed"
+            );
+
+            let _: () = msg_send![view.as_ptr(), release];
         }
     }
 }

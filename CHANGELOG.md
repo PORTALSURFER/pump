@@ -700,7 +700,9 @@ All notable changes to this project are documented in this file.
 
 - Assert hosted VST3 Radiant content (ae6c09f)
 
-- Add Radiant curve point insertion (f12c742)
+- Add Radiant curve point insertion (7e6f186)
+
+- Extend Radiant curve canvas insertion (c8b746d)
 
 
 ### Refactoring
