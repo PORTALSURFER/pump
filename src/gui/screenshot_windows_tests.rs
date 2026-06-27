@@ -3,7 +3,7 @@
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use crate::GuiStatus;
+    use crate::{params::MAX_PRESETS, GuiStatus};
     use toybox::clap::gui::InputState;
     use toybox::gui::declarative::{LayoutDiagnosticsMode, LayoutNodeDiagnostic, LayoutNodeKind};
     use toybox::gui::{Point, Rect, Size, render_spec_to_frame, screenshot_harness};
@@ -56,7 +56,7 @@
         let height = WINDOW_HEIGHT;
         let mut gui = PumpGui::default();
         let params = Arc::new(PumpParams::new());
-        for _ in 0..20 {
+        for _ in 1..MAX_PRESETS {
             params
                 .add_preset_from_current_state()
                 .expect("preset insertion should succeed");
