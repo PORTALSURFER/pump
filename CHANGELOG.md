@@ -194,6 +194,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (e12df21)
 
+- (changelog) Update changelog [skip ci] (667c72a)
+
 
 ### Features
 
@@ -717,6 +719,12 @@ All notable changes to this project are documented in this file.
 - Merge pull request #1 from PORTALSURFER/codex/update-pump-radiant-gui
 
 Extend Pump Radiant curve insertion (cbb4f09)
+
+- Add Radiant curve node hover deletion (21f1d6f)
+
+- Merge pull request #2 from PORTALSURFER/codex/pump-node-hover-delete
+
+Add Radiant curve node hover deletion (f0f742e)
 
 
 ### Refactoring
