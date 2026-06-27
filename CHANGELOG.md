@@ -702,7 +702,21 @@ All notable changes to this project are documented in this file.
 
 - Add Radiant curve point insertion (7e6f186)
 
-- Extend Radiant curve canvas insertion (c8b746d)
+- Extend Radiant curve canvas insertion (5dccd37)
+
+- Add Radiant option segment curvature drag (04c5a10)
+
+- Fix CI private git dependency fetch (fdd1999)
+
+- Use Radiant token for CI git dependencies (7e4d677)
+
+- Fix Windows dropdown preset setup (90a822f)
+
+- Stabilize Windows dropdown regression (099f713)
+
+- Merge pull request #1 from PORTALSURFER/codex/update-pump-radiant-gui
+
+Extend Pump Radiant curve insertion (cbb4f09)
 
 
 ### Refactoring
