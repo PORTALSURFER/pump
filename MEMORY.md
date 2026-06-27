@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-03-29 14:42:26 UTC
-- Active Mission: Keep Pump's editor UX moving forward without expanding preset/state scope unnecessarily.
-- Current Workstream: Beat-grid emphasis, snap controls, temporary snap inversion, and Windows-style undo/redo hotkeys are implemented directly on `main`.
+- Last Updated (UTC): 2026-06-27 08:15:23 UTC
+- Active Mission: Fix the signed-off Pump Radiant PR's GitHub Actions dependency-fetch failure, then merge it.
+- Current Workstream: Pump pins `PORTALSURFER/radiant` main at `119f95cfebab84687b7af870f3bf6e385f365346`, uses Toybox `593b67a91d25ee22668047714a54e9f521d125e1`, and `dist/pump-v0.2.0-macos.vst3` exports Ableton-required `_bundleEntry`, `_bundleExit`, and `_GetPluginFactory`.
 
 ## Current State
 
@@ -18,7 +18,16 @@
 - Curve point insertion, dragging, and segment translation now snap to the active vertical beat guides plus quarter-step horizontal bands when snap is effectively enabled.
 - Holding `s` temporarily inverts snapping, while preset save moved to `Shift+S`.
 - Undo and redo are now bound to `Ctrl+Z` and `Ctrl+Y` instead of the older `u` / `Shift+u` shortcuts.
+- Pump now depends on the latest `PORTALSURFER/radiant` main revision with a full `rev` pin, and `gui::tests::radiant_embedded_gui_surface_renders_at_pump_design_size` verifies Radiant can emit a frame for Pump-sized GUI content.
+- The VST3 AppKit tests now prove the hosted `PumpRadiantEditorView` contains a live Radiant runtime with visible `PUMP` text, fill, and curve polyline paint primitives after `IPlugView::attached`.
+- The Radiant curve widget now previews a new node while hovering sampled curve segments, inserts on segment click or blank-canvas click, hands the inserted point to the existing active-node drag/release path, paints an Option-held segment hover highlight, suppresses insert preview during Option-line hover, and adjusts segment curvature on Option-drag.
+- The macOS VST3 AppKit editor view now installs mouse tracking and forwards hover/modifier events so Option-hover can work in hosts.
+- GitHub Actions CI now sets `CARGO_NET_GIT_FETCH_WITH_CLI=true` and configures git to use the `RADIANT_REPO_TOKEN` repository secret so Cargo can fetch the private pinned Radiant dependency.
+- The Windows dropdown screenshot regression test now creates `MAX_PRESETS - 1` additional presets instead of exceeding the model cap.
+- The Windows dropdown regression now uses Pump's headless declarative renderer plus reducer checks for popup-over-curve geometry and preset/division selection behavior, avoiding the GitHub Windows runner's native WGPU readback access violation.
+- Pump now depends on a Toybox revision with Ableton-compatible macOS VST3 bundle entry symbols.
+- `scripts/ci.sh` now avoids the macOS Bash `set -u` empty-array failure when no feature flags are requested.
 
 ## Immediate Next Action
 
-- Continue from `docs/plans/active/todo.md` item `1` for the next request, keeping Pump pinned to the updated `toybox/main` shortcut-handling behavior.
+- Commit and push the Windows dropdown regression harness fix, wait for GitHub Actions to pass, then merge the signed-off Pump PR before updating/merging the audiodev superproject PR. Local Pump CI and `cargo test --features screenshot-test` are green; the rebuilt root `dist` Pump VST3 binary SHA-256 from the latest code-bearing commit is `339085d94859d7428eb65ff9fa6e35fd79a0023e96c38447a112fa12dbf28d71`.

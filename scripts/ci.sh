@@ -46,7 +46,7 @@ fi
 
 features=()
 if [[ "${want_vst3}" == "1" ]]; then
-  if grep -qE '^\\s*vst3\\s*=' Cargo.toml; then
+  if grep -qE '^[[:space:]]*vst3[[:space:]]*=' Cargo.toml; then
     : "${VST3_SDK_DIR:?VST3_SDK_DIR must be set when running with --vst3}"
     features=(--features vst3)
   else
@@ -56,8 +56,13 @@ if [[ "${want_vst3}" == "1" ]]; then
 fi
 
 cargo fmt --all -- --check
-cargo clippy --all-targets "${features[@]}" -- -D warnings
-cargo test --all "${features[@]}"
+if [[ ${#features[@]} -gt 0 ]]; then
+  cargo clippy --all-targets "${features[@]}" -- -D warnings
+  cargo test --all "${features[@]}"
+else
+  cargo clippy --all-targets -- -D warnings
+  cargo test --all
+fi
 
 if [[ "${want_screenshots}" == "1" ]]; then
   if ! grep -qE '^[[:space:]]*screenshot-test[[:space:]]*=' Cargo.toml; then

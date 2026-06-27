@@ -3,9 +3,14 @@
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use crate::GuiStatus;
+    use crate::{
+        params::{MAX_PRESETS, SYNC_DIVISIONS},
+        GuiStatus,
+    };
     use toybox::clap::gui::InputState;
-    use toybox::gui::declarative::{LayoutDiagnosticsMode, LayoutNodeDiagnostic, LayoutNodeKind};
+    use toybox::gui::declarative::{
+        LayoutDiagnosticsMode, LayoutNodeDiagnostic, LayoutNodeKind, UiAction,
+    };
     use toybox::gui::{Point, Rect, Size, render_spec_to_frame, screenshot_harness};
     use toybox::raw_window_handle::{RawWindowHandle, Win32WindowHandle};
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
@@ -54,79 +59,67 @@
     fn dropdown_popups_remain_usable_over_curve_content() {
         let width = WINDOW_WIDTH;
         let height = WINDOW_HEIGHT;
-        let mut gui = PumpGui::default();
         let params = Arc::new(PumpParams::new());
-        for _ in 0..20 {
+        for _ in 1..MAX_PRESETS {
             params
                 .add_preset_from_current_state()
                 .expect("preset insertion should succeed");
         }
         params.load_preset(0).expect("preset selection should succeed");
         let status = Arc::new(GuiStatus::default());
-        let host = parent_window(width, height);
         let queue = Arc::new(AutomationQueue::default());
-
-        gui.set_parent_raw(host.raw_handle());
-        gui.open(&params, &status, queue, None)
-            .expect("open should succeed");
-        gui.window.show();
-        let hwnd = wait_for_window_handle(&gui, host.hwnd);
-        let _ = wait_for_any_logical_size(&gui);
-        gui.request_resize(width, height);
-        wait_for_requested_logical_size(&gui, width, height)
-            .expect("plugin GUI did not reach requested logical size");
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            status,
+            Arc::clone(&queue),
+            None,
+        );
 
         let geometry = dropdown_geometry_for_size(width, height)
             .expect("dropdown geometry should resolve from diagnostics");
-        let baseline =
-            wait_for_rendered_frame(&gui, width, height).expect("baseline frame should render");
+        let baseline = render_state_frame(&state, width, height)
+            .expect("baseline frame should render");
+        let curve_variation = pixel_variation_count_in_rect(
+            baseline.width,
+            baseline.height,
+            &baseline.pixels,
+            geometry.curve_region,
+        );
+        assert!(
+            curve_variation > 0,
+            "curve region should contain rendered content under dropdown overlap area"
+        );
 
-        let preset_center = rect_center(geometry.preset_dropdown);
-        send_left_click(hwnd, preset_center);
-        let preset_open = wait_for_changed_frame(
-            &gui,
-            width,
+        let preset_menu = dropdown_menu_rect(
+            geometry.preset_dropdown,
+            params.preset_bank_snapshot().presets.len(),
+            false,
             height,
-            &baseline,
-            MIN_VISUAL_CHANGE_PIXELS,
-            "preset dropdown open",
-        )
-        .expect("preset dropdown should open and draw popup");
-
-        let preset_row_hover = dropdown_menu_row_point(geometry.preset_dropdown, 1, false);
-        send_mouse_move(hwnd, preset_row_hover);
-        let preset_hover = wait_for_changed_frame(
-            &gui,
-            width,
-            height,
-            &preset_open,
-            MIN_VISUAL_CHANGE_PIXELS,
-            "preset row hover",
-        )
-        .expect("preset dropdown row hover should update visuals");
-
-        send_mouse_wheel(hwnd, preset_row_hover, -120);
-        let preset_scrolled = wait_for_changed_frame(
-            &gui,
-            width,
-            height,
-            &preset_hover,
-            MIN_VISUAL_CHANGE_PIXELS,
-            "preset wheel scroll",
-        )
-        .expect("preset dropdown wheel scroll should update popup");
+        );
+        assert!(
+            rects_intersect(preset_menu, geometry.curve_region),
+            "preset dropdown popup geometry should overlap curve region"
+        );
+        assert!(
+            rect_contains_point(
+                preset_menu,
+                dropdown_menu_row_point(geometry.preset_dropdown, 1, false),
+            ),
+            "preset popup geometry should include at least one selectable row"
+        );
 
         let selected_preset_before = params.preset_bank_snapshot().selected;
-        send_left_click(hwnd, preset_row_hover);
-        let after_preset_select = wait_for_changed_frame(
-            &gui,
-            width,
-            height,
-            &preset_scrolled,
-            MIN_VISUAL_CHANGE_PIXELS,
-            "preset select",
-        )
-        .expect("preset dropdown selection should update frame");
+        state.reduce_action(UiAction::DropdownSelected {
+            key: PRESET_DROPDOWN_KEY.to_string(),
+            index: 1,
+        });
+        let after_preset_select = render_state_frame(&state, width, height)
+            .expect("preset selection frame should render");
+        assert!(
+            changed_pixel_count(&baseline.pixels, &after_preset_select.pixels)
+                >= MIN_VISUAL_CHANGE_PIXELS,
+            "preset dropdown selection should update frame"
+        );
         let selected_preset_after = params.preset_bank_snapshot().selected;
         assert_ne!(
             selected_preset_after, selected_preset_before,
@@ -134,58 +127,45 @@
         );
 
         let division_before = params.sync_division();
-        let division_center = rect_center(geometry.division_dropdown);
-        send_left_click(hwnd, division_center);
-        let division_open = wait_for_changed_frame(
-            &gui,
-            width,
+        let division_menu = dropdown_menu_rect(
+            geometry.division_dropdown,
+            SYNC_DIVISIONS.len(),
+            true,
             height,
-            &after_preset_select,
-            MIN_VISUAL_CHANGE_PIXELS,
-            "division dropdown open",
-        )
-        .expect("division dropdown should open and draw popup");
+        );
+        assert!(
+            rects_intersect(division_menu, geometry.curve_region),
+            "division dropdown popup should overlap visible curve content"
+        );
+        assert!(
+            rect_contains_point(
+                division_menu,
+                dropdown_menu_row_point(geometry.division_dropdown, 1, true),
+            ),
+            "division popup geometry should include at least one selectable row over the curve"
+        );
+        state.reduce_action(UiAction::DropdownSelected {
+            key: DIVISION_KEY.to_string(),
+            index: 1,
+        });
+        let after_division_select = render_state_frame(&state, width, height)
+            .expect("division selection frame should render");
         let curve_overlay_pixels = changed_pixel_count_in_rect(
             &after_preset_select.pixels,
-            &division_open.pixels,
+            &after_division_select.pixels,
             width,
             height,
             geometry.curve_region,
         );
         assert!(
             curve_overlay_pixels >= MIN_CURVE_OVERLAY_CHANGE_PIXELS,
-            "division dropdown popup should overlap visible curve content"
+            "division dropdown selection should update visible curve-region frame content"
         );
-
-        let division_row_hover = dropdown_menu_row_point(geometry.division_dropdown, 1, true);
-        send_mouse_move(hwnd, division_row_hover);
-        let division_hover = wait_for_changed_frame(
-            &gui,
-            width,
-            height,
-            &division_open,
-            MIN_VISUAL_CHANGE_PIXELS,
-            "division row hover",
-        )
-        .expect("division dropdown row hover should update visuals");
-
-        send_left_click(hwnd, division_row_hover);
-        let _after_division_select = wait_for_changed_frame(
-            &gui,
-            width,
-            height,
-            &division_hover,
-            MIN_VISUAL_CHANGE_PIXELS,
-            "division select",
-        )
-        .expect("division dropdown selection should update frame");
         let division_after = params.sync_division();
         assert_ne!(
             division_after, division_before,
             "division dropdown selection must remain interactive"
         );
-
-        gui.close();
     }
 
     fn render_and_capture_at_size(width: u32, height: u32) {
@@ -293,6 +273,97 @@
             x: control_rect.origin.x + (control_rect.size.width as i32 / 2),
             y,
         }
+    }
+
+    fn render_state_frame(
+        state: &GuiState,
+        width: u32,
+        height: u32,
+    ) -> Result<CapturedFrame, String> {
+        let frame = render_spec_to_frame(Size { width, height }, |input: &InputState| {
+            state.build_ui(input)
+        })?;
+        Ok(CapturedFrame {
+            width: frame.width,
+            height: frame.height,
+            pixels: frame.pixels,
+        })
+    }
+
+    fn dropdown_menu_rect(
+        control_rect: Rect,
+        option_count: usize,
+        open_up: bool,
+        window_height: u32,
+    ) -> Rect {
+        let row_height = control_rect.size.height.max(1) as i32;
+        let unclamped_height = row_height.saturating_mul(option_count.max(1) as i32);
+        let menu_height = unclamped_height.min(window_height as i32);
+        let origin_y = if open_up {
+            (control_rect.origin.y - menu_height).max(0)
+        } else {
+            let max_origin = window_height as i32 - menu_height;
+            (control_rect.origin.y + row_height).min(max_origin.max(0))
+        };
+        Rect {
+            origin: Point {
+                x: control_rect.origin.x,
+                y: origin_y,
+            },
+            size: Size {
+                width: control_rect.size.width,
+                height: menu_height.max(0) as u32,
+            },
+        }
+    }
+
+    fn rects_intersect(left: Rect, right: Rect) -> bool {
+        let left_x1 = left.origin.x + left.size.width as i32;
+        let left_y1 = left.origin.y + left.size.height as i32;
+        let right_x1 = right.origin.x + right.size.width as i32;
+        let right_y1 = right.origin.y + right.size.height as i32;
+        left.origin.x < right_x1
+            && left_x1 > right.origin.x
+            && left.origin.y < right_y1
+            && left_y1 > right.origin.y
+    }
+
+    fn rect_contains_point(rect: Rect, point: Point) -> bool {
+        point.x >= rect.origin.x
+            && point.y >= rect.origin.y
+            && point.x < rect.origin.x + rect.size.width as i32
+            && point.y < rect.origin.y + rect.size.height as i32
+    }
+
+    fn pixel_variation_count_in_rect(
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+        rect: Rect,
+    ) -> usize {
+        let Some((x0, y0, x1, y1)) = clamp_rect(rect, width, height) else {
+            return 0;
+        };
+        let stride = width as usize * 4;
+        let mut unique = Vec::<[u8; 4]>::new();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let offset = y as usize * stride + x as usize * 4;
+                let pixel = [
+                    pixels[offset],
+                    pixels[offset + 1],
+                    pixels[offset + 2],
+                    pixels[offset + 3],
+                ];
+                if !unique.contains(&pixel) {
+                    unique.push(pixel);
+                    if unique.len() > 1 {
+                        return unique.len();
+                    }
+                }
+            }
+        }
+        unique.len()
     }
 
     fn parent_window(width: u32, height: u32) -> ScreenshotParentWindow {

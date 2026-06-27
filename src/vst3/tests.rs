@@ -9,6 +9,17 @@ fn controller_reports_expected_parameter_count() {
 }
 
 #[test]
+fn controller_creates_editor_view_for_host_editor_request() {
+    let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
+    let view = unsafe { controller.createView(ViewType::kEditor) };
+    assert!(!view.is_null(), "editor view should be creatable");
+    unsafe {
+        let unknown = view.cast::<FUnknown>();
+        ((*(*unknown).vtbl).release)(unknown);
+    }
+}
+
+#[test]
 fn view_enforces_minimum_size() {
     let (preferred_width, preferred_height) = preferred_window_size();
     let view = HostedVst3View::new(
@@ -27,11 +38,11 @@ fn view_enforces_minimum_size() {
 fn controller_and_processor_share_param_state() {
     let shared = Arc::new(PumpVst3Shared::new());
     let controller = PumpVst3Controller::new(Arc::clone(&shared));
-    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let _processor = PumpVst3Processor::new(Arc::clone(&shared));
     let value = to_normalized(PARAM_MIX_NUM, 0.25);
     let result = unsafe { controller.setParamNormalized(PARAM_MIX_NUM, value) };
     assert_eq!(result, kResultOk);
-    assert!((processor.shared.params.mix() - 0.25).abs() < 1.0e-6);
+    assert!((shared.params.mix() - 0.25).abs() < 1.0e-6);
 }
 
 #[test]

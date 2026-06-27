@@ -131,6 +131,8 @@ All notable changes to this project are documented in this file.
 
 - (deps) Bump toybox to latest main (53c68f4)
 
+- (gui) Pin radiant for pump gui surface smoke (709219c)
+
 
 ### Documentation
 
@@ -189,6 +191,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (24e5f1f)
 
 - (changelog) Update changelog [skip ci] (5a74360)
+
+- (changelog) Update changelog [skip ci] (e12df21)
 
 
 ### Features
@@ -681,6 +685,24 @@ All notable changes to this project are documented in this file.
 - Render snap as checkbox control (c874d72)
 
 - Use Ctrl-Z and Ctrl-Y for Pump undo (c6f924b)
+
+- Fix macOS VST3 release compatibility (7d645c0)
+
+- Fix macOS VST3 editor attach (4a359ec)
+
+- Use Radiant surface for macOS VST3 editor (6649983)
+
+- Share Pump Radiant editor surface (33b129b)
+
+- Render Pump curve in Radiant editor (5db497c)
+
+- Harden Pump Radiant VST3 editor open path (91f17cd)
+
+- Assert hosted VST3 Radiant content (ae6c09f)
+
+- Add Radiant curve point insertion (7e6f186)
+
+- Extend Radiant curve canvas insertion (c8b746d)
 
 
 ### Refactoring
