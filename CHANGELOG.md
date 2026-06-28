@@ -226,6 +226,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (151a981)
 
+- (changelog) Update changelog [skip ci] (8e971ab)
+
 
 ### Features
 
@@ -802,7 +804,11 @@ Pump: remove visible pump label from UI (b5ea672)
 
 OPT-927: Add Cmd-click numeric parameter entry (2fe5c76)
 
-- Add global Pump curve slots (99d1b39)
+- Add global Pump curve slots (b025f8c)
+
+- Make curve slot swatches uniform (9a36e9c)
+
+- Pin Pump to merged Toybox command modifier (4247875)
 
 
 ### Refactoring
