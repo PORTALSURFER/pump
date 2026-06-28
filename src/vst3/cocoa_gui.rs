@@ -40,6 +40,14 @@ extern "C" {
     static NSParagraphStyleAttributeName: *mut Object;
 }
 
+type CFRunLoopRef = *mut c_void;
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFRunLoopGetMain() -> CFRunLoopRef;
+    fn CFRunLoopWakeUp(rl: CFRunLoopRef);
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct NSPoint {
@@ -579,6 +587,7 @@ extern "C" fn playhead_redraw_tick(this: &Object, _cmd: Sel, _timer: *mut Object
             .unwrap_or(false)
         {
             let _: () = msg_send![this, setNeedsDisplay: YES];
+            let _: () = msg_send![this, displayIfNeeded];
         }
     }
 }
@@ -689,6 +698,7 @@ unsafe fn start_redraw_driver(view: *mut Object) -> *mut RedrawDriver {
                     withObject: ptr::null_mut::<Object>()
                     waitUntilDone: NO
                 ];
+                wake_main_run_loop();
             }
             thread::sleep(PLAYHEAD_REDRAW_INTERVAL);
         }
@@ -701,6 +711,13 @@ unsafe fn start_redraw_driver(view: *mut Object) -> *mut RedrawDriver {
         stop,
         handle: Some(handle),
     }))
+}
+
+unsafe fn wake_main_run_loop() {
+    let main_run_loop = CFRunLoopGetMain();
+    if !main_run_loop.is_null() {
+        CFRunLoopWakeUp(main_run_loop);
+    }
 }
 
 unsafe fn stop_redraw_driver(view: *const Object) {

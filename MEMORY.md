@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-06-28 11:46:54 UTC
+- Last Updated (UTC): 2026-06-28 11:52:16 UTC
 - Active Mission: Add a realtime playback-position marker to Pump's Radiant curve editor.
-- Current Workstream: Branch `codex/playback-position-marker` threads `GuiStatus` into the macOS VST3 Radiant editor, paints a compact playhead marker at the sampled curve phase, and now uses a small redraw driver thread that asks AppKit's main thread to repaint while transport/timeline status is active.
+- Current Workstream: Branch `codex/playback-position-marker` threads `GuiStatus` into the macOS VST3 Radiant editor, paints a compact playhead marker at the sampled curve phase, and now uses a small redraw driver thread that wakes CoreFoundation's main run loop and forces an AppKit display pass while transport/timeline status is active.
 
 ## Current State
 
@@ -23,7 +23,7 @@
 - The Radiant curve widget now previews a new node while hovering sampled curve segments, inserts on segment click or blank-canvas click, hands the inserted point to the existing active-node drag/release path, paints an Option-held segment hover highlight, suppresses insert preview during Option-line hover, and adjusts segment curvature on Option-drag.
 - The macOS VST3 AppKit editor view now installs mouse tracking and forwards hover/modifier events so Option-hover can work in hosts.
 - The Radiant curve widget now paints a copper/warning/mint playback-position marker at `GuiStatus::phase()` whenever host beat timeline data is available or playback is active.
-- The macOS VST3 AppKit editor view now installs a 30 Hz redraw driver thread, retains the view while active, posts `playheadRedrawTick:` to the AppKit main thread, and stops/joins/releases on close/dealloc so the Radiant playhead marker can move in realtime without relying on pointer events or host run-loop timers.
+- The macOS VST3 AppKit editor view now installs a 30 Hz redraw driver thread, retains the view while active, posts `playheadRedrawTick:` to the AppKit main thread, wakes the main run loop, forces `displayIfNeeded` when the playhead should animate, and stops/joins/releases on close/dealloc so the Radiant playhead marker can move in realtime without relying on pointer events or host run-loop timers.
 - GitHub Actions CI now sets `CARGO_NET_GIT_FETCH_WITH_CLI=true` and configures git to use the `RADIANT_REPO_TOKEN` repository secret so Cargo can fetch the private pinned Radiant dependency.
 - The Windows dropdown screenshot regression test now creates `MAX_PRESETS - 1` additional presets instead of exceeding the model cap.
 - The Windows dropdown regression now uses Pump's headless declarative renderer plus reducer checks for popup-over-curve geometry and preset/division selection behavior, avoiding the GitHub Windows runner's native WGPU readback access violation.
