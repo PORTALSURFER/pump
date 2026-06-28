@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-06-28 12:41:47 UTC
-- Active Mission: Add OPT-923 hover highlighting composition for Pump curve editor nodes.
-- Current Workstream: Branch `wsvasek/opt-923-pump-highlight-curve-editor-nodes-on-hover` keeps hovered curve nodes visibly highlighted even when the hovered node is active/dragged, while preserving the active warning fill and adding a mint hover outline.
+- Last Updated (UTC): 2026-06-28 13:12:49 UTC
+- Active Mission: Add OPT-929 subtle version/build labeling to Pump editors.
+- Current Workstream: Branch `wsvasek/opt-929-pump-show-versionbuild-as-a-small-subtle-ui-label` renders the Cargo package version plus build-time short git SHA as a small muted label in both the Patchbay header and the Radiant/VST3 editor surface, without changing host-facing plugin identity metadata.
 
 ## Current State
 
@@ -32,7 +32,9 @@
 - Pump now depends on the Toybox revision that makes Ioskeley Mono the default bundled Radiant/Patchbay vector text font.
 - `scripts/ci.sh` now avoids the macOS Bash `set -u` empty-array failure when no feature flags are requested.
 - The Radiant curve widget now paints a hover outline for the active/dragged node under the pointer, keeps non-active hover highlighting distinct, and has regression coverage for clearing node hover when the pointer leaves the hit target.
+- Pump build.rs now exports `PUMP_BUILD_GIT_SHA_SHORT` from the current git commit, and the UI build label is generated from `CARGO_PKG_VERSION` plus that build hash.
+- The Patchbay editor header and Radiant/VST3 editor surface now display the generated version/build label while tests assert the prominent `PUMP` title text stays absent.
 
 ## Immediate Next Action
 
-- Run Pump local CI, commit and push the OPT-923 branch, and open a PR for user review. Latest focused validation passed: `cargo test radiant_editor -- --nocapture` and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture`.
+- Run `bash scripts/update_changelog.sh`, `bash scripts/ci_local.sh`, commit and push the OPT-929 branch, and open a PR for user review. Focused validation passed: `cargo test radiant_editor -- --nocapture`, `cargo test build_ui_includes_textboxes_for_control_captions -- --nocapture`, `cargo test radiant_embedded_gui_surface_renders_at_pump_design_size -- --nocapture`, `cargo test radiant_editor_surface_emits_visible_paint -- --nocapture`, and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture`.

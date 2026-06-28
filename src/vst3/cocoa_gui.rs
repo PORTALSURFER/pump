@@ -890,7 +890,11 @@ mod tests {
             let runtime = runtime_mut(root_view).expect("Radiant runtime should be attached");
             let paint_plan = runtime.paint_plan();
 
+            let version_label = crate::gui::build_version_label();
             assert!(paint_plan.primitives.iter().any(|primitive| {
+                matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == version_label)
+            }));
+            assert!(!paint_plan.primitives.iter().any(|primitive| {
                 matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
             }));
             assert!(paint_plan.primitives.iter().any(|primitive| {

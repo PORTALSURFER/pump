@@ -1,8 +1,9 @@
     use super::{
         constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
         local_from_node, move_node_with_push_through, move_segment_translated,
-        preferred_window_size, preview_node_on_curve, radiant_editor_frame_for_params,
-        resolve_runtime_controls_slot_widths, recompute_move_node_from_origin_for_size,
+        build_version_label, preferred_window_size, preview_node_on_curve,
+        radiant_editor_frame_for_params, recompute_move_node_from_origin_for_size,
+        resolve_runtime_controls_slot_widths,
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
@@ -726,9 +727,13 @@
         );
 
         let stats = frame.paint_plan.stats();
+        let version_label = build_version_label();
         assert!(stats.total > 0, "Radiant frame should emit paint primitives");
         assert!(stats.text > 0, "Radiant frame should emit text primitives");
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, radiant::runtime::PaintPrimitive::Text(text) if text.text.as_str() == version_label)
+        }));
+        assert!(!frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, radiant::runtime::PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
         }));
     }
@@ -1153,6 +1158,18 @@
                 texts
             );
         }
+
+        let version_label = build_version_label();
+        assert!(
+            texts.iter().any(|text| text == &version_label),
+            "expected build version label `{version_label}` in {:?}",
+            texts
+        );
+        assert!(
+            !texts.iter().any(|text| text == "PUMP"),
+            "expected no prominent PUMP text in {:?}",
+            texts
+        );
     }
 
     #[test]

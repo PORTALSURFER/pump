@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[path = "src/build_support.rs"]
 mod build_support;
@@ -19,6 +20,7 @@ fn main() {
 
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    emit_build_metadata(&manifest_dir);
     let config_path = manifest_dir.join("toybox.toml");
     println!("cargo:rerun-if-changed={}", config_path.display());
 
@@ -49,6 +51,54 @@ fn main() {
         artifact.label(),
         log_path(&output_path)
     );
+}
+
+fn emit_build_metadata(manifest_dir: &Path) {
+    if let Some(git_dir) = resolved_git_dir(manifest_dir) {
+        let head_path = git_dir.join("HEAD");
+        println!("cargo:rerun-if-changed={}", head_path.display());
+        if let Ok(head) = fs::read_to_string(&head_path) {
+            if let Some(reference) = head.strip_prefix("ref: ").map(str::trim) {
+                println!(
+                    "cargo:rerun-if-changed={}",
+                    git_dir.join(reference).display()
+                );
+            }
+        }
+    }
+
+    println!(
+        "cargo:rustc-env=PUMP_BUILD_GIT_SHA_SHORT={}",
+        git_short_sha(manifest_dir).unwrap_or_else(|| "unknown".to_string())
+    );
+}
+
+fn resolved_git_dir(manifest_dir: &Path) -> Option<PathBuf> {
+    let dot_git = manifest_dir.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+
+    let contents = fs::read_to_string(&dot_git).ok()?;
+    let path = contents.strip_prefix("gitdir: ")?.trim();
+    let git_dir = PathBuf::from(path);
+    Some(if git_dir.is_absolute() {
+        git_dir
+    } else {
+        manifest_dir.join(git_dir)
+    })
+}
+
+fn git_short_sha(manifest_dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .current_dir(manifest_dir)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn cargo_target_dir(manifest_dir: &Path) -> PathBuf {
