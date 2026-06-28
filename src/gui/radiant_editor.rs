@@ -1931,7 +1931,7 @@ mod tests {
             matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == version_label)
         }));
         assert!(!frame.paint_plan.primitives.iter().any(|primitive| {
-            matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
+            matches!(primitive, PaintPrimitive::Text(text) if text.text.eq_ignore_ascii_case("pump"))
         }));
         assert!(frame
             .paint_plan

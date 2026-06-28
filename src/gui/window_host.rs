@@ -82,7 +82,7 @@ impl PumpGui {
 
         self.window
             .open_parented_with(GuiOpenRequest::<GuiState, _, _, _>::new(
-                "pump".to_string(),
+                crate::plugin_metadata::PLUGIN_NAME.to_string(),
                 open_size,
                 state,
                 on_init,
