@@ -218,6 +218,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (f2e22ac)
 
+- (changelog) Update changelog [skip ci] (dd4d53e)
+
 
 ### Features
 
@@ -777,6 +779,10 @@ Bump Toybox for Ioskeley font (4725cac)
 OPT-923: Highlight Pump curve nodes on hover (12e6fd1)
 
 - Show Pump version build label (a213998)
+
+- Merge pull request #6 from PORTALSURFER/wsvasek/opt-929-pump-show-versionbuild-as-a-small-subtle-ui-label
+
+OPT-929: Show Pump version/build label (f87a57e)
 
 
 ### Refactoring
