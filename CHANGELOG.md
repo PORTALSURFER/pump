@@ -202,6 +202,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (1ea9e10)
 
+- (changelog) Update changelog [skip ci] (b225d3b)
+
 
 ### Features
 
@@ -737,6 +739,8 @@ Add Radiant curve node hover deletion (f0f742e)
 - Fix VST3 playhead redraw timer (3193828)
 
 - Drive VST3 playhead redraws without host timers (77f808c)
+
+- Force VST3 playhead redraw display passes (6bbc143)
 
 
 ### Refactoring
