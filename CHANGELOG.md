@@ -212,6 +212,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (1b4211c)
 
+- (changelog) Update changelog [skip ci] (38b9901)
+
 
 ### Features
 
@@ -759,6 +761,10 @@ Add Radiant playback position marker (da0a587)
 - Bump Toybox for Ioskeley font (46c08bb)
 
 - Point Pump at merged Toybox font commit (b7e7392)
+
+- Merge pull request #4 from PORTALSURFER/codex/pump-ioskeley-toybox-rev
+
+Bump Toybox for Ioskeley font (4725cac)
 
 
 ### Refactoring
