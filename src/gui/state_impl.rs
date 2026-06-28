@@ -487,18 +487,12 @@ impl GuiState {
             .unwrap_or((None, None, None));
         let deviated_slot =
             loaded_slot.filter(|index| self.params.current_curve_deviates_from_global_slot(*index));
-        let slot_widths =
-            weighted_slot_lengths(metrics.content_w.max(1), &[1; GLOBAL_CURVE_SLOT_COUNT]);
         let buttons = quick_slots
             .iter()
             .enumerate()
             .map(|(index, slot)| {
                 let size = Size {
-                    width: slot_widths
-                        .get(index)
-                        .copied()
-                        .unwrap_or(metrics.quick_shape_button_w)
-                        .max(1),
+                    width: metrics.quick_shape_button_w.max(1),
                     height: metrics.quick_shape_button_h,
                 };
                 weighted_slot(

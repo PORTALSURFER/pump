@@ -21,7 +21,7 @@
     use toybox::gui::declarative::{
         measure_checked, ContainerLayout, ContainerLength, CurveEditorSpec, DropdownSpec,
         GridKind, LayoutBox, Length, Node, PanelSpec, RegionInteractionKind, RootScaleMode,
-        SurfaceCommand, UiAction, UiSpec, weighted_slot_lengths,
+        SurfaceCommand, UiAction, UiSpec,
     };
     use toybox::gui::{render_spec_to_frame, Color, MainPalette, Point, Size};
 
@@ -1200,7 +1200,7 @@
     }
 
     #[test]
-    fn build_ui_uses_exact_weighted_widths_for_quick_slot_regions() {
+    fn build_ui_uses_uniform_widths_for_quick_slot_regions() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -1214,10 +1214,10 @@
             },
             ..InputState::default()
         });
-        let expected_widths = weighted_slot_lengths(WINDOW_WIDTH, &[1; GLOBAL_CURVE_SLOT_COUNT]);
+        let expected_width = UiLayoutMetrics::design_space().quick_shape_button_w;
         let expected_height = UiLayoutMetrics::design_space().quick_shape_button_h;
 
-        for (index, expected_width) in expected_widths.iter().copied().enumerate() {
+        for index in 0..GLOBAL_CURVE_SLOT_COUNT {
             let key = format!("{QUICK_SLOT_KEY_PREFIX}{index}");
             let region =
                 find_region_node(spec.root.content(), &key).expect("quick-slot region should exist");

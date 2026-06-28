@@ -39,6 +39,10 @@ use super::{build_version_label, WINDOW_HEIGHT, WINDOW_WIDTH};
 const BUILD_LABEL_HEIGHT: f32 = 16.0;
 const CURVE_PREVIEW_HEIGHT: f32 = 72.0;
 const CURVE_SLOT_ROW_HEIGHT: f32 = 22.0;
+const CURVE_SLOT_SPACING: f32 = 4.0;
+const CURVE_SLOT_WIDTH: f32 = ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0)
+    - CURVE_SLOT_SPACING * ((GLOBAL_CURVE_SLOT_COUNT - 1) as f32))
+    / GLOBAL_CURVE_SLOT_COUNT as f32;
 const CONTROL_ROW_HEIGHT: f32 = 22.0;
 const CONTROL_LABEL_WIDTH: f32 = 54.0;
 const CONTROL_VALUE_WIDTH: f32 = 60.0;
@@ -466,10 +470,11 @@ fn curve_slot_row(state: &RadiantEditorState) -> ViewNode<RadiantEditorMessage> 
                 ),
                 RadiantEditorMessage::CurveSlot,
             )
+            .width(CURVE_SLOT_WIDTH)
             .height(CURVE_SLOT_ROW_HEIGHT)
         });
     row(slot_nodes)
-        .spacing(4.0)
+        .spacing(CURVE_SLOT_SPACING)
         .fill_width()
         .height(CURVE_SLOT_ROW_HEIGHT)
 }
@@ -1024,14 +1029,9 @@ struct CurveSlotWidget {
 impl CurveSlotWidget {
     fn new(index: usize, curve: Option<EditableCurve>, loaded: bool, deviated: bool) -> Self {
         Self {
-            common: WidgetCommon::fixed(
-                0,
-                ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0) / GLOBAL_CURVE_SLOT_COUNT as f32)
-                    .max(1.0),
-                CURVE_SLOT_ROW_HEIGHT,
-            )
-            .with_pointer_focus()
-            .without_default_chrome(),
+            common: WidgetCommon::fixed(0, CURVE_SLOT_WIDTH.max(1.0), CURVE_SLOT_ROW_HEIGHT)
+                .with_pointer_focus()
+                .without_default_chrome(),
             index,
             curve: curve.map(|curve| curve.normalized()),
             loaded,
