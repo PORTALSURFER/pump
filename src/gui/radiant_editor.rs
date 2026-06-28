@@ -57,6 +57,7 @@ const CURVE_NODE_HIT_RADIUS: f32 = 10.0;
 const CURVE_NODE_INSERT_GUARD_RADIUS: f32 = 12.0;
 const CURVE_SEGMENT_HOVER_RADIUS: f32 = 7.0;
 const CURVE_SEGMENT_TENSION_PIXEL_SCALE: f32 = 120.0;
+const CURVE_NODE_PUSH_THROUGH_MARGIN_PX: f32 = 10.0;
 const CURVE_NODE_MIN_SPACING_X: f32 = 1.0e-3;
 const CURVE_PLAYHEAD_MARKER_SIZE: f32 = 5.5;
 const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
@@ -64,6 +65,12 @@ const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
 const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
 const VALUE_LABEL_FONT_SIZE: f32 = 12.0;
+
+#[derive(Clone)]
+struct ActiveCurveNodeDrag {
+    origin_index: usize,
+    origin_curve: EditableCurve,
+}
 
 #[derive(Clone)]
 struct ActiveCurveSegmentDrag {
@@ -147,6 +154,7 @@ struct RadiantEditorState {
     automation_queue: Arc<AutomationQueue>,
     automation_config: AutomationConfig,
     active_curve_node: Option<usize>,
+    active_curve_node_drag: Option<ActiveCurveNodeDrag>,
     active_curve_segment: Option<ActiveCurveSegmentDrag>,
     hover_curve_node: Option<usize>,
     preview_curve_node: Option<CurveNode>,
@@ -291,6 +299,7 @@ impl RadiantEditorState {
             automation_queue,
             automation_config: AutomationConfig::default(),
             active_curve_node: None,
+            active_curve_node_drag: None,
             active_curve_segment: None,
             hover_curve_node: None,
             preview_curve_node: None,
@@ -597,14 +606,19 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             }
         }
         CurvePreviewMessage::PressNode { index } => {
-            state.active_curve_node = Some(index);
-            state.active_curve_segment = None;
-            state.hover_curve_node = Some(index);
-            state.preview_curve_node = None;
-            state.hover_curve_segment = None;
+            let curve = state.params.editable_curve_snapshot();
+            if let Some(drag) = start_curve_node_drag(&curve, index) {
+                state.active_curve_node = Some(index);
+                state.active_curve_node_drag = Some(drag);
+                state.active_curve_segment = None;
+                state.hover_curve_node = Some(index);
+                state.preview_curve_node = None;
+                state.hover_curve_segment = None;
+            }
         }
         CurvePreviewMessage::InsertNode { node } => {
             let mut curve = state.params.editable_curve_snapshot();
+            state.active_curve_node_drag = None;
             state.active_curve_segment = None;
             state.hover_curve_node = None;
             state.preview_curve_node = None;
@@ -612,6 +626,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             if let Some(index) = insert_curve_node(&mut curve, node) {
                 state.params.set_editable_curve(&curve);
                 state.active_curve_node = Some(index);
+                state.active_curve_node_drag = start_curve_node_drag(&curve, index);
                 state.hover_curve_node = Some(index);
             }
         }
@@ -621,28 +636,40 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 state.params.set_editable_curve(&curve);
             }
             state.active_curve_node = None;
+            state.active_curve_node_drag = None;
             state.active_curve_segment = None;
             state.hover_curve_node = None;
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
         CurvePreviewMessage::DragNode { index, node } => {
-            let mut curve = state.params.editable_curve_snapshot();
-            update_curve_node(&mut curve, index, node);
+            let (curve, moved_index) = if let Some(drag) = state.active_curve_node_drag.as_ref() {
+                curve_with_dragged_node(drag, node)
+            } else {
+                let mut curve = state.params.editable_curve_snapshot();
+                update_curve_node(&mut curve, index, node);
+                (curve, index)
+            };
             state.params.set_editable_curve(&curve);
-            state.active_curve_node = Some(index);
+            state.active_curve_node = Some(moved_index);
             state.active_curve_segment = None;
-            state.hover_curve_node = Some(index);
+            state.hover_curve_node = Some(moved_index);
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
         CurvePreviewMessage::ReleaseNode { index, node } => {
-            let mut curve = state.params.editable_curve_snapshot();
-            update_curve_node(&mut curve, index, node);
+            let (curve, moved_index) = if let Some(drag) = state.active_curve_node_drag.as_ref() {
+                curve_with_dragged_node(drag, node)
+            } else {
+                let mut curve = state.params.editable_curve_snapshot();
+                update_curve_node(&mut curve, index, node);
+                (curve, index)
+            };
             state.params.set_editable_curve(&curve);
             state.active_curve_node = None;
+            state.active_curve_node_drag = None;
             state.active_curve_segment = None;
-            state.hover_curve_node = Some(index);
+            state.hover_curve_node = Some(moved_index);
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
@@ -650,6 +677,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             let curve = state.params.editable_curve_snapshot();
             if let Some(drag) = start_curve_segment_drag(&curve, index, position) {
                 state.active_curve_node = None;
+                state.active_curve_node_drag = None;
                 state.active_curve_segment = Some(drag);
                 state.hover_curve_node = None;
                 state.preview_curve_node = None;
@@ -676,6 +704,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         }
         CurvePreviewMessage::Cancel => {
             state.active_curve_node = None;
+            state.active_curve_node_drag = None;
             state.active_curve_segment = None;
             state.hover_curve_node = None;
             state.preview_curve_node = None;
@@ -683,6 +712,122 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.option_hover_held = false;
         }
     }
+}
+
+fn start_curve_node_drag(curve: &EditableCurve, index: usize) -> Option<ActiveCurveNodeDrag> {
+    let normalized = curve.clone().normalized();
+    (index < normalized.nodes.len()).then_some(ActiveCurveNodeDrag {
+        origin_index: index,
+        origin_curve: normalized,
+    })
+}
+
+fn curve_with_dragged_node(
+    drag: &ActiveCurveNodeDrag,
+    target: CurveNode,
+) -> (EditableCurve, usize) {
+    let mut curve = drag.origin_curve.clone();
+    let moved_index = move_curve_node_with_push_through(&mut curve, drag.origin_index, target);
+    curve.normalize_in_place();
+    (curve, moved_index)
+}
+
+fn move_curve_node_with_push_through(
+    curve: &mut EditableCurve,
+    index: usize,
+    target: CurveNode,
+) -> usize {
+    if index >= curve.nodes.len() {
+        return index;
+    }
+
+    let y = target.y.clamp(0.0, 1.0);
+    let last_index = curve.nodes.len().saturating_sub(1);
+    if index == 0 {
+        set_wrapped_curve_endpoint_y(curve, y);
+        return 0;
+    }
+    if index == last_index {
+        set_wrapped_curve_endpoint_y(curve, y);
+        return curve.nodes.len().saturating_sub(1);
+    }
+
+    let mut moved_index = index;
+    let threshold_x = CURVE_NODE_PUSH_THROUGH_MARGIN_PX
+        / ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(2.0) - 1.0);
+    while moved_index + 1 < curve.nodes.len().saturating_sub(1)
+        && target.x > curve.nodes[moved_index + 1].x + threshold_x
+    {
+        remove_interior_curve_node(curve, moved_index + 1);
+    }
+    while moved_index > 1 && target.x < curve.nodes[moved_index - 1].x - threshold_x {
+        remove_interior_curve_node(curve, moved_index - 1);
+        moved_index = moved_index.saturating_sub(1);
+    }
+
+    let min_x = curve.nodes[moved_index - 1].x + CURVE_NODE_MIN_SPACING_X;
+    let max_x = curve.nodes[moved_index + 1].x - CURVE_NODE_MIN_SPACING_X;
+    curve.nodes[moved_index] = CurveNode {
+        x: target.x.clamp(min_x, max_x),
+        y,
+    };
+    enforce_wrapped_curve_endpoints(curve);
+    moved_index
+}
+
+fn remove_interior_curve_node(curve: &mut EditableCurve, remove_index: usize) {
+    let last_index = curve.nodes.len().saturating_sub(1);
+    if remove_index == 0 || remove_index >= last_index {
+        return;
+    }
+
+    let left_segment_index = remove_index.saturating_sub(1);
+    let right_segment_index = remove_index.min(curve.segments.len().saturating_sub(1));
+    let left_tension = curve
+        .segments
+        .get(left_segment_index)
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let right_tension = curve
+        .segments
+        .get(right_segment_index)
+        .copied()
+        .unwrap_or(CurveSegment {
+            tension: left_tension,
+        })
+        .tension;
+    let merged_tension =
+        ((left_tension + right_tension) * 0.5).clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
+
+    curve.nodes.remove(remove_index);
+    if !curve.segments.is_empty() {
+        if right_segment_index < curve.segments.len() {
+            curve.segments.remove(right_segment_index);
+        } else {
+            curve.segments.pop();
+        }
+        if left_segment_index < curve.segments.len() {
+            curve.segments[left_segment_index].tension = merged_tension;
+        }
+    }
+}
+
+fn set_wrapped_curve_endpoint_y(curve: &mut EditableCurve, y: f32) {
+    if curve.nodes.len() < 2 {
+        return;
+    }
+    let clamped = y.clamp(0.0, 1.0);
+    let last_index = curve.nodes.len() - 1;
+    curve.nodes[0] = CurveNode { x: 0.0, y: clamped };
+    curve.nodes[last_index] = CurveNode { x: 1.0, y: clamped };
+}
+
+fn enforce_wrapped_curve_endpoints(curve: &mut EditableCurve) {
+    if curve.nodes.len() < 2 {
+        return;
+    }
+    set_wrapped_curve_endpoint_y(curve, curve.nodes[0].y);
 }
 
 fn start_curve_segment_drag(
@@ -2080,6 +2225,268 @@ mod tests {
         assert!((curve.nodes[1].x - 0.24).abs() < f32::EPSILON);
         assert!((curve.nodes[1].y - 0.3).abs() < f32::EPSILON);
         assert_eq!(state.active_curve_node, None);
+    }
+
+    #[test]
+    fn radiant_editor_curve_drag_sticks_before_neighbor_boundary() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.25, y: 0.6 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        let threshold_x = CURVE_NODE_PUSH_THROUGH_MARGIN_PX
+            / ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(2.0) - 1.0);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 2 }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode {
+                    x: curve.nodes[3].x + threshold_x - 1.0e-3,
+                    y: 0.4,
+                },
+            }),
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        assert_eq!(dragged.nodes.len(), curve.nodes.len());
+        assert_eq!(dragged.nodes[3], curve.nodes[3]);
+        assert!(dragged.nodes[2].x <= curve.nodes[3].x - CURVE_NODE_MIN_SPACING_X);
+        assert_eq!(state.active_curve_node, Some(2));
+    }
+
+    #[test]
+    fn radiant_editor_curve_drag_removes_crossed_neighbor() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.25, y: 0.6 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 2 }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode { x: 0.95, y: 0.4 },
+            }),
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        assert_eq!(dragged.nodes.len(), curve.nodes.len() - 1);
+        assert!(!dragged.nodes.contains(&curve.nodes[3]));
+        assert_eq!(dragged.segments.len(), dragged.nodes.len() - 1);
+        assert_eq!(state.active_curve_node, Some(2));
+        assert_eq!(state.hover_curve_node, Some(2));
+    }
+
+    #[test]
+    fn radiant_editor_curve_drag_removes_multiple_crossed_neighbors() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.2, y: 0.6 },
+                CurveNode { x: 0.4, y: 0.3 },
+                CurveNode { x: 0.6, y: 0.7 },
+                CurveNode { x: 0.8, y: 0.2 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 1 }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
+                index: 1,
+                node: CurveNode { x: 0.98, y: 0.45 },
+            }),
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        assert_eq!(dragged.nodes.len(), 3);
+        assert_eq!(dragged.nodes[0].x, 0.0);
+        assert!((dragged.nodes[1].x - 0.98).abs() < 1.0e-6);
+        assert_eq!(dragged.nodes[2].x, 1.0);
+        assert_eq!(state.active_curve_node, Some(1));
+    }
+
+    #[test]
+    fn radiant_editor_curve_drag_reverse_restores_buffered_neighbors() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.25, y: 0.6 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.15 },
+                CurveSegment { tension: -0.25 },
+                CurveSegment { tension: 0.35 },
+                CurveSegment { tension: -0.05 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 2 }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode { x: 0.95, y: 0.4 },
+            }),
+        );
+        assert_eq!(
+            params.editable_curve_snapshot().nodes.len(),
+            curve.nodes.len() - 1
+        );
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode { x: 0.55, y: 0.4 },
+            }),
+        );
+
+        let restored = params.editable_curve_snapshot();
+        assert_eq!(restored.nodes.len(), curve.nodes.len());
+        assert_eq!(restored.nodes[3], curve.nodes[3]);
+        assert_eq!(restored.segments, curve.segments);
+        assert_eq!(state.active_curve_node, Some(2));
+    }
+
+    #[test]
+    fn radiant_editor_curve_drag_release_commits_visible_crossings() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.25, y: 0.6 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 2 }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseNode {
+                index: 2,
+                node: CurveNode { x: 0.95, y: 0.4 },
+            }),
+        );
+
+        let released = params.editable_curve_snapshot();
+        assert_eq!(released.nodes.len(), curve.nodes.len() - 1);
+        assert!(!released.nodes.contains(&curve.nodes[3]));
+        assert_eq!(state.active_curve_node, None);
+        assert!(state.active_curve_node_drag.is_none());
+    }
+
+    #[test]
+    fn radiant_editor_curve_drag_keeps_endpoints_anchored() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.5, y: 0.25 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 0 }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
+                index: 0,
+                node: CurveNode { x: 0.9, y: 0.31 },
+            }),
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        let last_index = dragged.nodes.len() - 1;
+        assert_eq!(dragged.nodes.len(), curve.nodes.len());
+        assert_eq!(dragged.nodes[0].x, 0.0);
+        assert_eq!(dragged.nodes[last_index].x, 1.0);
+        assert!((dragged.nodes[0].y - 0.31).abs() < 1.0e-6);
+        assert!((dragged.nodes[last_index].y - 0.31).abs() < 1.0e-6);
     }
 
     #[test]
