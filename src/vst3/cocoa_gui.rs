@@ -35,6 +35,11 @@ extern "C" {
     static NSParagraphStyleAttributeName: *mut Object;
 }
 
+#[link(name = "Foundation", kind = "framework")]
+extern "C" {
+    static NSRunLoopCommonModes: *mut Object;
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct NSPoint {
@@ -660,14 +665,24 @@ unsafe fn event_position(this: &Object, event: *mut Object) -> Point {
 }
 
 unsafe fn schedule_redraw_timer(view: *mut Object) -> *mut Object {
-    msg_send![
+    let timer: *mut Object = msg_send![
         class!(NSTimer),
-        scheduledTimerWithTimeInterval: PLAYHEAD_REDRAW_INTERVAL_SECONDS
+        timerWithTimeInterval: PLAYHEAD_REDRAW_INTERVAL_SECONDS
         target: view
         selector: sel!(playheadRedrawTick:)
         userInfo: ptr::null_mut::<Object>()
         repeats: YES
-    ]
+    ];
+    if timer.is_null() {
+        return ptr::null_mut();
+    }
+    let main_run_loop: *mut Object = msg_send![class!(NSRunLoop), mainRunLoop];
+    let _: () = msg_send![
+        main_run_loop,
+        addTimer: timer
+        forMode: NSRunLoopCommonModes
+    ];
+    timer
 }
 
 unsafe fn invalidate_redraw_timer(view: *const Object) {
@@ -898,6 +913,8 @@ mod tests {
                 !redraw_timer.is_null(),
                 "playhead redraw timer should be installed"
             );
+            let timer_valid: BOOL = msg_send![redraw_timer, isValid];
+            assert_eq!(timer_valid, YES);
 
             let _: () = msg_send![view.as_ptr(), release];
         }

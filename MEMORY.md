@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-06-28 11:30:55 UTC
+- Last Updated (UTC): 2026-06-28 11:41:10 UTC
 - Active Mission: Add a realtime playback-position marker to Pump's Radiant curve editor.
-- Current Workstream: Branch `codex/playback-position-marker` threads `GuiStatus` into the macOS VST3 Radiant editor, paints a compact playhead marker at the sampled curve phase, and installs an AppKit redraw timer so the marker moves during playback.
+- Current Workstream: Branch `codex/playback-position-marker` threads `GuiStatus` into the macOS VST3 Radiant editor, paints a compact playhead marker at the sampled curve phase, and now schedules the AppKit redraw timer on the main run loop in common modes so it can tick even when the pointer is not hovering the curve.
 
 ## Current State
 
@@ -23,7 +23,7 @@
 - The Radiant curve widget now previews a new node while hovering sampled curve segments, inserts on segment click or blank-canvas click, hands the inserted point to the existing active-node drag/release path, paints an Option-held segment hover highlight, suppresses insert preview during Option-line hover, and adjusts segment curvature on Option-drag.
 - The macOS VST3 AppKit editor view now installs mouse tracking and forwards hover/modifier events so Option-hover can work in hosts.
 - The Radiant curve widget now paints a copper/warning/mint playback-position marker at `GuiStatus::phase()` whenever host beat timeline data is available or playback is active.
-- The macOS VST3 AppKit editor view now installs a 30 Hz redraw timer and invalidates it on close/dealloc so the Radiant playhead marker moves in realtime without relying on pointer events.
+- The macOS VST3 AppKit editor view now installs a 30 Hz redraw timer on `NSRunLoop mainRunLoop` in `NSRunLoopCommonModes` and invalidates it on close/dealloc so the Radiant playhead marker moves in realtime without relying on pointer events.
 - GitHub Actions CI now sets `CARGO_NET_GIT_FETCH_WITH_CLI=true` and configures git to use the `RADIANT_REPO_TOKEN` repository secret so Cargo can fetch the private pinned Radiant dependency.
 - The Windows dropdown screenshot regression test now creates `MAX_PRESETS - 1` additional presets instead of exceeding the model cap.
 - The Windows dropdown regression now uses Pump's headless declarative renderer plus reducer checks for popup-over-curve geometry and preset/division selection behavior, avoiding the GitHub Windows runner's native WGPU readback access violation.
@@ -32,4 +32,4 @@
 
 ## Immediate Next Action
 
-- Commit and push the Pump branch, run changelog automation as its own follow-up commit if needed, then open a Pump PR for user review. Validation already passed: `bash scripts/run_agent_request.sh`, `cargo fmt --all -- --check`, `cargo test radiant_editor -- --nocapture`, `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture`, `bash scripts/ci.sh`, `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3`, `cargo test --features screenshot-test -- --nocapture`, `bash scripts/update_changelog.sh`, and `bash scripts/ci_local.sh`.
+- Commit and push the Pump branch, run changelog automation as its own follow-up commit if needed, rebuild `dist/pump-v0.2.0-macos.vst3`, and hand back to user review. Latest validation passed: `cargo fmt --all -- --check`, `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture`, `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3`, and `bash scripts/ci_local.sh`.
