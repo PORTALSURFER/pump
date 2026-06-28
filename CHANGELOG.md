@@ -228,6 +228,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (8e971ab)
 
+- (changelog) Update changelog [skip ci] (defcdce)
+
 
 ### Features
 
@@ -809,6 +811,12 @@ OPT-927: Add Cmd-click numeric parameter entry (2fe5c76)
 - Make curve slot swatches uniform (9a36e9c)
 
 - Pin Pump to merged Toybox command modifier (4247875)
+
+- Support sticky curve point drag-through (f86a315)
+
+- Merge pull request #10 from PORTALSURFER/wsvasek/opt-925-pump-support-sticky-drag-through-point-removal-in-curve
+
+OPT-925: Support sticky curve point drag-through (baa6434)
 
 
 ### Refactoring
