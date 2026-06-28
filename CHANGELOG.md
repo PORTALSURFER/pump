@@ -220,6 +220,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (dd4d53e)
 
+- (changelog) Update changelog [skip ci] (cf13e59)
+
 
 ### Features
 
@@ -783,6 +785,12 @@ OPT-923: Highlight Pump curve nodes on hover (12e6fd1)
 - Merge pull request #6 from PORTALSURFER/wsvasek/opt-929-pump-show-versionbuild-as-a-small-subtle-ui-label
 
 OPT-929: Show Pump version/build label (f87a57e)
+
+- Guard Pump UI against visible name label (bd7edd6)
+
+- Merge pull request #7 from PORTALSURFER/wsvasek/opt-928-pump-remove-visible-pump-label-from-the-ui
+
+Pump: remove visible pump label from UI (b5ea672)
 
 
 ### Refactoring
