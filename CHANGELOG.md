@@ -222,6 +222,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (cf13e59)
 
+- (changelog) Update changelog [skip ci] (ed61ff2)
+
 
 ### Features
 
