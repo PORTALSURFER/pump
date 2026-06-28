@@ -206,6 +206,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (9ea4580)
 
+- (changelog) Update changelog [skip ci] (a757bfd)
+
 
 ### Features
 
@@ -745,6 +747,10 @@ Add Radiant curve node hover deletion (f0f742e)
 - Force VST3 playhead redraw display passes (6bbc143)
 
 - Refresh Radiant surface for realtime playhead (97ee6e2)
+
+- Merge pull request #3 from PORTALSURFER/codex/playback-position-marker
+
+Add Radiant playback position marker (da0a587)
 
 
 ### Refactoring
