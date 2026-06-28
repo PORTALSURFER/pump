@@ -198,6 +198,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (ac80d25)
 
+- (changelog) Update changelog [skip ci] (3cb2dae)
+
 
 ### Features
 
@@ -729,6 +731,8 @@ Extend Pump Radiant curve insertion (cbb4f09)
 Add Radiant curve node hover deletion (f0f742e)
 
 - Add Radiant playback position marker (72e46f4)
+
+- Fix VST3 playhead redraw timer (3193828)
 
 
 ### Refactoring
