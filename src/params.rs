@@ -16,6 +16,7 @@ use crate::curve::{
     CurveSegment, EditableCurve, CURVE_TABLE_LEN, MAX_EDITABLE_NODES,
 };
 
+mod global_curve_slots;
 mod host_api;
 mod model;
 mod preset_store;
@@ -28,6 +29,8 @@ pub(crate) use model::{
     seeded_quick_shape_slots, STATE_MAGIC, STATE_VERSION,
 };
 
+#[cfg(test)]
+pub(crate) use global_curve_slots::with_test_curve_slot_path;
 #[cfg(feature = "vst3")]
 pub use host_api::{
     apply_normalized_param_value, clap_id_from_vst3_param_id, normalized_from_plain_value,

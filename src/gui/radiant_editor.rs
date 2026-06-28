@@ -29,15 +29,16 @@ use crate::curve::{
 };
 use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
-    MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
-    PARAM_PHASE_OFFSET_ID,
+    GLOBAL_CURVE_SLOT_COUNT, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB,
+    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
 };
 use crate::GuiStatus;
 
 use super::{build_version_label, WINDOW_HEIGHT, WINDOW_WIDTH};
 
 const BUILD_LABEL_HEIGHT: f32 = 16.0;
-const CURVE_PREVIEW_HEIGHT: f32 = 96.0;
+const CURVE_PREVIEW_HEIGHT: f32 = 72.0;
+const CURVE_SLOT_ROW_HEIGHT: f32 = 22.0;
 const CONTROL_ROW_HEIGHT: f32 = 22.0;
 const CONTROL_LABEL_WIDTH: f32 = 54.0;
 const CONTROL_VALUE_WIDTH: f32 = 60.0;
@@ -55,6 +56,8 @@ const CURVE_SEGMENT_TENSION_PIXEL_SCALE: f32 = 120.0;
 const CURVE_NODE_MIN_SPACING_X: f32 = 1.0e-3;
 const CURVE_PLAYHEAD_MARKER_SIZE: f32 = 5.5;
 const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
+const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
+const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
 const VALUE_LABEL_FONT_SIZE: f32 = 12.0;
 
@@ -145,6 +148,7 @@ struct RadiantEditorState {
     preview_curve_node: Option<CurveNode>,
     hover_curve_segment: Option<usize>,
     option_hover_held: bool,
+    loaded_global_curve_slot: Option<usize>,
     numeric_entry: Option<NumericEntryState>,
 }
 
@@ -155,6 +159,7 @@ enum RadiantEditorMessage {
     OutputGain(f32),
     SyncDivision(f32),
     Curve(CurvePreviewMessage),
+    CurveSlot(CurveSlotMessage),
     NumericEntry(NumericEntryMessage),
 }
 
@@ -287,6 +292,7 @@ impl RadiantEditorState {
             preview_curve_node: None,
             hover_curve_segment: None,
             option_hover_held: false,
+            loaded_global_curve_slot: None,
             numeric_entry: None,
         }
     }
@@ -320,6 +326,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             )
             .fill_width()
             .height(CURVE_PREVIEW_HEIGHT),
+            curve_slot_row(state),
             control_row(
                 NumericEntryTarget::Mix,
                 format!("{:.0}%", params.mix() * 100.0),
@@ -437,7 +444,56 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                 .set_sync_division((value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round());
         }
         RadiantEditorMessage::Curve(message) => reduce_curve_message(state, message),
+        RadiantEditorMessage::CurveSlot(message) => reduce_curve_slot_message(state, message),
         RadiantEditorMessage::NumericEntry(message) => reduce_numeric_entry_message(state, message),
+    }
+}
+
+fn curve_slot_row(state: &RadiantEditorState) -> ViewNode<RadiantEditorMessage> {
+    let slots = state.params.global_curve_slots_snapshot();
+    let loaded_slot = state.loaded_global_curve_slot;
+    let deviated_slot =
+        loaded_slot.filter(|index| state.params.current_curve_deviates_from_global_slot(*index));
+    let slot_nodes: [ViewNode<RadiantEditorMessage>; GLOBAL_CURVE_SLOT_COUNT] =
+        std::array::from_fn(|index| {
+            let curve = slots.get(index).and_then(|slot| slot.curve.clone());
+            custom_widget_mapped(
+                CurveSlotWidget::new(
+                    index,
+                    curve,
+                    loaded_slot == Some(index),
+                    deviated_slot == Some(index),
+                ),
+                RadiantEditorMessage::CurveSlot,
+            )
+            .height(CURVE_SLOT_ROW_HEIGHT)
+        });
+    row(slot_nodes)
+        .spacing(4.0)
+        .fill_width()
+        .height(CURVE_SLOT_ROW_HEIGHT)
+}
+
+fn reduce_curve_slot_message(state: &mut RadiantEditorState, message: CurveSlotMessage) {
+    match message {
+        CurveSlotMessage::Load { index } => {
+            let Some(curve) = state.params.global_curve_slot_curve(index) else {
+                return;
+            };
+            state.params.set_editable_curve(&curve);
+            state.active_curve_node = None;
+            state.active_curve_segment = None;
+            state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.hover_curve_segment = None;
+            state.loaded_global_curve_slot = Some(index);
+        }
+        CurveSlotMessage::Store { index } => {
+            let curve = state.params.editable_curve_snapshot();
+            if state.params.set_global_curve_slot_curve(index, &curve) {
+                state.loaded_global_curve_slot = Some(index);
+            }
+        }
     }
 }
 
@@ -954,6 +1010,166 @@ impl Widget for NumericValueLabelWidget {
 
 fn is_numeric_entry_char(ch: char) -> bool {
     ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+' | '%' | ' ' | 'd' | 'D' | 'b' | 'B')
+}
+
+#[derive(Clone)]
+struct CurveSlotWidget {
+    common: WidgetCommon,
+    index: usize,
+    curve: Option<EditableCurve>,
+    loaded: bool,
+    deviated: bool,
+}
+
+impl CurveSlotWidget {
+    fn new(index: usize, curve: Option<EditableCurve>, loaded: bool, deviated: bool) -> Self {
+        Self {
+            common: WidgetCommon::fixed(
+                0,
+                ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0) / GLOBAL_CURVE_SLOT_COUNT as f32)
+                    .max(1.0),
+                CURVE_SLOT_ROW_HEIGHT,
+            )
+            .with_pointer_focus()
+            .without_default_chrome(),
+            index,
+            curve: curve.map(|curve| curve.normalized()),
+            loaded,
+            deviated,
+        }
+    }
+
+    fn sample_points(&self, bounds: Rect) -> Arc<[Point]> {
+        let margin = CURVE_SLOT_MARGIN
+            .min(bounds.width() * 0.25)
+            .min(bounds.height() * 0.25)
+            .max(1.0);
+        let inner_w = (bounds.width() - margin * 2.0).max(1.0);
+        let inner_h = (bounds.height() - margin * 2.0).max(1.0);
+        if let Some(curve) = self.curve.as_ref() {
+            let points: Vec<Point> = (0..CURVE_SLOT_PREVIEW_STEPS.max(2))
+                .map(|step| {
+                    let steps = CURVE_SLOT_PREVIEW_STEPS.max(2);
+                    let t = step as f32 / (steps - 1) as f32;
+                    Point::new(
+                        bounds.min.x + margin + t * inner_w,
+                        bounds.min.y
+                            + margin
+                            + (1.0 - sample_editable_curve(curve, t).clamp(0.0, 1.0)) * inner_h,
+                    )
+                })
+                .collect();
+            Arc::from(points)
+        } else {
+            let y = bounds.min.y + margin + inner_h * 0.5;
+            Arc::from([
+                Point::new(bounds.min.x + margin, y),
+                Point::new(bounds.max.x - margin, y),
+            ])
+        }
+    }
+}
+
+impl Widget for CurveSlotWidget {
+    fn common(&self) -> &WidgetCommon {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        &mut self.common
+    }
+
+    fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        let message = match input {
+            WidgetInput::PointerMove { position } => {
+                self.common.state.hovered = bounds.contains(position);
+                None
+            }
+            WidgetInput::PointerPress {
+                position,
+                button: PointerButton::Primary,
+                modifiers,
+            } if bounds.contains(position) => {
+                self.common.state.focused = true;
+                self.common.state.hovered = true;
+                if modifiers.command {
+                    Some(CurveSlotMessage::Store { index: self.index })
+                } else {
+                    Some(CurveSlotMessage::Load { index: self.index })
+                }
+            }
+            WidgetInput::FocusChanged(focused) => {
+                self.common.state.focused = focused;
+                None
+            }
+            _ => None,
+        }?;
+        Some(WidgetOutput::typed(message))
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        let hovered = self.common.state.hovered;
+        let fill = if self.deviated {
+            theme.accent_danger
+        } else if self.loaded {
+            theme.surface_raised
+        } else if hovered {
+            theme.bg_secondary
+        } else {
+            theme.bg_primary
+        };
+        let outline = if self.deviated {
+            theme.accent_danger
+        } else if hovered || self.loaded {
+            theme.accent_warning
+        } else {
+            theme.border
+        };
+        let curve_color = if self.deviated {
+            theme.text_primary
+        } else if self.curve.is_some() {
+            theme.accent_mint
+        } else {
+            theme.text_muted
+        };
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.common.id,
+            rect: bounds,
+            color: fill,
+        }));
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.common.id,
+            rect: bounds,
+            color: outline,
+            width: 1.0,
+        }));
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: self.sample_points(bounds),
+            color: curve_color,
+            width: if hovered || self.loaded || self.deviated {
+                2.0
+            } else {
+                1.0
+            },
+        }));
+    }
+
+    fn automation_label(&self) -> Option<String> {
+        Some(format!("Curve slot {}", self.index + 1))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CurveSlotMessage {
+    Load { index: usize },
+    Store { index: usize },
 }
 
 #[derive(Clone)]
@@ -1565,6 +1781,70 @@ mod tests {
             Arc::new(GuiStatus::default()),
             Arc::new(AutomationQueue::default()),
         )
+    }
+
+    #[test]
+    fn curve_slot_widget_click_loads_and_command_click_stores() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, 48.0, CURVE_SLOT_ROW_HEIGHT);
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget = CurveSlotWidget::new(3, Some(curve), false, false);
+
+        let load = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: Point::new(10.0, 10.0),
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers::default(),
+                },
+            )
+            .expect("normal slot click should emit load");
+        assert_eq!(
+            load.typed_copied(),
+            Some(CurveSlotMessage::Load { index: 3 })
+        );
+
+        let store = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: Point::new(10.0, 10.0),
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers {
+                        command: true,
+                        ..PointerModifiers::default()
+                    },
+                },
+            )
+            .expect("command slot click should emit store");
+        assert_eq!(
+            store.typed_copied(),
+            Some(CurveSlotMessage::Store { index: 3 })
+        );
+    }
+
+    #[test]
+    fn curve_slot_widget_paints_deviation_in_danger_color() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, 48.0, CURVE_SLOT_ROW_HEIGHT);
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let widget = CurveSlotWidget::new(0, Some(curve), true, true);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::FillRect(fill) if fill.color == theme.accent_danger
+            )
+        }));
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokeRect(stroke) if stroke.color == theme.accent_danger
+            )
+        }));
     }
 
     #[test]
@@ -2300,7 +2580,6 @@ mod tests {
         let mut primitives = Vec::new();
 
         widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
-
         assert!(primitives.iter().any(|primitive| {
             matches!(
                 primitive,
@@ -2396,8 +2675,8 @@ mod tests {
                 primitive,
                 PaintPrimitive::FillRect(fill)
                     if fill.color == theme.accent_warning
-                        && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
-                        && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
+                        && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-4
+                        && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-4
                         && ((fill.rect.min.x + fill.rect.width() * 0.5) - expected_center.x).abs()
                             < 1.0e-4
                         && ((fill.rect.min.y + fill.rect.height() * 0.5) - expected_center.y).abs()

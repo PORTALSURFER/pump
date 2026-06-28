@@ -51,6 +51,8 @@ pub const DEFAULT_SYNC_DIVISION_INDEX: usize = 4;
 pub const MAX_PRESETS: usize = 16;
 /// Fixed number of overwriteable quick slots stored inside each preset.
 pub const QUICK_SLOT_COUNT: usize = 8;
+/// Fixed number of globally persisted curve slots.
+pub const GLOBAL_CURVE_SLOT_COUNT: usize = QUICK_SLOT_COUNT;
 /// Maximum preset-name length in characters.
 pub const MAX_PRESET_NAME_CHARS: usize = 24;
 /// Default preset name for the initialized plugin state.
@@ -162,6 +164,13 @@ pub fn sync_division_index_from_text(text: &str) -> Option<usize> {
 pub struct QuickShapeSlot {
     /// Stored quick-slot curve shown in the per-preset micro-preview tile.
     pub curve: EditableCurve,
+}
+
+/// Serializable snapshot of one globally persisted curve slot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalCurveSlot {
+    /// Stored reusable curve, or `None` when the slot is empty.
+    pub curve: Option<EditableCurve>,
 }
 
 /// Serializable snapshot of one Pump preset.

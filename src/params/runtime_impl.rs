@@ -254,6 +254,43 @@ impl PumpParams {
         true
     }
 
+    /// Snapshot the globally persisted curve slots.
+    pub fn global_curve_slots_snapshot(&self) -> Vec<GlobalCurveSlot> {
+        match super::global_curve_slots::load_global_curve_slots() {
+            Ok(slots) => slots,
+            Err(error) => {
+                Self::log_preset_persistence_error("load global curve slots", error.as_str());
+                vec![GlobalCurveSlot { curve: None }; GLOBAL_CURVE_SLOT_COUNT]
+            }
+        }
+    }
+
+    /// Snapshot one globally persisted curve slot.
+    pub fn global_curve_slot_curve(&self, index: usize) -> Option<EditableCurve> {
+        self.global_curve_slots_snapshot()
+            .get(index)
+            .and_then(|slot| slot.curve.clone())
+    }
+
+    /// Store the current editable curve into one globally persisted slot.
+    pub fn set_global_curve_slot_curve(&self, index: usize, curve: &EditableCurve) -> bool {
+        match super::global_curve_slots::store_global_curve_slot(index, curve) {
+            Ok(()) => true,
+            Err(error) => {
+                Self::log_preset_persistence_error("save global curve slot", error.as_str());
+                false
+            }
+        }
+    }
+
+    /// Return whether the current editable curve differs from a stored global slot.
+    pub fn current_curve_deviates_from_global_slot(&self, index: usize) -> bool {
+        let Some(slot_curve) = self.global_curve_slot_curve(index) else {
+            return false;
+        };
+        !curve_near_eq(&self.editable_curve_snapshot(), &slot_curve)
+    }
+
     /// Replace the full preset bank, clamping to supported limits.
     pub fn set_preset_bank(&self, bank: PumpPresetBank) {
         let normalized = self.normalized_preset_bank(bank);

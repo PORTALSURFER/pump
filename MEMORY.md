@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-06-28 14:23:15 UTC
-- Active Mission: Add OPT-927 Cmd-click numeric entry to Pump parameter value labels.
-- Current Workstream: Branch `wsvasek/opt-927-pump-add-cmd-click-numeric-entry-for-parameter-value-labels` makes Radiant/VST3 value labels enter numeric keyboard-edit mode on macOS command-click while preserving normal click/drag behavior for regular interactions.
+- Last Updated (UTC): 2026-06-28 15:22:23 UTC
+- Active Mission: Add OPT-926 global Pump curve slot swatches with load/store and deviation state.
+- Current Workstream: Branch `wsvasek/opt-926-pump-add-global-curve-slot-swatches-with-loadstore-and` adds 8 globally persisted curve slots shared across Pump instances, with click-to-load, Cmd-click-to-store, empty-slot no-op behavior, miniature previews, and red loaded-slot deviation feedback.
 
 ## Current State
 
@@ -13,13 +13,13 @@
 - Local changelog generator is `scripts/update_changelog.sh`.
 - Push-time changelog updater is `.github/workflows/changelog.yml`.
 - Shared monotonic timing utility is `src/time_utils.rs`.
-- Mix, Phase, and Output value labels now use a Radiant numeric-entry label widget that begins editing only on command-click.
-- Numeric entry drafts start from the existing host-facing plain value text, accept typed numeric/unit characters, commit on Enter, cancel on Escape or focus loss, and leave the parameter unchanged for invalid commits.
-- Numeric entry commits reuse `params::host_api` formatting/parsing and send the same automation begin/value/end queue events as normal UI edits.
-- The Sync value label remains passive because the control is enumerated/non-numeric in this UI.
-- The macOS VST3 AppKit editor view now becomes first responder on mouse down and forwards keyDown text, Enter, Escape, Backspace, and Delete into the Radiant runtime.
-- `bash scripts/update_changelog.sh`, `bash scripts/ci_local.sh`, `bash scripts/ci.sh`, focused Radiant/AppKit/VST3 text tests, and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3` are green.
+- `src/params/global_curve_slots.rs` owns the new global slot store (`curve-slots.bin`) with atomic temp-file replacement, thread-local test path overrides, empty-slot support, and binary serialization tests.
+- `PumpParams` exposes global slot snapshot/load/store/deviation helpers; preset-bank quick-slot payloads remain for backwards compatibility but are no longer the active UI slot source.
+- The Toybox UI slot strip now reads global slots, uses Cmd-store via the new Toybox region `command_down` modifier, treats empty normal-clicks as no-ops, and paints loaded-slot deviation in red.
+- The Radiant/VST3 editor now has its own compact 8-slot row with the same load/store/deviation behavior.
+- `Cargo.toml` pins Toybox to `33db8968635375a5da2ebb9c215b79f336cf6616`, which adds command modifier plumbing to region actions.
+- `bash scripts/ci.sh` and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture` are green.
 
 ## Immediate Next Action
 
-- Build the fresh host-installable Pump VST3 from the audiodev superproject, commit and push the OPT-927 Pump branch, then sync the updated submodule pointer in the audiodev superproject PR.
+- Commit and push the OPT-926 Pump branch, open the Pump PR, then sync the Pump and Toybox submodule pointers from the audiodev superproject branch and build a fresh host-installable Pump VST3 before user review.

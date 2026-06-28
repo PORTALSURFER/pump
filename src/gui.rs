@@ -27,10 +27,10 @@ use crate::curve::{
 };
 use crate::params::{
     sync_division_label, PumpParams, PumpPresetBank, SavePresetOutcome, DEFAULT_MIX,
-    DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET, DEFAULT_PRESET_NAME, MAX_MIX, MAX_OUTPUT_GAIN_DB,
-    MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_MIX, MIN_OUTPUT_GAIN_DB,
-    MIN_PHASE_OFFSET, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
-    PARAM_SYNC_DIVISION_ID, QUICK_SLOT_COUNT,
+    DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET, DEFAULT_PRESET_NAME, GLOBAL_CURVE_SLOT_COUNT,
+    MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION,
+    MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
+    PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
 };
 use crate::GuiStatus;
 
@@ -174,6 +174,7 @@ struct GuiRuntime {
     preset_warning_text: Option<&'static str>,
     quick_slot_hovered: Option<usize>,
     quick_slot_pressed: Option<usize>,
+    loaded_global_curve_slot: Option<usize>,
     pointer_primary_down: bool,
     pointer_secondary_down: bool,
     active_knob_gesture_param: Option<ClapId>,
@@ -270,6 +271,14 @@ struct CurveRenderState {
     hovered_node: Option<usize>,
     hovered_segment: Option<usize>,
     preview_node: Option<CurveNode>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct QuickSlotVisualState {
+    hovered: bool,
+    active: bool,
+    store_hovered: bool,
+    deviated: bool,
 }
 
 #[cfg(test)]
