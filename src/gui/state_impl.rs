@@ -144,6 +144,7 @@ impl GuiState {
             ],
         );
         let left_width = header_slot_widths.first().copied().unwrap_or(1).max(1);
+        let right_width = header_slot_widths.get(1).copied().unwrap_or(1).max(1);
         let action_button_width = (left_width / 8).max(metrics.transport_indicator_size.max(1));
         let preset_title_width = left_width.saturating_sub(action_button_width).max(1);
         let preset_selected_row_highlight = (presets.dirty || presets.warning_blink_visible)
@@ -162,6 +163,23 @@ impl GuiState {
             )),
         )
         .slot_align(SlotAlign::Center, SlotAlign::Center)
+        .fill();
+        let version_label = Node::align_box(
+            textbox(build_version_label())
+                .text_color(theme.version_label)
+                .text_align_center()
+                .widget_layout(fixed_box(
+                    right_width,
+                    HEADER_VERSION_LABEL_HEIGHT.min(header_h).max(1),
+                )),
+        )
+        .slot_align(SlotAlign::Center, SlotAlign::Center)
+        .fill();
+        let right_status = column_slots(vec![
+            weighted_slot(version_label, 8),
+            weighted_slot(indicator_node, 11),
+        ])
+        .container_overflow(OverflowPolicy::Compress)
         .fill();
 
         let preset_dropdown_or_edit = if presets.rename_active {
@@ -244,7 +262,7 @@ impl GuiState {
         .fill();
         let header_content = row_slots(vec![
             weighted_slot(left_controls, HEADER_EMPTY_SECTION_PERCENT as u16),
-            weighted_slot(indicator_node, HEADER_INDICATOR_SECTION_PERCENT as u16),
+            weighted_slot(right_status, HEADER_INDICATOR_SECTION_PERCENT as u16),
         ])
         .container_overflow(OverflowPolicy::Compress);
         panel("header", header_content).pad_all(0)

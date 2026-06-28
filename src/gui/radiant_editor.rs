@@ -5,7 +5,7 @@ use std::sync::Arc;
 use radiant::gui::types::{Point, Rect, Vector2};
 use radiant::layout::LayoutOutput;
 use radiant::prelude::{
-    column, custom_widget_mapped, row, slider, text, IntoView, UiSurface, ViewNode,
+    column, custom_widget_mapped, row, slider, text, IntoView, TextAlign, UiSurface, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
@@ -26,9 +26,9 @@ use crate::params::{
 };
 use crate::GuiStatus;
 
-use super::{WINDOW_HEIGHT, WINDOW_WIDTH};
+use super::{build_version_label, WINDOW_HEIGHT, WINDOW_WIDTH};
 
-const TITLE_HEIGHT: f32 = 24.0;
+const BUILD_LABEL_HEIGHT: f32 = 16.0;
 const CURVE_PREVIEW_HEIGHT: f32 = 96.0;
 const CONTROL_ROW_HEIGHT: f32 = 22.0;
 const CONTROL_LABEL_WIDTH: f32 = 54.0;
@@ -188,7 +188,11 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         .then_some(state.status.phase());
     Arc::new(
         column([
-            text("PUMP").height(TITLE_HEIGHT).fill_width(),
+            text(build_version_label())
+                .muted_text()
+                .align_text(TextAlign::Right)
+                .height(BUILD_LABEL_HEIGHT)
+                .fill_width(),
             custom_widget_mapped(
                 CurvePreviewWidget::new(
                     params.editable_curve_snapshot(),
@@ -1921,8 +1925,12 @@ mod tests {
             Arc::new(GuiStatus::default()),
             Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
         );
+        let version_label = build_version_label();
 
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == version_label)
+        }));
+        assert!(!frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
         }));
         assert!(frame

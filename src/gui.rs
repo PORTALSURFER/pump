@@ -99,6 +99,7 @@ const DROPDOWN_SECTION_WEIGHT: u16 = 30;
 const QUICK_SHAPE_BUTTONS_PER_ROW: usize = 8;
 const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
+const HEADER_VERSION_LABEL_HEIGHT: u32 = 8;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_VERTICAL_MARGIN: u32 = 10;
 const CURVE_H: u32 = resolve_curve_editor_height(resolve_vertical_slot_heights(WINDOW_HEIGHT).1);
@@ -130,6 +131,14 @@ const CURVE_DRAG_START_THRESHOLD_PX: i32 = 2;
 const CURVE_TENSION_PIXEL_SCALE: f32 = 120.0;
 const NODE_PUSH_THROUGH_PX: i32 = 10;
 const NODE_X_MIN_SPACING: f32 = 1.0e-3;
+
+pub(crate) fn build_version_label() -> String {
+    format!(
+        "{}+{}",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("PUMP_BUILD_GIT_SHA_SHORT").unwrap_or("unknown")
+    )
+}
 
 #[cfg(all(test, feature = "screenshot-test", not(target_os = "windows")))]
 mod screenshot_tests {
