@@ -139,6 +139,9 @@ impl RadiantPumpEditor {
 
     /// Refresh and return the current backend-neutral paint plan.
     pub(crate) fn paint_plan(&mut self) -> &SurfacePaintPlan {
+        if self.needs_realtime_redraw() {
+            self.runtime.refresh();
+        }
         let _ = self
             .runtime
             .borrowed_frame_into(&self.theme, &mut self.paint_plan);
@@ -1122,6 +1125,8 @@ fn point_to_segment_distance_squared(point: Point, a: Point, b: Point) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "vst3")]
+    use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
     use radiant::widgets::PointerModifiers;
 
@@ -1787,6 +1792,71 @@ mod tests {
                             < 1.0e-4
             )
         }));
+    }
+
+    #[cfg(feature = "vst3")]
+    #[test]
+    fn radiant_editor_reprojects_playhead_from_status_without_pointer_event() {
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        status.update(
+            0.1,
+            1.0,
+            GuiTransportTelemetry {
+                is_playing: true,
+                has_host_beats_timeline: true,
+                beat_phase: 0.1,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::clone(&status),
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        let first_center = playhead_marker_center(editor.paint_plan())
+            .expect("initial paint plan should include a playhead marker");
+
+        status.update(
+            0.6,
+            1.0,
+            GuiTransportTelemetry {
+                is_playing: true,
+                has_host_beats_timeline: true,
+                beat_phase: 0.6,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        let second_center = playhead_marker_center(editor.paint_plan())
+            .expect("refreshed paint plan should include a playhead marker");
+
+        assert!(
+            (second_center.x - first_center.x).abs() > 32.0,
+            "playhead marker should move after status changes without relying on pointer events (first={first_center:?}, second={second_center:?})"
+        );
+    }
+
+    #[cfg(feature = "vst3")]
+    fn playhead_marker_center(plan: &SurfacePaintPlan) -> Option<Point> {
+        let theme = ThemeTokens::default();
+        plan.primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill)
+                    if fill.color == theme.accent_warning
+                        && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
+                        && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6 =>
+                {
+                    Some(Point::new(
+                        fill.rect.min.x + fill.rect.width() * 0.5,
+                        fill.rect.min.y + fill.rect.height() * 0.5,
+                    ))
+                }
+                _ => None,
+            })
     }
 
     #[test]
