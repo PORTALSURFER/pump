@@ -2042,7 +2042,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "patchbay-gui"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=33db8968635375a5da2ebb9c215b79f336cf6616#33db8968635375a5da2ebb9c215b79f336cf6616"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=2c0317e6cc777258d6bf573cf8e802fd96dc02fa#2c0317e6cc777258d6bf573cf8e802fd96dc02fa"
 dependencies = [
  "pollster 0.3.0",
  "raw-window-handle 0.5.2",
@@ -2482,7 +2482,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2961,7 +2961,7 @@ dependencies = [
 [[package]]
 name = "toybox"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=33db8968635375a5da2ebb9c215b79f336cf6616#33db8968635375a5da2ebb9c215b79f336cf6616"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=2c0317e6cc777258d6bf573cf8e802fd96dc02fa#2c0317e6cc777258d6bf573cf8e802fd96dc02fa"
 dependencies = [
  "clack-common",
  "clack-extensions",
@@ -2977,12 +2977,12 @@ dependencies = [
 [[package]]
 name = "toybox-process-log"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=33db8968635375a5da2ebb9c215b79f336cf6616#33db8968635375a5da2ebb9c215b79f336cf6616"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=2c0317e6cc777258d6bf573cf8e802fd96dc02fa#2c0317e6cc777258d6bf573cf8e802fd96dc02fa"
 
 [[package]]
 name = "toybox-vst3-ffi"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=33db8968635375a5da2ebb9c215b79f336cf6616#33db8968635375a5da2ebb9c215b79f336cf6616"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=2c0317e6cc777258d6bf573cf8e802fd96dc02fa#2c0317e6cc777258d6bf573cf8e802fd96dc02fa"
 dependencies = [
  "vst3",
 ]
@@ -3596,7 +3596,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
