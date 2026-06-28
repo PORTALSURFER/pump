@@ -8,12 +8,11 @@
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY,
-        PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, QUICK_SLOT_COUNT,
-        QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
-        WINDOW_HEIGHT, WINDOW_WIDTH,
+        PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, QUICK_SLOT_KEY_PREFIX,
+        REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
-    use crate::params::{PumpParams, MAX_SYNC_DIVISION};
+    use crate::params::{PumpParams, GLOBAL_CURVE_SLOT_COUNT, MAX_SYNC_DIVISION};
     use crate::{GuiStatus, GuiTransportTelemetry};
     use std::sync::Arc;
     use toybox::clack_extensions::gui::GuiSize;
@@ -1190,7 +1189,7 @@
         let mut keys = Vec::new();
         collect_region_keys(spec.root.content(), &mut keys);
 
-        for index in 0..QUICK_SLOT_COUNT {
+        for index in 0..GLOBAL_CURVE_SLOT_COUNT {
             let expected = format!("{QUICK_SLOT_KEY_PREFIX}{index}");
             assert!(
                 keys.iter().any(|key| key == &expected),
@@ -1215,7 +1214,7 @@
             },
             ..InputState::default()
         });
-        let expected_widths = weighted_slot_lengths(WINDOW_WIDTH, &[1; QUICK_SLOT_COUNT]);
+        let expected_widths = weighted_slot_lengths(WINDOW_WIDTH, &[1; GLOBAL_CURVE_SLOT_COUNT]);
         let expected_height = UiLayoutMetrics::design_space().quick_shape_button_h;
 
         for (index, expected_width) in expected_widths.iter().copied().enumerate() {
@@ -1233,18 +1232,23 @@
     }
 
     #[test]
-    fn quick_slot_draw_commands_use_store_hover_palette_when_shift_is_held() {
+    fn quick_slot_draw_commands_use_store_hover_palette_when_command_is_held() {
         let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
         let size = Size {
             width: metrics.quick_shape_button_w,
             height: metrics.quick_shape_button_h,
         };
-        let curve = PumpParams::new().selected_quick_slots_snapshot()[0]
-            .curve
-            .clone();
-        let commands =
-            GuiState::build_quick_slot_draw_commands(&curve, size, theme, true, false, true);
+        let curve = crate::curve::default_editable_curve();
+        let commands = GuiState::build_quick_slot_draw_commands(
+            Some(&curve),
+            size,
+            theme,
+            true,
+            false,
+            true,
+            false,
+        );
 
         assert!(matches!(
             commands.first(),
@@ -1255,6 +1259,37 @@
             commands.get(1),
             Some(SurfaceCommand::StrokeRect { color, .. })
                 if *color == theme.quick_slot_outline_store_hover
+        ));
+    }
+
+    #[test]
+    fn quick_slot_draw_commands_use_deviation_palette_when_loaded_curve_differs() {
+        let metrics = UiLayoutMetrics::design_space();
+        let theme = PumpTheme::main(metrics);
+        let size = Size {
+            width: metrics.quick_shape_button_w,
+            height: metrics.quick_shape_button_h,
+        };
+        let curve = crate::curve::default_editable_curve();
+        let commands = GuiState::build_quick_slot_draw_commands(
+            Some(&curve),
+            size,
+            theme,
+            false,
+            true,
+            false,
+            true,
+        );
+
+        assert!(matches!(
+            commands.first(),
+            Some(SurfaceCommand::FillRect { color, .. })
+                if *color == theme.quick_slot_deviation_bg
+        ));
+        assert!(matches!(
+            commands.get(1),
+            Some(SurfaceCommand::StrokeRect { color, .. })
+                if *color == theme.quick_slot_outline_deviation
         ));
     }
 
@@ -1337,6 +1372,7 @@
             local_pointer: Point { x: 0, y: 0 },
             raw_local_pointer: Point { x: 0, y: 0 },
             alt_down: false,
+            command_down: false,
             shift_down: false,
         });
         let controls = state.snapshot_controls();

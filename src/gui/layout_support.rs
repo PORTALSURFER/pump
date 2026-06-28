@@ -98,10 +98,14 @@ pub(super) struct PumpTheme {
     pub(super) quick_slot_hover_bg: Color,
     pub(super) quick_slot_store_hover_bg: Color,
     pub(super) quick_slot_active_bg: Color,
+    pub(super) quick_slot_deviation_bg: Color,
     pub(super) quick_slot_outline: Color,
     pub(super) quick_slot_outline_hover: Color,
     pub(super) quick_slot_outline_store_hover: Color,
+    pub(super) quick_slot_outline_deviation: Color,
     pub(super) quick_slot_curve: Color,
+    pub(super) quick_slot_empty_curve: Color,
+    pub(super) quick_slot_deviation_curve: Color,
 }
 
 impl PumpTheme {
@@ -159,10 +163,14 @@ impl PumpTheme {
                 48,
             ),
             quick_slot_active_bg: palette.ui_secondary,
+            quick_slot_deviation_bg: Color::rgba(150, 30, 38, 96),
             quick_slot_outline: palette.ui_secondary,
             quick_slot_outline_hover: palette.accent_focus,
             quick_slot_outline_store_hover: palette.literals,
+            quick_slot_outline_deviation: Color::rgba(255, 74, 88, 255),
             quick_slot_curve: palette.identifiers,
+            quick_slot_empty_curve: palette.text_muted,
+            quick_slot_deviation_curve: Color::rgba(255, 110, 116, 255),
         }
     }
 }

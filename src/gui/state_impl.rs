@@ -23,6 +23,7 @@ impl GuiRuntime {
             preset_warning_text: None,
             quick_slot_hovered: None,
             quick_slot_pressed: None,
+            loaded_global_curve_slot: None,
             pointer_primary_down: false,
             pointer_secondary_down: false,
             active_knob_gesture_param: None,
@@ -305,22 +306,25 @@ impl GuiState {
     fn quick_slot_index_from_key(key: &str) -> Option<usize> {
         key.strip_prefix(QUICK_SLOT_KEY_PREFIX)
             .and_then(|suffix| suffix.parse::<usize>().ok())
-            .filter(|index| *index < QUICK_SLOT_COUNT)
+            .filter(|index| *index < GLOBAL_CURVE_SLOT_COUNT)
     }
 
     pub(super) fn build_quick_slot_draw_commands(
-        curve: &EditableCurve,
+        curve: Option<&EditableCurve>,
         size: Size,
         theme: PumpTheme,
         hovered: bool,
         active: bool,
         store_hovered: bool,
+        deviated: bool,
     ) -> Vec<SurfaceCommand> {
         let rect = Rect {
             origin: Point { x: 0, y: 0 },
             size,
         };
-        let fill = if active {
+        let fill = if deviated {
+            theme.quick_slot_deviation_bg
+        } else if active {
             theme.quick_slot_active_bg
         } else if store_hovered {
             theme.quick_slot_store_hover_bg
@@ -329,7 +333,9 @@ impl GuiState {
         } else {
             theme.quick_slot_bg
         };
-        let outline = if store_hovered {
+        let outline = if deviated {
+            theme.quick_slot_outline_deviation
+        } else if store_hovered {
             theme.quick_slot_outline_store_hover
         } else if hovered || active {
             theme.quick_slot_outline_hover
@@ -343,20 +349,31 @@ impl GuiState {
         let inner_w = (size.width as i32 - margin * 2).max(1);
         let inner_h = (size.height as i32 - margin * 2).max(1);
         let steps = QUICK_SLOT_PREVIEW_STEPS.max(2);
-        let points = (0..steps)
-            .map(|step| {
-                let t = if steps <= 1 {
-                    0.0
-                } else {
-                    step as f32 / (steps - 1) as f32
-                };
-                let x = margin + (t * inner_w as f32).round() as i32;
-                let y = margin
-                    + ((1.0 - sample_editable_curve(curve, t).clamp(0.0, 1.0)) * inner_h as f32)
-                        .round() as i32;
-                Point { x, y }
-            })
-            .collect();
+        let points = if let Some(curve) = curve {
+            (0..steps)
+                .map(|step| {
+                    let t = if steps <= 1 {
+                        0.0
+                    } else {
+                        step as f32 / (steps - 1) as f32
+                    };
+                    let x = margin + (t * inner_w as f32).round() as i32;
+                    let y = margin
+                        + ((1.0 - sample_editable_curve(curve, t).clamp(0.0, 1.0)) * inner_h as f32)
+                            .round() as i32;
+                    Point { x, y }
+                })
+                .collect()
+        } else {
+            let y = margin + inner_h / 2;
+            vec![
+                Point { x: margin, y },
+                Point {
+                    x: margin + inner_w,
+                    y,
+                },
+            ]
+        };
         vec![
             SurfaceCommand::FillRect { rect, color: fill },
             SurfaceCommand::StrokeRect {
@@ -366,20 +383,28 @@ impl GuiState {
             },
             SurfaceCommand::Polyline {
                 points,
-                thickness: if hovered || active { 2.0 } else { 1.0 },
-                color: theme.quick_slot_curve,
+                thickness: if hovered || active || deviated {
+                    2.0
+                } else {
+                    1.0
+                },
+                color: if deviated {
+                    theme.quick_slot_deviation_curve
+                } else if curve.is_some() {
+                    theme.quick_slot_curve
+                } else {
+                    theme.quick_slot_empty_curve
+                },
             },
         ]
     }
 
     fn quick_slot_surface(
         index: usize,
-        curve: &EditableCurve,
+        curve: Option<&EditableCurve>,
         size: Size,
         theme: PumpTheme,
-        hovered: bool,
-        active: bool,
-        store_hovered: bool,
+        visual: QuickSlotVisualState,
     ) -> Node {
         Node::align_box(surface(
             Self::quick_slot_key(index),
@@ -388,9 +413,10 @@ impl GuiState {
                 curve,
                 size,
                 theme,
-                hovered,
-                active,
-                store_hovered,
+                visual.hovered,
+                visual.active,
+                visual.store_hovered,
+                visual.deviated,
             ),
         ))
         .slot_align(SlotAlign::Start, SlotAlign::Center)
@@ -444,16 +470,25 @@ impl GuiState {
         &self,
         metrics: UiLayoutMetrics,
         theme: PumpTheme,
-        shift_down: bool,
+        command_down: bool,
     ) -> Node {
-        let quick_slots = self.params.selected_quick_slots_snapshot();
-        let (hovered_slot, pressed_slot) = self
+        let quick_slots = self.params.global_curve_slots_snapshot();
+        let (hovered_slot, pressed_slot, loaded_slot) = self
             .runtime
             .lock()
             .ok()
-            .map(|runtime| (runtime.quick_slot_hovered, runtime.quick_slot_pressed))
-            .unwrap_or((None, None));
-        let slot_widths = weighted_slot_lengths(metrics.content_w.max(1), &[1; QUICK_SLOT_COUNT]);
+            .map(|runtime| {
+                (
+                    runtime.quick_slot_hovered,
+                    runtime.quick_slot_pressed,
+                    runtime.loaded_global_curve_slot,
+                )
+            })
+            .unwrap_or((None, None, None));
+        let deviated_slot =
+            loaded_slot.filter(|index| self.params.current_curve_deviates_from_global_slot(*index));
+        let slot_widths =
+            weighted_slot_lengths(metrics.content_w.max(1), &[1; GLOBAL_CURVE_SLOT_COUNT]);
         let buttons = quick_slots
             .iter()
             .enumerate()
@@ -469,12 +504,15 @@ impl GuiState {
                 weighted_slot(
                     Self::quick_slot_surface(
                         index,
-                        &slot.curve,
+                        slot.curve.as_ref(),
                         size,
                         theme,
-                        hovered_slot == Some(index),
-                        pressed_slot == Some(index),
-                        hovered_slot == Some(index) && shift_down,
+                        QuickSlotVisualState {
+                            hovered: hovered_slot == Some(index),
+                            active: pressed_slot == Some(index) || loaded_slot == Some(index),
+                            store_hovered: hovered_slot == Some(index) && command_down,
+                            deviated: deviated_slot == Some(index),
+                        },
                     ),
                     1,
                 )
@@ -694,7 +732,7 @@ impl GuiState {
 
         let header_slot = self.build_header_slot(metrics, theme, &presets);
         let spline_slot = self.build_spline_slot(metrics, theme, controls);
-        let quick_shapes_slot = self.build_quick_shapes_slot(metrics, theme, input.shift_down);
+        let quick_shapes_slot = self.build_quick_shapes_slot(metrics, theme, input.command_down);
         let controls_slot = self.build_controls_slot(metrics, theme, controls);
 
         let content = column_slots(vec![
@@ -840,11 +878,11 @@ impl GuiState {
             UiAction::RegionInteracted {
                 key,
                 kind,
-                shift_down,
+                command_down,
                 ..
             } if Self::quick_slot_index_from_key(key.as_str()).is_some() => {
                 if let Some(index) = Self::quick_slot_index_from_key(key.as_str()) {
-                    self.reduce_quick_slot_interaction(index, kind, shift_down);
+                    self.reduce_quick_slot_interaction(index, kind, command_down);
                 }
             }
             UiAction::RegionInteracted { .. } => {}
@@ -1272,19 +1310,27 @@ impl GuiState {
 
     /// Load one quick-slot curve into the main editable curve.
     pub(super) fn apply_quick_slot_curve(&self, index: usize) {
-        let Some(curve) = self.params.selected_quick_slot_curve(index) else {
+        let Some(curve) = self.params.global_curve_slot_curve(index) else {
             return;
         };
         self.params.set_editable_curve(&curve);
         self.clear_curve_transient_state();
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.loaded_global_curve_slot = Some(index);
+        }
     }
 
-    /// Store the current editable curve into one quick slot on the selected preset.
+    /// Store the current editable curve into one globally persisted quick slot.
     pub(super) fn store_quick_slot_curve(&self, index: usize) {
         let editable_curve = self.params.editable_curve_snapshot();
-        let _stored = self
+        if self
             .params
-            .set_selected_quick_slot_curve(index, &editable_curve);
+            .set_global_curve_slot_curve(index, &editable_curve)
+        {
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.loaded_global_curve_slot = Some(index);
+            }
+        }
     }
 
     /// Apply one quick-slot interaction from the preview row.
@@ -1292,17 +1338,17 @@ impl GuiState {
         &mut self,
         index: usize,
         kind: RegionInteractionKind,
-        shift_down: bool,
+        command_down: bool,
     ) {
         match kind {
             RegionInteractionKind::Pressed => {
-                self.capture_undo_snapshot();
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.quick_slot_pressed = Some(index);
                 }
-                if shift_down {
+                if command_down {
                     self.store_quick_slot_curve(index);
-                } else {
+                } else if self.params.global_curve_slot_curve(index).is_some() {
+                    self.capture_undo_snapshot();
                     self.apply_quick_slot_curve(index);
                 }
             }

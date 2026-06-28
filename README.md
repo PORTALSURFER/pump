@@ -35,16 +35,19 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 
 ## Quick Shape Strip
 
-- The row between the curve editor and knobs provides 8 per-preset quick slots
-  with micro previews of the stored curves.
-- Each named preset carries its own slot contents, so different presets can keep
-  different transient, pumping, or sidechain shape banks.
+- The row between the curve editor and knobs provides 8 globally persisted curve
+  slots with micro previews of stored curves.
+- The slot bank is shared by every Pump instance and survives host/plugin
+  relaunches independently of project state, presets, and individual instances.
 - Clicking a slot loads only that slot's curve into the editor and keeps the
   current sync division unchanged.
-- `Shift`-clicking a slot stores the current editable curve into that slot for
-  the currently selected preset.
-- New presets and migrated legacy presets start with seeded factory shapes that
-  can be overwritten at any time.
+- Empty slots show a muted dash; clicking an empty slot is a non-destructive
+  no-op.
+- `Cmd`-clicking a slot stores the current editable curve into that slot without
+  loading first.
+- A loaded slot turns red when the editor curve diverges from the stored slot
+  curve, and returns to normal when the curve matches again or a matching slot
+  is loaded/stored.
 
 ## Notes
 
