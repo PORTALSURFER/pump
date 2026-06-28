@@ -208,6 +208,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (a757bfd)
 
+- (changelog) Update changelog [skip ci] (825d6b5)
+
 
 ### Features
 
