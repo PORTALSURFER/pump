@@ -734,7 +734,7 @@
             matches!(primitive, radiant::runtime::PaintPrimitive::Text(text) if text.text.as_str() == version_label)
         }));
         assert!(!frame.paint_plan.primitives.iter().any(|primitive| {
-            matches!(primitive, radiant::runtime::PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
+            matches!(primitive, radiant::runtime::PaintPrimitive::Text(text) if text.text.eq_ignore_ascii_case("pump"))
         }));
     }
 
@@ -1166,8 +1166,8 @@
             texts
         );
         assert!(
-            !texts.iter().any(|text| text == "PUMP"),
-            "expected no prominent PUMP text in {:?}",
+            !texts.iter().any(|text| text.eq_ignore_ascii_case("pump")),
+            "expected no visible pump label in {:?}",
             texts
         );
     }

@@ -895,7 +895,7 @@ mod tests {
                 matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == version_label)
             }));
             assert!(!paint_plan.primitives.iter().any(|primitive| {
-                matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
+                matches!(primitive, PaintPrimitive::Text(text) if text.text.eq_ignore_ascii_case("pump"))
             }));
             assert!(paint_plan.primitives.iter().any(|primitive| {
                 matches!(primitive, PaintPrimitive::StrokePolyline(polyline) if polyline.points.len() > 16)

@@ -19,12 +19,17 @@ pub(crate) const VENDOR_EMAIL: &str = "support@localhost";
 
 #[cfg(test)]
 mod tests {
-    use super::{PLUGIN_ID, VENDOR_NAME};
+    use super::{PLUGIN_ID, PLUGIN_NAME, VENDOR_NAME};
 
     #[test]
     fn plugin_id_stays_reverse_dns_lowercase() {
         assert_eq!(PLUGIN_ID, PLUGIN_ID.to_ascii_lowercase());
         assert!(PLUGIN_ID.split('.').count() >= 3);
+    }
+
+    #[test]
+    fn plugin_name_remains_host_facing_identity() {
+        assert_eq!(PLUGIN_NAME, "pump");
     }
 
     #[test]
