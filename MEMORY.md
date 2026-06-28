@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-06-28 12:13:40 UTC
+- Last Updated (UTC): 2026-06-28 12:32:17 UTC
 - Active Mission: Pick up the Toybox/Radiant Ioskeley Mono default font in Pump.
-- Current Workstream: Branch `codex/pump-ioskeley-toybox-rev` updates Pump's pinned `toybox` dependency to `274a9aaec84ae67fb8a1d38b295b2f40fc17f3ec`, where Patchbay/Radiant vector text now prefers bundled Ioskeley Mono before the previous Sometype Mono fallback.
+- Current Workstream: Branch `codex/pump-ioskeley-toybox-rev` updates Pump's pinned `toybox` dependency to merged Toybox main commit `1000011b94a73d57aa41f6f988d821c4de7cf862`, where Patchbay/Radiant vector text now prefers bundled Ioskeley Mono before the previous Sometype Mono fallback.
 
 ## Current State
 
