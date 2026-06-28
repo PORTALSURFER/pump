@@ -214,6 +214,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (38b9901)
 
+- (changelog) Update changelog [skip ci] (5f499f8)
+
 
 ### Features
 
@@ -765,6 +767,12 @@ Add Radiant playback position marker (da0a587)
 - Merge pull request #4 from PORTALSURFER/codex/pump-ioskeley-toybox-rev
 
 Bump Toybox for Ioskeley font (4725cac)
+
+- Highlight active curve node hover (f782ba7)
+
+- Merge pull request #5 from PORTALSURFER/wsvasek/opt-923-pump-highlight-curve-editor-nodes-on-hover
+
+OPT-923: Highlight Pump curve nodes on hover (12e6fd1)
 
 
 ### Refactoring
