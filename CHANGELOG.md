@@ -224,6 +224,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (ed61ff2)
 
+- (changelog) Update changelog [skip ci] (151a981)
+
 
 ### Features
 
@@ -799,6 +801,8 @@ Pump: remove visible pump label from UI (b5ea672)
 - Merge pull request #8 from PORTALSURFER/wsvasek/opt-927-pump-add-cmd-click-numeric-entry-for-parameter-value-labels
 
 OPT-927: Add Cmd-click numeric parameter entry (2fe5c76)
+
+- Add global Pump curve slots (99d1b39)
 
 
 ### Refactoring
