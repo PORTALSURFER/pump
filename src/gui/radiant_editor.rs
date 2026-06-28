@@ -855,7 +855,7 @@ impl CurvePreviewWidget {
         for (index, node) in self.curve.nodes.iter().copied().enumerate() {
             let center = Self::curve_point(bounds, node);
             let active = self.active_node == Some(index);
-            let hovered = !active && self.hover_node == Some(index);
+            let hovered = self.hover_node == Some(index);
             let size = if active {
                 CURVE_NODE_SIZE + 2.0
             } else if hovered {
@@ -879,12 +879,14 @@ impl CurvePreviewWidget {
             primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
                 widget_id: self.common.id,
                 rect,
-                color: if hovered {
+                color: if active && hovered {
+                    theme.accent_mint
+                } else if hovered {
                     theme.accent_warning
                 } else {
                     theme.accent_copper
                 },
-                width: 1.0,
+                width: if hovered { 1.5 } else { 1.0 },
             }));
         }
     }
@@ -1654,6 +1656,28 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_clears_node_hover_off_hit_target() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, Some(1), None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let node_position = CurvePreviewWidget::curve_point(bounds, curve.nodes[1]);
+        let position = Point::new(
+            node_position.x + CURVE_NODE_HIT_RADIUS + 2.0,
+            node_position.y,
+        );
+
+        let output = widget
+            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .expect("moving off the node should clear hover state");
+
+        assert!(matches!(
+            output.typed_copied(),
+            Some(CurvePreviewMessage::Hover { node: None, .. })
+        ));
+    }
+
+    #[test]
     fn curve_preview_widget_emits_delete_for_double_clicked_interior_node() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget =
@@ -1756,6 +1780,37 @@ mod tests {
                 PaintPrimitive::StrokeRect(stroke)
                     if stroke.color == theme.accent_warning
                         && (stroke.rect.width() - (CURVE_NODE_SIZE + 1.5)).abs() < 1.0e-6
+                        && (stroke.width - 1.5).abs() < 1.0e-6
+            )
+        }));
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_hovered_active_node_outline() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let widget = CurvePreviewWidget::new(curve, Some(1), None, Some(1), None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::FillRect(fill)
+                    if fill.color == theme.accent_warning
+                        && (fill.rect.width() - (CURVE_NODE_SIZE + 2.0)).abs() < 1.0e-6
+                        && (fill.rect.height() - (CURVE_NODE_SIZE + 2.0)).abs() < 1.0e-6
+            )
+        }));
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokeRect(stroke)
+                    if stroke.color == theme.accent_mint
+                        && (stroke.rect.width() - (CURVE_NODE_SIZE + 2.0)).abs() < 1.0e-6
+                        && (stroke.width - 1.5).abs() < 1.0e-6
             )
         }));
     }

@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-06-28 12:32:17 UTC
-- Active Mission: Pick up the Toybox/Radiant Ioskeley Mono default font in Pump.
-- Current Workstream: Branch `codex/pump-ioskeley-toybox-rev` updates Pump's pinned `toybox` dependency to merged Toybox main commit `1000011b94a73d57aa41f6f988d821c4de7cf862`, where Patchbay/Radiant vector text now prefers bundled Ioskeley Mono before the previous Sometype Mono fallback.
+- Last Updated (UTC): 2026-06-28 12:41:47 UTC
+- Active Mission: Add OPT-923 hover highlighting composition for Pump curve editor nodes.
+- Current Workstream: Branch `wsvasek/opt-923-pump-highlight-curve-editor-nodes-on-hover` keeps hovered curve nodes visibly highlighted even when the hovered node is active/dragged, while preserving the active warning fill and adding a mint hover outline.
 
 ## Current State
 
@@ -31,7 +31,8 @@
 - Pump now depends on a Toybox revision with Ableton-compatible macOS VST3 bundle entry symbols.
 - Pump now depends on the Toybox revision that makes Ioskeley Mono the default bundled Radiant/Patchbay vector text font.
 - `scripts/ci.sh` now avoids the macOS Bash `set -u` empty-array failure when no feature flags are requested.
+- The Radiant curve widget now paints a hover outline for the active/dragged node under the pointer, keeps non-active hover highlighting distinct, and has regression coverage for clearing node hover when the pointer leaves the hit target.
 
 ## Immediate Next Action
 
-- Run changelog/local CI, commit and push the Pump branch, then update the audiodev superproject pointers for `toybox` and `pump`. Latest validation passed: `cargo fmt --all -- --check`, `cargo test radiant_editor -- --nocapture`, `bash scripts/ci.sh`, `cargo check`, `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture`, and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3`.
+- Run Pump local CI, commit and push the OPT-923 branch, and open a PR for user review. Latest focused validation passed: `cargo test radiant_editor -- --nocapture` and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture`.
