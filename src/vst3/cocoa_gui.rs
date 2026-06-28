@@ -3,11 +3,16 @@
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
-use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel, BOOL, YES};
+use objc::runtime::{Class, Object, Sel, BOOL, NO, YES};
 use objc::{class, msg_send, sel, sel_impl, Encode, Encoding};
 use radiant::gui::types::{Point, Rect as UiRect, Rgba8};
 use radiant::runtime::{Event, PaintPrimitive, PaintTextAlign, SurfacePaintPlan};
@@ -15,6 +20,7 @@ use radiant::widgets::{PointerButton, PointerModifiers};
 
 use crate::gui::{preferred_window_size, RadiantPumpEditor};
 use crate::params::PumpParams;
+use crate::GuiStatus;
 
 const NS_UTF8_STRING_ENCODING: usize = 4;
 const NSEVENT_MODIFIER_FLAG_SHIFT: u64 = 1 << 17;
@@ -25,12 +31,21 @@ const NSTRACKING_MOUSE_MOVED: usize = 0x02;
 const NSTRACKING_ACTIVE_ALWAYS: usize = 0x80;
 const NSTRACKING_IN_VISIBLE_RECT: usize = 0x200;
 const NSTRACKING_ENABLED_DURING_MOUSE_DRAG: usize = 0x400;
+const PLAYHEAD_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
 
 #[link(name = "AppKit", kind = "framework")]
 extern "C" {
     static NSFontAttributeName: *mut Object;
     static NSForegroundColorAttributeName: *mut Object;
     static NSParagraphStyleAttributeName: *mut Object;
+}
+
+type CFRunLoopRef = *mut c_void;
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFRunLoopGetMain() -> CFRunLoopRef;
+    fn CFRunLoopWakeUp(rl: CFRunLoopRef);
 }
 
 #[repr(C)]
@@ -72,6 +87,11 @@ unsafe impl Encode for NSRect {
     }
 }
 
+struct RedrawDriver {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
 /// AppKit child editor used when Pump is loaded as a VST3 on macOS.
 #[derive(Default)]
 pub(super) struct CocoaPumpEditor {
@@ -89,7 +109,7 @@ impl CocoaPumpEditor {
     }
 
     /// Attach the editor view to the host parent.
-    pub(super) fn open(&mut self, params: Arc<PumpParams>) -> bool {
+    pub(super) fn open(&mut self, params: Arc<PumpParams>, status: Arc<GuiStatus>) -> bool {
         if self.root_view.is_some() {
             return true;
         }
@@ -97,7 +117,9 @@ impl CocoaPumpEditor {
             return false;
         };
         let (width, height) = preferred_window_size();
-        let Some(root_view) = (unsafe { create_editor_view(parent, params, width, height) }) else {
+        let Some(root_view) =
+            (unsafe { create_editor_view(parent, params, status, width, height) })
+        else {
             return false;
         };
         self.root_view = Some(root_view);
@@ -109,6 +131,7 @@ impl CocoaPumpEditor {
     pub(super) fn close(&mut self) {
         unsafe {
             if let Some(root_view) = self.root_view.take() {
+                stop_redraw_driver(root_view.as_ptr());
                 drop_runtime(root_view.as_ptr());
                 let view = root_view.as_ptr();
                 let _: () = msg_send![view, removeFromSuperview];
@@ -150,10 +173,15 @@ impl Drop for CocoaPumpEditor {
 unsafe fn create_editor_view(
     parent: NonNull<c_void>,
     params: Arc<PumpParams>,
+    status: Arc<GuiStatus>,
     width: u32,
     height: u32,
 ) -> Option<NonNull<Object>> {
-    let root_view = new_radiant_view(RadiantPumpEditor::new(params, width, height), width, height)?;
+    let root_view = new_radiant_view(
+        RadiantPumpEditor::new(params, status, width, height),
+        width,
+        height,
+    )?;
     let parent = parent.as_ptr().cast::<Object>();
     let _: () = msg_send![parent, addSubview: root_view.as_ptr()];
     Some(root_view)
@@ -169,6 +197,7 @@ unsafe fn new_radiant_view(
         msg_send![view, initWithFrame: ns_rect(0.0, 0.0, width as f64, height as f64)];
     let view = NonNull::new(view)?;
     (*view.as_ptr()).set_ivar("runtime", Box::into_raw(Box::new(runtime)) as usize);
+    (*view.as_ptr()).set_ivar("redraw_driver", start_redraw_driver(view.as_ptr()) as usize);
     let _: () = msg_send![view.as_ptr(), updateTrackingAreas];
     Some(view)
 }
@@ -380,6 +409,7 @@ fn editor_view_class() -> *const Class {
             ClassDecl::new("PumpRadiantEditorView", superclass).expect("unique class name");
         decl.add_ivar::<usize>("runtime");
         decl.add_ivar::<usize>("tracking_area");
+        decl.add_ivar::<usize>("redraw_driver");
         unsafe {
             decl.add_method(
                 sel!(drawRect:),
@@ -420,6 +450,10 @@ fn editor_view_class() -> *const Class {
             decl.add_method(
                 sel!(flagsChanged:),
                 flags_changed as extern "C" fn(&Object, Sel, *mut Object),
+            );
+            decl.add_method(
+                sel!(playheadRedrawTick:),
+                playhead_redraw_tick as extern "C" fn(&Object, Sel, *mut Object),
             );
             decl.add_method(
                 sel!(isFlipped),
@@ -546,8 +580,21 @@ extern "C" fn flags_changed(this: &Object, _cmd: Sel, event: *mut Object) {
     }
 }
 
+extern "C" fn playhead_redraw_tick(this: &Object, _cmd: Sel, _timer: *mut Object) {
+    unsafe {
+        if runtime_mut(this)
+            .map(|runtime| runtime.needs_realtime_redraw())
+            .unwrap_or(false)
+        {
+            let _: () = msg_send![this, setNeedsDisplay: YES];
+            let _: () = msg_send![this, displayIfNeeded];
+        }
+    }
+}
+
 extern "C" fn dealloc(this: &Object, _cmd: Sel) {
     unsafe {
+        stop_redraw_driver(this);
         remove_tracking_area(this);
         drop_runtime(this);
         let superclass = class!(NSView);
@@ -633,6 +680,62 @@ unsafe fn event_position(this: &Object, event: *mut Object) -> Point {
     Point::new(local_point.x as f32, local_point.y as f32)
 }
 
+unsafe fn start_redraw_driver(view: *mut Object) -> *mut RedrawDriver {
+    if view.is_null() {
+        return ptr::null_mut();
+    }
+    let retained_view: *mut Object = msg_send![view, retain];
+    let view_addr = retained_view as usize;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_thread = Arc::clone(&stop);
+    let handle = thread::spawn(move || {
+        while !stop_for_thread.load(Ordering::Acquire) {
+            let view = view_addr as *mut Object;
+            unsafe {
+                let _: () = msg_send![
+                    view,
+                    performSelectorOnMainThread: sel!(playheadRedrawTick:)
+                    withObject: ptr::null_mut::<Object>()
+                    waitUntilDone: NO
+                ];
+                wake_main_run_loop();
+            }
+            thread::sleep(PLAYHEAD_REDRAW_INTERVAL);
+        }
+        let view = view_addr as *mut Object;
+        unsafe {
+            let _: () = msg_send![view, release];
+        }
+    });
+    Box::into_raw(Box::new(RedrawDriver {
+        stop,
+        handle: Some(handle),
+    }))
+}
+
+unsafe fn wake_main_run_loop() {
+    let main_run_loop = CFRunLoopGetMain();
+    if !main_run_loop.is_null() {
+        CFRunLoopWakeUp(main_run_loop);
+    }
+}
+
+unsafe fn stop_redraw_driver(view: *const Object) {
+    let Some(view) = view.cast_mut().as_mut() else {
+        return;
+    };
+    let driver = *view.get_ivar::<usize>("redraw_driver") as *mut RedrawDriver;
+    if driver.is_null() {
+        return;
+    }
+    view.set_ivar("redraw_driver", 0_usize);
+    let mut driver = Box::from_raw(driver);
+    driver.stop.store(true, Ordering::Release);
+    if let Some(handle) = driver.handle.take() {
+        let _ = handle.join();
+    }
+}
+
 unsafe fn remove_tracking_area(view: *const Object) {
     let Some(view_ref) = view.as_ref() else {
         return;
@@ -710,7 +813,7 @@ mod tests {
             let mut editor = CocoaPumpEditor::default();
             editor.set_parent_raw(RawWindowHandle::AppKit(handle));
 
-            assert!(editor.open(Arc::new(PumpParams::new())));
+            assert!(editor.open(Arc::new(PumpParams::new()), Arc::new(GuiStatus::default())));
             assert_eq!(editor.last_size(), Some(preferred_window_size()));
 
             let subviews: *mut Object = msg_send![parent.as_ptr(), subviews];
@@ -808,7 +911,12 @@ mod tests {
         unsafe {
             let (width, height) = preferred_window_size();
             let view = new_radiant_view(
-                RadiantPumpEditor::new(Arc::new(PumpParams::new()), width, height),
+                RadiantPumpEditor::new(
+                    Arc::new(PumpParams::new()),
+                    Arc::new(GuiStatus::default()),
+                    width,
+                    height,
+                ),
                 width,
                 height,
             )
@@ -818,8 +926,11 @@ mod tests {
                 msg_send![view.as_ptr(), respondsToSelector: sel!(mouseMoved:)];
             let responds_flags_changed: BOOL =
                 msg_send![view.as_ptr(), respondsToSelector: sel!(flagsChanged:)];
+            let responds_redraw_tick: BOOL =
+                msg_send![view.as_ptr(), respondsToSelector: sel!(playheadRedrawTick:)];
             assert_eq!(responds_mouse_moved, YES);
             assert_eq!(responds_flags_changed, YES);
+            assert_eq!(responds_redraw_tick, YES);
 
             let tracking_area = *view
                 .as_ptr()
@@ -829,6 +940,16 @@ mod tests {
             assert!(
                 !tracking_area.is_null(),
                 "hover tracking area should be installed"
+            );
+            let redraw_driver = *view
+                .as_ptr()
+                .as_ref()
+                .expect("view pointer should be valid")
+                .get_ivar::<usize>("redraw_driver")
+                as *mut RedrawDriver;
+            assert!(
+                !redraw_driver.is_null(),
+                "playhead redraw driver should be installed"
             );
 
             let _: () = msg_send![view.as_ptr(), release];

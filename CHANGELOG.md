@@ -196,6 +196,16 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (667c72a)
 
+- (changelog) Update changelog [skip ci] (ac80d25)
+
+- (changelog) Update changelog [skip ci] (3cb2dae)
+
+- (changelog) Update changelog [skip ci] (1ea9e10)
+
+- (changelog) Update changelog [skip ci] (b225d3b)
+
+- (changelog) Update changelog [skip ci] (9ea4580)
+
 
 ### Features
 
@@ -725,6 +735,16 @@ Extend Pump Radiant curve insertion (cbb4f09)
 - Merge pull request #2 from PORTALSURFER/codex/pump-node-hover-delete
 
 Add Radiant curve node hover deletion (f0f742e)
+
+- Add Radiant playback position marker (72e46f4)
+
+- Fix VST3 playhead redraw timer (3193828)
+
+- Drive VST3 playhead redraws without host timers (77f808c)
+
+- Force VST3 playhead redraw display passes (6bbc143)
+
+- Refresh Radiant surface for realtime playhead (97ee6e2)
 
 
 ### Refactoring

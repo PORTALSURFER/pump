@@ -721,6 +721,7 @@
 
         let frame = radiant_editor_frame_for_params(
             Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
             Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
         );
 

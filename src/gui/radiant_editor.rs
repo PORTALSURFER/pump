@@ -24,6 +24,7 @@ use crate::curve::{
 use crate::params::{
     sync_division_label, PumpParams, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB,
 };
+use crate::GuiStatus;
 
 use super::{WINDOW_HEIGHT, WINDOW_WIDTH};
 
@@ -44,6 +45,8 @@ const CURVE_NODE_INSERT_GUARD_RADIUS: f32 = 12.0;
 const CURVE_SEGMENT_HOVER_RADIUS: f32 = 7.0;
 const CURVE_SEGMENT_TENSION_PIXEL_SCALE: f32 = 120.0;
 const CURVE_NODE_MIN_SPACING_X: f32 = 1.0e-3;
+const CURVE_PLAYHEAD_MARKER_SIZE: f32 = 5.5;
+const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
 
 #[derive(Clone)]
 struct ActiveCurveSegmentDrag {
@@ -56,6 +59,7 @@ struct ActiveCurveSegmentDrag {
 #[derive(Clone)]
 struct RadiantEditorState {
     params: Arc<PumpParams>,
+    status: Arc<GuiStatus>,
     active_curve_node: Option<usize>,
     active_curve_segment: Option<ActiveCurveSegmentDrag>,
     hover_curve_node: Option<usize>,
@@ -86,6 +90,7 @@ type EditorSurfaceRuntime = DeclarativeSurfaceRuntime<
 #[cfg(feature = "vst3")]
 pub(crate) struct RadiantPumpEditor {
     runtime: EditorSurfaceRuntime,
+    status: Arc<GuiStatus>,
     theme: ThemeTokens,
     paint_plan: SurfacePaintPlan,
 }
@@ -93,24 +98,22 @@ pub(crate) struct RadiantPumpEditor {
 #[cfg(feature = "vst3")]
 impl RadiantPumpEditor {
     /// Build a Radiant editor runtime at the provided logical viewport.
-    pub(crate) fn new(params: Arc<PumpParams>, width: u32, height: u32) -> Self {
+    pub(crate) fn new(
+        params: Arc<PumpParams>,
+        status: Arc<GuiStatus>,
+        width: u32,
+        height: u32,
+    ) -> Self {
         let theme = ThemeTokens::default();
         let viewport = Vector2::new(width.max(1) as f32, height.max(1) as f32);
         Self {
             runtime: EditorSurfaceRuntime::new_declarative(
-                RadiantEditorState {
-                    params,
-                    active_curve_node: None,
-                    active_curve_segment: None,
-                    hover_curve_node: None,
-                    preview_curve_node: None,
-                    hover_curve_segment: None,
-                    option_hover_held: false,
-                },
+                RadiantEditorState::new(params, Arc::clone(&status)),
                 viewport,
                 project_editor_surface,
                 reduce_editor_message,
             ),
+            status,
             paint_plan: SurfacePaintPlan::empty(&theme),
             theme,
         }
@@ -129,8 +132,16 @@ impl RadiantPumpEditor {
         let _ = self.runtime.dispatch_event(event);
     }
 
+    /// Return whether the hosted view should keep repainting without input.
+    pub(crate) fn needs_realtime_redraw(&self) -> bool {
+        self.status.has_host_beats_timeline() || self.status.is_playing()
+    }
+
     /// Refresh and return the current backend-neutral paint plan.
     pub(crate) fn paint_plan(&mut self) -> &SurfacePaintPlan {
+        if self.needs_realtime_redraw() {
+            self.runtime.refresh();
+        }
         let _ = self
             .runtime
             .borrowed_frame_into(&self.theme, &mut self.paint_plan);
@@ -142,18 +153,11 @@ impl RadiantPumpEditor {
 #[cfg(test)]
 pub(crate) fn radiant_editor_frame_for_params(
     params: Arc<PumpParams>,
+    status: Arc<GuiStatus>,
     viewport: Vector2,
 ) -> SurfaceFrame {
     EditorSurfaceRuntime::new_declarative(
-        RadiantEditorState {
-            params,
-            active_curve_node: None,
-            active_curve_segment: None,
-            hover_curve_node: None,
-            preview_curve_node: None,
-            hover_curve_segment: None,
-            option_hover_held: false,
-        },
+        RadiantEditorState::new(params, status),
         viewport,
         project_editor_surface,
         reduce_editor_message,
@@ -161,10 +165,27 @@ pub(crate) fn radiant_editor_frame_for_params(
     .frame(&ThemeTokens::default())
 }
 
+impl RadiantEditorState {
+    fn new(params: Arc<PumpParams>, status: Arc<GuiStatus>) -> Self {
+        Self {
+            params,
+            status,
+            active_curve_node: None,
+            active_curve_segment: None,
+            hover_curve_node: None,
+            preview_curve_node: None,
+            hover_curve_segment: None,
+            option_hover_held: false,
+        }
+    }
+}
+
 fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<RadiantEditorMessage>> {
     let params = state.params.as_ref();
     let output = params.output_gain_db();
     let sync = params.sync_division();
+    let playhead_phase = (state.status.has_host_beats_timeline() || state.status.is_playing())
+        .then_some(state.status.phase());
     Arc::new(
         column([
             text("PUMP").height(TITLE_HEIGHT).fill_width(),
@@ -177,7 +198,8 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                     state.preview_curve_node,
                     state.hover_curve_segment,
                     state.option_hover_held,
-                ),
+                )
+                .with_playhead_phase(playhead_phase),
                 RadiantEditorMessage::Curve,
             )
             .fill_width()
@@ -517,6 +539,7 @@ struct CurvePreviewWidget {
     preview_node: Option<CurveNode>,
     hover_segment: Option<usize>,
     option_hover_held: bool,
+    playhead_phase: Option<f32>,
 }
 
 impl CurvePreviewWidget {
@@ -544,7 +567,13 @@ impl CurvePreviewWidget {
             preview_node,
             hover_segment,
             option_hover_held,
+            playhead_phase: None,
         }
+    }
+
+    fn with_playhead_phase(mut self, playhead_phase: Option<f32>) -> Self {
+        self.playhead_phase = playhead_phase.map(|phase| phase.rem_euclid(1.0));
+        self
     }
 
     fn curve_point(bounds: Rect, node: CurveNode) -> Point {
@@ -859,6 +888,58 @@ impl CurvePreviewWidget {
             }));
         }
     }
+
+    fn push_playhead(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        theme: &ThemeTokens,
+    ) {
+        let Some(phase) = self.playhead_phase else {
+            return;
+        };
+        let sample = sample_editable_curve(&self.curve, phase).clamp(0.0, 1.0);
+        let center = Self::curve_point(
+            bounds,
+            CurveNode {
+                x: phase,
+                y: sample,
+            },
+        );
+        let glow_radius = CURVE_PLAYHEAD_MARKER_GLOW_SIZE * 0.5;
+        let core_radius = CURVE_PLAYHEAD_MARKER_SIZE * 0.5;
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.common.id,
+            rect: Rect::from_xy_size(
+                center.x - glow_radius,
+                center.y - glow_radius,
+                CURVE_PLAYHEAD_MARKER_GLOW_SIZE,
+                CURVE_PLAYHEAD_MARKER_GLOW_SIZE,
+            ),
+            color: theme.accent_copper,
+        }));
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.common.id,
+            rect: Rect::from_xy_size(
+                center.x - core_radius,
+                center.y - core_radius,
+                CURVE_PLAYHEAD_MARKER_SIZE,
+                CURVE_PLAYHEAD_MARKER_SIZE,
+            ),
+            color: theme.accent_warning,
+        }));
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.common.id,
+            rect: Rect::from_xy_size(
+                center.x - core_radius,
+                center.y - core_radius,
+                CURVE_PLAYHEAD_MARKER_SIZE,
+                CURVE_PLAYHEAD_MARKER_SIZE,
+            ),
+            color: theme.accent_mint,
+            width: 1.0,
+        }));
+    }
 }
 
 impl Widget for CurvePreviewWidget {
@@ -968,6 +1049,7 @@ impl Widget for CurvePreviewWidget {
     ) {
         self.push_grid(primitives, bounds, theme);
         self.push_curve(primitives, bounds, theme);
+        self.push_playhead(primitives, bounds, theme);
         self.push_nodes(primitives, bounds, theme);
     }
 }
@@ -1043,6 +1125,8 @@ fn point_to_segment_distance_squared(point: Point, a: Point, b: Point) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "vst3")]
+    use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
     use radiant::widgets::PointerModifiers;
 
@@ -1051,6 +1135,7 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let mut state = RadiantEditorState {
             params: Arc::clone(&params),
+            status: Arc::new(GuiStatus::default()),
             active_curve_node: None,
             active_curve_segment: None,
             hover_curve_node: None,
@@ -1075,6 +1160,7 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let mut state = RadiantEditorState {
             params: Arc::clone(&params),
+            status: Arc::new(GuiStatus::default()),
             active_curve_node: None,
             active_curve_segment: None,
             hover_curve_node: None,
@@ -1120,6 +1206,7 @@ mod tests {
         let before = params.editable_curve_snapshot();
         let mut state = RadiantEditorState {
             params: Arc::clone(&params),
+            status: Arc::new(GuiStatus::default()),
             active_curve_node: Some(1),
             active_curve_segment: None,
             hover_curve_node: Some(1),
@@ -1149,6 +1236,7 @@ mod tests {
         let before = params.editable_curve_snapshot();
         let mut state = RadiantEditorState {
             params: Arc::clone(&params),
+            status: Arc::new(GuiStatus::default()),
             active_curve_node: None,
             active_curve_segment: None,
             hover_curve_node: Some(0),
@@ -1171,6 +1259,7 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let mut state = RadiantEditorState {
             params: Arc::clone(&params),
+            status: Arc::new(GuiStatus::default()),
             active_curve_node: None,
             active_curve_segment: None,
             hover_curve_node: None,
@@ -1207,6 +1296,7 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let mut state = RadiantEditorState {
             params,
+            status: Arc::new(GuiStatus::default()),
             active_curve_node: None,
             active_curve_segment: None,
             hover_curve_node: None,
@@ -1242,6 +1332,7 @@ mod tests {
         params.set_editable_curve(&curve);
         let mut state = RadiantEditorState {
             params: Arc::clone(&params),
+            status: Arc::new(GuiStatus::default()),
             active_curve_node: None,
             active_curve_segment: None,
             hover_curve_node: None,
@@ -1467,6 +1558,7 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let mut state = RadiantEditorState {
             params: Arc::clone(&params),
+            status: Arc::new(GuiStatus::default()),
             active_curve_node: None,
             active_curve_segment: None,
             hover_curve_node: None,
@@ -1669,9 +1761,109 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_paints_playhead_marker_at_sampled_phase() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let phase = 0.37;
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_playhead_phase(Some(phase));
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let expected_center = CurvePreviewWidget::curve_point(
+            bounds,
+            CurveNode {
+                x: phase,
+                y: sample_editable_curve(&curve, phase).clamp(0.0, 1.0),
+            },
+        );
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::FillRect(fill)
+                    if fill.color == theme.accent_warning
+                        && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
+                        && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
+                        && ((fill.rect.min.x + fill.rect.width() * 0.5) - expected_center.x).abs()
+                            < 1.0e-4
+                        && ((fill.rect.min.y + fill.rect.height() * 0.5) - expected_center.y).abs()
+                            < 1.0e-4
+            )
+        }));
+    }
+
+    #[cfg(feature = "vst3")]
+    #[test]
+    fn radiant_editor_reprojects_playhead_from_status_without_pointer_event() {
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        status.update(
+            0.1,
+            1.0,
+            GuiTransportTelemetry {
+                is_playing: true,
+                has_host_beats_timeline: true,
+                beat_phase: 0.1,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::clone(&status),
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        let first_center = playhead_marker_center(editor.paint_plan())
+            .expect("initial paint plan should include a playhead marker");
+
+        status.update(
+            0.6,
+            1.0,
+            GuiTransportTelemetry {
+                is_playing: true,
+                has_host_beats_timeline: true,
+                beat_phase: 0.6,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        let second_center = playhead_marker_center(editor.paint_plan())
+            .expect("refreshed paint plan should include a playhead marker");
+
+        assert!(
+            (second_center.x - first_center.x).abs() > 32.0,
+            "playhead marker should move after status changes without relying on pointer events (first={first_center:?}, second={second_center:?})"
+        );
+    }
+
+    #[cfg(feature = "vst3")]
+    fn playhead_marker_center(plan: &SurfacePaintPlan) -> Option<Point> {
+        let theme = ThemeTokens::default();
+        plan.primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill)
+                    if fill.color == theme.accent_warning
+                        && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
+                        && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6 =>
+                {
+                    Some(Point::new(
+                        fill.rect.min.x + fill.rect.width() * 0.5,
+                        fill.rect.min.y + fill.rect.height() * 0.5,
+                    ))
+                }
+                _ => None,
+            })
+    }
+
+    #[test]
     fn radiant_editor_surface_emits_visible_paint() {
         let frame = radiant_editor_frame_for_params(
             Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
             Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
         );
 

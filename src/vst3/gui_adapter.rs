@@ -59,7 +59,10 @@ impl Vst3HostedGui for PumpVst3GuiAdapter {
         #[cfg(target_os = "macos")]
         {
             let _ = &self.shared.automation_queue;
-            self.cocoa_gui.open(Arc::clone(&self.shared.params))
+            self.cocoa_gui.open(
+                Arc::clone(&self.shared.params),
+                Arc::clone(&self.shared.status),
+            )
         }
 
         #[cfg(not(target_os = "macos"))]
