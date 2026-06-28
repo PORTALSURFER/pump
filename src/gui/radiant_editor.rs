@@ -11,18 +11,26 @@ use radiant::prelude::{
 use radiant::runtime::SurfaceFrame;
 use radiant::runtime::{
     DeclarativeSurfaceRuntime, PaintFillRect, PaintPrimitive, PaintStrokePolyline, PaintStrokeRect,
+    PaintText, PaintTextAlign, PaintTextRun,
 };
 #[cfg(feature = "vst3")]
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
-use radiant::widgets::{PointerButton, Widget, WidgetCommon, WidgetInput, WidgetOutput};
+use radiant::widgets::{
+    FocusBehavior, PointerButton, TextWrap, Widget, WidgetCommon, WidgetInput, WidgetKey,
+    WidgetOutput,
+};
+use toybox::clack_plugin::utils::ClapId;
+use toybox::clap::automation::{AutomationConfig, AutomationQueue};
 
 use crate::curve::{
     sample_editable_curve, CurveNode, CurveSegment, EditableCurve, MAX_EDITABLE_NODES,
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    sync_division_label, PumpParams, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB,
+    format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
+    MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
+    PARAM_PHASE_OFFSET_ID,
 };
 use crate::GuiStatus;
 
@@ -47,6 +55,8 @@ const CURVE_SEGMENT_TENSION_PIXEL_SCALE: f32 = 120.0;
 const CURVE_NODE_MIN_SPACING_X: f32 = 1.0e-3;
 const CURVE_PLAYHEAD_MARKER_SIZE: f32 = 5.5;
 const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
+const VALUE_ENTRY_MAX_CHARS: usize = 16;
+const VALUE_LABEL_FONT_SIZE: f32 = 12.0;
 
 #[derive(Clone)]
 struct ActiveCurveSegmentDrag {
@@ -56,16 +66,86 @@ struct ActiveCurveSegmentDrag {
     start_tension: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NumericEntryTarget {
+    Mix,
+    Phase,
+    OutputGain,
+}
+
+impl NumericEntryTarget {
+    fn param_id(self) -> ClapId {
+        match self {
+            Self::Mix => PARAM_MIX_ID,
+            Self::Phase => PARAM_PHASE_OFFSET_ID,
+            Self::OutputGain => PARAM_OUTPUT_GAIN_ID,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Mix => "Mix",
+            Self::Phase => "Phase",
+            Self::OutputGain => "Output",
+        }
+    }
+
+    fn widget_key(self) -> &'static str {
+        match self {
+            Self::Mix => "numeric-entry-mix",
+            Self::Phase => "numeric-entry-phase",
+            Self::OutputGain => "numeric-entry-output",
+        }
+    }
+
+    fn current_plain_value(self, params: &PumpParams) -> f64 {
+        match self {
+            Self::Mix => params.mix() as f64,
+            Self::Phase => params.phase_offset() as f64,
+            Self::OutputGain => params.output_gain_db() as f64,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct NumericEntryState {
+    target: NumericEntryTarget,
+    draft: String,
+    dirty: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum NumericEntryMessage {
+    Begin {
+        target: NumericEntryTarget,
+    },
+    DraftChanged {
+        target: NumericEntryTarget,
+        draft: String,
+        dirty: bool,
+    },
+    Commit {
+        target: NumericEntryTarget,
+        draft: String,
+    },
+    Cancel {
+        target: NumericEntryTarget,
+    },
+}
+
 #[derive(Clone)]
 struct RadiantEditorState {
     params: Arc<PumpParams>,
     status: Arc<GuiStatus>,
+    automation_queue: Arc<AutomationQueue>,
+    automation_config: AutomationConfig,
     active_curve_node: Option<usize>,
     active_curve_segment: Option<ActiveCurveSegmentDrag>,
     hover_curve_node: Option<usize>,
     preview_curve_node: Option<CurveNode>,
     hover_curve_segment: Option<usize>,
     option_hover_held: bool,
+    numeric_entry: Option<NumericEntryState>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +155,7 @@ enum RadiantEditorMessage {
     OutputGain(f32),
     SyncDivision(f32),
     Curve(CurvePreviewMessage),
+    NumericEntry(NumericEntryMessage),
 }
 
 type EditorProjector = fn(&mut RadiantEditorState) -> Arc<UiSurface<RadiantEditorMessage>>;
@@ -101,6 +182,7 @@ impl RadiantPumpEditor {
     pub(crate) fn new(
         params: Arc<PumpParams>,
         status: Arc<GuiStatus>,
+        automation_queue: Arc<AutomationQueue>,
         width: u32,
         height: u32,
     ) -> Self {
@@ -108,7 +190,7 @@ impl RadiantPumpEditor {
         let viewport = Vector2::new(width.max(1) as f32, height.max(1) as f32);
         Self {
             runtime: EditorSurfaceRuntime::new_declarative(
-                RadiantEditorState::new(params, Arc::clone(&status)),
+                RadiantEditorState::new(params, Arc::clone(&status), automation_queue),
                 viewport,
                 project_editor_surface,
                 reduce_editor_message,
@@ -130,6 +212,29 @@ impl RadiantPumpEditor {
     /// Route a backend-neutral event into the Radiant runtime.
     pub(crate) fn dispatch_event(&mut self, event: Event) {
         let _ = self.runtime.dispatch_event(event);
+    }
+
+    /// Route a focused key press into the Radiant runtime.
+    pub(crate) fn dispatch_key_press(&mut self, key: WidgetKey) -> bool {
+        self.runtime.dispatch_event(Event::key_press(key)).is_some()
+    }
+
+    /// Route a focused text character into the Radiant runtime.
+    pub(crate) fn dispatch_character(&mut self, ch: char) -> bool {
+        self.runtime.dispatch_event(Event::character(ch)).is_some()
+    }
+
+    /// Cancel active numeric value entry, if any.
+    pub(crate) fn cancel_numeric_entry(&mut self) -> bool {
+        if self.runtime.bridge().state().numeric_entry.is_none() {
+            return false;
+        }
+        let _ = self.runtime.dispatch_event(Event::clear_focus());
+        if self.runtime.bridge().state().numeric_entry.is_some() {
+            self.runtime.bridge_mut().state_mut().numeric_entry = None;
+            self.runtime.refresh();
+        }
+        true
     }
 
     /// Return whether the hosted view should keep repainting without input.
@@ -157,7 +262,7 @@ pub(crate) fn radiant_editor_frame_for_params(
     viewport: Vector2,
 ) -> SurfaceFrame {
     EditorSurfaceRuntime::new_declarative(
-        RadiantEditorState::new(params, status),
+        RadiantEditorState::new(params, status, Arc::new(AutomationQueue::default())),
         viewport,
         project_editor_surface,
         reduce_editor_message,
@@ -166,16 +271,23 @@ pub(crate) fn radiant_editor_frame_for_params(
 }
 
 impl RadiantEditorState {
-    fn new(params: Arc<PumpParams>, status: Arc<GuiStatus>) -> Self {
+    fn new(
+        params: Arc<PumpParams>,
+        status: Arc<GuiStatus>,
+        automation_queue: Arc<AutomationQueue>,
+    ) -> Self {
         Self {
             params,
             status,
+            automation_queue,
+            automation_config: AutomationConfig::default(),
             active_curve_node: None,
             active_curve_segment: None,
             hover_curve_node: None,
             preview_curve_node: None,
             hover_curve_segment: None,
             option_hover_held: false,
+            numeric_entry: None,
         }
     }
 }
@@ -209,24 +321,27 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             .fill_width()
             .height(CURVE_PREVIEW_HEIGHT),
             control_row(
-                "Mix",
+                NumericEntryTarget::Mix,
                 format!("{:.0}%", params.mix() * 100.0),
                 params.mix(),
+                state.numeric_entry.as_ref(),
                 RadiantEditorMessage::Mix,
             ),
             control_row(
-                "Phase",
+                NumericEntryTarget::Phase,
                 format!("{:.0}%", params.phase_offset() * 100.0),
                 params.phase_offset(),
+                state.numeric_entry.as_ref(),
                 RadiantEditorMessage::Phase,
             ),
             control_row(
-                "Output",
+                NumericEntryTarget::OutputGain,
                 format!("{output:+.1} dB"),
                 normalize_output_gain(output),
+                state.numeric_entry.as_ref(),
                 RadiantEditorMessage::OutputGain,
             ),
-            control_row(
+            enum_control_row(
                 "Sync",
                 sync_division_label(sync).to_string(),
                 normalize_sync_division(sync),
@@ -241,8 +356,36 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
 }
 
 fn control_row(
+    target: NumericEntryTarget,
+    value_label: String,
+    value: f32,
+    active_entry: Option<&NumericEntryState>,
+    message: fn(f32) -> RadiantEditorMessage,
+) -> ViewNode<RadiantEditorMessage> {
+    let value_label = value_label_node(target, value_label, active_entry);
+    slider_control_row(target.label(), value_label, value, message)
+}
+
+fn enum_control_row(
     label: &'static str,
     value_label: String,
+    value: f32,
+    message: fn(f32) -> RadiantEditorMessage,
+) -> ViewNode<RadiantEditorMessage> {
+    slider_control_row(
+        label,
+        text(value_label)
+            .align_text(TextAlign::Right)
+            .width(CONTROL_VALUE_WIDTH)
+            .height(CONTROL_ROW_HEIGHT),
+        value,
+        message,
+    )
+}
+
+fn slider_control_row(
+    label: &'static str,
+    value_label: ViewNode<RadiantEditorMessage>,
     value: f32,
     message: fn(f32) -> RadiantEditorMessage,
 ) -> ViewNode<RadiantEditorMessage> {
@@ -254,12 +397,28 @@ fn control_row(
             .message(message)
             .fill_width()
             .height(CONTROL_ROW_HEIGHT),
-        text(value_label)
-            .width(CONTROL_VALUE_WIDTH)
-            .height(CONTROL_ROW_HEIGHT),
+        value_label,
     ])
     .spacing(8.0)
     .fill_width()
+    .height(CONTROL_ROW_HEIGHT)
+}
+
+fn value_label_node(
+    target: NumericEntryTarget,
+    value_label: String,
+    active_entry: Option<&NumericEntryState>,
+) -> ViewNode<RadiantEditorMessage> {
+    let (display, editing, dirty) = active_entry
+        .filter(|entry| entry.target == target)
+        .map(|entry| (entry.draft.clone(), true, entry.dirty))
+        .unwrap_or((value_label, false, false));
+    custom_widget_mapped(
+        NumericValueLabelWidget::new(target, display, editing, dirty),
+        RadiantEditorMessage::NumericEntry,
+    )
+    .key(target.widget_key())
+    .width(CONTROL_VALUE_WIDTH)
     .height(CONTROL_ROW_HEIGHT)
 }
 
@@ -278,7 +437,85 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                 .set_sync_division((value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round());
         }
         RadiantEditorMessage::Curve(message) => reduce_curve_message(state, message),
+        RadiantEditorMessage::NumericEntry(message) => reduce_numeric_entry_message(state, message),
     }
+}
+
+fn reduce_numeric_entry_message(state: &mut RadiantEditorState, message: NumericEntryMessage) {
+    match message {
+        NumericEntryMessage::Begin { target } => {
+            let value = target.current_plain_value(state.params.as_ref());
+            let draft = format_plain_value_text(target.param_id(), value)
+                .unwrap_or_else(|| value.to_string());
+            state.numeric_entry = Some(NumericEntryState {
+                target,
+                draft,
+                dirty: false,
+            });
+        }
+        NumericEntryMessage::DraftChanged {
+            target,
+            draft,
+            dirty,
+        } => {
+            if state
+                .numeric_entry
+                .as_ref()
+                .is_some_and(|entry| entry.target == target)
+            {
+                state.numeric_entry = Some(NumericEntryState {
+                    target,
+                    draft,
+                    dirty,
+                });
+            }
+        }
+        NumericEntryMessage::Commit { target, draft } => {
+            let entry_active = state
+                .numeric_entry
+                .as_ref()
+                .is_some_and(|entry| entry.target == target);
+            if entry_active {
+                let Some(value) = parse_plain_value_text(target.param_id(), draft.trim()) else {
+                    return;
+                };
+                apply_numeric_entry_value(state, target, value);
+                state.numeric_entry = None;
+            }
+        }
+        NumericEntryMessage::Cancel { target } => {
+            if state
+                .numeric_entry
+                .as_ref()
+                .is_some_and(|entry| entry.target == target)
+            {
+                state.numeric_entry = None;
+            }
+        }
+    }
+}
+
+fn apply_numeric_entry_value(
+    state: &mut RadiantEditorState,
+    target: NumericEntryTarget,
+    value: f64,
+) {
+    match target {
+        NumericEntryTarget::Mix => state.params.set_mix(value as f32),
+        NumericEntryTarget::Phase => state.params.set_phase_offset(value as f32),
+        NumericEntryTarget::OutputGain => state.params.set_output_gain_db(value as f32),
+    }
+
+    let param_id = target.param_id();
+    let _ = state
+        .automation_queue
+        .push_gesture_begin(&state.automation_config, param_id);
+    let _ = state
+        .automation_queue
+        .push_value(&state.automation_config, param_id, value);
+    let _ = state
+        .automation_queue
+        .push_gesture_end(&state.automation_config, param_id);
 }
 
 fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMessage) {
@@ -531,6 +768,192 @@ fn denormalize_output_gain(value: f32) -> f32 {
 
 fn normalize_sync_division(value: usize) -> f32 {
     (value as f32 / MAX_SYNC_DIVISION).clamp(0.0, 1.0)
+}
+
+#[derive(Clone)]
+struct NumericValueLabelWidget {
+    common: WidgetCommon,
+    target: NumericEntryTarget,
+    text: String,
+    editing: bool,
+    dirty: bool,
+}
+
+impl NumericValueLabelWidget {
+    fn new(target: NumericEntryTarget, text: String, editing: bool, dirty: bool) -> Self {
+        Self {
+            common: WidgetCommon::fixed(0, CONTROL_VALUE_WIDTH, CONTROL_ROW_HEIGHT)
+                .with_focus(FocusBehavior::Keyboard)
+                .without_default_chrome(),
+            target,
+            text,
+            editing,
+            dirty,
+        }
+    }
+
+    fn draft_with_character(&self, ch: char) -> Option<String> {
+        if !is_numeric_entry_char(ch) {
+            return None;
+        }
+        let mut draft = if self.dirty {
+            self.text.clone()
+        } else {
+            String::new()
+        };
+        if draft.chars().count() >= VALUE_ENTRY_MAX_CHARS {
+            return None;
+        }
+        draft.push(ch);
+        Some(draft)
+    }
+
+    fn draft_after_backspace(&self) -> String {
+        if !self.dirty {
+            return String::new();
+        }
+        let mut draft = self.text.clone();
+        draft.pop();
+        draft
+    }
+
+    fn draft_after_delete(&self) -> String {
+        if self.dirty {
+            self.text.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    fn changed(&self, draft: String) -> NumericEntryMessage {
+        NumericEntryMessage::DraftChanged {
+            target: self.target,
+            draft,
+            dirty: true,
+        }
+    }
+}
+
+impl Widget for NumericValueLabelWidget {
+    fn common(&self) -> &WidgetCommon {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        &mut self.common
+    }
+
+    fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        let message = match input {
+            WidgetInput::PointerMove { position } => {
+                self.common.state.hovered = bounds.contains(position);
+                None
+            }
+            WidgetInput::PointerPress {
+                position,
+                button: PointerButton::Primary,
+                modifiers,
+            } if bounds.contains(position) => {
+                self.common.state.focused = true;
+                self.common.state.hovered = true;
+                modifiers.command.then_some(NumericEntryMessage::Begin {
+                    target: self.target,
+                })
+            }
+            WidgetInput::FocusChanged(focused) => {
+                self.common.state.focused = focused;
+                (!focused && self.editing).then_some(NumericEntryMessage::Cancel {
+                    target: self.target,
+                })
+            }
+            WidgetInput::Character('\u{1b}') if self.editing => Some(NumericEntryMessage::Cancel {
+                target: self.target,
+            }),
+            WidgetInput::Character('\r' | '\n') if self.editing => {
+                Some(NumericEntryMessage::Commit {
+                    target: self.target,
+                    draft: self.text.clone(),
+                })
+            }
+            WidgetInput::Character(ch) if self.editing => self
+                .draft_with_character(ch)
+                .map(|draft| self.changed(draft)),
+            WidgetInput::KeyPress(WidgetKey::Enter) if self.editing => {
+                Some(NumericEntryMessage::Commit {
+                    target: self.target,
+                    draft: self.text.clone(),
+                })
+            }
+            WidgetInput::KeyPress(WidgetKey::Backspace) if self.editing => {
+                Some(self.changed(self.draft_after_backspace()))
+            }
+            WidgetInput::KeyPress(WidgetKey::Delete) if self.editing => {
+                Some(self.changed(self.draft_after_delete()))
+            }
+            _ => None,
+        }?;
+        Some(WidgetOutput::typed(message))
+    }
+
+    fn accepts_text_input(&self) -> bool {
+        self.editing
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        if self.editing {
+            primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+                widget_id: self.common.id,
+                rect: bounds,
+                color: theme.bg_primary,
+            }));
+            primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+                widget_id: self.common.id,
+                rect: bounds,
+                color: if self.common.state.focused {
+                    theme.accent_warning
+                } else {
+                    theme.border_emphasis
+                },
+                width: 1.0,
+            }));
+        }
+        primitives.push(PaintPrimitive::Text(PaintTextRun {
+            widget_id: self.common.id,
+            text: PaintText::from(self.text.clone()),
+            rect: bounds,
+            font_size: VALUE_LABEL_FONT_SIZE,
+            baseline: None,
+            color: if self.editing {
+                theme.text_primary
+            } else {
+                theme.text_muted
+            },
+            align: if self.editing {
+                PaintTextAlign::Left
+            } else {
+                PaintTextAlign::Right
+            },
+            wrap: TextWrap::None,
+        }));
+    }
+
+    fn automation_label(&self) -> Option<String> {
+        Some(format!("{} value", self.target.label()))
+    }
+
+    fn automation_value_text(&self) -> Option<String> {
+        Some(self.text.clone())
+    }
+}
+
+fn is_numeric_entry_char(ch: char) -> bool {
+    ch.is_ascii_digit() || matches!(ch, '.' | '-' | '+' | '%' | ' ' | 'd' | 'D' | 'b' | 'B')
 }
 
 #[derive(Clone)]
@@ -1136,19 +1559,18 @@ mod tests {
     use radiant::runtime::PaintPrimitive;
     use radiant::widgets::PointerModifiers;
 
+    fn editor_state(params: Arc<PumpParams>) -> RadiantEditorState {
+        RadiantEditorState::new(
+            params,
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+        )
+    }
+
     #[test]
     fn radiant_editor_reduces_slider_messages_to_params() {
         let params = Arc::new(PumpParams::new());
-        let mut state = RadiantEditorState {
-            params: Arc::clone(&params),
-            status: Arc::new(GuiStatus::default()),
-            active_curve_node: None,
-            active_curve_segment: None,
-            hover_curve_node: None,
-            preview_curve_node: None,
-            hover_curve_segment: None,
-            option_hover_held: false,
-        };
+        let mut state = editor_state(Arc::clone(&params));
 
         reduce_editor_message(&mut state, RadiantEditorMessage::Mix(0.25));
         reduce_editor_message(&mut state, RadiantEditorMessage::Phase(0.5));
@@ -1162,18 +1584,192 @@ mod tests {
     }
 
     #[test]
+    fn radiant_numeric_entry_commit_valid_value_updates_param() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Begin {
+                target: NumericEntryTarget::Mix,
+            }),
+        );
+        assert_eq!(
+            state
+                .numeric_entry
+                .as_ref()
+                .map(|entry| entry.draft.as_str()),
+            Some("100%")
+        );
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::DraftChanged {
+                target: NumericEntryTarget::Mix,
+                draft: "25".to_string(),
+                dirty: true,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Commit {
+                target: NumericEntryTarget::Mix,
+                draft: "25".to_string(),
+            }),
+        );
+
+        assert!((params.mix() - 0.25).abs() < f32::EPSILON);
+        assert!(state.numeric_entry.is_none());
+    }
+
+    #[test]
+    fn radiant_numeric_entry_rejects_invalid_commit_without_corrupting_param() {
+        let params = Arc::new(PumpParams::new());
+        params.set_output_gain_db(-3.0);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Begin {
+                target: NumericEntryTarget::OutputGain,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Commit {
+                target: NumericEntryTarget::OutputGain,
+                draft: "not a number".to_string(),
+            }),
+        );
+
+        assert!((params.output_gain_db() + 3.0).abs() < f32::EPSILON);
+        assert_eq!(
+            state.numeric_entry.as_ref().map(|entry| entry.target),
+            Some(NumericEntryTarget::OutputGain)
+        );
+    }
+
+    #[test]
+    fn radiant_numeric_entry_cancel_leaves_prior_value() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Begin {
+                target: NumericEntryTarget::Phase,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::DraftChanged {
+                target: NumericEntryTarget::Phase,
+                draft: "75".to_string(),
+                dirty: true,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Cancel {
+                target: NumericEntryTarget::Phase,
+            }),
+        );
+
+        assert!((params.phase_offset() - 0.0).abs() < f32::EPSILON);
+        assert!(state.numeric_entry.is_none());
+    }
+
+    #[test]
+    fn numeric_value_label_starts_edit_only_on_command_click() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, CONTROL_VALUE_WIDTH, CONTROL_ROW_HEIGHT);
+        let mut widget =
+            NumericValueLabelWidget::new(NumericEntryTarget::Mix, "50%".to_string(), false, false);
+
+        assert!(widget
+            .handle_input(bounds, WidgetInput::primary_press(Point::new(8.0, 8.0)))
+            .is_none());
+
+        let output = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: Point::new(8.0, 8.0),
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers {
+                        command: true,
+                        ..PointerModifiers::default()
+                    },
+                },
+            )
+            .expect("command-click should begin numeric entry");
+
+        assert_eq!(
+            output.typed_cloned::<NumericEntryMessage>(),
+            Some(NumericEntryMessage::Begin {
+                target: NumericEntryTarget::Mix
+            })
+        );
+    }
+
+    #[test]
+    fn numeric_value_label_edits_commits_and_cancels_draft() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, CONTROL_VALUE_WIDTH, CONTROL_ROW_HEIGHT);
+        let mut widget =
+            NumericValueLabelWidget::new(NumericEntryTarget::Mix, "100%".to_string(), true, false);
+
+        let output = widget
+            .handle_input(bounds, WidgetInput::Character('2'))
+            .expect("first typed character should replace selected label");
+        assert_eq!(
+            output.typed_cloned::<NumericEntryMessage>(),
+            Some(NumericEntryMessage::DraftChanged {
+                target: NumericEntryTarget::Mix,
+                draft: "2".to_string(),
+                dirty: true,
+            })
+        );
+
+        widget.text = "2".to_string();
+        widget.dirty = true;
+        let output = widget
+            .handle_input(bounds, WidgetInput::Character('5'))
+            .expect("second typed character should append");
+        assert_eq!(
+            output.typed_cloned::<NumericEntryMessage>(),
+            Some(NumericEntryMessage::DraftChanged {
+                target: NumericEntryTarget::Mix,
+                draft: "25".to_string(),
+                dirty: true,
+            })
+        );
+
+        widget.text = "25".to_string();
+        let output = widget
+            .handle_input(bounds, WidgetInput::KeyPress(WidgetKey::Enter))
+            .expect("enter should commit");
+        assert_eq!(
+            output.typed_cloned::<NumericEntryMessage>(),
+            Some(NumericEntryMessage::Commit {
+                target: NumericEntryTarget::Mix,
+                draft: "25".to_string(),
+            })
+        );
+
+        let output = widget
+            .handle_input(bounds, WidgetInput::FocusChanged(false))
+            .expect("focus loss should cancel active edit");
+        assert_eq!(
+            output.typed_cloned::<NumericEntryMessage>(),
+            Some(NumericEntryMessage::Cancel {
+                target: NumericEntryTarget::Mix,
+            })
+        );
+    }
+
+    #[test]
     fn radiant_editor_curve_drag_updates_editable_curve() {
         let params = Arc::new(PumpParams::new());
-        let mut state = RadiantEditorState {
-            params: Arc::clone(&params),
-            status: Arc::new(GuiStatus::default()),
-            active_curve_node: None,
-            active_curve_segment: None,
-            hover_curve_node: None,
-            preview_curve_node: None,
-            hover_curve_segment: None,
-            option_hover_held: false,
-        };
+        let mut state = editor_state(Arc::clone(&params));
 
         reduce_editor_message(
             &mut state,
@@ -1210,16 +1806,11 @@ mod tests {
     fn radiant_editor_curve_delete_removes_interior_node() {
         let params = Arc::new(PumpParams::new());
         let before = params.editable_curve_snapshot();
-        let mut state = RadiantEditorState {
-            params: Arc::clone(&params),
-            status: Arc::new(GuiStatus::default()),
-            active_curve_node: Some(1),
-            active_curve_segment: None,
-            hover_curve_node: Some(1),
-            preview_curve_node: Some(CurveNode { x: 0.2, y: 0.3 }),
-            hover_curve_segment: Some(0),
-            option_hover_held: false,
-        };
+        let mut state = editor_state(Arc::clone(&params));
+        state.active_curve_node = Some(1);
+        state.hover_curve_node = Some(1);
+        state.preview_curve_node = Some(CurveNode { x: 0.2, y: 0.3 });
+        state.hover_curve_segment = Some(0);
 
         reduce_editor_message(
             &mut state,
@@ -1240,16 +1831,8 @@ mod tests {
     fn radiant_editor_curve_delete_ignores_endpoints() {
         let params = Arc::new(PumpParams::new());
         let before = params.editable_curve_snapshot();
-        let mut state = RadiantEditorState {
-            params: Arc::clone(&params),
-            status: Arc::new(GuiStatus::default()),
-            active_curve_node: None,
-            active_curve_segment: None,
-            hover_curve_node: Some(0),
-            preview_curve_node: None,
-            hover_curve_segment: None,
-            option_hover_held: false,
-        };
+        let mut state = editor_state(Arc::clone(&params));
+        state.hover_curve_node = Some(0);
 
         reduce_editor_message(
             &mut state,
@@ -1263,16 +1846,10 @@ mod tests {
     #[test]
     fn radiant_editor_curve_insert_adds_preview_node_to_params() {
         let params = Arc::new(PumpParams::new());
-        let mut state = RadiantEditorState {
-            params: Arc::clone(&params),
-            status: Arc::new(GuiStatus::default()),
-            active_curve_node: None,
-            active_curve_segment: None,
-            hover_curve_node: None,
-            preview_curve_node: Some(CurveNode { x: 0.2, y: 0.0 }),
-            hover_curve_segment: Some(1),
-            option_hover_held: true,
-        };
+        let mut state = editor_state(Arc::clone(&params));
+        state.preview_curve_node = Some(CurveNode { x: 0.2, y: 0.0 });
+        state.hover_curve_segment = Some(1);
+        state.option_hover_held = true;
         let before = params.editable_curve_snapshot();
         let node = CurveNode {
             x: 0.2,
@@ -1300,16 +1877,9 @@ mod tests {
     #[test]
     fn radiant_editor_option_hover_clears_insert_preview() {
         let params = Arc::new(PumpParams::new());
-        let mut state = RadiantEditorState {
-            params,
-            status: Arc::new(GuiStatus::default()),
-            active_curve_node: None,
-            active_curve_segment: None,
-            hover_curve_node: None,
-            preview_curve_node: Some(CurveNode { x: 0.2, y: 0.3 }),
-            hover_curve_segment: Some(1),
-            option_hover_held: false,
-        };
+        let mut state = editor_state(params);
+        state.preview_curve_node = Some(CurveNode { x: 0.2, y: 0.3 });
+        state.hover_curve_segment = Some(1);
 
         reduce_editor_message(
             &mut state,
@@ -1336,16 +1906,8 @@ mod tests {
         }
         .normalized();
         params.set_editable_curve(&curve);
-        let mut state = RadiantEditorState {
-            params: Arc::clone(&params),
-            status: Arc::new(GuiStatus::default()),
-            active_curve_node: None,
-            active_curve_segment: None,
-            hover_curve_node: None,
-            preview_curve_node: None,
-            hover_curve_segment: None,
-            option_hover_held: true,
-        };
+        let mut state = editor_state(Arc::clone(&params));
+        state.option_hover_held = true;
         let start = Point::new(120.0, 48.0);
         let baseline_midpoint = sample_editable_curve(&curve, 0.25);
 
@@ -1562,16 +2124,7 @@ mod tests {
     #[test]
     fn radiant_editor_canvas_insert_can_drag_inserted_node() {
         let params = Arc::new(PumpParams::new());
-        let mut state = RadiantEditorState {
-            params: Arc::clone(&params),
-            status: Arc::new(GuiStatus::default()),
-            active_curve_node: None,
-            active_curve_segment: None,
-            hover_curve_node: None,
-            preview_curve_node: None,
-            hover_curve_segment: None,
-            option_hover_held: false,
-        };
+        let mut state = editor_state(Arc::clone(&params));
 
         reduce_editor_message(
             &mut state,
@@ -1872,6 +2425,7 @@ mod tests {
         let mut editor = RadiantPumpEditor::new(
             Arc::clone(&params),
             Arc::clone(&status),
+            Arc::new(AutomationQueue::default()),
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
         );

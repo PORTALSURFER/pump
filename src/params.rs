@@ -30,14 +30,15 @@ pub(crate) use model::{
 
 #[cfg(feature = "vst3")]
 pub use host_api::{
-    apply_normalized_param_value, clap_id_from_vst3_param_id, format_plain_value_text,
-    normalized_from_plain_value, parse_plain_value_text, plain_from_normalized_value,
-    vst3_param_info_for_index,
+    apply_normalized_param_value, clap_id_from_vst3_param_id, normalized_from_plain_value,
+    plain_from_normalized_value, vst3_param_info_for_index,
 };
 pub use host_api::{
     apply_param_event, get_param_value, param_count, text_to_value, value_to_text,
     write_param_info, MAX_SYNC_DIVISION,
 };
+#[cfg(any(feature = "vst3", test))]
+pub(crate) use host_api::{format_plain_value_text, parse_plain_value_text};
 pub use state_codec::{decode_state_payload, encode_state_payload};
 
 #[cfg(test)]

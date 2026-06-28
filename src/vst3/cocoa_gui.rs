@@ -1,7 +1,7 @@
 //! Radiant-backed AppKit VST3 editor for macOS hosts.
 
 use std::cell::Cell;
-use std::ffi::c_void;
+use std::ffi::{c_void, CStr};
 use std::ptr::{self, NonNull};
 use std::sync::OnceLock;
 use std::sync::{
@@ -16,7 +16,8 @@ use objc::runtime::{Class, Object, Sel, BOOL, NO, YES};
 use objc::{class, msg_send, sel, sel_impl, Encode, Encoding};
 use radiant::gui::types::{Point, Rect as UiRect, Rgba8};
 use radiant::runtime::{Event, PaintPrimitive, PaintTextAlign, SurfacePaintPlan};
-use radiant::widgets::{PointerButton, PointerModifiers};
+use radiant::widgets::{PointerButton, PointerModifiers, WidgetKey};
+use toybox::clap::automation::AutomationQueue;
 
 use crate::gui::{preferred_window_size, RadiantPumpEditor};
 use crate::params::PumpParams;
@@ -109,7 +110,12 @@ impl CocoaPumpEditor {
     }
 
     /// Attach the editor view to the host parent.
-    pub(super) fn open(&mut self, params: Arc<PumpParams>, status: Arc<GuiStatus>) -> bool {
+    pub(super) fn open(
+        &mut self,
+        params: Arc<PumpParams>,
+        status: Arc<GuiStatus>,
+        automation_queue: Arc<AutomationQueue>,
+    ) -> bool {
         if self.root_view.is_some() {
             return true;
         }
@@ -117,9 +123,9 @@ impl CocoaPumpEditor {
             return false;
         };
         let (width, height) = preferred_window_size();
-        let Some(root_view) =
-            (unsafe { create_editor_view(parent, params, status, width, height) })
-        else {
+        let Some(root_view) = (unsafe {
+            create_editor_view(parent, params, status, automation_queue, width, height)
+        }) else {
             return false;
         };
         self.root_view = Some(root_view);
@@ -174,11 +180,12 @@ unsafe fn create_editor_view(
     parent: NonNull<c_void>,
     params: Arc<PumpParams>,
     status: Arc<GuiStatus>,
+    automation_queue: Arc<AutomationQueue>,
     width: u32,
     height: u32,
 ) -> Option<NonNull<Object>> {
     let root_view = new_radiant_view(
-        RadiantPumpEditor::new(params, status, width, height),
+        RadiantPumpEditor::new(params, status, automation_queue, width, height),
         width,
         height,
     )?;
@@ -452,6 +459,10 @@ fn editor_view_class() -> *const Class {
                 flags_changed as extern "C" fn(&Object, Sel, *mut Object),
             );
             decl.add_method(
+                sel!(keyDown:),
+                key_down as extern "C" fn(&Object, Sel, *mut Object),
+            );
+            decl.add_method(
                 sel!(playheadRedrawTick:),
                 playhead_redraw_tick as extern "C" fn(&Object, Sel, *mut Object),
             );
@@ -543,6 +554,9 @@ extern "C" fn mouse_exited(this: &Object, _cmd: Sel, event: *mut Object) {
 }
 
 extern "C" fn mouse_down(this: &Object, _cmd: Sel, event: *mut Object) {
+    unsafe {
+        make_first_responder(this);
+    }
     dispatch_mouse_event(this, event, PointerButton::Primary, MouseEventKind::Press);
 }
 
@@ -577,6 +591,26 @@ extern "C" fn flags_changed(this: &Object, _cmd: Sel, event: *mut Object) {
         };
         runtime.dispatch_event(Event::pointer_modifiers_changed(event_modifiers(event)));
         let _: () = msg_send![this, setNeedsDisplay: YES];
+    }
+}
+
+extern "C" fn key_down(this: &Object, _cmd: Sel, event: *mut Object) {
+    unsafe {
+        if event.is_null() {
+            return;
+        }
+        let Some(runtime) = runtime_mut(this) else {
+            return;
+        };
+        let mut handled = false;
+        if let Some(text) = event_characters(event) {
+            for ch in text.chars() {
+                handled |= dispatch_key_character(runtime, ch);
+            }
+        }
+        if handled {
+            let _: () = msg_send![this, setNeedsDisplay: YES];
+        }
     }
 }
 
@@ -666,6 +700,40 @@ unsafe fn event_modifiers(event: *mut Object) -> PointerModifiers {
         command: flags & NSEVENT_MODIFIER_FLAG_COMMAND != 0,
         shift: flags & NSEVENT_MODIFIER_FLAG_SHIFT != 0,
         alt: flags & NSEVENT_MODIFIER_FLAG_OPTION != 0,
+    }
+}
+
+unsafe fn event_characters(event: *mut Object) -> Option<String> {
+    let characters: *mut Object = msg_send![event, charactersIgnoringModifiers];
+    ns_string_to_string(characters)
+}
+
+unsafe fn ns_string_to_string(string: *mut Object) -> Option<String> {
+    if string.is_null() {
+        return None;
+    }
+    let bytes: *const i8 = msg_send![string, UTF8String];
+    if bytes.is_null() {
+        return None;
+    }
+    CStr::from_ptr(bytes).to_str().ok().map(str::to_owned)
+}
+
+unsafe fn make_first_responder(this: &Object) {
+    let window: *mut Object = msg_send![this, window];
+    if !window.is_null() {
+        let _: BOOL = msg_send![window, makeFirstResponder: this];
+    }
+}
+
+fn dispatch_key_character(runtime: &mut RadiantPumpEditor, ch: char) -> bool {
+    match ch {
+        '\u{1b}' => runtime.cancel_numeric_entry(),
+        '\r' | '\n' => runtime.dispatch_key_press(WidgetKey::Enter),
+        '\u{8}' => runtime.dispatch_key_press(WidgetKey::Backspace),
+        '\u{7f}' => runtime.dispatch_key_press(WidgetKey::Delete),
+        _ if !ch.is_control() => runtime.dispatch_character(ch),
+        _ => false,
     }
 }
 
@@ -813,7 +881,11 @@ mod tests {
             let mut editor = CocoaPumpEditor::default();
             editor.set_parent_raw(RawWindowHandle::AppKit(handle));
 
-            assert!(editor.open(Arc::new(PumpParams::new()), Arc::new(GuiStatus::default())));
+            assert!(editor.open(
+                Arc::new(PumpParams::new()),
+                Arc::new(GuiStatus::default()),
+                Arc::new(AutomationQueue::default()),
+            ));
             assert_eq!(editor.last_size(), Some(preferred_window_size()));
 
             let subviews: *mut Object = msg_send![parent.as_ptr(), subviews];
@@ -918,6 +990,7 @@ mod tests {
                 RadiantPumpEditor::new(
                     Arc::new(PumpParams::new()),
                     Arc::new(GuiStatus::default()),
+                    Arc::new(AutomationQueue::default()),
                     width,
                     height,
                 ),
@@ -930,10 +1003,13 @@ mod tests {
                 msg_send![view.as_ptr(), respondsToSelector: sel!(mouseMoved:)];
             let responds_flags_changed: BOOL =
                 msg_send![view.as_ptr(), respondsToSelector: sel!(flagsChanged:)];
+            let responds_key_down: BOOL =
+                msg_send![view.as_ptr(), respondsToSelector: sel!(keyDown:)];
             let responds_redraw_tick: BOOL =
                 msg_send![view.as_ptr(), respondsToSelector: sel!(playheadRedrawTick:)];
             assert_eq!(responds_mouse_moved, YES);
             assert_eq!(responds_flags_changed, YES);
+            assert_eq!(responds_key_down, YES);
             assert_eq!(responds_redraw_tick, YES);
 
             let tracking_area = *view

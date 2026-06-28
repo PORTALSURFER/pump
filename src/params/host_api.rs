@@ -272,24 +272,12 @@ pub fn text_to_value(param_id: ClapId, text: &CStr) -> Option<f64> {
 }
 
 /// Format one plain parameter value into host-facing display text.
-#[cfg(feature = "vst3")]
 pub fn format_plain_value_text(param_id: ClapId, value: f64) -> Option<String> {
     format_plain_value_text_impl(param_id, value)
 }
 
-#[cfg(not(feature = "vst3"))]
-fn format_plain_value_text(param_id: ClapId, value: f64) -> Option<String> {
-    format_plain_value_text_impl(param_id, value)
-}
-
 /// Parse host-facing parameter text into one plain parameter value.
-#[cfg(feature = "vst3")]
 pub fn parse_plain_value_text(param_id: ClapId, raw: &str) -> Option<f64> {
-    parse_plain_value_text_impl(param_id, raw)
-}
-
-#[cfg(not(feature = "vst3"))]
-fn parse_plain_value_text(param_id: ClapId, raw: &str) -> Option<f64> {
     parse_plain_value_text_impl(param_id, raw)
 }
 
