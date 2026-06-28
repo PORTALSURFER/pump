@@ -90,6 +90,7 @@ type EditorSurfaceRuntime = DeclarativeSurfaceRuntime<
 #[cfg(feature = "vst3")]
 pub(crate) struct RadiantPumpEditor {
     runtime: EditorSurfaceRuntime,
+    status: Arc<GuiStatus>,
     theme: ThemeTokens,
     paint_plan: SurfacePaintPlan,
 }
@@ -107,11 +108,12 @@ impl RadiantPumpEditor {
         let viewport = Vector2::new(width.max(1) as f32, height.max(1) as f32);
         Self {
             runtime: EditorSurfaceRuntime::new_declarative(
-                RadiantEditorState::new(params, status),
+                RadiantEditorState::new(params, Arc::clone(&status)),
                 viewport,
                 project_editor_surface,
                 reduce_editor_message,
             ),
+            status,
             paint_plan: SurfacePaintPlan::empty(&theme),
             theme,
         }
@@ -128,6 +130,11 @@ impl RadiantPumpEditor {
     /// Route a backend-neutral event into the Radiant runtime.
     pub(crate) fn dispatch_event(&mut self, event: Event) {
         let _ = self.runtime.dispatch_event(event);
+    }
+
+    /// Return whether the hosted view should keep repainting without input.
+    pub(crate) fn needs_realtime_redraw(&self) -> bool {
+        self.status.has_host_beats_timeline() || self.status.is_playing()
     }
 
     /// Refresh and return the current backend-neutral paint plan.

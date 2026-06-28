@@ -3,11 +3,16 @@
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
-use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel, BOOL, YES};
+use objc::runtime::{Class, Object, Sel, BOOL, NO, YES};
 use objc::{class, msg_send, sel, sel_impl, Encode, Encoding};
 use radiant::gui::types::{Point, Rect as UiRect, Rgba8};
 use radiant::runtime::{Event, PaintPrimitive, PaintTextAlign, SurfacePaintPlan};
@@ -26,18 +31,13 @@ const NSTRACKING_MOUSE_MOVED: usize = 0x02;
 const NSTRACKING_ACTIVE_ALWAYS: usize = 0x80;
 const NSTRACKING_IN_VISIBLE_RECT: usize = 0x200;
 const NSTRACKING_ENABLED_DURING_MOUSE_DRAG: usize = 0x400;
-const PLAYHEAD_REDRAW_INTERVAL_SECONDS: f64 = 1.0 / 30.0;
+const PLAYHEAD_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
 
 #[link(name = "AppKit", kind = "framework")]
 extern "C" {
     static NSFontAttributeName: *mut Object;
     static NSForegroundColorAttributeName: *mut Object;
     static NSParagraphStyleAttributeName: *mut Object;
-}
-
-#[link(name = "Foundation", kind = "framework")]
-extern "C" {
-    static NSRunLoopCommonModes: *mut Object;
 }
 
 #[repr(C)]
@@ -79,6 +79,11 @@ unsafe impl Encode for NSRect {
     }
 }
 
+struct RedrawDriver {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
 /// AppKit child editor used when Pump is loaded as a VST3 on macOS.
 #[derive(Default)]
 pub(super) struct CocoaPumpEditor {
@@ -118,7 +123,7 @@ impl CocoaPumpEditor {
     pub(super) fn close(&mut self) {
         unsafe {
             if let Some(root_view) = self.root_view.take() {
-                invalidate_redraw_timer(root_view.as_ptr());
+                stop_redraw_driver(root_view.as_ptr());
                 drop_runtime(root_view.as_ptr());
                 let view = root_view.as_ptr();
                 let _: () = msg_send![view, removeFromSuperview];
@@ -184,10 +189,7 @@ unsafe fn new_radiant_view(
         msg_send![view, initWithFrame: ns_rect(0.0, 0.0, width as f64, height as f64)];
     let view = NonNull::new(view)?;
     (*view.as_ptr()).set_ivar("runtime", Box::into_raw(Box::new(runtime)) as usize);
-    (*view.as_ptr()).set_ivar(
-        "redraw_timer",
-        schedule_redraw_timer(view.as_ptr()) as usize,
-    );
+    (*view.as_ptr()).set_ivar("redraw_driver", start_redraw_driver(view.as_ptr()) as usize);
     let _: () = msg_send![view.as_ptr(), updateTrackingAreas];
     Some(view)
 }
@@ -399,7 +401,7 @@ fn editor_view_class() -> *const Class {
             ClassDecl::new("PumpRadiantEditorView", superclass).expect("unique class name");
         decl.add_ivar::<usize>("runtime");
         decl.add_ivar::<usize>("tracking_area");
-        decl.add_ivar::<usize>("redraw_timer");
+        decl.add_ivar::<usize>("redraw_driver");
         unsafe {
             decl.add_method(
                 sel!(drawRect:),
@@ -572,13 +574,18 @@ extern "C" fn flags_changed(this: &Object, _cmd: Sel, event: *mut Object) {
 
 extern "C" fn playhead_redraw_tick(this: &Object, _cmd: Sel, _timer: *mut Object) {
     unsafe {
-        let _: () = msg_send![this, setNeedsDisplay: YES];
+        if runtime_mut(this)
+            .map(|runtime| runtime.needs_realtime_redraw())
+            .unwrap_or(false)
+        {
+            let _: () = msg_send![this, setNeedsDisplay: YES];
+        }
     }
 }
 
 extern "C" fn dealloc(this: &Object, _cmd: Sel) {
     unsafe {
-        invalidate_redraw_timer(this);
+        stop_redraw_driver(this);
         remove_tracking_area(this);
         drop_runtime(this);
         let superclass = class!(NSView);
@@ -664,38 +671,51 @@ unsafe fn event_position(this: &Object, event: *mut Object) -> Point {
     Point::new(local_point.x as f32, local_point.y as f32)
 }
 
-unsafe fn schedule_redraw_timer(view: *mut Object) -> *mut Object {
-    let timer: *mut Object = msg_send![
-        class!(NSTimer),
-        timerWithTimeInterval: PLAYHEAD_REDRAW_INTERVAL_SECONDS
-        target: view
-        selector: sel!(playheadRedrawTick:)
-        userInfo: ptr::null_mut::<Object>()
-        repeats: YES
-    ];
-    if timer.is_null() {
+unsafe fn start_redraw_driver(view: *mut Object) -> *mut RedrawDriver {
+    if view.is_null() {
         return ptr::null_mut();
     }
-    let main_run_loop: *mut Object = msg_send![class!(NSRunLoop), mainRunLoop];
-    let _: () = msg_send![
-        main_run_loop,
-        addTimer: timer
-        forMode: NSRunLoopCommonModes
-    ];
-    timer
+    let retained_view: *mut Object = msg_send![view, retain];
+    let view_addr = retained_view as usize;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_thread = Arc::clone(&stop);
+    let handle = thread::spawn(move || {
+        while !stop_for_thread.load(Ordering::Acquire) {
+            let view = view_addr as *mut Object;
+            unsafe {
+                let _: () = msg_send![
+                    view,
+                    performSelectorOnMainThread: sel!(playheadRedrawTick:)
+                    withObject: ptr::null_mut::<Object>()
+                    waitUntilDone: NO
+                ];
+            }
+            thread::sleep(PLAYHEAD_REDRAW_INTERVAL);
+        }
+        let view = view_addr as *mut Object;
+        unsafe {
+            let _: () = msg_send![view, release];
+        }
+    });
+    Box::into_raw(Box::new(RedrawDriver {
+        stop,
+        handle: Some(handle),
+    }))
 }
 
-unsafe fn invalidate_redraw_timer(view: *const Object) {
-    let Some(view_ref) = view.as_ref() else {
+unsafe fn stop_redraw_driver(view: *const Object) {
+    let Some(view) = view.cast_mut().as_mut() else {
         return;
     };
-    let timer = *view_ref.get_ivar::<usize>("redraw_timer") as *mut Object;
-    if timer.is_null() {
+    let driver = *view.get_ivar::<usize>("redraw_driver") as *mut RedrawDriver;
+    if driver.is_null() {
         return;
     }
-    let _: () = msg_send![timer, invalidate];
-    if let Some(view_mut) = view.cast_mut().as_mut() {
-        view_mut.set_ivar("redraw_timer", 0_usize);
+    view.set_ivar("redraw_driver", 0_usize);
+    let mut driver = Box::from_raw(driver);
+    driver.stop.store(true, Ordering::Release);
+    if let Some(handle) = driver.handle.take() {
+        let _ = handle.join();
     }
 }
 
@@ -904,17 +924,16 @@ mod tests {
                 !tracking_area.is_null(),
                 "hover tracking area should be installed"
             );
-            let redraw_timer = *view
+            let redraw_driver = *view
                 .as_ptr()
                 .as_ref()
                 .expect("view pointer should be valid")
-                .get_ivar::<usize>("redraw_timer") as *mut Object;
+                .get_ivar::<usize>("redraw_driver")
+                as *mut RedrawDriver;
             assert!(
-                !redraw_timer.is_null(),
-                "playhead redraw timer should be installed"
+                !redraw_driver.is_null(),
+                "playhead redraw driver should be installed"
             );
-            let timer_valid: BOOL = msg_send![redraw_timer, isValid];
-            assert_eq!(timer_valid, YES);
 
             let _: () = msg_send![view.as_ptr(), release];
         }
