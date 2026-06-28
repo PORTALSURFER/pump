@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "119f95cfebab84687b7af870f3bf6e385f365346", default-features = false }
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "33db8968635375a5da2ebb9c215b79f336cf6616", features = ["gui"] }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "2c0317e6cc777258d6bf573cf8e802fd96dc02fa", features = ["gui"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2.7"
