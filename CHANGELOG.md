@@ -208,6 +208,10 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (a757bfd)
 
+- (changelog) Update changelog [skip ci] (825d6b5)
+
+- (changelog) Update changelog [skip ci] (1b4211c)
+
 
 ### Features
 
@@ -751,6 +755,10 @@ Add Radiant curve node hover deletion (f0f742e)
 - Merge pull request #3 from PORTALSURFER/codex/playback-position-marker
 
 Add Radiant playback position marker (da0a587)
+
+- Bump Toybox for Ioskeley font (46c08bb)
+
+- Point Pump at merged Toybox font commit (b7e7392)
 
 
 ### Refactoring

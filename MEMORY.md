@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-06-28 11:58:02 UTC
-- Active Mission: Add a realtime playback-position marker to Pump's Radiant curve editor.
-- Current Workstream: Branch `codex/playback-position-marker` threads `GuiStatus` into the macOS VST3 Radiant editor, paints a compact playhead marker at the sampled curve phase, refreshes the Radiant surface projection before realtime paint plans so status-only phase changes are visible without pointer input, and uses a small redraw driver thread that wakes CoreFoundation's main run loop and forces an AppKit display pass while transport/timeline status is active.
+- Last Updated (UTC): 2026-06-28 12:32:17 UTC
+- Active Mission: Pick up the Toybox/Radiant Ioskeley Mono default font in Pump.
+- Current Workstream: Branch `codex/pump-ioskeley-toybox-rev` updates Pump's pinned `toybox` dependency to merged Toybox main commit `1000011b94a73d57aa41f6f988d821c4de7cf862`, where Patchbay/Radiant vector text now prefers bundled Ioskeley Mono before the previous Sometype Mono fallback.
 
 ## Current State
 
@@ -29,8 +29,9 @@
 - The Windows dropdown screenshot regression test now creates `MAX_PRESETS - 1` additional presets instead of exceeding the model cap.
 - The Windows dropdown regression now uses Pump's headless declarative renderer plus reducer checks for popup-over-curve geometry and preset/division selection behavior, avoiding the GitHub Windows runner's native WGPU readback access violation.
 - Pump now depends on a Toybox revision with Ableton-compatible macOS VST3 bundle entry symbols.
+- Pump now depends on the Toybox revision that makes Ioskeley Mono the default bundled Radiant/Patchbay vector text font.
 - `scripts/ci.sh` now avoids the macOS Bash `set -u` empty-array failure when no feature flags are requested.
 
 ## Immediate Next Action
 
-- Commit and push the Pump branch, run changelog automation as its own follow-up commit if needed, rebuild `dist/pump-v0.2.0-macos.vst3`, and hand back to user review. Latest validation passed: `cargo fmt --all -- --check`, `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture`, `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3`, and `bash scripts/ci_local.sh`.
+- Run changelog/local CI, commit and push the Pump branch, then update the audiodev superproject pointers for `toybox` and `pump`. Latest validation passed: `cargo fmt --all -- --check`, `cargo test radiant_editor -- --nocapture`, `bash scripts/ci.sh`, `cargo check`, `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture`, and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3`.
