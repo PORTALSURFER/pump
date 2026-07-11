@@ -238,6 +238,14 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (5189443)
 
+- (changelog) Update changelog [skip ci] (670d44e)
+
+- Record Pump curve fill validation (8ac64be)
+
+- Finalize Pump curve fill handoff (820205c)
+
+- Mark Pump curve fill ready for review (1dbea99)
+
 
 ### Features
 

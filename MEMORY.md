@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-11 12:10:00 UTC
-- Active Mission: Adopt Radiant's native sampled curve-area fill in Pump.
-- Current Workstream: PR #12 on branch `codex/pump-radiant-curve-area-fill` is ready and waiting for user review; it pins merged Radiant PR #1407 and replaces the Radiant/VST3 editor's 96 opaque fill rectangles with one bottom-baselined gradient `FillPath`.
+- Last Updated (UTC): 2026-07-11 12:58:13 UTC
+- Active Mission: Render Pump's declarative GUI entirely through Radiant while Toybox owns reusable plugin-host infrastructure.
+- Current Workstream: PR #12 on branch `codex/pump-radiant-curve-area-fill` is back in implementation after hosted testing exposed Pump's obsolete Cocoa primitive renderer.
 
 ## Current State
 
@@ -17,13 +17,15 @@
 - `PumpParams` exposes global slot snapshot/load/store/deviation helpers; preset-bank quick-slot payloads remain for backwards compatibility but are no longer the active UI slot source.
 - The Toybox UI slot strip now reads global slots, uses Cmd-store via the new Toybox region `command_down` modifier, treats empty normal-clicks as no-ops, paints loaded-slot deviation in red, and keeps all visible slot swatches the same size.
 - The Radiant/VST3 editor now has its own compact 8-slot row with the same load/store/deviation behavior and uniform fixed-size slot swatches.
-- `Cargo.toml` pins Radiant to merged curve-area-fill commit `78b16cfe5369304420cd9345ee689796c00585e6` and Toybox to merged main commit `2c0317e6cc777258d6bf573cf8e802fd96dc02fa`.
+- `Cargo.toml` pins Radiant to embedded Vello commit `9b45df71893a71f165fcae4183a189d664cecb10` and Toybox to hosted-view commit `2c05c2a1062ba0fe92544a07d62250476f7f2d1a`.
+- Pump's macOS VST3 adapter now supplies `RadiantPumpEditor` to Toybox's generic `RadiantVst3HostedGui`; Pump's Cocoa/AppKit view and primitive paint replay have been deleted.
 - The Radiant/VST3 attenuation fill uses `push_sampled_curve_area_fill` with one 96-interval path and a top-to-bottom alpha fade; the Toybox/CLAP fill remains unchanged.
 - Radiant curve endpoints remain protected wrapped-Y anchors; only interior points can be drag-through removed.
 - Focused Radiant coverage includes sticky boundary resistance, single- and multi-point crossing, reverse-drag restoration, release commit, and endpoint anchoring.
-- `cargo fmt --all -- --check`, `cargo test radiant_editor -- --nocapture`, `bash scripts/ci.sh`, `bash scripts/ci_local.sh`, and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3` are green on the new Radiant pin.
-- The release VST3 build passes bundle signing verification; Bitwig PID `87704` still maps the previous Pump binary and must restart or fully unload before visual testing.
+- Full manual VST3 validation passes: format, feature-specific clippy, and all 190 tests. Toybox's main-thread smoke host also attaches and draws a gradient `FillPath` through embedded Vello.
+- A fresh signed artifact is installed at `dist/pump-v0.2.0-macos.vst3`; its binary SHA-256 is `b29fb69253530289fcf3bd91eed3f1ebc27bc42c061f3a5fd563877e2562513e`.
+- `scripts/run_agent_request.sh` is currently blocked by the root screenshot-coverage policy not listing Pump, which predates this GUI migration.
 
 ## Immediate Next Action
 
-- Wait for explicit user review and sign-off on Pump PR #12 before merge.
+- Complete Pump validation, build a fresh release VST3, and verify the Radiant/Vello surface and attenuation fill in a real host before returning PR #12 to user review.

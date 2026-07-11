@@ -276,6 +276,37 @@ impl RadiantPumpEditor {
     }
 }
 
+#[cfg(all(feature = "vst3", target_os = "macos"))]
+impl toybox::vst3::gui::RadiantVst3Editor for RadiantPumpEditor {
+    fn resize(&mut self, width: u32, height: u32) {
+        Self::resize(self, width, height);
+    }
+
+    fn dispatch_event(&mut self, event: Event) {
+        Self::dispatch_event(self, event);
+    }
+
+    fn paint_plan(&mut self) -> &SurfacePaintPlan {
+        Self::paint_plan(self)
+    }
+
+    fn needs_realtime_redraw(&self) -> bool {
+        Self::needs_realtime_redraw(self)
+    }
+
+    fn dispatch_key_press(&mut self, key: WidgetKey) -> bool {
+        Self::dispatch_key_press(self, key)
+    }
+
+    fn dispatch_character(&mut self, character: char) -> bool {
+        Self::dispatch_character(self, character)
+    }
+
+    fn cancel_text_entry(&mut self) -> bool {
+        Self::cancel_numeric_entry(self)
+    }
+}
+
 /// Build one Radiant frame for tests and non-retained preview hosts.
 #[cfg(test)]
 pub(crate) fn radiant_editor_frame_for_params(
