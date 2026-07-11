@@ -10,8 +10,8 @@ use radiant::prelude::{
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
 use radiant::runtime::{
-    DeclarativeSurfaceRuntime, PaintFillRect, PaintPrimitive, PaintStrokePolyline, PaintStrokeRect,
-    PaintText, PaintTextAlign, PaintTextRun,
+    DeclarativeSurfaceRuntime, PaintFillRect, PaintFillRectBatch, PaintPrimitive,
+    PaintStrokePolyline, PaintStrokeRect, PaintText, PaintTextAlign, PaintTextRun,
 };
 #[cfg(feature = "vst3")]
 use radiant::runtime::{Event, SurfacePaintPlan};
@@ -1552,6 +1552,31 @@ impl CurvePreviewWidget {
 
     fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
         let points = self.sample_curve_points(bounds);
+        let fill_rects: Vec<Rect> = (0..CURVE_SAMPLE_COUNT)
+            .map(|step| {
+                let phase = (step as f32 + 0.5) / CURVE_SAMPLE_COUNT as f32;
+                let left =
+                    bounds.min.x + bounds.width() * (step as f32 / CURVE_SAMPLE_COUNT as f32);
+                let right =
+                    bounds.min.x + bounds.width() * ((step + 1) as f32 / CURVE_SAMPLE_COUNT as f32);
+                let top = Self::curve_point(
+                    bounds,
+                    CurveNode {
+                        x: phase,
+                        y: sample_editable_curve(&self.curve, phase),
+                    },
+                )
+                .y;
+                Rect::from_xy_size(left, top, (right - left).max(0.0), bounds.max.y - top)
+            })
+            .collect();
+        primitives.push(PaintPrimitive::FillRectBatch(PaintFillRectBatch {
+            widget_id: self.common.id,
+            rects: Arc::from(fill_rects),
+            color: theme
+                .bg_secondary
+                .blend_opaque_toward(theme.accent_mint, 0.2),
+        }));
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
             points: Arc::from(points),
@@ -2996,6 +3021,40 @@ mod tests {
                         && polyline.points.len() > 2
             )
         }));
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_subtle_fill_beneath_curve() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let fill = primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::FillRectBatch(fill)
+                    if fill.color
+                        == theme
+                            .bg_secondary
+                            .blend_opaque_toward(theme.accent_mint, 0.2) =>
+                {
+                    Some(fill)
+                }
+                _ => None,
+            })
+            .expect("curve preview should emit one host-visible attenuation fill batch");
+        assert_eq!(fill.rects.len(), CURVE_SAMPLE_COUNT);
+        assert_eq!(fill.color.a, 255);
+        assert!((fill.rects[0].min.x - bounds.min.x).abs() < 1.0e-6);
+        assert!((fill.rects[fill.rects.len() - 1].max.x - bounds.max.x).abs() < 1.0e-4);
+        assert!(fill
+            .rects
+            .iter()
+            .all(|rect| (rect.max.y - bounds.max.y).abs() < 1.0e-6));
     }
 
     #[test]
