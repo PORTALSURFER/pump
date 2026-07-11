@@ -1,6 +1,6 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-11 12:58:13 UTC
+- Last Updated (UTC): 2026-07-11 18:28:00 UTC
 - Active Mission: Render Pump's declarative GUI entirely through Radiant while Toybox owns reusable plugin-host infrastructure.
 - Current Workstream: PR #12 on branch `codex/pump-radiant-curve-area-fill` is back in implementation after hosted testing exposed Pump's obsolete Cocoa primitive renderer.
 
@@ -17,8 +17,9 @@
 - `PumpParams` exposes global slot snapshot/load/store/deviation helpers; preset-bank quick-slot payloads remain for backwards compatibility but are no longer the active UI slot source.
 - The Toybox UI slot strip now reads global slots, uses Cmd-store via the new Toybox region `command_down` modifier, treats empty normal-clicks as no-ops, paints loaded-slot deviation in red, and keeps all visible slot swatches the same size.
 - The Radiant/VST3 editor now has its own compact 8-slot row with the same load/store/deviation behavior and uniform fixed-size slot swatches.
-- `Cargo.toml` pins Radiant to embedded Vello recovery commit `4d526a93a5724d153537efb3ff2ad0cb686b9f85` and Toybox to hosted-view commit `57764d8fb74c91625a79821bdb1e84c843e67c6d`.
+- `Cargo.toml` pins Radiant to embedded clip-validation commit `af6387df13d699a70acc33035c38316ca95261ad` and Toybox to hosted-view commit `71dede5a797303fcd1a4cc1e2be75becf766b2ae`.
 - Radiant acquires and recovers the presentation surface before rendering, preventing a Lost/Outdated recovery frame from blitting an unrendered replacement target.
+- Radiant embedded validation shares the scene encoder's clip state, so unsupported surfaces inside suppressed clips are ignored consistently.
 - Toybox now initializes the declarative editor's logical size before its first hosted paint.
 - Toybox forwards key events that Radiant does not handle through AppKit's responder chain.
 - Toybox preserves the last host-provided logical size while closing and reopening its native view.

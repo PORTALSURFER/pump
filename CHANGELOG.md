@@ -864,6 +864,10 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 - Record rebuilt Pump CI-auth artifact (a129635)
 
+- Pin embedded surface recovery fix (ea5b7c3)
+
+- Record rebuilt Pump surface-recovery artifact (949103b)
+
 
 ### Refactoring
 
