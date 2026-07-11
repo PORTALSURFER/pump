@@ -1,6 +1,6 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-11 18:45:51 UTC
+- Last Updated (UTC): 2026-07-11 18:46:43 UTC
 - Active Mission: Render Pump's declarative GUI entirely through Radiant while Toybox owns reusable plugin-host infrastructure.
 - Current Workstream: PR #12 on branch `codex/pump-radiant-curve-area-fill` is back in implementation after hosted testing exposed Pump's obsolete Cocoa primitive renderer.
 
@@ -31,7 +31,7 @@
 - Radiant curve endpoints remain protected wrapped-Y anchors; only interior points can be drag-through removed.
 - Focused Radiant coverage includes sticky boundary resistance, single- and multi-point crossing, reverse-drag restoration, release commit, and endpoint anchoring.
 - Full manual VST3 validation passes: format, feature-specific clippy, and all 190 tests. Toybox's main-thread smoke host also attaches and draws a gradient `FillPath` through embedded Vello.
-- A fresh signed artifact is installed at `dist/pump-v0.2.0-macos.vst3`; its binary SHA-256 is `1a81edcfe87e63f3b38a2a59f3aced03490bda1d4e6828b546ca74af855486f4`.
+- A fresh signed artifact is installed at `dist/pump-v0.2.0-macos.vst3`; its binary SHA-256 is `fd6d7bd12e9b34a586fa7b77212b1ce37481206d601355e46df29412a4c0b6e5`.
 - Bitwig plugin-host PID `56167` still maps the previous binary and must unload or restart before testing this rebuild.
 - `scripts/run_agent_request.sh` is currently blocked by the root screenshot-coverage policy not listing Pump, which predates this GUI migration.
 

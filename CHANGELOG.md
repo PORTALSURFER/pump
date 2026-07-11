@@ -876,6 +876,8 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 - Record rebuilt text-options artifact (66a2af1)
 
+- Pin embedded animation clock fix (f57d100)
+
 
 ### Refactoring
 
