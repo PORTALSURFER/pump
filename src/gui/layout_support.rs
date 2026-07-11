@@ -130,7 +130,7 @@ impl PumpTheme {
                 palette.syntax_emphasis.r,
                 palette.syntax_emphasis.g,
                 palette.syntax_emphasis.b,
-                32,
+                64,
             ),
             curve_line: palette.syntax_emphasis,
             curve_line_highlight: palette.accent_focus,

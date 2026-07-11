@@ -1559,7 +1559,7 @@ impl CurvePreviewWidget {
         primitives.push(PaintPrimitive::FillPolygon(PaintFillPolygon {
             widget_id: self.common.id,
             points: Arc::from(fill_points),
-            color: theme.accent_mint.with_alpha(32),
+            color: theme.accent_mint.with_alpha(64),
         }));
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
@@ -3021,7 +3021,7 @@ mod tests {
             .iter()
             .find_map(|primitive| match primitive {
                 PaintPrimitive::FillPolygon(fill)
-                    if fill.color == theme.accent_mint.with_alpha(32) =>
+                    if fill.color == theme.accent_mint.with_alpha(64) =>
                 {
                     Some(fill)
                 }
