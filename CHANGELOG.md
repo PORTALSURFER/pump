@@ -55,6 +55,10 @@ All notable changes to this project are documented in this file.
 
 - (vst3) Normalize process flag types to u32 (f0e4d72)
 
+- Increase attenuation fill visibility (a06699c)
+
+- Render attenuation fill with visible primitives (a0c079f)
+
 
 ### CI
 
@@ -238,6 +242,8 @@ All notable changes to this project are documented in this file.
 - (vst3) Consume keys via edit-mode and registered shortcuts (2ce4027)
 
 - (presets) Make init preset fully writable (253dec6)
+
+- Add attenuation fill beneath curve (8584e02)
 
 
 ### Other
@@ -819,6 +825,10 @@ OPT-927: Add Cmd-click numeric parameter entry (2fe5c76)
 - Merge pull request #10 from PORTALSURFER/wsvasek/opt-925-pump-support-sticky-drag-through-point-removal-in-curve
 
 OPT-925: Support sticky curve point drag-through (baa6434)
+
+- Merge pull request #11 from PORTALSURFER/codex/pump-attenuation-fill
+
+Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 
 ### Refactoring
