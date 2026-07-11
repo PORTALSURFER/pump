@@ -868,6 +868,8 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 - Record rebuilt Pump surface-recovery artifact (949103b)
 
+- Pin shared embedded clip validation (8841960)
+
 
 ### Refactoring
 
