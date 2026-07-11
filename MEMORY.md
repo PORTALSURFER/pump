@@ -17,7 +17,8 @@
 - `PumpParams` exposes global slot snapshot/load/store/deviation helpers; preset-bank quick-slot payloads remain for backwards compatibility but are no longer the active UI slot source.
 - The Toybox UI slot strip now reads global slots, uses Cmd-store via the new Toybox region `command_down` modifier, treats empty normal-clicks as no-ops, paints loaded-slot deviation in red, and keeps all visible slot swatches the same size.
 - The Radiant/VST3 editor now has its own compact 8-slot row with the same load/store/deviation behavior and uniform fixed-size slot swatches.
-- `Cargo.toml` pins Radiant to embedded Vello commit `9b45df71893a71f165fcae4183a189d664cecb10` and Toybox to hosted-view commit `2c05c2a1062ba0fe92544a07d62250476f7f2d1a`.
+- `Cargo.toml` pins Radiant to embedded Vello commit `9b45df71893a71f165fcae4183a189d664cecb10` and Toybox to hosted-view commit `d4dfd7d5dfe46dbf99e1b0514d904ce175ad869b`.
+- Toybox now initializes the declarative editor's logical size before its first hosted paint.
 - Pump's macOS VST3 adapter now supplies `RadiantPumpEditor` to Toybox's generic `RadiantVst3HostedGui`; Pump's Cocoa/AppKit view and primitive paint replay have been deleted.
 - The Radiant/VST3 attenuation fill uses `push_sampled_curve_area_fill` with one 96-interval path and a top-to-bottom alpha fade; the Toybox/CLAP fill remains unchanged.
 - Radiant curve endpoints remain protected wrapped-Y anchors; only interior points can be drag-through removed.

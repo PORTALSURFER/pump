@@ -842,6 +842,8 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 - Use Radiant curve area fill in Pump (8ca663e)
 
+- Route Pump VST3 GUI through Radiant (05eff54)
+
 
 ### Refactoring
 
