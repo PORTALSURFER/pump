@@ -1798,6 +1798,41 @@ impl GuiState {
             rect,
             color: theme.curve_bg,
         });
+
+        // SurfaceCommand does not expose polygon fills, so build a contiguous
+        // low-alpha area from narrow strips. Sampling at two-pixel intervals
+        // keeps the contour smooth without crowding the paint plan.
+        const FILL_STRIP_WIDTH: u32 = 2;
+        for x in (0..curve_size.width).step_by(FILL_STRIP_WIDTH as usize) {
+            let phase = if curve_size.width > 1 {
+                x as f32 / (curve_size.width - 1) as f32
+            } else {
+                0.0
+            };
+            let curve_point = to_canvas(local_from_node_for_size(
+                CurveNode {
+                    x: phase,
+                    y: sample_editable_curve(editable_curve, phase),
+                },
+                curve_size,
+            ));
+            let top = curve_point
+                .y
+                .clamp(0, curve_size.height.saturating_sub(1) as i32);
+            commands.push(SurfaceCommand::FillRect {
+                rect: Rect {
+                    origin: Point {
+                        x: x as i32,
+                        y: top,
+                    },
+                    size: Size {
+                        width: FILL_STRIP_WIDTH.min(curve_size.width - x),
+                        height: curve_size.height.saturating_sub(top as u32),
+                    },
+                },
+                color: theme.curve_fill,
+            });
+        }
         commands.push(SurfaceCommand::StrokeRect {
             rect,
             thickness: border_stroke,

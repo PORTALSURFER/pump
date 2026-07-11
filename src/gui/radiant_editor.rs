@@ -10,8 +10,8 @@ use radiant::prelude::{
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
 use radiant::runtime::{
-    DeclarativeSurfaceRuntime, PaintFillRect, PaintPrimitive, PaintStrokePolyline, PaintStrokeRect,
-    PaintText, PaintTextAlign, PaintTextRun,
+    DeclarativeSurfaceRuntime, PaintFillPolygon, PaintFillRect, PaintPrimitive,
+    PaintStrokePolyline, PaintStrokeRect, PaintText, PaintTextAlign, PaintTextRun,
 };
 #[cfg(feature = "vst3")]
 use radiant::runtime::{Event, SurfacePaintPlan};
@@ -1552,6 +1552,15 @@ impl CurvePreviewWidget {
 
     fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
         let points = self.sample_curve_points(bounds);
+        let mut fill_points = Vec::with_capacity(points.len() + 2);
+        fill_points.extend(points.iter().copied());
+        fill_points.push(Point::new(bounds.max.x, bounds.max.y));
+        fill_points.push(Point::new(bounds.min.x, bounds.max.y));
+        primitives.push(PaintPrimitive::FillPolygon(PaintFillPolygon {
+            widget_id: self.common.id,
+            points: Arc::from(fill_points),
+            color: theme.accent_mint.with_alpha(32),
+        }));
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
             points: Arc::from(points),
@@ -2996,6 +3005,35 @@ mod tests {
                         && polyline.points.len() > 2
             )
         }));
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_subtle_fill_beneath_curve() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let fill = primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::FillPolygon(fill)
+                    if fill.color == theme.accent_mint.with_alpha(32) =>
+                {
+                    Some(fill)
+                }
+                _ => None,
+            })
+            .expect("curve preview should emit one subtle attenuation fill polygon");
+        assert_eq!(fill.points.len(), CURVE_SAMPLE_COUNT + 3);
+        assert_eq!(fill.points[fill.points.len() - 2], bounds.max);
+        assert_eq!(
+            fill.points[fill.points.len() - 1],
+            Point::new(bounds.min.x, bounds.max.y)
+        );
     }
 
     #[test]

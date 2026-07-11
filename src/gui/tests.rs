@@ -1,6 +1,7 @@
     use super::{
         constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
-        local_from_node, move_node_with_push_through, move_segment_translated,
+        local_from_node, local_from_node_for_size, move_node_with_push_through,
+        move_segment_translated,
         build_version_label, preferred_window_size, preview_node_on_curve,
         radiant_editor_frame_for_params, recompute_move_node_from_origin_for_size,
         resolve_runtime_controls_slot_widths,
@@ -567,6 +568,37 @@
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn attenuation_fill_tracks_the_area_beneath_the_curve() {
+        let (commands, curve, theme) = curve_draw_commands_with_transport(0.25, false, false);
+        let strips = fill_rects_for_color(&commands, theme.curve_fill);
+        let metrics = UiLayoutMetrics::design_space();
+
+        assert!(
+            strips.len() >= metrics.curve_size.width.saturating_div(2) as usize,
+            "attenuation fill should span the curve width with contiguous strips"
+        );
+        let midpoint = strips
+            .iter()
+            .find(|(origin, _)| origin.x == (metrics.curve_size.width / 2) as i32)
+            .expect("attenuation fill should include the curve midpoint");
+        let expected_top = local_from_node_for_size(
+            CurveNode {
+                x: 0.5,
+                y: sample_editable_curve(&curve, 0.5),
+            },
+            metrics.curve_size,
+        )
+        .y;
+        assert_eq!(midpoint.0.y, expected_top);
+        assert_eq!(
+            midpoint.1.height,
+            metrics.curve_size.height.saturating_sub(expected_top as u32),
+            "fill should extend from the curve down to the bottom edge"
+        );
+        assert!(theme.curve_fill.a < theme.curve_line.a);
     }
 
     #[test]

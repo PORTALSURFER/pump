@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-06-28 17:28:12 UTC
-- Active Mission: Implement OPT-925 sticky drag-through point removal in the Radiant curve editor.
-- Current Workstream: Branch `wsvasek/opt-925-pump-support-sticky-drag-through-point-removal-in-curve` makes Radiant node drags recompute from the drag-origin curve, so crossed interior points are temporarily removed, restored when reversing before release, and committed on release.
+- Last Updated (UTC): 2026-07-11 09:53:59 UTC
+- Active Mission: Add a subtle fill beneath Pump's curve to visualize attenuation.
+- Current Workstream: Branch `codex/pump-attenuation-fill` adds matching low-alpha curve fills to the Toybox and Radiant editor paths, with focused paint-plan coverage.
 
 ## Current State
 
@@ -24,4 +24,4 @@
 
 ## Immediate Next Action
 
-- Push the Pump branch and open the OPT-925 PR for user review. A fresh local review bundle was built at `/Users/portalsurfer/dev/audiodev/dist/pump-v0.2.0-macos.vst3`; binary SHA-256 is `12a958c0367d701f05f9c554688a092e2de9437b0fc48d026f43451895c4fc79`.
+- Push the completed branch and open its ready-for-review PR. The fresh review bundle is `/Users/portalsurfer/dev/audiodev/dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `94dc02ad79f5115c8e37ffd903e72179b5f89b18455431e58798ee608b3f3a83`; restart or fully unload Bitwig's existing Pump host before testing it.
