@@ -848,6 +848,10 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 - Record rebuilt Pump test artifact (b4beca8)
 
+- Pin Toybox key forwarding fix (2e93856)
+
+- Record rebuilt Pump key-forwarding artifact (581833d)
+
 
 ### Refactoring
 
