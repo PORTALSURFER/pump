@@ -22,8 +22,8 @@
 - Radiant curve endpoints remain protected wrapped-Y anchors; only interior points can be drag-through removed.
 - Focused Radiant coverage includes sticky boundary resistance, single- and multi-point crossing, reverse-drag restoration, release commit, and endpoint anchoring.
 - `cargo fmt --all -- --check`, `cargo test radiant_editor -- --nocapture`, `bash scripts/ci.sh`, `bash scripts/ci_local.sh`, and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3` are green on the new Radiant pin.
-- The first release build passed bundle signing verification and produced binary SHA-256 `5597370f12249736d55eca0fa7dd42179af8bdebc58856c8edcdad443e9f1c59`; Bitwig PID `87704` still maps the previous Pump binary and must restart or fully unload before visual testing.
+- The release VST3 build passes bundle signing verification; Bitwig PID `87704` still maps the previous Pump binary and must restart or fully unload before visual testing.
 
 ## Immediate Next Action
 
-- Push this build record, rebuild from the final Pump commit, then publish the Pump PR and audiodev pointer PR for review.
+- Publish the Pump PR, then update and publish the audiodev pointer PR for review.
