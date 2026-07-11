@@ -239,6 +239,8 @@ All notable changes to this project are documented in this file.
 
 ### Features
 
+- Render the Radiant editor's attenuation area as one native gradient path.
+
 - (vst3) Consume keys via edit-mode and registered shortcuts (2ce4027)
 
 - (presets) Make init preset fully writable (253dec6)
@@ -873,4 +875,3 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 - (state) Add malformed payload decode coverage (ebed91c)
 
 - (gui) Add non-windows dropdown-over-curve coverage (dd87705)
-

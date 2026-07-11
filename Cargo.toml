@@ -10,7 +10,7 @@ build = "build.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "119f95cfebab84687b7af870f3bf6e385f365346", default-features = false }
+radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "78b16cfe5369304420cd9345ee689796c00585e6", default-features = false }
 toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "2c0317e6cc777258d6bf573cf8e802fd96dc02fa", features = ["gui"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

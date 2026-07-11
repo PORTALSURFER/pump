@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-11 10:03:23 UTC
-- Active Mission: Add a subtle fill beneath Pump's curve to visualize attenuation.
-- Current Workstream: Branch `codex/pump-attenuation-fill` keeps the Toybox fill and replaces Radiant's host-invisible translucent polygon with 96 opaque, pre-blended fill rectangles. Host review confirmed the committed polygon path emitted correctly but produced no visible fill in Bitwig.
+- Last Updated (UTC): 2026-07-11 12:06:00 UTC
+- Active Mission: Adopt Radiant's native sampled curve-area fill in Pump.
+- Current Workstream: Branch `codex/pump-radiant-curve-area-fill` pins merged Radiant PR #1407 and replaces the Radiant/VST3 editor's 96 opaque fill rectangles with one bottom-baselined gradient `FillPath`.
 
 ## Current State
 
@@ -17,11 +17,12 @@
 - `PumpParams` exposes global slot snapshot/load/store/deviation helpers; preset-bank quick-slot payloads remain for backwards compatibility but are no longer the active UI slot source.
 - The Toybox UI slot strip now reads global slots, uses Cmd-store via the new Toybox region `command_down` modifier, treats empty normal-clicks as no-ops, paints loaded-slot deviation in red, and keeps all visible slot swatches the same size.
 - The Radiant/VST3 editor now has its own compact 8-slot row with the same load/store/deviation behavior and uniform fixed-size slot swatches.
-- `Cargo.toml` pins Toybox to merged main commit `2c0317e6cc777258d6bf573cf8e802fd96dc02fa`, which adds command modifier plumbing to region actions.
+- `Cargo.toml` pins Radiant to merged curve-area-fill commit `78b16cfe5369304420cd9345ee689796c00585e6` and Toybox to merged main commit `2c0317e6cc777258d6bf573cf8e802fd96dc02fa`.
+- The Radiant/VST3 attenuation fill uses `push_sampled_curve_area_fill` with one 96-interval path and a top-to-bottom alpha fade; the Toybox/CLAP fill remains unchanged.
 - Radiant curve endpoints remain protected wrapped-Y anchors; only interior points can be drag-through removed.
 - Focused Radiant coverage includes sticky boundary resistance, single- and multi-point crossing, reverse-drag restoration, release commit, and endpoint anchoring.
-- `cargo test radiant_editor -- --nocapture`, `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk cargo test --features vst3 cocoa_gui -- --nocapture`, `bash scripts/ci.sh`, and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3` are green.
+- `cargo fmt --all -- --check`, `cargo test radiant_editor -- --nocapture`, `bash scripts/ci.sh`, `bash scripts/ci_local.sh`, and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3` are green on the new Radiant pin.
 
 ## Immediate Next Action
 
-- Commit and push the host-visible rectangle-batch implementation, refresh the superproject pointer PR, and rebuild `/Users/portalsurfer/dev/audiodev/dist/pump-v0.2.0-macos.vst3` from that final commit for Bitwig retesting.
+- Commit and push the Pump branch, build a fresh macOS VST3, then publish the Pump PR and audiodev pointer PR for review.
