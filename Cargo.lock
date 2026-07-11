@@ -2080,7 +2080,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "patchbay-gui"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=d4dfd7d5dfe46dbf99e1b0514d904ce175ad869b#d4dfd7d5dfe46dbf99e1b0514d904ce175ad869b"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=aff8738d2c18e60576cf80899cf1e74300c5d2c9#aff8738d2c18e60576cf80899cf1e74300c5d2c9"
 dependencies = [
  "pollster 0.3.0",
  "raw-window-handle 0.5.2",
@@ -2999,7 +2999,7 @@ dependencies = [
 [[package]]
 name = "toybox"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=d4dfd7d5dfe46dbf99e1b0514d904ce175ad869b#d4dfd7d5dfe46dbf99e1b0514d904ce175ad869b"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=aff8738d2c18e60576cf80899cf1e74300c5d2c9#aff8738d2c18e60576cf80899cf1e74300c5d2c9"
 dependencies = [
  "clack-common",
  "clack-extensions",
@@ -3018,12 +3018,12 @@ dependencies = [
 [[package]]
 name = "toybox-process-log"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=d4dfd7d5dfe46dbf99e1b0514d904ce175ad869b#d4dfd7d5dfe46dbf99e1b0514d904ce175ad869b"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=aff8738d2c18e60576cf80899cf1e74300c5d2c9#aff8738d2c18e60576cf80899cf1e74300c5d2c9"
 
 [[package]]
 name = "toybox-vst3-ffi"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=d4dfd7d5dfe46dbf99e1b0514d904ce175ad869b#d4dfd7d5dfe46dbf99e1b0514d904ce175ad869b"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=aff8738d2c18e60576cf80899cf1e74300c5d2c9#aff8738d2c18e60576cf80899cf1e74300c5d2c9"
 dependencies = [
  "vst3",
 ]

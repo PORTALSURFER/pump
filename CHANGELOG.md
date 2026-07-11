@@ -844,6 +844,10 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 - Route Pump VST3 GUI through Radiant (05eff54)
 
+- Pin Toybox first-paint sizing fix (89134a6)
+
+- Record rebuilt Pump test artifact (b4beca8)
+
 
 ### Refactoring
 
