@@ -870,6 +870,8 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 - Pin shared embedded clip validation (8841960)
 
+- Record rebuilt clip-validation artifact (bcc4b93)
+
 
 ### Refactoring
 
