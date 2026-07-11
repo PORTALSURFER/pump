@@ -1,6 +1,6 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-11 12:06:00 UTC
+- Last Updated (UTC): 2026-07-11 12:07:00 UTC
 - Active Mission: Adopt Radiant's native sampled curve-area fill in Pump.
 - Current Workstream: Branch `codex/pump-radiant-curve-area-fill` pins merged Radiant PR #1407 and replaces the Radiant/VST3 editor's 96 opaque fill rectangles with one bottom-baselined gradient `FillPath`.
 
@@ -22,7 +22,8 @@
 - Radiant curve endpoints remain protected wrapped-Y anchors; only interior points can be drag-through removed.
 - Focused Radiant coverage includes sticky boundary resistance, single- and multi-point crossing, reverse-drag restoration, release commit, and endpoint anchoring.
 - `cargo fmt --all -- --check`, `cargo test radiant_editor -- --nocapture`, `bash scripts/ci.sh`, `bash scripts/ci_local.sh`, and `VST3_SDK_DIR=/Users/portalsurfer/lib/vst3sdk bash scripts/ci.sh --vst3` are green on the new Radiant pin.
+- The first release build passed bundle signing verification and produced binary SHA-256 `5597370f12249736d55eca0fa7dd42179af8bdebc58856c8edcdad443e9f1c59`; Bitwig PID `87704` still maps the previous Pump binary and must restart or fully unload before visual testing.
 
 ## Immediate Next Action
 
-- Commit and push the Pump branch, build a fresh macOS VST3, then publish the Pump PR and audiodev pointer PR for review.
+- Push this build record, rebuild from the final Pump commit, then publish the Pump PR and audiodev pointer PR for review.
