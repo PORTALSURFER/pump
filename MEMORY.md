@@ -27,7 +27,7 @@
 - Radiant curve endpoints remain protected wrapped-Y anchors; only interior points can be drag-through removed.
 - Focused Radiant coverage includes sticky boundary resistance, single- and multi-point crossing, reverse-drag restoration, release commit, and endpoint anchoring.
 - Full manual VST3 validation passes: format, feature-specific clippy, and all 190 tests. Toybox's main-thread smoke host also attaches and draws a gradient `FillPath` through embedded Vello.
-- A fresh signed artifact is installed at `dist/pump-v0.2.0-macos.vst3`; its binary SHA-256 is `df88a1b8af3eda89c6127b98a851828905507bd17a1649e7a70c922941a8e6c6`.
+- A fresh signed artifact is installed at `dist/pump-v0.2.0-macos.vst3`; its binary SHA-256 is `85deec5a13b0d9c1f071d80f67908b6f1d65e549d6b33c478ccc5476011e8a56`.
 - Bitwig plugin-host PID `56167` still maps the previous binary and must unload or restart before testing this rebuild.
 - `scripts/run_agent_request.sh` is currently blocked by the root screenshot-coverage policy not listing Pump, which predates this GUI migration.
 
