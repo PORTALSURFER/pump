@@ -852,6 +852,10 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 - Record rebuilt Pump key-forwarding artifact (581833d)
 
+- Pin Toybox hosted-size preservation (d33ab75)
+
+- Record rebuilt Pump size-preservation artifact (4198ca3)
+
 
 ### Refactoring
 
