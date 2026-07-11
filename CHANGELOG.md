@@ -874,6 +874,8 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 
 - Pin embedded text options support (6f0f5a6)
 
+- Record rebuilt text-options artifact (66a2af1)
+
 
 ### Refactoring
 

@@ -1,6 +1,6 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-11 18:37:24 UTC
+- Last Updated (UTC): 2026-07-11 18:45:51 UTC
 - Active Mission: Render Pump's declarative GUI entirely through Radiant while Toybox owns reusable plugin-host infrastructure.
 - Current Workstream: PR #12 on branch `codex/pump-radiant-curve-area-fill` is back in implementation after hosted testing exposed Pump's obsolete Cocoa primitive renderer.
 
@@ -17,10 +17,11 @@
 - `PumpParams` exposes global slot snapshot/load/store/deviation helpers; preset-bank quick-slot payloads remain for backwards compatibility but are no longer the active UI slot source.
 - The Toybox UI slot strip now reads global slots, uses Cmd-store via the new Toybox region `command_down` modifier, treats empty normal-clicks as no-ops, paints loaded-slot deviation in red, and keeps all visible slot swatches the same size.
 - The Radiant/VST3 editor now has its own compact 8-slot row with the same load/store/deviation behavior and uniform fixed-size slot swatches.
-- `Cargo.toml` pins Radiant to embedded text-options commit `e63788a917d72ebbd053e20e9e65b549ab865194` and Toybox to hosted-view commit `fe309cfc54dc2f59029eb1addec5403623fe3ae2`.
+- `Cargo.toml` pins Radiant to embedded animation-clock commit `6575b0c9a6b5abad17f711a36b832b7e7434e7b1` and Toybox to hosted-view commit `a3e0279619bcd087bdcc803c6fc4ca6a65ade33b`.
 - Radiant acquires and recovers the presentation surface before rendering, preventing a Lost/Outdated recovery frame from blitting an unrendered replacement target.
 - Radiant embedded validation shares the scene encoder's clip state, so unsupported surfaces inside suppressed clips are ignored consistently.
 - Toybox hosted views can own and forward `NativeTextOptions` for portable embedded fonts without plugin-local rendering code.
+- Radiant trait-based embedded renders advance monotonic elapsed time, keeping focused text-input caret animation live through Toybox's normal renderer call.
 - Toybox now initializes the declarative editor's logical size before its first hosted paint.
 - Toybox forwards key events that Radiant does not handle through AppKit's responder chain.
 - Toybox preserves the last host-provided logical size while closing and reopening its native view.
