@@ -10,7 +10,7 @@ use radiant::prelude::{
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
 use radiant::runtime::{
-    DeclarativeSurfaceRuntime, PaintFillPolygon, PaintFillRect, PaintPrimitive,
+    DeclarativeSurfaceRuntime, PaintFillRect, PaintFillRectBatch, PaintPrimitive,
     PaintStrokePolyline, PaintStrokeRect, PaintText, PaintTextAlign, PaintTextRun,
 };
 #[cfg(feature = "vst3")]
@@ -1552,14 +1552,30 @@ impl CurvePreviewWidget {
 
     fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
         let points = self.sample_curve_points(bounds);
-        let mut fill_points = Vec::with_capacity(points.len() + 2);
-        fill_points.extend(points.iter().copied());
-        fill_points.push(Point::new(bounds.max.x, bounds.max.y));
-        fill_points.push(Point::new(bounds.min.x, bounds.max.y));
-        primitives.push(PaintPrimitive::FillPolygon(PaintFillPolygon {
+        let fill_rects: Vec<Rect> = (0..CURVE_SAMPLE_COUNT)
+            .map(|step| {
+                let phase = (step as f32 + 0.5) / CURVE_SAMPLE_COUNT as f32;
+                let left =
+                    bounds.min.x + bounds.width() * (step as f32 / CURVE_SAMPLE_COUNT as f32);
+                let right =
+                    bounds.min.x + bounds.width() * ((step + 1) as f32 / CURVE_SAMPLE_COUNT as f32);
+                let top = Self::curve_point(
+                    bounds,
+                    CurveNode {
+                        x: phase,
+                        y: sample_editable_curve(&self.curve, phase),
+                    },
+                )
+                .y;
+                Rect::from_xy_size(left, top, (right - left).max(0.0), bounds.max.y - top)
+            })
+            .collect();
+        primitives.push(PaintPrimitive::FillRectBatch(PaintFillRectBatch {
             widget_id: self.common.id,
-            points: Arc::from(fill_points),
-            color: theme.accent_mint.with_alpha(64),
+            rects: Arc::from(fill_rects),
+            color: theme
+                .bg_secondary
+                .blend_opaque_toward(theme.accent_mint, 0.2),
         }));
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
@@ -3020,20 +3036,25 @@ mod tests {
         let fill = primitives
             .iter()
             .find_map(|primitive| match primitive {
-                PaintPrimitive::FillPolygon(fill)
-                    if fill.color == theme.accent_mint.with_alpha(64) =>
+                PaintPrimitive::FillRectBatch(fill)
+                    if fill.color
+                        == theme
+                            .bg_secondary
+                            .blend_opaque_toward(theme.accent_mint, 0.2) =>
                 {
                     Some(fill)
                 }
                 _ => None,
             })
-            .expect("curve preview should emit one subtle attenuation fill polygon");
-        assert_eq!(fill.points.len(), CURVE_SAMPLE_COUNT + 3);
-        assert_eq!(fill.points[fill.points.len() - 2], bounds.max);
-        assert_eq!(
-            fill.points[fill.points.len() - 1],
-            Point::new(bounds.min.x, bounds.max.y)
-        );
+            .expect("curve preview should emit one host-visible attenuation fill batch");
+        assert_eq!(fill.rects.len(), CURVE_SAMPLE_COUNT);
+        assert_eq!(fill.color.a, 255);
+        assert!((fill.rects[0].min.x - bounds.min.x).abs() < 1.0e-6);
+        assert!((fill.rects[fill.rects.len() - 1].max.x - bounds.max.x).abs() < 1.0e-4);
+        assert!(fill
+            .rects
+            .iter()
+            .all(|rect| (rect.max.y - bounds.max.y).abs() < 1.0e-6));
     }
 
     #[test]

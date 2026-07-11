@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-11 10:00:14 UTC
+- Last Updated (UTC): 2026-07-11 10:03:23 UTC
 - Active Mission: Add a subtle fill beneath Pump's curve to visualize attenuation.
-- Current Workstream: Branch `codex/pump-attenuation-fill` adds matching 64/255-alpha curve fills to the Toybox and Radiant editor paths, with focused paint-plan coverage. The opacity was raised after host review showed the initial 32/255 fill was not perceptible enough.
+- Current Workstream: Branch `codex/pump-attenuation-fill` keeps the Toybox fill and replaces Radiant's host-invisible translucent polygon with 96 opaque, pre-blended fill rectangles. Host review confirmed the committed polygon path emitted correctly but produced no visible fill in Bitwig.
 
 ## Current State
 
@@ -24,4 +24,4 @@
 
 ## Immediate Next Action
 
-- Push the visibility adjustment and refresh the superproject pointer PR. Rebuild `/Users/portalsurfer/dev/audiodev/dist/pump-v0.2.0-macos.vst3` from the final amended commit, then restart or fully unload Bitwig's existing Pump host before retesting.
+- Commit and push the host-visible rectangle-batch implementation, refresh the superproject pointer PR, and rebuild `/Users/portalsurfer/dev/audiodev/dist/pump-v0.2.0-macos.vst3` from that final commit for Bitwig retesting.
