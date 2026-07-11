@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-11 12:07:00 UTC
+- Last Updated (UTC): 2026-07-11 12:10:00 UTC
 - Active Mission: Adopt Radiant's native sampled curve-area fill in Pump.
-- Current Workstream: Branch `codex/pump-radiant-curve-area-fill` pins merged Radiant PR #1407 and replaces the Radiant/VST3 editor's 96 opaque fill rectangles with one bottom-baselined gradient `FillPath`.
+- Current Workstream: PR #12 on branch `codex/pump-radiant-curve-area-fill` is ready and waiting for user review; it pins merged Radiant PR #1407 and replaces the Radiant/VST3 editor's 96 opaque fill rectangles with one bottom-baselined gradient `FillPath`.
 
 ## Current State
 
@@ -26,4 +26,4 @@
 
 ## Immediate Next Action
 
-- Publish the Pump PR, then update and publish the audiodev pointer PR for review.
+- Wait for explicit user review and sign-off on Pump PR #12 before merge.
