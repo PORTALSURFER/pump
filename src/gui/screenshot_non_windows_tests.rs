@@ -8,6 +8,7 @@ use super::{
     DIVISION_KEY, PRESET_DROPDOWN_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
 };
 use crate::params::SYNC_DIVISIONS;
+use crate::GuiTransportTelemetry;
 
 struct CapturedFrame {
     width: u32,
@@ -38,6 +39,35 @@ fn screenshot_renders_initial_ui() {
         |input| state.build_ui(input),
     )
     .expect("failed to capture pump headless screenshots");
+}
+
+#[test]
+fn screenshot_renders_initial_ui_with_playhead() {
+    let params = Arc::new(PumpParams::new());
+    let status = Arc::new(GuiStatus::default());
+    status.update(
+        0.37,
+        0.72,
+        GuiTransportTelemetry {
+            is_playing: true,
+            has_host_beats_timeline: true,
+            beat_phase: 0.37,
+            tempo_bpm: 120.0,
+            beats_per_cycle: 1.0,
+        },
+    );
+    let queue = Arc::new(AutomationQueue::default());
+    let state = GuiState::new(params, status, queue, None);
+
+    screenshot_harness::capture_initial_ui_screenshots_if_enabled(
+        "pump-playhead",
+        Size {
+            width: WINDOW_WIDTH,
+            height: WINDOW_HEIGHT,
+        },
+        |input| state.build_ui(input),
+    )
+    .expect("failed to capture pump playhead screenshots");
 }
 
 #[test]

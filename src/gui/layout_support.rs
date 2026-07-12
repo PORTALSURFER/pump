@@ -145,14 +145,13 @@ impl PumpTheme {
             node_selected_stroke: palette.text_primary,
             node_hover_ring: palette.syntax_emphasis,
             node_selected_ring: palette.accent_focus,
-            playhead_dot_core: Color::rgba(255, 255, 255, 220),
-            playhead_dot_glow: Color::rgba(
-                palette.accent_focus.r,
-                palette.accent_focus.g,
-                palette.accent_focus.b,
-                180,
-            ),
-            playhead_dot_stroke: palette.accent_focus,
+            // Reserve magenta for transport position feedback. Editable curve
+            // nodes and insertion previews use the shared palette across their
+            // normal, hover, and selected states, so the playhead deliberately
+            // sits outside that interaction vocabulary.
+            playhead_dot_core: Color::rgb(255, 96, 208),
+            playhead_dot_glow: Color::rgba(255, 96, 208, 112),
+            playhead_dot_stroke: Color::rgb(255, 196, 232),
             meter_outline: palette.ui_secondary,
             meter_fill: palette.literals,
             version_label: palette.text_muted,

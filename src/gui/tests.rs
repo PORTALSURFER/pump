@@ -654,6 +654,41 @@
     }
 
     #[test]
+    fn playhead_palette_is_distinct_from_curve_and_editable_node_states() {
+        let theme = PumpTheme::main(UiLayoutMetrics::design_space());
+        let editable_colors = [
+            theme.curve_line,
+            theme.curve_line_highlight,
+            theme.preview_fill,
+            theme.preview_stroke,
+            theme.node_fill,
+            theme.node_hover_fill,
+            theme.node_selected_fill,
+            theme.node_stroke,
+            theme.node_hover_stroke,
+            theme.node_selected_stroke,
+            theme.node_hover_ring,
+            theme.node_selected_ring,
+        ];
+
+        for editable_color in editable_colors {
+            assert_ne!(
+                theme.playhead_dot_core, editable_color,
+                "playhead core must not reuse a curve or editable-node state color"
+            );
+            assert_ne!(
+                theme.playhead_dot_stroke, editable_color,
+                "playhead ring must not reuse a curve or editable-node state color"
+            );
+        }
+        assert_ne!(theme.playhead_dot_core, theme.playhead_dot_stroke);
+        assert!(
+            theme.playhead_dot_glow.a < theme.playhead_dot_core.a,
+            "playhead glow should support the indicator without reading as another solid node"
+        );
+    }
+
+    #[test]
     fn playhead_dot_tracks_curve_sample_at_host_phase() {
         let phase = 0.37;
         let (commands, curve, theme) = curve_draw_commands_with_transport(phase, true, true);

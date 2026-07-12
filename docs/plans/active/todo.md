@@ -2,7 +2,7 @@
 
 Ordered queue for immediate execution:
 
-1. Validate Pump against the pinned Radiant embedded renderer and Toybox hosted-view API.
-2. Build a fresh Pump VST3 and verify the actual hosted UI and curve fill.
-3. Update the existing Pump PR and dependent audiodev pointer PR for user review.
-4. Keep `MEMORY.md` current, run `bash scripts/update_changelog.sh`, and run the available CI lanes before pushing.
+1. Finish full validation and artifact rebuild for PR #13's playhead-over-node paint-order review fix.
+2. Push the follow-up commit, wait for green checks, and merge PR #13 under the user's explicit sign-off.
+3. Advance the audiodev submodule pointer on its matching branch.
+4. Open, verify, and merge the dependent audiodev PR, then clean both repositories back to `main`.
