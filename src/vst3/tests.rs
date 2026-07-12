@@ -200,6 +200,21 @@ fn processor_accepts_a_positive_length_zero_bus_parameter_flush() {
 }
 
 #[test]
+fn processor_accepts_an_omitted_deactivated_output_bus() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+    let mut fixture = stereo_process_fixture(64, 9.0);
+    fixture.process_data.numOutputs = 0;
+    fixture.process_data.outputs = ptr::null_mut();
+    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+
+    let result = unsafe { processor.process(&mut fixture.process_data) };
+
+    assert_eq!(result, process_ok());
+    assert_eq!(fixture.output_left, vec![9.0; 64]);
+    assert_eq!(fixture.output_right, vec![9.0; 64]);
+}
+
+#[test]
 fn processor_silences_instead_of_waiting_for_reentrant_runtime_access() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let _runtime_guard = processor

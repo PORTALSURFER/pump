@@ -295,10 +295,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             }
         }
 
-        // VST3 hosts may call process with no audio buses to flush queued
-        // parameter changes. Those calls are valid even with a positive sample
-        // count because there is no audio range or sample format to validate.
-        if process_data.numInputs == 0 && process_data.numOutputs == 0 {
+        // VST3 hosts may omit a deactivated trailing output bus, including for
+        // parameter-only flushes. With no output bus there is no writable audio
+        // range or sample format to validate after consuming parameter changes.
+        if process_data.numOutputs == 0 {
             return process_ok();
         }
 
