@@ -254,6 +254,14 @@ All notable changes to this project are documented in this file.
 
 - Record OPT-1112 review readiness (c01350b)
 
+- (changelog) Update changelog [skip ci] (9deeaa7)
+
+- Record OPT-1111 review state (219cd77)
+
+- Record OPT-1111 review artifact (19d4615)
+
+- Defer final artifact hash to PR (3b4f6d3)
+
 
 ### Features
 
@@ -965,6 +973,12 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 - Merge pull request #19 from PORTALSURFER/wsvasek/opt-1112-pump-optionally-show-the-incoming-waveform-or-kick-transient
 
 OPT-1112 Add incoming waveform behind the Pump curve (8a24ba1)
+
+- OPT-1111 Add sync-aware curve beat grid (e42f4f2)
+
+- Merge pull request #20 from PORTALSURFER/wsvasek/opt-1111-pump-show-sync-aware-vertical-beat-divisions-in-the-curve
+
+OPT-1111 Show sync-aware beat divisions in the Pump curve (11590ad)
 
 
 ### Refactoring
