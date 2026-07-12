@@ -2,7 +2,7 @@
 
 - Last Updated (UTC): 2026-07-12 17:02:54 UTC
 - Active Mission: Add the optional incoming-audio waveform background for OPT-1112.
-- Current Workstream: `wsvasek/opt-1112-pump-optionally-show-the-incoming-waveform-or-kick-transient` is validated and being packaged as the single active Pump PR. Scope: a user-controlled background waveform in both Pump curve editors, fixed-size lock-free phase-aligned capture, stable empty/unavailable handling, and disabled-path cost removal. Definition of Done: the issue's enabled, disabled, unavailable-input, alignment, render-order, realtime-bound, and no-audio-change requirements pass default, VST3, and screenshot validation. Status: validated; ready-for-review PR and signed review artifact are the remaining steps.
+- Current Workstream: Pump PR #19 (`https://github.com/PORTALSURFER/pump/pull/19`) is ready for review on `wsvasek/opt-1112-pump-optionally-show-the-incoming-waveform-or-kick-transient`. Scope: a user-controlled background waveform in both Pump curve editors, fixed-size lock-free phase-aligned capture, stable empty/unavailable handling, and disabled-path cost removal. Definition of Done: the issue's enabled, disabled, unavailable-input, alignment, render-order, realtime-bound, and no-audio-change requirements pass default, VST3, and screenshot validation. Status: waiting for user review; the signed review artifact is being rebuilt from the final PR head.
 
 ## Current State
 
@@ -58,4 +58,4 @@
 
 ## Immediate Next Action
 
-- Open the ready-for-review OPT-1112 PR, build and audit a fresh signed VST3 artifact, then wait for GitHub CI and explicit user review/sign-off.
+- Build and audit a fresh signed VST3 artifact from Pump PR #19 head, then wait for GitHub CI and explicit user review/sign-off.
