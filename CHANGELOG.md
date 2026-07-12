@@ -240,6 +240,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (e0bce35)
 
+- (changelog) Update changelog [skip ci] (2098211)
+
 
 ### Features
 
@@ -899,6 +901,8 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 - Distinguish curve playhead from editable nodes (#13) (5f25e11)
 
 - Remove blocking mutex acquisition from VST3 audio processing (#14) (74affe9)
+
+- OPT-1139 Honor sample offsets for CLAP and VST3 automation (#15) (f52b9e9)
 
 
 ### Refactoring
