@@ -8,5 +8,5 @@ Ordered queue for immediate execution:
 4. [x] Inject directory-create, temporary-write, and final-rename failures and assert rollback plus reload behavior.
 5. [x] Validate a genuinely unwritable preset directory, default CI (205 tests), and VST3 CI (229 tests).
 6. [x] Build and audit the signed `dist/pump-v0.2.0-macos.vst3` review artifact.
-7. [ ] Open the OPT-1142 Pump PR ready for review.
+7. [x] Open Pump PR #18 ready for review.
 8. [ ] Wait for CI and explicit user review/sign-off on the OPT-1142 PR.
