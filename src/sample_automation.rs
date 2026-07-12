@@ -19,6 +19,7 @@ const DEFAULT_EVENT_CAPACITY: usize = 256;
 /// Reusable per-processor storage for one block of parameter automation.
 pub(crate) struct ParamEventSchedule {
     events: Vec<ScheduledParamEvent>,
+    max_events: usize,
     next_event: usize,
     frame_count: usize,
     next_sequence: usize,
@@ -35,10 +36,26 @@ impl ParamEventSchedule {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             events: Vec::with_capacity(capacity),
+            max_events: capacity,
             next_event: 0,
             frame_count: 0,
             next_sequence: 0,
         }
+    }
+
+    /// Create bounded scheduling storage without panicking on allocation failure.
+    pub(crate) fn try_with_capacity(
+        capacity: usize,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let mut events = Vec::new();
+        events.try_reserve_exact(capacity)?;
+        Ok(Self {
+            events,
+            max_events: capacity,
+            next_event: 0,
+            frame_count: 0,
+            next_sequence: 0,
+        })
     }
 
     /// Clear the previous block and set the valid end boundary for this block.
@@ -50,7 +67,26 @@ impl ParamEventSchedule {
     }
 
     /// Add one plain-valued parameter point, clamping its offset to the block.
+    #[cfg(any(test, feature = "vst3"))]
     pub(crate) fn push(&mut self, sample_offset: i64, param_id: ClapId, plain_value: f32) {
+        self.push_event(sample_offset, param_id, plain_value);
+    }
+
+    /// Add one point without growing beyond the preallocated event bound.
+    pub(crate) fn push_bounded(
+        &mut self,
+        sample_offset: i64,
+        param_id: ClapId,
+        plain_value: f32,
+    ) -> bool {
+        if self.events.len() >= self.max_events {
+            return false;
+        }
+        self.push_event(sample_offset, param_id, plain_value);
+        true
+    }
+
+    fn push_event(&mut self, sample_offset: i64, param_id: ClapId, plain_value: f32) {
         let sample_offset = sample_offset.clamp(0, self.frame_count as i64) as usize;
         self.events.push(ScheduledParamEvent {
             sample_offset,
@@ -88,6 +124,11 @@ impl ParamEventSchedule {
     /// Apply all remaining points, including points clamped to the end boundary.
     pub(crate) fn apply_remaining(&mut self, params: &PumpParams, settings: &mut DspSettings) {
         self.apply_through(self.frame_count, params, settings);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn event_storage(&self) -> (usize, usize, usize) {
+        (self.events.len(), self.events.capacity(), self.max_events)
     }
 }
 
