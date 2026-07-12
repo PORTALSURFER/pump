@@ -3569,6 +3569,52 @@ mod tests {
 
     #[cfg(feature = "vst3")]
     #[test]
+    fn radiant_editor_consumes_inactive_meter_clear_repaint() {
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        let mut editor = RadiantPumpEditor::new(
+            params,
+            Arc::clone(&status),
+            Arc::new(AutomationQueue::default()),
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        status.update(
+            0.0,
+            0.25,
+            GuiTransportTelemetry {
+                is_playing: true,
+                transport_is_playing: true,
+                has_host_beats_timeline: false,
+                beat_phase: 0.0,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        assert!(status.gain_reduction_db() > 0.0);
+        status.update_transport(
+            0.0,
+            GuiTransportTelemetry {
+                is_playing: false,
+                transport_is_playing: false,
+                has_host_beats_timeline: false,
+                beat_phase: 0.0,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        status.mark_gain_reduction_inactive();
+
+        assert!(editor.needs_realtime_redraw());
+        let _ = editor.paint_plan();
+        assert!(
+            !editor.needs_realtime_redraw(),
+            "painting zero must consume the one-shot clear repaint"
+        );
+    }
+
+    #[cfg(feature = "vst3")]
+    #[test]
     fn radiant_editor_reprojects_playhead_from_status_without_pointer_event() {
         let params = Arc::new(PumpParams::new());
         let status = Arc::new(GuiStatus::default());

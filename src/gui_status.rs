@@ -41,6 +41,7 @@ pub struct GuiStatus {
     gain_reduction_last_update_micros: AtomicU64,
     gain_reduction_display_db: AtomicF32,
     gain_reduction_display_update_micros: AtomicU64,
+    gain_reduction_clear_repaint_pending: AtomicBool,
     is_playing: AtomicBool,
     transport_is_playing: AtomicBool,
     has_host_beats_timeline: AtomicBool,
@@ -65,6 +66,7 @@ impl Default for GuiStatus {
             gain_reduction_last_update_micros: AtomicU64::new(0),
             gain_reduction_display_db: AtomicF32::new(0.0),
             gain_reduction_display_update_micros: AtomicU64::new(0),
+            gain_reduction_clear_repaint_pending: AtomicBool::new(false),
             is_playing: AtomicBool::new(false),
             transport_is_playing: AtomicBool::new(false),
             has_host_beats_timeline: AtomicBool::new(false),
@@ -148,10 +150,15 @@ impl GuiStatus {
     /// Clear meter activity for silence, missing input, stopped processing, or bypass.
     pub fn mark_gain_reduction_inactive(&self) {
         self.gain_reduction_linear.store(1.0, Ordering::Relaxed);
-        self.gain_reduction_active.store(false, Ordering::Relaxed);
+        let was_active = self.gain_reduction_active.swap(false, Ordering::Relaxed);
+        let displayed = self.gain_reduction_display_db.load(Ordering::Relaxed);
         self.gain_reduction_display_db.store(0.0, Ordering::Relaxed);
         self.gain_reduction_display_update_micros
             .store(monotonic_micros(), Ordering::Relaxed);
+        if was_active || displayed > 0.0 {
+            self.gain_reduction_clear_repaint_pending
+                .store(true, Ordering::Release);
+        }
     }
 
     /// Read latest phase value.
@@ -174,9 +181,15 @@ impl GuiStatus {
     pub fn gain_reduction_needs_redraw(&self) -> bool {
         self.gain_reduction_active.load(Ordering::Relaxed)
             || self.gain_reduction_display_db.load(Ordering::Relaxed) > 0.0
+            || self
+                .gain_reduction_clear_repaint_pending
+                .load(Ordering::Acquire)
     }
 
     fn gain_reduction_db_at(&self, now_micros: u64) -> f32 {
+        // Reading the meter means this frame can paint the cleared value.
+        self.gain_reduction_clear_repaint_pending
+            .store(false, Ordering::Release);
         let last_audio_update = self
             .gain_reduction_last_update_micros
             .load(Ordering::Relaxed);
@@ -372,6 +385,31 @@ mod tests {
         assert!(status.gain_reduction_needs_redraw());
         assert_eq!(status.gain_reduction_db_at(1_000_000), 0.0);
         assert!(!status.gain_reduction_needs_redraw());
+    }
+
+    #[test]
+    fn inactive_clear_stays_pending_until_the_meter_is_read() {
+        let status = GuiStatus::default();
+        status.gain_reduction_active.store(true, Ordering::Relaxed);
+        status
+            .gain_reduction_display_db
+            .store(12.0, Ordering::Relaxed);
+
+        status.mark_gain_reduction_inactive();
+        status.mark_gain_reduction_inactive();
+        assert!(
+            status.gain_reduction_needs_redraw(),
+            "repeated inactive blocks must not consume the pending clear repaint"
+        );
+
+        assert_eq!(status.gain_reduction_db_at(1_000_000), 0.0);
+        assert!(!status.gain_reduction_needs_redraw());
+
+        status.mark_gain_reduction_inactive();
+        assert!(
+            !status.gain_reduction_needs_redraw(),
+            "already-cleared inactivity must not request unbounded repaints"
+        );
     }
 
     #[test]
