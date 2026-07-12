@@ -2,7 +2,7 @@
 
 - Last Updated (UTC): 2026-07-12 17:02:54 UTC
 - Active Mission: Add the optional incoming-audio waveform background for OPT-1112.
-- Current Workstream: Pump PR #19 (`https://github.com/PORTALSURFER/pump/pull/19`) is ready for review on `wsvasek/opt-1112-pump-optionally-show-the-incoming-waveform-or-kick-transient`. Scope: a user-controlled background waveform in both Pump curve editors, fixed-size lock-free phase-aligned capture, stable empty/unavailable handling, and disabled-path cost removal. Definition of Done: the issue's enabled, disabled, unavailable-input, alignment, render-order, realtime-bound, and no-audio-change requirements pass default, VST3, and screenshot validation. Status: waiting for user review; the signed review artifact is being rebuilt from the final PR head.
+- Current Workstream: Pump PR #19 (`https://github.com/PORTALSURFER/pump/pull/19`) is ready for review on `wsvasek/opt-1112-pump-optionally-show-the-incoming-waveform-or-kick-transient`. Scope: a user-controlled background waveform in both Pump curve editors, fixed-size lock-free phase-aligned capture, stable empty/unavailable handling, and disabled-path cost removal. Definition of Done: the issue's enabled, disabled, unavailable-input, alignment, render-order, realtime-bound, and no-audio-change requirements pass default, VST3, and screenshot validation. Status: waiting for user review; a fresh signed review artifact is available from the final PR head.
 
 ## Current State
 
@@ -55,7 +55,8 @@
 - Pump PR #18 for OPT-1142 merged at `29474c9`; the branch cleanup and generated changelog left Pump `main` at `b115b00` before OPT-1112 began.
 - OPT-1112 adds a disabled-by-default `Wave` / `Input waveform` toggle in the Toybox and Radiant editors. Enabled capture aggregates pre-gain stereo peaks into 96 atomic bins keyed by the exact DSP cycle phase; generation changes remove stale bins on enable, disable, unavailable input, and cycle wrap without clearing arrays on the audio thread.
 - Incoming-waveform rendering is a low-contrast symmetric envelope behind the editable curve, nodes, playhead, and interaction feedback. Default CI passes 216 tests, VST3 CI passes 241 tests, and screenshot validation passes at 315x211, 420x282, 525x352, and 630x423.
+- The OPT-1112 review artifact is `dist/pump-v0.2.0-macos.vst3`; signing, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. The final binary hash is recorded on PR #19 after the last documentation commit and rebuild.
 
 ## Immediate Next Action
 
-- Build and audit a fresh signed VST3 artifact from Pump PR #19 head, then wait for GitHub CI and explicit user review/sign-off.
+- Wait for GitHub CI and explicit user review/sign-off on ready-for-review Pump PR #19.
