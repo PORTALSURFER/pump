@@ -26,7 +26,7 @@ use crate::params::{
 };
 use crate::plugin_metadata::PLUGIN_NAME;
 use crate::sample_automation::{
-    dsp_settings_from_params, process_stereo_block, ParamEventSchedule,
+    dsp_settings_from_params, process_stereo_block_raw, ParamEventSchedule, RawStereoBlock,
 };
 use crate::transport::{gui_phase_from_transport, gui_transport_telemetry};
 use crate::GuiStatus;

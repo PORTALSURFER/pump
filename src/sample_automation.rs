@@ -130,6 +130,66 @@ pub(crate) fn process_stereo_block(
     last_telemetry
 }
 
+/// Process one stereo block through raw host pointers that may be in-place.
+///
+/// # Safety
+///
+/// Every pointer must be valid for `frame_count` samples. Each output channel
+/// must be writable, and the two channel ranges must not overlap each other.
+/// An input channel may alias its corresponding output channel.
+#[cfg(feature = "vst3")]
+pub(crate) struct RawStereoBlock {
+    pub(crate) num_samples: usize,
+    pub(crate) input_left: *const f32,
+    pub(crate) input_right: *const f32,
+    pub(crate) output_left: *mut f32,
+    pub(crate) output_right: *mut f32,
+}
+
+#[cfg(feature = "vst3")]
+impl RawStereoBlock {
+    /// Write silence without creating host-buffer slices that could alias.
+    pub(crate) unsafe fn silence(&self) {
+        for sample_offset in 0..self.num_samples {
+            unsafe {
+                self.output_left.add(sample_offset).write(0.0);
+                self.output_right.add(sample_offset).write(0.0);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "vst3")]
+pub(crate) unsafe fn process_stereo_block_raw(
+    engine: &mut PumpEngine,
+    block: RawStereoBlock,
+    params: &PumpParams,
+    schedule: &mut ParamEventSchedule,
+    settings: &mut DspSettings,
+    transport: TransportState,
+) -> Option<DspTelemetry> {
+    let mut transport_for_sample = transport;
+    let mut last_telemetry = None;
+
+    for sample_offset in 0..block.num_samples {
+        schedule.apply_through(sample_offset, params, settings);
+        // Read both inputs before either output is written so exact in-place
+        // buffers preserve the original stereo sample pair.
+        let mut left = unsafe { block.input_left.add(sample_offset).read() };
+        let mut right = unsafe { block.input_right.add(sample_offset).read() };
+        last_telemetry =
+            Some(engine.process_sample(&mut left, &mut right, *settings, transport_for_sample));
+        unsafe {
+            block.output_left.add(sample_offset).write(left);
+            block.output_right.add(sample_offset).write(right);
+        }
+        transport_for_sample.song_pos_beats = None;
+    }
+
+    schedule.apply_remaining(params, settings);
+    last_telemetry
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

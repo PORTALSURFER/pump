@@ -293,11 +293,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             {
                 return kInvalidArgument;
             }
-            let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
+            let Some(buffers) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
                 return unsafe { silence_valid_stereo_output(process_data) };
             };
-            buffers.output_left.fill(0.0);
-            buffers.output_right.fill(0.0);
+            unsafe { buffers.silence() };
             // SAFETY: successful stereo buffer extraction validated one
             // writable output bus above.
             unsafe { (*process_data.outputs).silenceFlags = 0b11 };
@@ -326,7 +325,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             return kInvalidArgument;
         }
 
-        let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
+        let Some(buffers) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
             apply_scheduled_vst3_points_remaining(
                 &mut runtime.param_schedule,
                 self.shared.params.as_ref(),
@@ -369,20 +368,17 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             ),
         );
 
-        buffers.output_left[..buffers.num_samples]
-            .copy_from_slice(&buffers.input_left[..buffers.num_samples]);
-        buffers.output_right[..buffers.num_samples]
-            .copy_from_slice(&buffers.input_right[..buffers.num_samples]);
         let runtime = &mut *runtime;
-        let telemetry = process_stereo_block(
-            &mut runtime.engine,
-            &mut buffers.output_left[..buffers.num_samples],
-            &mut buffers.output_right[..buffers.num_samples],
-            self.shared.params.as_ref(),
-            &mut runtime.param_schedule,
-            &mut settings,
-            transport,
-        );
+        let telemetry = unsafe {
+            process_stereo_block_raw(
+                &mut runtime.engine,
+                buffers,
+                self.shared.params.as_ref(),
+                &mut runtime.param_schedule,
+                &mut settings,
+                transport,
+            )
+        };
         let (last_phase, last_gain) = telemetry
             .map(|telemetry| (telemetry.phase, telemetry.gain))
             .unwrap_or((0.0, 1.0));
@@ -405,6 +401,45 @@ impl IAudioProcessorTrait for PumpVst3Processor {
     unsafe fn getTailSamples(&self) -> u32 {
         0
     }
+}
+
+/// Validate a VST3 stereo f32 block while retaining raw pointers so exact
+/// in-place input/output channel aliases never become overlapping Rust slices.
+unsafe fn raw_stereo_f32_buffers(data: &ProcessData) -> Option<RawStereoBlock> {
+    if data.numInputs != 1
+        || data.numOutputs != 1
+        || data.inputs.is_null()
+        || data.outputs.is_null()
+    {
+        return None;
+    }
+
+    let num_samples = usize::try_from(data.numSamples).ok()?;
+    let input_bus = unsafe { &*data.inputs };
+    let output_bus = unsafe { &*data.outputs };
+    if input_bus.numChannels != 2
+        || output_bus.numChannels != 2
+        || input_bus.__field0.channelBuffers32.is_null()
+        || output_bus.__field0.channelBuffers32.is_null()
+    {
+        return None;
+    }
+
+    let input_channels = unsafe { slice::from_raw_parts(input_bus.__field0.channelBuffers32, 2) };
+    let output_channels = unsafe { slice::from_raw_parts(output_bus.__field0.channelBuffers32, 2) };
+    if input_channels.iter().any(|channel| channel.is_null())
+        || output_channels.iter().any(|channel| channel.is_null())
+    {
+        return None;
+    }
+
+    Some(RawStereoBlock {
+        num_samples,
+        input_left: input_channels[0],
+        input_right: input_channels[1],
+        output_left: output_channels[0],
+        output_right: output_channels[1],
+    })
 }
 
 fn prepare_vst3_param_schedule(

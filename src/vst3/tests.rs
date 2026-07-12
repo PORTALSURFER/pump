@@ -118,6 +118,25 @@ fn processor_writes_the_full_normal_output_range() {
 }
 
 #[test]
+fn processor_supports_exact_in_place_channel_buffers() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared.params.set_output_gain_db(-24.0);
+    let processor = PumpVst3Processor::new(shared);
+    let mut fixture = stereo_process_fixture(64, 9.0);
+    fixture._output_channel_buffers[0] = fixture._input_left.as_mut_ptr();
+    fixture._output_channel_buffers[1] = fixture._input_right.as_mut_ptr();
+
+    let result = unsafe { processor.process(&mut fixture.process_data) };
+
+    assert_eq!(result, process_ok());
+    assert!(fixture._input_left.iter().all(|sample| sample.is_finite()));
+    assert!(fixture._input_right.iter().all(|sample| sample.is_finite()));
+    assert!(fixture._input_left.iter().any(|sample| *sample < 1.0));
+    assert!(fixture._input_right.iter().any(|sample| *sample < 0.5));
+    assert_eq!(fixture.output_buses[0].silenceFlags, 0);
+}
+
+#[test]
 fn processor_silences_valid_outputs_when_input_is_missing() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let mut fixture = stereo_process_fixture(32, 9.0);
