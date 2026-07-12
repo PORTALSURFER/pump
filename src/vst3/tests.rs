@@ -143,6 +143,35 @@ fn processor_publishes_enabled_input_waveform_and_clears_it_when_input_disappear
 }
 
 #[test]
+fn empty_vst3_blocks_do_not_refresh_a_stale_waveform() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared.status.set_incoming_waveform_enabled(true);
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(64, 9.0);
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(shared.status.incoming_waveform_snapshot().is_some());
+
+    shared
+        .status
+        .incoming_waveform_buffer()
+        .set_last_update_micros_for_test(0);
+    fixture.process_data.numSamples = 0;
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "an empty keepalive block must not republish or refresh the old input peak"
+    );
+}
+
+#[test]
 fn processor_supports_exact_in_place_channel_buffers() {
     let shared = Arc::new(PumpVst3Shared::new());
     shared.params.set_output_gain_db(-24.0);

@@ -116,6 +116,11 @@ impl IncomingWaveformBuffer {
         });
         any_signal.then_some(snapshot)
     }
+
+    #[cfg(all(test, feature = "vst3"))]
+    pub(crate) fn set_last_update_micros_for_test(&self, value: u64) {
+        self.last_update_micros.store(value, Ordering::Release);
+    }
 }
 
 /// Audio-owned peak aggregator that publishes at most once per visited bin.

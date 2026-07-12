@@ -181,8 +181,10 @@ pub(crate) fn process_stereo_block(
     }
 
     schedule.apply_remaining(params, settings);
-    if let Some(capture) = waveform {
-        capture.finish();
+    if frame_count > 0 {
+        if let Some(capture) = waveform {
+            capture.finish();
+        }
     }
     last_telemetry
 }
@@ -251,8 +253,10 @@ pub(crate) unsafe fn process_stereo_block_raw(
     }
 
     schedule.apply_remaining(params, settings);
-    if let Some(capture) = waveform {
-        capture.finish();
+    if block.num_samples > 0 {
+        if let Some(capture) = waveform {
+            capture.finish();
+        }
     }
     last_telemetry
 }
