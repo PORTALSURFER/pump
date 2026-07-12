@@ -132,6 +132,28 @@ fn processor_silences_valid_outputs_when_input_is_missing() {
 }
 
 #[test]
+fn processor_clears_reused_output_silence_flags_after_normal_processing() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+    let mut fixture = stereo_process_fixture(32, 9.0);
+    fixture.process_data.inputs = ptr::null_mut();
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert_eq!(fixture.output_buses[0].silenceFlags, 0b11);
+
+    fixture.process_data.inputs = fixture._input_buses.as_mut_ptr();
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+
+    assert_eq!(fixture.output_buses[0].silenceFlags, 0);
+    assert!(fixture.output_left.iter().any(|sample| *sample != 0.0));
+    assert!(fixture.output_right.iter().any(|sample| *sample != 0.0));
+}
+
+#[test]
 fn processor_rejects_unwritable_output_instead_of_claiming_success() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let mut fixture = stereo_process_fixture(32, 9.0);
@@ -191,6 +213,7 @@ fn processor_silences_instead_of_waiting_for_reentrant_runtime_access() {
     assert_eq!(result, process_ok());
     assert_eq!(fixture.output_left, vec![0.0; 32]);
     assert_eq!(fixture.output_right, vec![0.0; 32]);
+    assert_eq!(fixture.output_buses[0].silenceFlags, 0b11);
 }
 
 #[test]

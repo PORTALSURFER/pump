@@ -315,6 +315,9 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         let Some(mut runtime) = self.runtime.try_acquire() else {
             buffers.output_left.fill(0.0);
             buffers.output_right.fill(0.0);
+            // SAFETY: successful stereo buffer extraction validated one
+            // writable output bus above.
+            unsafe { (*process_data.outputs).silenceFlags = 0b11 };
             return process_ok();
         };
 
@@ -373,6 +376,9 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             buffers.output_left[sample_index] = left;
             buffers.output_right[sample_index] = right;
         }
+        // SAFETY: successful stereo buffer extraction validated one writable
+        // output bus, and the full range now contains processed audio.
+        unsafe { (*process_data.outputs).silenceFlags = 0 };
         self.shared.status.update(
             last_phase,
             last_gain,
