@@ -7,6 +7,6 @@ Ordered queue for immediate execution:
 3. [x] Thin minor divisions at narrow widths and define stable empty behavior for unsupported timing and the boundary-free 1/16 cycle.
 4. [x] Add focused sync-length, resize, alignment, full-height geometry, and unsupported-state tests.
 5. [x] Pass default CI (229 tests), VST3 CI (256 tests), and four-size screenshot validation with and without the playhead.
-6. [ ] Commit and open the OPT-1111 Pump PR ready for review.
+6. [x] Commit and open Pump PR #20 ready for review.
 7. [ ] Build and audit the signed `dist/pump-v0.2.0-macos.vst3` review artifact.
 8. [ ] Wait for GitHub CI and explicit user review/sign-off on the OPT-1111 PR.

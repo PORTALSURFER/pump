@@ -2,7 +2,7 @@
 
 - Last Updated (UTC): 2026-07-12 19:40:10 UTC
 - Active Mission: Add sync-aware vertical beat divisions to both Pump curve editors for OPT-1111.
-- Current Workstream: `wsvasek/opt-1111-pump-show-sync-aware-vertical-beat-divisions-in-the-curve` is validated and ready to commit/open as a dedicated ready-for-review PR. Scope: display-only major/minor beat divisions derived from Pump's sync length, adaptive minor-line density, exact normalized resize mapping, and stable empty unsupported/shortest-cycle behavior. Definition of Done: both Toybox and Radiant editors update from sync state without changing snapping, hit testing, playhead, curve data, or DSP. Status: validated; PR creation and signed review artifact remain.
+- Current Workstream: Pump PR #20 (`https://github.com/PORTALSURFER/pump/pull/20`) is ready for review on `wsvasek/opt-1111-pump-show-sync-aware-vertical-beat-divisions-in-the-curve`. Scope: display-only major/minor beat divisions derived from Pump's sync length, adaptive minor-line density, exact normalized resize mapping, and stable empty unsupported/shortest-cycle behavior. Definition of Done: both Toybox and Radiant editors update from sync state without changing snapping, hit testing, playhead, curve data, or DSP. Status: waiting for user review; signed review artifact creation remains.
 
 ## Current State
 
@@ -60,4 +60,4 @@
 
 ## Immediate Next Action
 
-- Commit OPT-1111, open the ready-for-review Pump PR, and build/audit the signed VST3 review artifact.
+- Build and audit the signed VST3 review artifact for ready-for-review Pump PR #20.
