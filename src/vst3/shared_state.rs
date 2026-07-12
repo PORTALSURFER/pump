@@ -146,6 +146,7 @@ pub(super) fn release_shared_for_role(shared: &Arc<PumpVst3Shared>, role: Shared
 
 pub(super) struct PumpVst3Runtime {
     pub(super) engine: PumpEngine,
+    pub(super) param_schedule: ParamEventSchedule,
     pub(super) last_curve_revision: u32,
     pub(super) sample_rate: f32,
 }
@@ -155,6 +156,7 @@ impl PumpVst3Runtime {
         let curve = params.curve_snapshot();
         Self {
             engine: PumpEngine::new(48_000.0, curve),
+            param_schedule: ParamEventSchedule::with_capacity(16_384),
             last_curve_revision: params.curve_revision(),
             sample_rate: 48_000.0,
         }

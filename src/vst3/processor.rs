@@ -282,43 +282,56 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         let process_data = unsafe { &*data };
-        for id in [
-            PARAM_MIX_NUM,
-            PARAM_PHASE_OFFSET_NUM,
-            PARAM_OUTPUT_GAIN_NUM,
-            PARAM_SYNC_DIVISION_NUM,
-        ] {
-            if let Some((_, value)) =
-                unsafe { latest_param_point(process_data.inputParameterChanges, id) }
-            {
-                apply_normalized_param(self.shared.params.as_ref(), id, value);
-            }
-        }
-
-        // VST3 hosts may omit a deactivated trailing output bus, including for
-        // parameter-only flushes. With no output bus there is no writable audio
-        // range or sample format to validate after consuming parameter changes.
-        if process_data.numOutputs == 0 {
-            return process_ok();
-        }
-
-        if process_data.numSamples > 0
-            && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
-        {
-            return kInvalidArgument;
-        }
-
-        let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
-            return unsafe { silence_valid_stereo_output(process_data) };
-        };
-
+        let frame_count = process_data.numSamples.max(0) as usize;
         let Some(mut runtime) = self.runtime.try_acquire() else {
+            apply_vst3_param_points_immediately(process_data, self.shared.params.as_ref());
+            if process_data.numOutputs == 0 {
+                return process_ok();
+            }
+            if process_data.numSamples > 0
+                && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
+            {
+                return kInvalidArgument;
+            }
+            let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
+                return unsafe { silence_valid_stereo_output(process_data) };
+            };
             buffers.output_left.fill(0.0);
             buffers.output_right.fill(0.0);
             // SAFETY: successful stereo buffer extraction validated one
             // writable output bus above.
             unsafe { (*process_data.outputs).silenceFlags = 0b11 };
             return process_ok();
+        };
+        prepare_vst3_param_schedule(&mut runtime.param_schedule, process_data, frame_count);
+
+        // VST3 hosts may omit a deactivated trailing output bus, including for
+        // parameter-only flushes. With no output bus there is no writable audio
+        // range or sample format to validate after consuming parameter changes.
+        if process_data.numOutputs == 0 {
+            apply_scheduled_vst3_points_remaining(
+                &mut runtime.param_schedule,
+                self.shared.params.as_ref(),
+            );
+            return process_ok();
+        }
+
+        if process_data.numSamples > 0
+            && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
+        {
+            apply_scheduled_vst3_points_remaining(
+                &mut runtime.param_schedule,
+                self.shared.params.as_ref(),
+            );
+            return kInvalidArgument;
+        }
+
+        let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
+            apply_scheduled_vst3_points_remaining(
+                &mut runtime.param_schedule,
+                self.shared.params.as_ref(),
+            );
+            return unsafe { silence_valid_stereo_output(process_data) };
         };
 
         let pending = self.runtime_handoff.take_pending();
@@ -340,12 +353,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             runtime.last_curve_revision = revision;
         }
 
-        let settings = DspSettings {
-            mix: self.shared.params.mix(),
-            phase_offset: self.shared.params.phase_offset(),
-            output_gain_db: self.shared.params.output_gain_db(),
-            beats_per_cycle: self.shared.params.sync_beats_per_cycle(),
-        };
+        let mut settings = dsp_settings_from_params(self.shared.params.as_ref());
+        runtime
+            .param_schedule
+            .apply_through(0, self.shared.params.as_ref(), &mut settings);
         let transport = transport_state_from_vst3_process_context(process_data.processContext);
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
         self.shared.status.update(
@@ -358,24 +369,23 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             ),
         );
 
-        let mut last_phase = 0.0_f32;
-        let mut last_gain = 1.0_f32;
-        let mut transport_for_sample = transport;
-        for sample_index in 0..buffers.num_samples {
-            let mut left = buffers.input_left[sample_index];
-            let mut right = buffers.input_right[sample_index];
-            let telemetry = runtime.engine.process_sample(
-                &mut left,
-                &mut right,
-                settings,
-                transport_for_sample,
-            );
-            transport_for_sample.song_pos_beats = None;
-            last_phase = telemetry.phase;
-            last_gain = telemetry.gain;
-            buffers.output_left[sample_index] = left;
-            buffers.output_right[sample_index] = right;
-        }
+        buffers.output_left[..buffers.num_samples]
+            .copy_from_slice(&buffers.input_left[..buffers.num_samples]);
+        buffers.output_right[..buffers.num_samples]
+            .copy_from_slice(&buffers.input_right[..buffers.num_samples]);
+        let runtime = &mut *runtime;
+        let telemetry = process_stereo_block(
+            &mut runtime.engine,
+            &mut buffers.output_left[..buffers.num_samples],
+            &mut buffers.output_right[..buffers.num_samples],
+            self.shared.params.as_ref(),
+            &mut runtime.param_schedule,
+            &mut settings,
+            transport,
+        );
+        let (last_phase, last_gain) = telemetry
+            .map(|telemetry| (telemetry.phase, telemetry.gain))
+            .unwrap_or((0.0, 1.0));
         // SAFETY: successful stereo buffer extraction validated one writable
         // output bus, and the full range now contains processed audio.
         unsafe { (*process_data.outputs).silenceFlags = 0 };
@@ -394,6 +404,54 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
     unsafe fn getTailSamples(&self) -> u32 {
         0
+    }
+}
+
+fn prepare_vst3_param_schedule(
+    schedule: &mut ParamEventSchedule,
+    process_data: &ProcessData,
+    frame_count: usize,
+) {
+    schedule.begin_block(frame_count);
+    unsafe {
+        for_each_param_point(
+            process_data.inputParameterChanges,
+            |param_id, sample_offset, normalized| {
+                schedule_vst3_param_point(schedule, param_id, sample_offset, normalized);
+            },
+        );
+    }
+    schedule.prepare();
+}
+
+fn apply_scheduled_vst3_points_remaining(schedule: &mut ParamEventSchedule, params: &PumpParams) {
+    let mut settings = dsp_settings_from_params(params);
+    schedule.apply_remaining(params, &mut settings);
+}
+
+fn schedule_vst3_param_point(
+    schedule: &mut ParamEventSchedule,
+    param_id: ParamID,
+    sample_offset: i32,
+    normalized: ParamValue,
+) {
+    let Some(clap_id) = clap_id_from_vst3_param_id(param_id) else {
+        return;
+    };
+    let Some(plain) = plain_from_normalized_value(clap_id, normalized) else {
+        return;
+    };
+    schedule.push(i64::from(sample_offset), clap_id, plain as f32);
+}
+
+fn apply_vst3_param_points_immediately(process_data: &ProcessData, params: &PumpParams) {
+    unsafe {
+        for_each_param_point(
+            process_data.inputParameterChanges,
+            |param_id, _sample_offset, normalized| {
+                apply_normalized_param(params, param_id, normalized);
+            },
+        );
     }
 }
 
@@ -436,5 +494,46 @@ impl IProcessContextRequirementsTrait for PumpVst3Processor {
         IProcessContextRequirements_::Flags_::kNeedTempo
             | IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic
             | IProcessContextRequirements_::Flags_::kNeedTransportState
+    }
+}
+
+#[cfg(test)]
+mod parameter_automation_tests {
+    use super::*;
+    use crate::params::PARAM_SYNC_DIVISION_NUM;
+
+    #[test]
+    fn vst3_points_share_offset_clamping_ordering_and_step_conversion() {
+        let params = PumpParams::new();
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(6);
+        schedule_vst3_param_point(
+            &mut schedule,
+            PARAM_MIX_NUM,
+            4,
+            to_normalized(PARAM_MIX_NUM, 0.4),
+        );
+        schedule_vst3_param_point(
+            &mut schedule,
+            PARAM_SYNC_DIVISION_NUM,
+            -5,
+            to_normalized(PARAM_SYNC_DIVISION_NUM, 6.0),
+        );
+        schedule_vst3_param_point(
+            &mut schedule,
+            PARAM_MIX_NUM,
+            99,
+            to_normalized(PARAM_MIX_NUM, 0.8),
+        );
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+
+        schedule.apply_through(0, &params, &mut settings);
+        assert_eq!(params.sync_division(), 6);
+        assert!((params.mix() - 1.0).abs() < f32::EPSILON);
+        schedule.apply_through(4, &params, &mut settings);
+        assert!((params.mix() - 0.4).abs() < 1.0e-6);
+        schedule.apply_remaining(&params, &mut settings);
+        assert!((params.mix() - 0.8).abs() < 1.0e-6);
     }
 }

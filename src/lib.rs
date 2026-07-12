@@ -10,6 +10,7 @@ use toybox::clack_extensions::gui::{PluginGui, PluginGuiImpl};
 use toybox::clack_extensions::params::*;
 use toybox::clack_extensions::state::{PluginState, PluginStateImpl};
 use toybox::clack_plugin;
+use toybox::clack_plugin::events::spaces::CoreEventSpace;
 use toybox::clack_plugin::prelude::*;
 use toybox::clack_plugin::stream::{InputStream, OutputStream};
 use toybox::clap::automation::{AutomationEvent, AutomationQueue};
@@ -27,6 +28,9 @@ use crate::params::{
     text_to_value, value_to_text, write_param_info, PumpParams,
 };
 use crate::plugin_metadata::{PLUGIN_ID, PLUGIN_NAME, VENDOR_NAME};
+use crate::sample_automation::{
+    dsp_settings_from_params, process_stereo_block, ParamEventSchedule,
+};
 use crate::time_utils::monotonic_micros;
 
 #[cfg(test)]
@@ -40,6 +44,7 @@ mod params;
 mod plugin_main_thread_impl;
 mod plugin_metadata;
 mod plugin_processor;
+mod sample_automation;
 mod time_utils;
 mod transport;
 #[cfg(feature = "vst3")]
