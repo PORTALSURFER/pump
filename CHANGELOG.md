@@ -242,6 +242,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (2098211)
 
+- (changelog) Update changelog [skip ci] (eb7d4f9)
+
 
 ### Features
 
@@ -903,6 +905,12 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 - Remove blocking mutex acquisition from VST3 audio processing (#14) (74affe9)
 
 - OPT-1139 Honor sample offsets for CLAP and VST3 automation (#15) (f52b9e9)
+
+- OPT-1141 Bound quick-slot counts during state decode (#16)
+
+* OPT-1141 Bound state decode collection counts
+
+* docs: record OPT-1141 review state (6fac47c)
 
 
 ### Refactoring
