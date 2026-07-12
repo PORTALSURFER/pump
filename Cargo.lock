@@ -2080,7 +2080,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "patchbay-gui"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=9ca7f9a7b90b30c21a85781913242e82f08a8761#9ca7f9a7b90b30c21a85781913242e82f08a8761"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=9264bd894372f18c79536f88556c1c88adbb0f6a#9264bd894372f18c79536f88556c1c88adbb0f6a"
 dependencies = [
  "pollster 0.3.0",
  "raw-window-handle 0.5.2",
@@ -2344,7 +2344,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "radiant"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/radiant.git?rev=6575b0c9a6b5abad17f711a36b832b7e7434e7b1#6575b0c9a6b5abad17f711a36b832b7e7434e7b1"
+source = "git+https://github.com/PORTALSURFER/radiant.git?rev=c66659782df30d1ebeeeb16ffca47149969de464#c66659782df30d1ebeeeb16ffca47149969de464"
 dependencies = [
  "arboard",
  "kurbo",
@@ -2999,7 +2999,7 @@ dependencies = [
 [[package]]
 name = "toybox"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=9ca7f9a7b90b30c21a85781913242e82f08a8761#9ca7f9a7b90b30c21a85781913242e82f08a8761"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=9264bd894372f18c79536f88556c1c88adbb0f6a#9264bd894372f18c79536f88556c1c88adbb0f6a"
 dependencies = [
  "clack-common",
  "clack-extensions",
@@ -3018,12 +3018,12 @@ dependencies = [
 [[package]]
 name = "toybox-process-log"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=9ca7f9a7b90b30c21a85781913242e82f08a8761#9ca7f9a7b90b30c21a85781913242e82f08a8761"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=9264bd894372f18c79536f88556c1c88adbb0f6a#9264bd894372f18c79536f88556c1c88adbb0f6a"
 
 [[package]]
 name = "toybox-vst3-ffi"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=9ca7f9a7b90b30c21a85781913242e82f08a8761#9ca7f9a7b90b30c21a85781913242e82f08a8761"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=9264bd894372f18c79536f88556c1c88adbb0f6a#9264bd894372f18c79536f88556c1c88adbb0f6a"
 dependencies = [
  "vst3",
 ]
