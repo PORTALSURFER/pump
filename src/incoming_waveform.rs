@@ -130,6 +130,7 @@ pub(crate) struct IncomingWaveformWriter {
     last_phase: Option<f32>,
     current_bin: Option<usize>,
     current_peak: f32,
+    block_has_signal: bool,
 }
 
 impl IncomingWaveformWriter {
@@ -143,6 +144,7 @@ impl IncomingWaveformWriter {
             self.reset();
             self.generation = generation;
         }
+        self.block_has_signal = false;
         true
     }
 
@@ -173,13 +175,19 @@ impl IncomingWaveformWriter {
         }
         let peak = left.abs().max(right.abs());
         if peak.is_finite() {
-            self.current_peak = self.current_peak.max(peak.clamp(0.0, 1.0));
+            let peak = peak.clamp(0.0, 1.0);
+            self.block_has_signal |= peak > SILENCE_FLOOR;
+            self.current_peak = self.current_peak.max(peak);
         }
     }
 
     pub(crate) fn finish_block(&mut self, buffer: &IncomingWaveformBuffer) {
+        if !self.block_has_signal {
+            return;
+        }
         self.flush_current(buffer);
         buffer.finish_block();
+        self.block_has_signal = false;
     }
 
     pub(crate) fn reset(&mut self) {
@@ -187,6 +195,7 @@ impl IncomingWaveformWriter {
         self.last_phase = None;
         self.current_bin = None;
         self.current_peak = 0.0;
+        self.block_has_signal = false;
     }
 
     fn flush_current(&self, buffer: &IncomingWaveformBuffer) {
@@ -354,5 +363,27 @@ mod tests {
             }
             writer.finish_block(&buffer);
         });
+    }
+
+    #[test]
+    fn silent_block_does_not_refresh_a_previous_signal() {
+        let buffer = IncomingWaveformBuffer::default();
+        buffer.set_enabled(true);
+        let mut writer = IncomingWaveformWriter::default();
+        assert!(writer.begin_block(&buffer));
+        writer.record(&buffer, 0.2, 0.8, 0.0);
+        writer.finish_block(&buffer);
+        assert!(buffer.snapshot().is_some());
+
+        buffer.last_update_micros.store(1, Ordering::Release);
+        assert!(writer.begin_block(&buffer));
+        writer.record(&buffer, 0.3, 0.0, 0.0);
+        writer.finish_block(&buffer);
+
+        assert_eq!(
+            buffer.last_update_micros.load(Ordering::Acquire),
+            1,
+            "an all-silent block must not renew the previous signal's freshness"
+        );
     }
 }

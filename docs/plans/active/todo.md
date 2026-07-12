@@ -6,7 +6,7 @@ Ordered queue for immediate execution:
 2. [x] Invalidate stale data for disable, unavailable/silent input, and cycle wrap without blocking or allocating on the audio thread.
 3. [x] Add explicit waveform toggles and subordinate background rendering to the Toybox and Radiant curve editors.
 4. [x] Cover enabled, disabled, unavailable-input, alignment, render order, and allocation-free processing states.
-5. [x] Pass default CI (218 tests), VST3 CI (244 tests), and four-size screenshot validation, including smaller backward-seek and empty-VST3-block review regressions.
+5. [x] Pass default CI (219 tests), VST3 CI (246 tests), and four-size screenshot validation, including backward-seek, empty-block, and all-silent-block review regressions.
 6. [x] Commit and open Pump PR #19 ready for review.
 7. [x] Build and audit the signed `dist/pump-v0.2.0-macos.vst3` review artifact.
 8. [ ] Wait for GitHub CI and explicit user review/sign-off on the OPT-1112 PR.
