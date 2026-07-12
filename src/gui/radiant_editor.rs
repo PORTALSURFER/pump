@@ -358,11 +358,15 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         .then_some(state.status.phase());
     Arc::new(
         column([
-            text(build_version_label())
-                .muted_text()
-                .align_text(TextAlign::Right)
-                .height(BUILD_LABEL_HEIGHT)
-                .fill_width(),
+            text(if params.preset_persistence_warning().is_some() {
+                super::PRESET_WARNING_STORAGE.to_string()
+            } else {
+                build_version_label()
+            })
+            .muted_text()
+            .align_text(TextAlign::Right)
+            .height(BUILD_LABEL_HEIGHT)
+            .fill_width(),
             custom_widget_mapped(
                 CurvePreviewWidget::new(
                     params.editable_curve_snapshot(),

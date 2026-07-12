@@ -81,7 +81,7 @@ impl GuiState {
     /// Snapshot preset-bank state and transient header interaction flags.
     pub(super) fn snapshot_presets(&self) -> PresetSnapshot {
         let bank = self.params.preset_bank_snapshot();
-        let names = if bank.presets.is_empty() {
+        let mut names = if bank.presets.is_empty() {
             vec![DEFAULT_PRESET_NAME.to_string()]
         } else {
             bank.presets
@@ -90,6 +90,10 @@ impl GuiState {
                 .collect()
         };
         let selected = bank.selected.min(names.len().saturating_sub(1));
+        let persistence_warning = self.params.preset_persistence_warning().is_some();
+        if persistence_warning {
+            names[selected] = PRESET_WARNING_STORAGE.to_string();
+        }
         let dirty = self.params.current_state_differs_from_selected_preset();
 
         let mut rename_active = false;
@@ -118,6 +122,7 @@ impl GuiState {
             dirty,
             rename_active,
             rename_draft,
+            persistence_warning,
             warning_blink_visible,
         }
     }
@@ -137,12 +142,19 @@ impl GuiState {
         presets: &PresetSnapshot,
     ) -> Node {
         let header_h = resolve_vertical_slot_heights(metrics.content_h).0.max(1);
+        let right_section_percent = if presets.persistence_warning {
+            HEADER_STORAGE_WARNING_SECTION_PERCENT
+        } else {
+            HEADER_INDICATOR_SECTION_PERCENT
+        };
+        let left_section_percent = if presets.persistence_warning {
+            100_u8.saturating_sub(HEADER_STORAGE_WARNING_SECTION_PERCENT)
+        } else {
+            HEADER_EMPTY_SECTION_PERCENT
+        };
         let header_slot_widths = weighted_slot_lengths(
             metrics.content_w.max(1),
-            &[
-                HEADER_EMPTY_SECTION_PERCENT as u16,
-                HEADER_INDICATOR_SECTION_PERCENT as u16,
-            ],
+            &[left_section_percent as u16, right_section_percent as u16],
         );
         let left_width = header_slot_widths.first().copied().unwrap_or(1).max(1);
         let right_width = header_slot_widths.get(1).copied().unwrap_or(1).max(1);
@@ -165,19 +177,27 @@ impl GuiState {
         )
         .slot_align(SlotAlign::Center, SlotAlign::Center)
         .fill();
-        let version_label = Node::align_box(
-            textbox(build_version_label())
-                .text_color(theme.version_label)
-                .text_align_center()
-                .widget_layout(fixed_box(
-                    right_width,
-                    HEADER_VERSION_LABEL_HEIGHT.min(header_h).max(1),
-                )),
+        let status_label = Node::align_box(
+            textbox(if presets.persistence_warning {
+                PRESET_WARNING_STORAGE.to_string()
+            } else {
+                build_version_label()
+            })
+            .text_color(if presets.persistence_warning {
+                theme.preset_dirty_highlight
+            } else {
+                theme.version_label
+            })
+            .text_align_center()
+            .widget_layout(fixed_box(
+                right_width,
+                HEADER_VERSION_LABEL_HEIGHT.min(header_h).max(1),
+            )),
         )
         .slot_align(SlotAlign::Center, SlotAlign::Center)
         .fill();
         let right_status = column_slots(vec![
-            weighted_slot(version_label, 8),
+            weighted_slot(status_label, 8),
             weighted_slot(indicator_node, 11),
         ])
         .container_overflow(OverflowPolicy::Compress)
@@ -262,8 +282,8 @@ impl GuiState {
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let header_content = row_slots(vec![
-            weighted_slot(left_controls, HEADER_EMPTY_SECTION_PERCENT as u16),
-            weighted_slot(right_status, HEADER_INDICATOR_SECTION_PERCENT as u16),
+            weighted_slot(left_controls, left_section_percent as u16),
+            weighted_slot(right_status, right_section_percent as u16),
         ])
         .container_overflow(OverflowPolicy::Compress);
         panel("header", header_content).pad_all(0)
@@ -779,15 +799,22 @@ impl GuiState {
             }
             UiAction::ButtonPressed { key } if key == PRESET_ADD_KEY => {
                 self.capture_undo_snapshot();
-                if self.params.add_preset_from_current_state().is_some() {
-                    if let Ok(mut runtime) = self.runtime.lock() {
-                        runtime.preset_rename_active = false;
-                        runtime.preset_name_draft.clear();
-                        runtime.preset_warning_frames = 0;
-                        runtime.preset_warning_text = None;
+                match self.params.add_preset_from_current_state() {
+                    Ok(_) => {
+                        if let Ok(mut runtime) = self.runtime.lock() {
+                            runtime.preset_rename_active = false;
+                            runtime.preset_name_draft.clear();
+                            runtime.preset_warning_frames = 0;
+                            runtime.preset_warning_text = None;
+                        }
                     }
-                } else {
-                    self.set_preset_warning(PRESET_WARNING_MAX);
+                    Err(PresetMutationError::CapacityReached) => {
+                        self.set_preset_warning(PRESET_WARNING_MAX)
+                    }
+                    Err(PresetMutationError::PersistenceFailed { .. }) => {
+                        self.set_preset_warning(PRESET_WARNING_STORAGE)
+                    }
+                    Err(_) => self.set_preset_warning(PRESET_WARNING_NAME),
                 }
             }
             UiAction::ButtonPressed { key } if key == PRESET_SAVE_KEY => {
@@ -895,14 +922,23 @@ impl GuiState {
         }
     }
 
-    fn apply_history_state(&self, snapshot: &UiHistorySnapshot) {
-        self.params.set_preset_bank(snapshot.preset_bank.clone());
+    fn apply_history_state(&self, snapshot: &UiHistorySnapshot) -> bool {
+        let current_bank = self.params.preset_bank_snapshot();
+        if current_bank != snapshot.preset_bank
+            && self
+                .params
+                .set_preset_bank(snapshot.preset_bank.clone())
+                .is_err()
+        {
+            return false;
+        }
         self.params.set_mix(snapshot.mix);
         self.params.set_phase_offset(snapshot.phase_offset);
         self.params.set_output_gain_db(snapshot.output_gain_db);
         self.params.set_sync_division(snapshot.sync_division as f32);
         self.params.set_editable_curve(&snapshot.editable_curve);
         self.push_all_param_updates();
+        true
     }
 
     fn push_history_snapshot(stack: &mut Vec<UiHistorySnapshot>, snapshot: UiHistorySnapshot) {
@@ -1116,9 +1152,17 @@ impl GuiState {
 
     fn apply_undo(&self) {
         let current = self.snapshot_history_state();
-        let mut target = None;
-        if let Ok(mut runtime) = self.runtime.lock() {
-            if let Some(snapshot) = runtime.undo_history.pop() {
+        let target = self
+            .runtime
+            .lock()
+            .ok()
+            .and_then(|runtime| runtime.undo_history.last().cloned());
+        if let Some(snapshot) = target {
+            if !self.apply_history_state(&snapshot) {
+                return;
+            }
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.undo_history.pop();
                 Self::push_history_snapshot(&mut runtime.redo_history, current);
                 runtime.knob_history_anchor = None;
                 runtime.curve_history_anchor = None;
@@ -1131,19 +1175,23 @@ impl GuiState {
                 runtime.preset_name_draft.clear();
                 runtime.preset_warning_frames = 0;
                 runtime.preset_warning_text = None;
-                target = Some(snapshot);
             }
-        }
-        if let Some(snapshot) = target {
-            self.apply_history_state(&snapshot);
         }
     }
 
     fn apply_redo(&self) {
         let current = self.snapshot_history_state();
-        let mut target = None;
-        if let Ok(mut runtime) = self.runtime.lock() {
-            if let Some(snapshot) = runtime.redo_history.pop() {
+        let target = self
+            .runtime
+            .lock()
+            .ok()
+            .and_then(|runtime| runtime.redo_history.last().cloned());
+        if let Some(snapshot) = target {
+            if !self.apply_history_state(&snapshot) {
+                return;
+            }
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.redo_history.pop();
                 Self::push_history_snapshot(&mut runtime.undo_history, current);
                 runtime.knob_history_anchor = None;
                 runtime.curve_history_anchor = None;
@@ -1156,11 +1204,7 @@ impl GuiState {
                 runtime.preset_name_draft.clear();
                 runtime.preset_warning_frames = 0;
                 runtime.preset_warning_text = None;
-                target = Some(snapshot);
             }
-        }
-        if let Some(snapshot) = target {
-            self.apply_history_state(&snapshot);
         }
     }
 
@@ -1185,15 +1229,21 @@ impl GuiState {
 
     pub(super) fn reduce_dropdown(&mut self, key: &str, index: usize) {
         if key == PRESET_DROPDOWN_KEY {
-            if let Some(selected) = self.params.load_preset(index) {
-                self.push_all_param_updates();
-                if let Ok(mut runtime) = self.runtime.lock() {
-                    runtime.preset_rename_active = false;
-                    runtime.preset_name_draft.clear();
-                    runtime.preset_rename_target = selected;
-                    runtime.preset_warning_frames = 0;
-                    runtime.preset_warning_text = None;
+            match self.params.load_preset(index) {
+                Ok(selected) => {
+                    self.push_all_param_updates();
+                    if let Ok(mut runtime) = self.runtime.lock() {
+                        runtime.preset_rename_active = false;
+                        runtime.preset_name_draft.clear();
+                        runtime.preset_rename_target = selected;
+                        runtime.preset_warning_frames = 0;
+                        runtime.preset_warning_text = None;
+                    }
                 }
+                Err(PresetMutationError::PersistenceFailed { .. }) => {
+                    self.set_preset_warning(PRESET_WARNING_STORAGE);
+                }
+                Err(_) => {}
             }
             return;
         }
@@ -1242,11 +1292,14 @@ impl GuiState {
         let renamed = self.params.rename_preset(target, text);
         runtime.preset_rename_active = false;
         runtime.preset_name_draft.clear();
-        if renamed {
+        if renamed.is_ok() {
             runtime.preset_warning_frames = 0;
             runtime.preset_warning_text = None;
         } else {
-            runtime.preset_warning_text = Some(PRESET_WARNING_NAME);
+            runtime.preset_warning_text = Some(match renamed {
+                Err(PresetMutationError::PersistenceFailed { .. }) => PRESET_WARNING_STORAGE,
+                _ => PRESET_WARNING_NAME,
+            });
             runtime.preset_warning_frames = PRESET_WARNING_FRAMES;
         }
     }
@@ -1279,7 +1332,8 @@ impl GuiState {
             })
             .unwrap_or(fallback_name);
         match self.params.save_current_state_by_name(&candidate) {
-            SavePresetOutcome::Overwritten { index } | SavePresetOutcome::Created { index } => {
+            Ok(SavePresetOutcome::Overwritten { index })
+            | Ok(SavePresetOutcome::Created { index }) => {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.preset_rename_active = false;
                     runtime.preset_name_draft.clear();
@@ -1288,8 +1342,13 @@ impl GuiState {
                     runtime.preset_warning_text = None;
                 }
             }
-            SavePresetOutcome::BlockedFull => self.set_preset_warning(PRESET_WARNING_MAX),
-            SavePresetOutcome::InvalidName => self.set_preset_warning(PRESET_WARNING_NAME),
+            Err(PresetMutationError::CapacityReached) => {
+                self.set_preset_warning(PRESET_WARNING_MAX)
+            }
+            Err(PresetMutationError::PersistenceFailed { .. }) => {
+                self.set_preset_warning(PRESET_WARNING_STORAGE)
+            }
+            Err(_) => self.set_preset_warning(PRESET_WARNING_NAME),
         }
     }
 

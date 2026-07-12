@@ -13,11 +13,14 @@ impl PumpParams {
             curve: std::array::from_fn(|index| AtomicF32::new(default_curve[index])),
             curve_revision: AtomicU32::new(1),
             preset_bank: RwLock::new(PumpPresetBank::default_init()),
+            preset_persistence_warning: RwLock::new(None),
         };
         match super::preset_store::load_persisted_preset_bank() {
             Ok(Some(bank)) => params.set_preset_bank_without_persistence(bank),
             Ok(None) => {}
-            Err(error) => Self::log_preset_persistence_error("load", error.as_str()),
+            Err(error) => {
+                params.record_preset_persistence_failure("load", error.as_str());
+            }
         }
         params
     }
@@ -161,9 +164,28 @@ impl PumpParams {
         eprintln!("pump preset persistence {context} failed: {error}");
     }
 
-    fn persist_preset_bank_snapshot(&self, bank: &PumpPresetBank) {
-        if let Err(error) = super::preset_store::persist_preset_bank(bank) {
-            Self::log_preset_persistence_error("save", error.as_str());
+    fn record_preset_persistence_failure(&self, context: &str, error: &str) {
+        Self::log_preset_persistence_error(context, error);
+        if let Ok(mut warning) = self.preset_persistence_warning.write() {
+            *warning = Some(error.to_string());
+        }
+    }
+
+    fn persist_preset_bank_snapshot(
+        &self,
+        bank: &PumpPresetBank,
+    ) -> Result<(), PresetMutationError> {
+        match super::preset_store::persist_preset_bank(bank) {
+            Ok(()) => {
+                if let Ok(mut warning) = self.preset_persistence_warning.write() {
+                    *warning = None;
+                }
+                Ok(())
+            }
+            Err(message) => {
+                self.record_preset_persistence_failure("save", message.as_str());
+                Err(PresetMutationError::PersistenceFailed { message })
+            }
         }
     }
 
@@ -236,22 +258,28 @@ impl PumpParams {
     }
 
     /// Replace one quick-slot curve on the selected preset and persist it.
-    pub fn set_selected_quick_slot_curve(&self, index: usize, curve: &EditableCurve) -> bool {
+    pub fn set_selected_quick_slot_curve(
+        &self,
+        index: usize,
+        curve: &EditableCurve,
+    ) -> Result<(), PresetMutationError> {
         let Ok(mut guard) = self.preset_bank.write() else {
-            return false;
+            return Err(PresetMutationError::StateUnavailable);
         };
-        let selected = guard.selected.min(guard.presets.len().saturating_sub(1));
-        let Some(preset) = guard.presets.get_mut(selected) else {
-            return false;
+        let mut candidate = guard.clone();
+        let selected = candidate
+            .selected
+            .min(candidate.presets.len().saturating_sub(1));
+        let Some(preset) = candidate.presets.get_mut(selected) else {
+            return Err(PresetMutationError::InvalidIndex);
         };
         let Some(slot) = preset.quick_slots.get_mut(index) else {
-            return false;
+            return Err(PresetMutationError::InvalidIndex);
         };
         slot.curve = curve.clone().normalized();
-        let persisted = guard.clone();
-        drop(guard);
-        self.persist_preset_bank_snapshot(&persisted);
-        true
+        self.persist_preset_bank_snapshot(&candidate)?;
+        *guard = candidate;
+        Ok(())
     }
 
     /// Snapshot the globally persisted curve slots.
@@ -292,12 +320,14 @@ impl PumpParams {
     }
 
     /// Replace the full preset bank, clamping to supported limits.
-    pub fn set_preset_bank(&self, bank: PumpPresetBank) {
+    pub fn set_preset_bank(&self, bank: PumpPresetBank) -> Result<(), PresetMutationError> {
         let normalized = self.normalized_preset_bank(bank);
-        if let Ok(mut guard) = self.preset_bank.write() {
-            *guard = normalized.clone();
-        }
-        self.persist_preset_bank_snapshot(&normalized);
+        let Ok(mut guard) = self.preset_bank.write() else {
+            return Err(PresetMutationError::StateUnavailable);
+        };
+        self.persist_preset_bank_snapshot(&normalized)?;
+        *guard = normalized;
+        Ok(())
     }
 
     /// Replace the full preset bank without touching persistent disk storage.
@@ -309,87 +339,87 @@ impl PumpParams {
     }
 
     /// Load one preset by index into the active parameter state.
-    pub fn load_preset(&self, index: usize) -> Option<usize> {
-        let preset = self
-            .preset_bank
-            .read()
-            .ok()
-            .and_then(|bank| bank.presets.get(index).cloned())?;
+    pub fn load_preset(&self, index: usize) -> Result<usize, PresetMutationError> {
+        let Ok(mut guard) = self.preset_bank.write() else {
+            return Err(PresetMutationError::StateUnavailable);
+        };
+        let Some(preset) = guard.presets.get(index).cloned() else {
+            return Err(PresetMutationError::InvalidIndex);
+        };
+        let mut candidate = guard.clone();
+        candidate.selected = index;
+        self.persist_preset_bank_snapshot(&candidate)?;
+        *guard = candidate;
+        drop(guard);
         self.apply_preset_snapshot(&preset);
-        let mut persisted = None;
-        if let Ok(mut guard) = self.preset_bank.write() {
-            guard.selected = index.min(guard.presets.len().saturating_sub(1));
-            let selected = guard.selected;
-            persisted = Some((selected, guard.clone()));
-        }
-        if let Some((selected, persisted_bank)) = persisted {
-            self.persist_preset_bank_snapshot(&persisted_bank);
-            return Some(selected);
-        }
-        Some(index)
+        Ok(index)
     }
 
     /// Insert a new preset cloned from current state and select it.
-    pub fn add_preset_from_current_state(&self) -> Option<usize> {
+    pub fn add_preset_from_current_state(&self) -> Result<usize, PresetMutationError> {
         let snapshot = self.current_preset_snapshot_with_name(String::new());
         let Ok(mut guard) = self.preset_bank.write() else {
-            return None;
+            return Err(PresetMutationError::StateUnavailable);
         };
         if guard.presets.len() >= MAX_PRESETS {
-            return None;
+            return Err(PresetMutationError::CapacityReached);
         }
         let insert_at = guard.selected.saturating_add(1).min(guard.presets.len());
         let fallback_index = guard.presets.len();
         let mut inserted = snapshot;
         inserted.name = sanitize_preset_name("", fallback_index);
         inserted.is_read_only = false;
-        guard.presets.insert(insert_at, inserted);
-        guard.selected = insert_at;
-        let persisted = guard.clone();
-        drop(guard);
-        self.persist_preset_bank_snapshot(&persisted);
-        Some(insert_at)
+        let mut candidate = guard.clone();
+        candidate.presets.insert(insert_at, inserted);
+        candidate.selected = insert_at;
+        self.persist_preset_bank_snapshot(&candidate)?;
+        *guard = candidate;
+        Ok(insert_at)
     }
 
     /// Rename one preset entry.
-    pub fn rename_preset(&self, index: usize, new_name: &str) -> bool {
+    pub fn rename_preset(&self, index: usize, new_name: &str) -> Result<(), PresetMutationError> {
         let Ok(mut guard) = self.preset_bank.write() else {
-            return false;
+            return Err(PresetMutationError::StateUnavailable);
         };
-        let Some(preset) = guard.presets.get_mut(index) else {
-            return false;
+        let mut candidate_bank = guard.clone();
+        let Some(preset) = candidate_bank.presets.get_mut(index) else {
+            return Err(PresetMutationError::InvalidIndex);
         };
         let candidate = sanitize_preset_name(new_name, index);
         preset.name = candidate;
-        let persisted = guard.clone();
-        drop(guard);
-        self.persist_preset_bank_snapshot(&persisted);
-        true
+        self.persist_preset_bank_snapshot(&candidate_bank)?;
+        *guard = candidate_bank;
+        Ok(())
     }
 
     /// Save current state by preset name using overwrite-or-create semantics.
-    pub fn save_current_state_by_name(&self, name: &str) -> SavePresetOutcome {
+    pub fn save_current_state_by_name(
+        &self,
+        name: &str,
+    ) -> Result<SavePresetOutcome, PresetMutationError> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
-            return SavePresetOutcome::InvalidName;
+            return Err(PresetMutationError::InvalidName);
         }
         let candidate_name: String = trimmed.chars().take(MAX_PRESET_NAME_CHARS).collect();
         if candidate_name.is_empty() {
-            return SavePresetOutcome::InvalidName;
+            return Err(PresetMutationError::InvalidName);
         }
         let normalized_candidate = normalized_preset_name(&candidate_name);
 
         let snapshot = self.current_preset_snapshot_with_name(candidate_name.clone());
         let Ok(mut guard) = self.preset_bank.write() else {
-            return SavePresetOutcome::InvalidName;
+            return Err(PresetMutationError::StateUnavailable);
         };
+        let mut candidate_bank = guard.clone();
 
-        let matching_index = guard
+        let matching_index = candidate_bank
             .presets
             .iter()
             .position(|preset| normalized_preset_name(&preset.name) == normalized_candidate);
         if let Some(index) = matching_index {
-            if let Some(existing) = guard.presets.get_mut(index) {
+            if let Some(existing) = candidate_bank.presets.get_mut(index) {
                 existing.mix = snapshot.mix;
                 existing.depth = snapshot.depth;
                 existing.phase_offset = snapshot.phase_offset;
@@ -398,25 +428,31 @@ impl PumpParams {
                 existing.editable_curve = snapshot.editable_curve;
                 existing.quick_slots = snapshot.quick_slots;
             }
-            guard.selected = index;
-            let persisted = guard.clone();
-            drop(guard);
-            self.persist_preset_bank_snapshot(&persisted);
-            return SavePresetOutcome::Overwritten { index };
+            candidate_bank.selected = index;
+            self.persist_preset_bank_snapshot(&candidate_bank)?;
+            *guard = candidate_bank;
+            return Ok(SavePresetOutcome::Overwritten { index });
         }
 
-        if guard.presets.len() >= MAX_PRESETS {
-            return SavePresetOutcome::BlockedFull;
+        if candidate_bank.presets.len() >= MAX_PRESETS {
+            return Err(PresetMutationError::CapacityReached);
         }
-        let created_index = guard.presets.len();
-        guard.presets.push(snapshot);
-        guard.selected = created_index;
-        let persisted = guard.clone();
-        drop(guard);
-        self.persist_preset_bank_snapshot(&persisted);
-        SavePresetOutcome::Created {
+        let created_index = candidate_bank.presets.len();
+        candidate_bank.presets.push(snapshot);
+        candidate_bank.selected = created_index;
+        self.persist_preset_bank_snapshot(&candidate_bank)?;
+        *guard = candidate_bank;
+        Ok(SavePresetOutcome::Created {
             index: created_index,
-        }
+        })
+    }
+
+    /// Return the most recent preset-store failure until a later durable write succeeds.
+    pub fn preset_persistence_warning(&self) -> Option<String> {
+        self.preset_persistence_warning
+            .read()
+            .ok()
+            .and_then(|warning| warning.clone())
     }
 
     /// Return true when current parameters/curve differ from selected preset.

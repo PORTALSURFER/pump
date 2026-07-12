@@ -1,7 +1,7 @@
 use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
-    sync_division_index_from_text, PumpParams, PumpPreset, PumpPresetBank, SavePresetOutcome,
-    MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION,
+    sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
+    SavePresetOutcome, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION,
 };
 #[cfg(feature = "vst3")]
 use super::{
@@ -193,7 +193,9 @@ fn preset_add_rename_and_load_roundtrip_current_state() {
         .add_preset_from_current_state()
         .expect("preset insertion should succeed");
     assert_eq!(inserted, 1);
-    assert!(params.rename_preset(inserted, "My Wide Preset Name That Should Clamp"));
+    assert!(params
+        .rename_preset(inserted, "My Wide Preset Name That Should Clamp")
+        .is_ok());
 
     let bank = params.preset_bank_snapshot();
     assert_eq!(bank.selected, 1);
@@ -213,9 +215,9 @@ fn preset_bank_roundtrips_through_state_payload() {
     params
         .add_preset_from_current_state()
         .expect("preset insertion should succeed");
-    assert!(params.rename_preset(1, "Verse"));
+    assert!(params.rename_preset(1, "Verse").is_ok());
     let slot_curve = test_quick_slot_curve(0.08);
-    assert!(params.set_selected_quick_slot_curve(3, &slot_curve));
+    assert!(params.set_selected_quick_slot_curve(3, &slot_curve).is_ok());
     params.load_preset(1).expect("preset load should succeed");
     let payload = encode_state_payload(&params);
 
@@ -266,35 +268,227 @@ fn load_preset_persists_selected_index_for_new_instances() {
 }
 
 #[test]
+fn preset_create_rolls_back_for_create_write_and_rename_failures() {
+    use super::preset_store::{with_test_persistence_failure, TestPersistenceFailure};
+
+    for (label, failure, expected_message) in [
+        (
+            "create-failure",
+            TestPersistenceFailure::CreateDirectory,
+            "creating preset store directory",
+        ),
+        (
+            "write-failure",
+            TestPersistenceFailure::WriteTemporary,
+            "writing temporary preset store",
+        ),
+        (
+            "rename-failure",
+            TestPersistenceFailure::RenameTemporary,
+            "finalizing preset store",
+        ),
+    ] {
+        let path = temp_preset_store_path(label);
+        super::preset_store::with_test_persistence_path(path.clone(), || {
+            let params = PumpParams::new();
+            let before = params.preset_bank_snapshot();
+
+            let result =
+                with_test_persistence_failure(failure, || params.add_preset_from_current_state());
+            assert!(matches!(
+                result,
+                Err(PresetMutationError::PersistenceFailed { ref message })
+                    if message.contains(expected_message)
+            ));
+            assert_eq!(
+                params.preset_bank_snapshot(),
+                before,
+                "failed create must roll back the in-memory bank"
+            );
+            assert!(params.preset_persistence_warning().is_some());
+
+            let restored = PumpParams::new();
+            assert_eq!(
+                restored.preset_bank_snapshot(),
+                before,
+                "failed create must not appear after reload"
+            );
+        });
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn preset_create_rolls_back_when_preset_directory_is_unwritable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = temp_preset_store_path("unwritable-directory");
+    let directory = path.with_extension("dir");
+    std::fs::create_dir_all(&directory).expect("test directory should be created");
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))
+        .expect("test directory should become unwritable");
+    let probe_path = directory.join("write-probe");
+    if let Ok(probe) = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe_path)
+    {
+        drop(probe);
+        let _ = std::fs::remove_file(probe_path);
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .expect("test directory permissions should be restored");
+        std::fs::remove_dir_all(directory).expect("test directory should be removed");
+        eprintln!("skipping unwritable-directory assertion: process can write through mode 0500");
+        return;
+    }
+    let store_path = directory.join("preset-bank.bin");
+
+    super::preset_store::with_test_persistence_path(store_path, || {
+        let params = PumpParams::new();
+        let before = params.preset_bank_snapshot();
+        let result = params.add_preset_from_current_state();
+        assert!(matches!(
+            result,
+            Err(PresetMutationError::PersistenceFailed { .. })
+        ));
+        assert_eq!(params.preset_bank_snapshot(), before);
+        assert!(params.preset_persistence_warning().is_some());
+    });
+
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+        .expect("test directory permissions should be restored");
+    std::fs::remove_dir_all(directory).expect("test directory should be removed");
+}
+
+#[test]
+fn preset_rename_overwrite_quick_slot_and_selection_roll_back_on_write_failure() {
+    use super::preset_store::{with_test_persistence_failure, TestPersistenceFailure};
+
+    let path = temp_preset_store_path("mutation-rollback");
+    super::preset_store::with_test_persistence_path(path.clone(), || {
+        let params = PumpParams::new();
+        params.set_mix(0.22);
+        params
+            .add_preset_from_current_state()
+            .expect("baseline preset should persist");
+        let baseline = params.preset_bank_snapshot();
+
+        let rename = with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+            params.rename_preset(1, "Unsaved rename")
+        });
+        assert!(matches!(
+            rename,
+            Err(PresetMutationError::PersistenceFailed { .. })
+        ));
+        assert_eq!(params.preset_bank_snapshot(), baseline);
+
+        params.set_mix(0.81);
+        let overwrite =
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                params.save_current_state_by_name(&baseline.presets[1].name)
+            });
+        assert!(matches!(
+            overwrite,
+            Err(PresetMutationError::PersistenceFailed { .. })
+        ));
+        assert_eq!(params.preset_bank_snapshot(), baseline);
+
+        let unsaved_curve = test_quick_slot_curve(0.14);
+        let quick_slot =
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                params.set_selected_quick_slot_curve(0, &unsaved_curve)
+            });
+        assert!(matches!(
+            quick_slot,
+            Err(PresetMutationError::PersistenceFailed { .. })
+        ));
+        assert_eq!(params.preset_bank_snapshot(), baseline);
+
+        let mix_before_failed_load = params.mix();
+        let selection =
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                params.load_preset(0)
+            });
+        assert!(matches!(
+            selection,
+            Err(PresetMutationError::PersistenceFailed { .. })
+        ));
+        assert_eq!(params.preset_bank_snapshot(), baseline);
+        assert!((params.mix() - mix_before_failed_load).abs() < 1.0e-6);
+
+        let restored = PumpParams::new();
+        assert_eq!(restored.preset_bank_snapshot(), baseline);
+
+        params
+            .rename_preset(1, "Saved rename")
+            .expect("a subsequent successful write should recover");
+        assert_eq!(params.preset_persistence_warning(), None);
+        assert_eq!(
+            PumpParams::new().preset_bank_snapshot().presets[1].name,
+            "Saved rename"
+        );
+    });
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn failed_final_rename_preserves_the_previous_durable_bank() {
+    use super::preset_store::{with_test_persistence_failure, TestPersistenceFailure};
+
+    let path = temp_preset_store_path("preserve-durable-bank");
+    super::preset_store::with_test_persistence_path(path.clone(), || {
+        let params = PumpParams::new();
+        params
+            .add_preset_from_current_state()
+            .expect("baseline bank should persist");
+        let baseline = params.preset_bank_snapshot();
+
+        let result = with_test_persistence_failure(TestPersistenceFailure::RenameTemporary, || {
+            params.rename_preset(1, "Unsaved rename")
+        });
+        assert!(matches!(
+            result,
+            Err(PresetMutationError::PersistenceFailed { .. })
+        ));
+        assert_eq!(params.preset_bank_snapshot(), baseline);
+        assert_eq!(PumpParams::new().preset_bank_snapshot(), baseline);
+    });
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn set_preset_bank_preserves_user_presets_without_inserting_init() {
     let params = PumpParams::new();
-    params.set_preset_bank(PumpPresetBank {
-        selected: 1,
-        presets: vec![
-            PumpPreset {
-                name: "Live A".to_string(),
-                is_read_only: false,
-                mix: 0.11,
-                depth: 0.22,
-                phase_offset: 0.33,
-                output_gain_db: -1.0,
-                sync_division: 2,
-                editable_curve: params.editable_curve_snapshot(),
-                quick_slots: seeded_quick_shape_slots(),
-            },
-            PumpPreset {
-                name: "Live B".to_string(),
-                is_read_only: false,
-                mix: 0.77,
-                depth: 0.66,
-                phase_offset: 0.55,
-                output_gain_db: -2.0,
-                sync_division: 4,
-                editable_curve: params.editable_curve_snapshot(),
-                quick_slots: seeded_quick_shape_slots(),
-            },
-        ],
-    });
+    params
+        .set_preset_bank(PumpPresetBank {
+            selected: 1,
+            presets: vec![
+                PumpPreset {
+                    name: "Live A".to_string(),
+                    is_read_only: false,
+                    mix: 0.11,
+                    depth: 0.22,
+                    phase_offset: 0.33,
+                    output_gain_db: -1.0,
+                    sync_division: 2,
+                    editable_curve: params.editable_curve_snapshot(),
+                    quick_slots: seeded_quick_shape_slots(),
+                },
+                PumpPreset {
+                    name: "Live B".to_string(),
+                    is_read_only: false,
+                    mix: 0.77,
+                    depth: 0.66,
+                    phase_offset: 0.55,
+                    output_gain_db: -2.0,
+                    sync_division: 4,
+                    editable_curve: params.editable_curve_snapshot(),
+                    quick_slots: seeded_quick_shape_slots(),
+                },
+            ],
+        })
+        .expect("preset bank should persist");
 
     let bank = params.preset_bank_snapshot();
     assert_eq!(bank.presets.len(), 2);
@@ -313,11 +507,11 @@ fn save_by_name_overwrites_case_insensitive_match() {
     params
         .add_preset_from_current_state()
         .expect("preset insertion should succeed");
-    assert!(params.rename_preset(1, "Verse"));
+    assert!(params.rename_preset(1, "Verse").is_ok());
     params.set_mix(0.12);
 
     let outcome = params.save_current_state_by_name(" verse ");
-    assert_eq!(outcome, SavePresetOutcome::Overwritten { index: 1 });
+    assert_eq!(outcome, Ok(SavePresetOutcome::Overwritten { index: 1 }));
     let bank = params.preset_bank_snapshot();
     assert_eq!(bank.selected, 1);
     assert_eq!(bank.presets[1].name, "Verse");
@@ -330,13 +524,13 @@ fn quick_slot_edits_switch_with_selected_preset() {
     let params = PumpParams::new();
     let curve_a = test_quick_slot_curve(0.02);
     let curve_b = test_quick_slot_curve(0.11);
-    assert!(params.set_selected_quick_slot_curve(0, &curve_a));
+    assert!(params.set_selected_quick_slot_curve(0, &curve_a).is_ok());
 
     let inserted = params
         .add_preset_from_current_state()
         .expect("preset insertion should succeed");
     assert_eq!(inserted, 1);
-    assert!(params.set_selected_quick_slot_curve(0, &curve_b));
+    assert!(params.set_selected_quick_slot_curve(0, &curve_b).is_ok());
 
     params.load_preset(0).expect("preset load should succeed");
     assert_eq!(
@@ -359,10 +553,10 @@ fn quick_slot_edits_switch_with_selected_preset() {
 fn save_by_name_preserves_selected_preset_quick_slots() {
     let params = PumpParams::new();
     let slot_curve = test_quick_slot_curve(0.05);
-    assert!(params.set_selected_quick_slot_curve(2, &slot_curve));
+    assert!(params.set_selected_quick_slot_curve(2, &slot_curve).is_ok());
 
     let outcome = params.save_current_state_by_name("Transients");
-    assert_eq!(outcome, SavePresetOutcome::Created { index: 1 });
+    assert_eq!(outcome, Ok(SavePresetOutcome::Created { index: 1 }));
     let bank = params.preset_bank_snapshot();
     assert_eq!(bank.presets[1].quick_slots[2].curve, slot_curve);
 }
@@ -372,7 +566,7 @@ fn save_by_name_creates_when_no_match_exists() {
     let params = PumpParams::new();
     params.set_mix(0.77);
     let outcome = params.save_current_state_by_name("Hook");
-    assert_eq!(outcome, SavePresetOutcome::Created { index: 1 });
+    assert_eq!(outcome, Ok(SavePresetOutcome::Created { index: 1 }));
     let bank = params.preset_bank_snapshot();
     assert_eq!(bank.presets.len(), 2);
     assert_eq!(bank.selected, 1);
@@ -384,10 +578,10 @@ fn save_by_name_creates_when_no_match_exists() {
 fn init_preset_is_writable_for_rename_and_save() {
     let params = PumpParams::new();
     params.set_mix(0.61);
-    assert!(params.rename_preset(0, "Init2"));
+    assert!(params.rename_preset(0, "Init2").is_ok());
     assert_eq!(
         params.save_current_state_by_name("Init2"),
-        SavePresetOutcome::Overwritten { index: 0 }
+        Ok(SavePresetOutcome::Overwritten { index: 0 })
     );
     let bank = params.preset_bank_snapshot();
     assert_eq!(bank.presets[0].name, "Init2");
@@ -460,6 +654,6 @@ fn save_by_name_blocks_when_preset_bank_is_full() {
     assert_eq!(params.preset_bank_snapshot().presets.len(), 16);
     assert_eq!(
         params.save_current_state_by_name("BrandNew"),
-        SavePresetOutcome::BlockedFull
+        Err(PresetMutationError::CapacityReached)
     );
 }

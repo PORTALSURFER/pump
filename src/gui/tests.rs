@@ -9,11 +9,15 @@
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY,
-        PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, QUICK_SLOT_KEY_PREFIX,
-        REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
+        PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_STORAGE,
+        QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
+        WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
-    use crate::params::{PumpParams, GLOBAL_CURVE_SLOT_COUNT, MAX_SYNC_DIVISION};
+    use crate::params::{
+        with_test_persistence_failure, with_test_persistence_path, PumpParams,
+        TestPersistenceFailure, GLOBAL_CURVE_SLOT_COUNT, MAX_SYNC_DIVISION,
+    };
     use crate::{GuiStatus, GuiTransportTelemetry};
     use std::sync::Arc;
     use toybox::clack_extensions::gui::GuiSize;
@@ -1476,30 +1480,85 @@
 
     #[test]
     fn undo_and_redo_hotkeys_restore_previous_mix_value() {
-        let params = Arc::new(PumpParams::new());
-        let mut state = GuiState::new(
-            Arc::clone(&params),
-            Arc::new(GuiStatus::default()),
-            Arc::new(AutomationQueue::default()),
-            None,
-        );
-        let original_mix = params.mix();
+        let path = std::env::temp_dir().join(format!(
+            "pump-gui-history-persistence-{}",
+            std::process::id()
+        ));
+        with_test_persistence_path(path.clone(), || {
+            let params = Arc::new(PumpParams::new());
+            let mut state = GuiState::new(
+                Arc::clone(&params),
+                Arc::new(GuiStatus::default()),
+                Arc::new(AutomationQueue::default()),
+                None,
+            );
+            let original_mix = params.mix();
 
-        state.reduce_action(UiAction::KnobChanged {
-            key: "mix".to_string(),
-            value: 0.17,
-        });
-        assert!((params.mix() - 0.17).abs() < 1.0e-6);
+            state.reduce_action(UiAction::KnobChanged {
+                key: "mix".to_string(),
+                value: 0.17,
+            });
+            assert!((params.mix() - 0.17).abs() < 1.0e-6);
 
-        state.reduce_action(UiAction::ButtonPressed {
-            key: UNDO_KEY.to_string(),
-        });
-        assert!((params.mix() - original_mix).abs() < 1.0e-6);
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                state.reduce_action(UiAction::ButtonPressed {
+                    key: UNDO_KEY.to_string(),
+                });
+            });
+            assert!((params.mix() - original_mix).abs() < 1.0e-6);
+            assert_eq!(params.preset_persistence_warning(), None);
 
-        state.reduce_action(UiAction::ButtonPressed {
-            key: REDO_KEY.to_string(),
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                state.reduce_action(UiAction::ButtonPressed {
+                    key: REDO_KEY.to_string(),
+                });
+            });
+            assert!((params.mix() - 0.17).abs() < 1.0e-6);
         });
-        assert!((params.mix() - 0.17).abs() < 1.0e-6);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn failed_preset_undo_remains_available_for_retry() {
+        let path = std::env::temp_dir().join(format!(
+            "pump-gui-preset-history-retry-{}",
+            std::process::id()
+        ));
+        with_test_persistence_path(path.clone(), || {
+            let params = Arc::new(PumpParams::new());
+            let mut state = GuiState::new(
+                Arc::clone(&params),
+                Arc::new(GuiStatus::default()),
+                Arc::new(AutomationQueue::default()),
+                None,
+            );
+            state.reduce_action(UiAction::ButtonPressed {
+                key: super::PRESET_ADD_KEY.to_string(),
+            });
+            assert_eq!(params.preset_bank_snapshot().presets.len(), 2);
+
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                state.reduce_action(UiAction::ButtonPressed {
+                    key: UNDO_KEY.to_string(),
+                });
+            });
+            assert_eq!(params.preset_bank_snapshot().presets.len(), 2);
+            assert_eq!(
+                state
+                    .runtime
+                    .lock()
+                    .expect("runtime lock should succeed")
+                    .undo_history
+                    .len(),
+                1
+            );
+
+            state.reduce_action(UiAction::ButtonPressed {
+                key: UNDO_KEY.to_string(),
+            });
+            assert_eq!(params.preset_bank_snapshot().presets.len(), 1);
+        });
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -1508,7 +1567,7 @@
         params
             .add_preset_from_current_state()
             .expect("preset insertion should succeed");
-        assert!(params.rename_preset(1, "Verse"));
+        assert!(params.rename_preset(1, "Verse").is_ok());
         params
             .load_preset(1)
             .expect("preset selection should succeed");
@@ -1568,6 +1627,69 @@
         assert_eq!(bank.selected, 2);
         assert_eq!(bank.presets[2].name, "Hook");
         assert!((bank.presets[2].mix - 0.74).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn persistence_failure_is_actionable_in_toybox_and_radiant_surfaces() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pump-gui-persistence-warning-{}-{stamp}.bin",
+            std::process::id()
+        ));
+
+        with_test_persistence_path(path.clone(), || {
+            let params = Arc::new(PumpParams::new());
+            let mut state = GuiState::new(
+                Arc::clone(&params),
+                Arc::new(GuiStatus::default()),
+                Arc::new(AutomationQueue::default()),
+                None,
+            );
+
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                state.reduce_action(UiAction::ButtonPressed {
+                    key: super::PRESET_ADD_KEY.to_string(),
+                });
+            });
+            state.reduce_action(UiAction::ButtonPressed {
+                key: PRESET_RENAME_BUTTON_KEY.to_string(),
+            });
+
+            let presets = state.snapshot_presets();
+            assert_eq!(presets.names[presets.selected], PRESET_WARNING_STORAGE);
+            assert!(presets.persistence_warning);
+            assert!(presets.rename_active);
+            assert_eq!(params.preset_bank_snapshot().presets.len(), 1);
+
+            let spec = state.build_ui(&InputState {
+                window_size: Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                },
+                ..InputState::default()
+            });
+            let mut texts = Vec::new();
+            collect_textbox_texts(spec.root.content(), &mut texts);
+            assert!(texts.iter().any(|text| text == PRESET_WARNING_STORAGE));
+            assert!(texts.iter().any(|text| text == "Init"));
+
+            let frame = radiant_editor_frame_for_params(
+                Arc::clone(&params),
+                Arc::new(GuiStatus::default()),
+                radiant::gui::types::Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+            );
+            assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+                matches!(
+                    primitive,
+                    radiant::runtime::PaintPrimitive::Text(text)
+                        if text.text.as_str() == PRESET_WARNING_STORAGE
+                )
+            }));
+        });
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

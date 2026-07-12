@@ -42,6 +42,10 @@ pub use host_api::{
 };
 #[cfg(any(feature = "vst3", test))]
 pub(crate) use host_api::{format_plain_value_text, parse_plain_value_text};
+#[cfg(test)]
+pub(crate) use preset_store::{
+    with_test_persistence_failure, with_test_persistence_path, TestPersistenceFailure,
+};
 pub use state_codec::{decode_state_payload, encode_state_payload};
 
 #[cfg(test)]

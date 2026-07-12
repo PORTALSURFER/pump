@@ -74,7 +74,7 @@ fn screenshot_renders_initial_ui_with_playhead() {
 fn dropdown_popups_render_over_curve_content_with_headless_click_open() {
     let params = Arc::new(PumpParams::new());
     for _ in 0..8 {
-        if params.add_preset_from_current_state().is_none() {
+        if params.add_preset_from_current_state().is_err() {
             break;
         }
     }
