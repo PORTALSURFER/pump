@@ -238,6 +238,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (5189443)
 
+- (changelog) Update changelog [skip ci] (e0bce35)
+
 
 ### Features
 
@@ -895,6 +897,8 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 * Pin merged Radiant and Toybox stack (a246e51)
 
 - Distinguish curve playhead from editable nodes (#13) (5f25e11)
+
+- Remove blocking mutex acquisition from VST3 audio processing (#14) (74affe9)
 
 
 ### Refactoring
