@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-12 19:42:32 UTC
+- Last Updated (UTC): 2026-07-12 20:10:10 UTC
 - Active Mission: Add a compact live gain-reduction meter beside both Pump curve editors for OPT-1114.
-- Current Workstream: The intended OPT-1114 PR is being prepared on `wsvasek/opt-1114-pump-add-a-compact-live-gain-reduction-meter-beside-the`. Scope: publish the strongest Pump-envelope attenuation from non-silent input once per audio block, render a labeled 0-36 dB meter beside both Toybox and Radiant curve editors, apply GUI-side attack/release ballistics, and clear stopped, silent, missing-input, bypass/stale, and unavailable processing states without changing gain processing or interaction. Status: implementing; code and visual validation pass, with final PR publication and review artifact remaining.
+- Current Workstream: Pump PR #21 (`https://github.com/PORTALSURFER/pump/pull/21`) is ready for review on `wsvasek/opt-1114-pump-add-a-compact-live-gain-reduction-meter-beside-the`. Scope: publish the strongest Pump-envelope attenuation from non-silent input once per audio block, render a labeled 0-36 dB meter beside both Toybox and Radiant curve editors, apply GUI-side attack/release ballistics, and clear stopped, silent, missing-input, bypass/stale, and unavailable processing states without changing gain processing or interaction. Status: waiting for user review; a fresh signed review artifact is available.
 
 ## Current State
 
@@ -61,7 +61,8 @@
 - OPT-1114 measures Pump envelope attenuation before output trim, aggregates the strongest reduction only across non-silent input samples in each block, and publishes bounded atomic telemetry without allocations or blocking on the audio thread.
 - The OPT-1114 meter uses a 36 dB top-down scale with fixed tick marks, compact dB labeling, a fast attack and slower release, and a narrow side strip in both Toybox and Radiant editors. Stopped transport, silence, missing input, unavailable processing, and telemetry older than 250 ms clear to zero; Radiant requests the final clearing repaint.
 - OPT-1114 default CI passes 236 tests, VST3 CI passes 263 tests, and Toybox screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 for idle and 12 dB reduction states.
+- The OPT-1114 review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. The final binary SHA-256 is recorded on PR #21 after the last documentation commit and rebuild. Bitwig plugin-host PID `25378` still maps the previous binary and must fully unload or restart before testing.
 
 ## Immediate Next Action
 
-- Finish the exact-head OPT-1114 validation, open the ready-for-review PR, and build/audit the signed VST3 review artifact.
+- Wait for GitHub CI and explicit user review/sign-off on ready-for-review Pump PR #21.
