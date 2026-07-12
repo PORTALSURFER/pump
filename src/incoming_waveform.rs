@@ -129,6 +129,7 @@ impl IncomingWaveformBuffer {
 pub(crate) struct IncomingWaveformWriter {
     generation: u32,
     last_phase: Option<f32>,
+    last_cycle_mapping: Option<[u32; 2]>,
     current_bin: Option<usize>,
     current_peak: f32,
     block_has_signal: bool,
@@ -149,6 +150,7 @@ impl IncomingWaveformWriter {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn record(
         &mut self,
         buffer: &IncomingWaveformBuffer,
@@ -156,18 +158,35 @@ impl IncomingWaveformWriter {
         left: f32,
         right: f32,
     ) {
+        self.record_with_cycle_mapping(buffer, phase, 1.0, 0.0, left, right);
+    }
+
+    pub(crate) fn record_with_cycle_mapping(
+        &mut self,
+        buffer: &IncomingWaveformBuffer,
+        phase: f32,
+        beats_per_cycle: f32,
+        phase_offset: f32,
+        left: f32,
+        right: f32,
+    ) {
         let phase = phase.rem_euclid(1.0);
+        let cycle_mapping = [beats_per_cycle.to_bits(), phase_offset.to_bits()];
+        let cycle_mapping_changed = self
+            .last_cycle_mapping
+            .is_some_and(|previous| previous != cycle_mapping);
         let phase_discontinuity = self.last_phase.is_some_and(|previous| {
             phase + BACKWARD_PHASE_EPSILON < previous
                 || phase - previous > FORWARD_PHASE_DISCONTINUITY
         });
-        if phase_discontinuity {
+        if cycle_mapping_changed || phase_discontinuity {
             self.generation = buffer.begin_next_generation();
             self.current_bin = None;
             self.current_peak = 0.0;
             self.block_has_signal = false;
         }
         self.last_phase = Some(phase);
+        self.last_cycle_mapping = Some(cycle_mapping);
 
         let bin = ((phase * INCOMING_WAVEFORM_BIN_COUNT as f32).floor() as usize)
             .min(INCOMING_WAVEFORM_BIN_COUNT - 1);
@@ -196,6 +215,7 @@ impl IncomingWaveformWriter {
     pub(crate) fn reset(&mut self) {
         self.generation = 0;
         self.last_phase = None;
+        self.last_cycle_mapping = None;
         self.current_bin = None;
         self.current_peak = 0.0;
         self.block_has_signal = false;
@@ -224,8 +244,22 @@ impl<'a> IncomingWaveformCapture<'a> {
             .then_some(Self { buffer, writer })
     }
 
-    pub(crate) fn record(&mut self, phase: f32, left: f32, right: f32) {
-        self.writer.record(self.buffer, phase, left, right);
+    pub(crate) fn record(
+        &mut self,
+        phase: f32,
+        beats_per_cycle: f32,
+        phase_offset: f32,
+        left: f32,
+        right: f32,
+    ) {
+        self.writer.record_with_cycle_mapping(
+            self.buffer,
+            phase,
+            beats_per_cycle,
+            phase_offset,
+            left,
+            right,
+        );
     }
 
     pub(crate) fn finish(self) {
@@ -376,6 +410,28 @@ mod tests {
         let snapshot = buffer.snapshot().expect("signal should remain available");
         assert!(snapshot[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] >= 0.8);
         assert!(snapshot[(0.21 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] >= 0.4);
+    }
+
+    #[test]
+    fn cycle_mapping_changes_invalidate_bins_from_the_previous_mapping() {
+        let buffer = IncomingWaveformBuffer::default();
+        buffer.set_enabled(true);
+        let mut writer = IncomingWaveformWriter::default();
+        assert!(writer.begin_block(&buffer));
+
+        writer.record_with_cycle_mapping(&buffer, 0.2, 1.0, 0.0, 0.9, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.2, 8.0, 0.0, 0.6, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.2, 8.0, 0.25, 0.4, 0.0);
+        writer.finish_block(&buffer);
+
+        let snapshot = buffer
+            .snapshot()
+            .expect("signal from the latest cycle mapping should remain");
+        assert!(
+            (snapshot[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.4).abs() < 1.0e-6,
+            "only the signal recorded after the final mapping change may remain"
+        );
+        assert_eq!(snapshot.iter().filter(|peak| **peak > 0.0).count(), 1);
     }
 
     #[test]

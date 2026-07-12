@@ -81,7 +81,14 @@ fn screenshot_renders_incoming_waveform_behind_curve() {
     for index in 0..crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT {
         let phase = index as f32 / crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT as f32;
         let kick = (-phase * 8.0).exp() * (phase * 48.0).sin().abs();
-        writer.record(status.incoming_waveform_buffer(), phase, kick, -kick);
+        writer.record_with_cycle_mapping(
+            status.incoming_waveform_buffer(),
+            phase,
+            1.0,
+            0.0,
+            kick,
+            -kick,
+        );
     }
     writer.finish_block(status.incoming_waveform_buffer());
     let queue = Arc::new(AutomationQueue::default());

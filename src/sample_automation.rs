@@ -174,7 +174,13 @@ pub(crate) fn process_stereo_block(
             transport_for_sample,
         );
         if let Some(capture) = waveform.as_mut() {
-            capture.record(telemetry.phase, input_left, input_right);
+            capture.record(
+                telemetry.phase,
+                settings.beats_per_cycle,
+                settings.phase_offset,
+                input_left,
+                input_right,
+            );
         }
         last_telemetry = Some(telemetry);
         transport_for_sample.song_pos_beats = None;
@@ -242,7 +248,13 @@ pub(crate) unsafe fn process_stereo_block_raw(
         let telemetry =
             engine.process_sample(&mut left, &mut right, *settings, transport_for_sample);
         if let Some(capture) = waveform.as_mut() {
-            capture.record(telemetry.phase, input_left, input_right);
+            capture.record(
+                telemetry.phase,
+                settings.beats_per_cycle,
+                settings.phase_offset,
+                input_left,
+                input_right,
+            );
         }
         last_telemetry = Some(telemetry);
         unsafe {
