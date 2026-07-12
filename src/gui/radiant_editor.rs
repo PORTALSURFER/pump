@@ -1897,8 +1897,8 @@ impl Widget for CurvePreviewWidget {
     ) {
         self.push_grid(primitives, bounds, theme);
         self.push_curve(primitives, bounds, theme);
-        self.push_playhead(primitives, bounds);
         self.push_nodes(primitives, bounds, theme);
+        self.push_playhead(primitives, bounds);
     }
 }
 
@@ -3176,6 +3176,51 @@ mod tests {
                             < 1.0e-4
             )
         }));
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_playhead_above_overlapping_node() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_playhead_phase(Some(0.0));
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let endpoint_node_index = primitives
+            .iter()
+            .enumerate()
+            .filter_map(|(index, primitive)| match primitive {
+                PaintPrimitive::StrokeRect(stroke)
+                    if stroke.color == theme.accent_copper
+                        && (stroke.rect.width() - CURVE_NODE_SIZE).abs() < 1.0e-6
+                        && (stroke.rect.height() - CURVE_NODE_SIZE).abs() < 1.0e-6 =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .next()
+            .expect("default curve should paint its endpoint node");
+        let playhead_core_index = primitives
+            .iter()
+            .position(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::FillRect(fill)
+                        if fill.color == CURVE_PLAYHEAD_CORE_COLOR
+                            && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
+                            && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
+                )
+            })
+            .expect("phase-zero playhead should paint over the endpoint node");
+
+        assert!(
+            playhead_core_index > endpoint_node_index,
+            "playhead must be appended after overlapping node primitives"
+        );
     }
 
     #[test]
