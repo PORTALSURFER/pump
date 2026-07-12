@@ -9,12 +9,16 @@
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, INCOMING_WAVEFORM_KEY,
+        METER_STROKE, METER_WIDTH,
         PRESET_DROPDOWN_KEY,
         PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_STORAGE,
         QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
         WINDOW_HEIGHT, WINDOW_WIDTH,
     };
-    use super::state_impl::{curve_beat_grid_commands, incoming_waveform_underlay_commands};
+    use super::state_impl::{
+        curve_beat_grid_commands, gain_reduction_meter_commands,
+        incoming_waveform_underlay_commands,
+    };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{
         with_test_persistence_failure, with_test_persistence_path, PumpParams,
@@ -586,14 +590,16 @@
             strips.len() >= metrics.curve_size.width.saturating_div(2) as usize,
             "attenuation fill should span the curve width with contiguous strips"
         );
+        let midpoint_x = (metrics.curve_size.width / 2) & !1;
         let midpoint = strips
             .iter()
-            .find(|(origin, _)| origin.x == (metrics.curve_size.width / 2) as i32)
+            .find(|(origin, _)| origin.x == midpoint_x as i32)
             .expect("attenuation fill should include the curve midpoint");
+        let midpoint_phase = midpoint_x as f32 / (metrics.curve_size.width - 1) as f32;
         let expected_top = local_from_node_for_size(
             CurveNode {
-                x: 0.5,
-                y: sample_editable_curve(&curve, 0.5),
+                x: midpoint_phase,
+                y: sample_editable_curve(&curve, midpoint_phase),
             },
             metrics.curve_size,
         )
@@ -701,10 +707,13 @@
         let core_centers = fill_circle_centers_for_color(&commands, theme.playhead_dot_core);
         assert_eq!(core_centers.len(), 1, "expected one core playhead dot");
         let phase = phase.rem_euclid(1.0);
-        let expected = local_from_node(CurveNode {
-            x: phase,
-            y: sample_editable_curve(&curve, phase).clamp(0.0, 1.0),
-        });
+        let expected = local_from_node_for_size(
+            CurveNode {
+                x: phase,
+                y: sample_editable_curve(&curve, phase).clamp(0.0, 1.0),
+            },
+            UiLayoutMetrics::design_space().curve_size,
+        );
         let dx = (core_centers[0].x - expected.x).abs();
         let dy = (core_centers[0].y - expected.y).abs();
         assert!(
@@ -715,38 +724,31 @@
     }
 
     #[test]
-    fn reduction_meter_is_empty_at_unity_and_fills_top_down_under_reduction() {
-        let (unity_commands, _curve, theme) =
-            curve_draw_commands_with_status(0.25, true, true, 1.0);
+    fn reduction_meter_is_empty_at_zero_db_and_fills_top_down_under_reduction() {
+        let metrics = UiLayoutMetrics::design_space();
+        let theme = PumpTheme::main(metrics);
+        let size = Size {
+            width: metrics.meter_panel_width,
+            height: 64,
+        };
+        let unity_commands = gain_reduction_meter_commands(size, theme, 0.0);
         assert!(
             fill_rects_for_color(&unity_commands, theme.meter_fill).is_empty(),
             "gain reduction meter should be empty at unity gain"
         );
 
-        let reduced_gain = 0.4;
-        let (reduced_commands, _curve, theme) =
-            curve_draw_commands_with_status(0.25, true, true, reduced_gain);
+        let reduction_db = crate::gui_status::GAIN_REDUCTION_METER_MAX_DB * 0.5;
+        let reduced_commands = gain_reduction_meter_commands(size, theme, reduction_db);
         let rects = fill_rects_for_color(&reduced_commands, theme.meter_fill);
         assert_eq!(rects.len(), 1, "expected one gain-reduction fill rect");
         let (fill_origin, fill_size) = rects[0];
-
-        let metrics = UiLayoutMetrics::design_space();
-        let meter_x_offset = metrics.meter_x_offset.max(0);
-        let meter_y_offset = metrics.meter_y_offset.max(0);
-        let meter_width = metrics.meter_width.max(1);
-        let meter_width_i32 = i32::try_from(meter_width).unwrap_or(i32::MAX);
-        let meter_stroke_u32 = metrics.meter_stroke.max(1);
-        let meter_stroke_i32 = i32::try_from(meter_stroke_u32).unwrap_or(i32::MAX);
-        let meter_height = metrics
-            .curve_size
-            .height
-            .saturating_sub((meter_y_offset.saturating_mul(2)).max(0) as u32);
-        let reduction = (1.0 - reduced_gain.clamp(0.0, 1.0)).clamp(0.0, 1.0);
-        let expected_fill_height = ((meter_height as f32) * reduction).round() as u32;
+        let meter_width = (METER_WIDTH as u32).min(size.width);
+        let meter_stroke_u32 = METER_STROKE.max(1) as u32;
+        let expected_fill_height =
+            (size.height.saturating_sub(meter_stroke_u32 * 2) as f32 * 0.5).round() as u32;
         let expected_fill_origin = Point {
-            x: metrics.curve_size.width as i32 - meter_x_offset - meter_width_i32
-                + meter_stroke_i32,
-            y: meter_y_offset + meter_stroke_i32,
+            x: ((size.width - meter_width) / 2 + meter_stroke_u32) as i32,
+            y: meter_stroke_u32 as i32,
         };
 
         assert_eq!(
@@ -1345,7 +1347,7 @@
         let mut texts = Vec::new();
         collect_textbox_texts(spec.root.content(), &mut texts);
 
-        for expected in ["Mix", "Phase", "Output"] {
+        for expected in ["Mix", "Phase", "Output", "dB", "0"] {
             assert!(
                 texts.iter().any(|text| text == expected),
                 "expected textbox caption `{expected}` in {:?}",

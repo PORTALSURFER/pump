@@ -285,6 +285,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         let process_data = unsafe { &*data };
         let frame_count = process_data.numSamples.max(0) as usize;
         let Some(mut runtime) = self.runtime.try_acquire() else {
+            self.shared.status.mark_gain_reduction_inactive();
             apply_vst3_param_points_immediately(process_data, self.shared.params.as_ref());
             self.shared
                 .status
@@ -313,6 +314,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         // parameter-only flushes. With no output bus there is no writable audio
         // range or sample format to validate after consuming parameter changes.
         if process_data.numOutputs == 0 {
+            self.shared.status.mark_gain_reduction_inactive();
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -328,6 +330,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         if process_data.numSamples > 0
             && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
         {
+            self.shared.status.mark_gain_reduction_inactive();
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -341,6 +344,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         let Some(buffers) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
+            self.shared.status.mark_gain_reduction_inactive();
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -378,9 +382,8 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             .apply_through(0, self.shared.params.as_ref(), &mut settings);
         let transport = transport_state_from_vst3_process_context(process_data.processContext);
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
-        self.shared.status.update(
+        self.shared.status.update_transport(
             gui_phase,
-            self.shared.status.gain(),
             gui_transport_telemetry(
                 transport,
                 settings.beats_per_cycle,
@@ -403,21 +406,25 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 ),
             )
         };
-        let (last_phase, last_gain) = telemetry
-            .map(|telemetry| (telemetry.phase, telemetry.gain))
-            .unwrap_or((0.0, 1.0));
+        let last_phase = telemetry.map(|telemetry| telemetry.phase).unwrap_or(0.0);
         // SAFETY: successful stereo buffer extraction validated one writable
         // output bus, and the full range now contains processed audio.
         unsafe { (*process_data.outputs).silenceFlags = 0 };
-        self.shared.status.update(
+        self.shared.status.update_transport(
             last_phase,
-            last_gain,
             gui_transport_telemetry(
                 transport,
                 settings.beats_per_cycle,
                 self.shared.status.beat_phase(),
             ),
         );
+        if let Some(telemetry) = telemetry {
+            self.shared
+                .status
+                .publish_gain_reduction(telemetry.reduction_gain, telemetry.input_active);
+        } else {
+            self.shared.status.mark_gain_reduction_inactive();
+        }
 
         process_ok()
     }

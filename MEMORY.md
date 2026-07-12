@@ -1,8 +1,8 @@
 # Memory
 
 - Last Updated (UTC): 2026-07-12 19:42:32 UTC
-- Active Mission: Add sync-aware vertical beat divisions to both Pump curve editors for OPT-1111.
-- Current Workstream: Pump PR #20 (`https://github.com/PORTALSURFER/pump/pull/20`) is ready for review on `wsvasek/opt-1111-pump-show-sync-aware-vertical-beat-divisions-in-the-curve`. Scope: display-only major/minor beat divisions derived from Pump's sync length, adaptive minor-line density, exact normalized resize mapping, and stable empty unsupported/shortest-cycle behavior. Definition of Done: both Toybox and Radiant editors update from sync state without changing snapping, hit testing, playhead, curve data, or DSP. Status: waiting for user review; a fresh signed review artifact is available.
+- Active Mission: Add a compact live gain-reduction meter beside both Pump curve editors for OPT-1114.
+- Current Workstream: The intended OPT-1114 PR is being prepared on `wsvasek/opt-1114-pump-add-a-compact-live-gain-reduction-meter-beside-the`. Scope: publish the strongest Pump-envelope attenuation from non-silent input once per audio block, render a labeled 0-36 dB meter beside both Toybox and Radiant curve editors, apply GUI-side attack/release ballistics, and clear stopped, silent, missing-input, bypass/stale, and unavailable processing states without changing gain processing or interaction. Status: implementing; code and visual validation pass, with final PR publication and review artifact remaining.
 
 ## Current State
 
@@ -58,7 +58,10 @@
 - The OPT-1112 review artifact is `dist/pump-v0.2.0-macos.vst3`; signing, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. The final binary hash is recorded on PR #19 after the last documentation commit and rebuild.
 - OPT-1111 now projects the same normalized musical grid into the Toybox and Radiant curve editors: sixteenth-note boundaries are subtle minor lines, full quarter-note beats are major lines, narrow widths thin minor lines below an eight-pixel spacing floor, and the shortest supported 1/16 cycle plus unsupported timing states render no internal vertical lines. Default CI passes 229 tests, VST3 CI passes 256 tests, and screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 with and without a playhead. Existing snap positions stay on their prior independent path.
 - The OPT-1111 review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. The final binary SHA-256 is recorded on PR #20 after the last documentation commit and rebuild. Bitwig plugin-host PID `91183` still maps the prior binary and must fully unload or restart before testing.
+- OPT-1114 measures Pump envelope attenuation before output trim, aggregates the strongest reduction only across non-silent input samples in each block, and publishes bounded atomic telemetry without allocations or blocking on the audio thread.
+- The OPT-1114 meter uses a 36 dB top-down scale with fixed tick marks, compact dB labeling, a fast attack and slower release, and a narrow side strip in both Toybox and Radiant editors. Stopped transport, silence, missing input, unavailable processing, and telemetry older than 250 ms clear to zero; Radiant requests the final clearing repaint.
+- OPT-1114 default CI passes 236 tests, VST3 CI passes 263 tests, and Toybox screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 for idle and 12 dB reduction states.
 
 ## Immediate Next Action
 
-- Wait for GitHub CI and explicit user review/sign-off on ready-for-review Pump PR #20.
+- Finish the exact-head OPT-1114 validation, open the ready-for-review PR, and build/audit the signed VST3 review artifact.

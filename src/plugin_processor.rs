@@ -42,6 +42,7 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
     ) -> Result<ProcessStatus, PluginError> {
         let frame_count = audio.frames_count() as usize;
         if frame_count > self.scratch_left.len() {
+            self.shared.status.mark_gain_reduction_inactive();
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -73,9 +74,8 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
 
         let transport = transport_state_from_transport(process.transport.copied());
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
-        self.shared.status.update(
+        self.shared.status.update_transport(
             gui_phase,
-            self.shared.status.gain(),
             gui_transport_telemetry(
                 transport,
                 settings.beats_per_cycle,
@@ -102,6 +102,7 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
                 self.process_stereo_pair(left_pair, right_pair, &mut settings, transport);
         }
         if should_mark_waveform_unavailable(frame_count, source_present, source_processed) {
+            self.shared.status.mark_gain_reduction_inactive();
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -304,19 +305,23 @@ impl PumpAudioProcessor<'_> {
                 &mut self.waveform_writer,
             ),
         );
-        let (last_phase, last_gain) = telemetry
-            .map(|telemetry| (telemetry.phase, telemetry.gain))
-            .unwrap_or((0.0, 1.0));
+        let last_phase = telemetry.map(|telemetry| telemetry.phase).unwrap_or(0.0);
 
-        self.shared.status.update(
+        self.shared.status.update_transport(
             last_phase,
-            last_gain,
             gui_transport_telemetry(
                 transport,
                 settings.beats_per_cycle,
                 self.shared.status.beat_phase(),
             ),
         );
+        if let Some(telemetry) = telemetry {
+            self.shared
+                .status
+                .publish_gain_reduction(telemetry.reduction_gain, telemetry.input_active);
+        } else {
+            self.shared.status.mark_gain_reduction_inactive();
+        }
 
         if let Some(out_left) = left_output {
             out_left[..frames].copy_from_slice(&self.scratch_left[..frames]);
