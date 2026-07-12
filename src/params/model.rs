@@ -207,7 +207,7 @@ pub struct PumpPresetBank {
     pub presets: Vec<PumpPreset>,
 }
 
-/// Outcome from saving current state into the preset bank.
+/// Successful outcome from saving current state into the preset bank.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SavePresetOutcome {
     /// Existing preset was overwritten.
@@ -220,10 +220,24 @@ pub enum SavePresetOutcome {
         /// Index of the created preset.
         index: usize,
     },
-    /// Save was blocked because the preset bank is at capacity.
-    BlockedFull,
-    /// Save was blocked due to an invalid name.
+}
+
+/// Error returned when a durable preset-bank mutation cannot be completed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresetMutationError {
+    /// The requested preset or quick-slot index does not exist.
+    InvalidIndex,
+    /// The supplied preset name is empty after normalization.
     InvalidName,
+    /// The preset bank has reached its supported capacity.
+    CapacityReached,
+    /// The in-memory preset bank could not be accessed.
+    StateUnavailable,
+    /// The staged bank could not be written durably and was rolled back.
+    PersistenceFailed {
+        /// Diagnostic detail logged for support and tests.
+        message: String,
+    },
 }
 
 impl PumpPresetBank {
@@ -297,4 +311,5 @@ pub struct PumpParams {
     pub(super) curve: [AtomicF32; CURVE_TABLE_LEN],
     pub(super) curve_revision: AtomicU32,
     pub(super) preset_bank: RwLock<PumpPresetBank>,
+    pub(super) preset_persistence_warning: RwLock<Option<String>>,
 }

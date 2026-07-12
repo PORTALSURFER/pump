@@ -8,3 +8,4 @@ This directory holds durable project plans and handoff detail. `AGENTS.md` stays
 - Active queue: `docs/plans/active/todo.md`
 - Current state snapshot: `MEMORY.md`
 - Changelog config: `.git-cliff.toml`
+- Preset persistence contract: `docs/preset-persistence.md`

@@ -16,6 +16,16 @@ const MIN_ENCODED_CURVE_BYTES: usize = 4 + MIN_CURVE_BYTES;
 #[cfg(test)]
 thread_local! {
     static TEST_PERSISTENCE_PATH_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    static TEST_PERSISTENCE_FAILURE: RefCell<Option<TestPersistenceFailure>> = const { RefCell::new(None) };
+}
+
+/// Filesystem stage to fail deterministically in preset persistence tests.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TestPersistenceFailure {
+    CreateDirectory,
+    WriteTemporary,
+    RenameTemporary,
 }
 
 /// Run one closure with a thread-local preset-store path override enabled.
@@ -33,6 +43,28 @@ pub(crate) fn with_test_persistence_path<R>(path: PathBuf, f: impl FnOnce() -> R
             Err(error) => std::panic::resume_unwind(error),
         }
     })
+}
+
+/// Run one closure with a deterministic preset-store filesystem failure.
+#[cfg(test)]
+pub(crate) fn with_test_persistence_failure<R>(
+    failure: TestPersistenceFailure,
+    f: impl FnOnce() -> R,
+) -> R {
+    TEST_PERSISTENCE_FAILURE.with(|slot| {
+        let previous = slot.replace(Some(failure));
+        let result = std::panic::catch_unwind(AssertUnwindSafe(f));
+        slot.replace(previous);
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::resume_unwind(error),
+        }
+    })
+}
+
+#[cfg(test)]
+fn injected_failure(failure: TestPersistenceFailure) -> bool {
+    TEST_PERSISTENCE_FAILURE.with(|slot| *slot.borrow() == Some(failure))
 }
 
 /// Load the persisted preset bank from disk when available.
@@ -113,6 +145,13 @@ fn persistence_file_path() -> Option<PathBuf> {
 fn save_preset_bank_to_path(path: &Path, bank: &PumpPresetBank) -> Result<(), String> {
     let payload = encode_preset_bank_payload(bank);
     if let Some(parent) = path.parent() {
+        #[cfg(test)]
+        if injected_failure(TestPersistenceFailure::CreateDirectory) {
+            return Err(format!(
+                "injected failure creating preset store directory `{}`",
+                parent.display()
+            ));
+        }
         fs::create_dir_all(parent).map_err(|error| {
             format!(
                 "failed to create preset store directory `{}`: {error}",
@@ -121,22 +160,60 @@ fn save_preset_bank_to_path(path: &Path, bank: &PumpPresetBank) -> Result<(), St
         })?;
     }
     let temp_path = temporary_store_path(path);
+    #[cfg(test)]
+    if injected_failure(TestPersistenceFailure::WriteTemporary) {
+        return Err(format!(
+            "injected failure writing temporary preset store `{}`",
+            temp_path.display()
+        ));
+    }
     fs::write(&temp_path, payload).map_err(|error| {
         format!(
             "failed to write temporary preset store `{}`: {error}",
             temp_path.display()
         )
     })?;
+    #[cfg(test)]
+    if injected_failure(TestPersistenceFailure::RenameTemporary) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!(
+            "injected failure finalizing preset store `{}`",
+            path.display()
+        ));
+    }
     if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(path);
-        if let Err(retry_error) = fs::rename(&temp_path, path) {
+        if !path.is_file() {
             let _ = fs::remove_file(&temp_path);
             return Err(format!(
-                "failed to finalize preset store `{}` after `{}`: {retry_error}",
-                path.display(),
-                error
+                "failed to finalize preset store `{}`: {error}",
+                path.display()
             ));
         }
+
+        let backup_path = backup_store_path(path);
+        if let Err(backup_error) = fs::rename(path, &backup_path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!(
+                "failed to preserve existing preset store `{}` after `{error}`: {backup_error}",
+                path.display()
+            ));
+        }
+        if let Err(retry_error) = fs::rename(&temp_path, path) {
+            let restore_result = fs::rename(&backup_path, path);
+            let _ = fs::remove_file(&temp_path);
+            return Err(match restore_result {
+                Ok(()) => format!(
+                    "failed to finalize preset store `{}` after `{error}`; restored previous store: {retry_error}",
+                    path.display()
+                ),
+                Err(restore_error) => format!(
+                    "failed to finalize preset store `{}` after `{error}`: {retry_error}; previous store remains at `{}` because restore failed: {restore_error}",
+                    path.display(),
+                    backup_path.display()
+                ),
+            });
+        }
+        let _ = fs::remove_file(backup_path);
     }
     Ok(())
 }
@@ -152,6 +229,19 @@ fn temporary_store_path(path: &Path) -> PathBuf {
         .as_nanos();
     let pid = std::process::id();
     path.with_file_name(format!("{file_name}.tmp-{pid}-{stamp}"))
+}
+
+fn backup_store_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| PRESET_STORE_FILE_NAME.to_string());
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    path.with_file_name(format!("{file_name}.backup-{pid}-{stamp}"))
 }
 
 fn encode_preset_bank_payload(bank: &PumpPresetBank) -> Vec<u8> {

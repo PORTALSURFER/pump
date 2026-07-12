@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-12 16:41:03 UTC
-- Active Mission: Preallocate and bound Pump's CLAP audio-thread scratch and automation buffers for OPT-1140.
-- Current Workstream: Pump PR #17 (`https://github.com/PORTALSURFER/pump/pull/17`) is ready for review on `wsvasek/opt-1140-pump-preallocate-clap-audio-thread-scratch-and-automation`. Scope: allocate stereo scratch, outgoing automation drain storage, and bounded CLAP parameter scheduling at activation; silence host blocks that exceed the declared maximum without allocation, panic, or realtime logging. Definition of Done: allocation-free normal process/flush coverage, first/max/in-place/separate/oversize/full-queue tests, default and VST3 CI, multi-size CLAP host smoke, and a fresh signed review artifact. Status: waiting for user review.
+- Last Updated (UTC): 2026-07-12 17:02:54 UTC
+- Active Mission: Make preset persistence failures explicit, rollback-safe, and user-visible for OPT-1142.
+- Current Workstream: Intended ready-for-review Pump PR on `wsvasek/opt-1142-pump-do-not-report-preset-changes-as-saved-when-persistence`. Scope: structured preset mutation outcomes, persist-before-commit rollback semantics, persistent Toybox/Radiant storage warnings, safe atomic replacement fallback, and injected create/write/rename failure coverage. Definition of Done: all durable mutations distinguish validation/capacity/persistence failure; runtime and disk remain aligned; both renderers warn; reload behavior is covered; default and VST3 CI pass; a fresh signed artifact is available. Status: validated, preparing PR.
 
 ## Current State
 
@@ -44,7 +44,12 @@
 - OPT-1140 preallocates both CLAP stereo scratch vectors to `max_frames_count`, reserves the bounded Toybox automation queue capacity in the audio-thread drain vector, and caps CLAP parameter scheduling at four points per declared frame without growing in `process`.
 - Oversized CLAP host blocks apply parameter changes, silence writable outputs, and drain outgoing automation without allocating, panicking, returning an error, or triggering realtime logging.
 - OPT-1140 default CI passes 200 tests and VST3 CI passes 224 tests. CLAP host smoke passes at 16, 64, 512, and 2048 frames with zero xruns. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `bb00d2a5c52701cb3fb9e061409d11a7c3188079badbb4357ab50fc74aa69e20`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass.
+- Pump PR #17 for OPT-1140 merged at `b5779611772b728cccd041c3dda953541dec48c8`; its CI checks passed and no active PR remained before OPT-1142 began.
+- OPT-1142 stages create, overwrite, rename, full-bank replacement, legacy preset quick-slot, and selected-index changes, persists the candidate first, and commits runtime state only after success. Failed preset selection also leaves active parameters unchanged.
+- `PresetMutationError` separates invalid index/name, capacity, state access, and persistence failures. A persistence failure remains visible as `NOT SAVED - CHECK PRESET FOLDER` in both Toybox and Radiant until a later preset-bank write succeeds.
+- Preset persistence tests inject directory-create, temporary-write, and final-rename failures; assert rollback and reload state; exercise a genuinely unwritable directory; and verify the existing durable bank remains readable after finalization failure.
+- OPT-1142 default CI passes 205 tests and VST3 CI passes 229 tests. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `6f1ba898e18ba214e8f93bb8853ef0725204c73c04236d4eb7d838cd9346469d`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass.
 
 ## Immediate Next Action
 
-- Wait for CI and explicit user review/sign-off on ready-for-review Pump PR #17.
+- Commit and open the ready-for-review OPT-1142 Pump PR, then wait for CI and explicit user review/sign-off.

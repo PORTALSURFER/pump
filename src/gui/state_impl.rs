@@ -81,7 +81,7 @@ impl GuiState {
     /// Snapshot preset-bank state and transient header interaction flags.
     pub(super) fn snapshot_presets(&self) -> PresetSnapshot {
         let bank = self.params.preset_bank_snapshot();
-        let names = if bank.presets.is_empty() {
+        let mut names = if bank.presets.is_empty() {
             vec![DEFAULT_PRESET_NAME.to_string()]
         } else {
             bank.presets
@@ -90,6 +90,9 @@ impl GuiState {
                 .collect()
         };
         let selected = bank.selected.min(names.len().saturating_sub(1));
+        if self.params.preset_persistence_warning().is_some() {
+            names[selected] = PRESET_WARNING_STORAGE.to_string();
+        }
         let dirty = self.params.current_state_differs_from_selected_preset();
 
         let mut rename_active = false;
@@ -779,15 +782,22 @@ impl GuiState {
             }
             UiAction::ButtonPressed { key } if key == PRESET_ADD_KEY => {
                 self.capture_undo_snapshot();
-                if self.params.add_preset_from_current_state().is_some() {
-                    if let Ok(mut runtime) = self.runtime.lock() {
-                        runtime.preset_rename_active = false;
-                        runtime.preset_name_draft.clear();
-                        runtime.preset_warning_frames = 0;
-                        runtime.preset_warning_text = None;
+                match self.params.add_preset_from_current_state() {
+                    Ok(_) => {
+                        if let Ok(mut runtime) = self.runtime.lock() {
+                            runtime.preset_rename_active = false;
+                            runtime.preset_name_draft.clear();
+                            runtime.preset_warning_frames = 0;
+                            runtime.preset_warning_text = None;
+                        }
                     }
-                } else {
-                    self.set_preset_warning(PRESET_WARNING_MAX);
+                    Err(PresetMutationError::CapacityReached) => {
+                        self.set_preset_warning(PRESET_WARNING_MAX)
+                    }
+                    Err(PresetMutationError::PersistenceFailed { .. }) => {
+                        self.set_preset_warning(PRESET_WARNING_STORAGE)
+                    }
+                    Err(_) => self.set_preset_warning(PRESET_WARNING_NAME),
                 }
             }
             UiAction::ButtonPressed { key } if key == PRESET_SAVE_KEY => {
@@ -896,7 +906,13 @@ impl GuiState {
     }
 
     fn apply_history_state(&self, snapshot: &UiHistorySnapshot) {
-        self.params.set_preset_bank(snapshot.preset_bank.clone());
+        if self
+            .params
+            .set_preset_bank(snapshot.preset_bank.clone())
+            .is_err()
+        {
+            return;
+        }
         self.params.set_mix(snapshot.mix);
         self.params.set_phase_offset(snapshot.phase_offset);
         self.params.set_output_gain_db(snapshot.output_gain_db);
@@ -1185,15 +1201,21 @@ impl GuiState {
 
     pub(super) fn reduce_dropdown(&mut self, key: &str, index: usize) {
         if key == PRESET_DROPDOWN_KEY {
-            if let Some(selected) = self.params.load_preset(index) {
-                self.push_all_param_updates();
-                if let Ok(mut runtime) = self.runtime.lock() {
-                    runtime.preset_rename_active = false;
-                    runtime.preset_name_draft.clear();
-                    runtime.preset_rename_target = selected;
-                    runtime.preset_warning_frames = 0;
-                    runtime.preset_warning_text = None;
+            match self.params.load_preset(index) {
+                Ok(selected) => {
+                    self.push_all_param_updates();
+                    if let Ok(mut runtime) = self.runtime.lock() {
+                        runtime.preset_rename_active = false;
+                        runtime.preset_name_draft.clear();
+                        runtime.preset_rename_target = selected;
+                        runtime.preset_warning_frames = 0;
+                        runtime.preset_warning_text = None;
+                    }
                 }
+                Err(PresetMutationError::PersistenceFailed { .. }) => {
+                    self.set_preset_warning(PRESET_WARNING_STORAGE);
+                }
+                Err(_) => {}
             }
             return;
         }
@@ -1242,11 +1264,14 @@ impl GuiState {
         let renamed = self.params.rename_preset(target, text);
         runtime.preset_rename_active = false;
         runtime.preset_name_draft.clear();
-        if renamed {
+        if renamed.is_ok() {
             runtime.preset_warning_frames = 0;
             runtime.preset_warning_text = None;
         } else {
-            runtime.preset_warning_text = Some(PRESET_WARNING_NAME);
+            runtime.preset_warning_text = Some(match renamed {
+                Err(PresetMutationError::PersistenceFailed { .. }) => PRESET_WARNING_STORAGE,
+                _ => PRESET_WARNING_NAME,
+            });
             runtime.preset_warning_frames = PRESET_WARNING_FRAMES;
         }
     }
@@ -1279,7 +1304,8 @@ impl GuiState {
             })
             .unwrap_or(fallback_name);
         match self.params.save_current_state_by_name(&candidate) {
-            SavePresetOutcome::Overwritten { index } | SavePresetOutcome::Created { index } => {
+            Ok(SavePresetOutcome::Overwritten { index })
+            | Ok(SavePresetOutcome::Created { index }) => {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.preset_rename_active = false;
                     runtime.preset_name_draft.clear();
@@ -1288,8 +1314,13 @@ impl GuiState {
                     runtime.preset_warning_text = None;
                 }
             }
-            SavePresetOutcome::BlockedFull => self.set_preset_warning(PRESET_WARNING_MAX),
-            SavePresetOutcome::InvalidName => self.set_preset_warning(PRESET_WARNING_NAME),
+            Err(PresetMutationError::CapacityReached) => {
+                self.set_preset_warning(PRESET_WARNING_MAX)
+            }
+            Err(PresetMutationError::PersistenceFailed { .. }) => {
+                self.set_preset_warning(PRESET_WARNING_STORAGE)
+            }
+            Err(_) => self.set_preset_warning(PRESET_WARNING_NAME),
         }
     }
 

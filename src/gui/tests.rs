@@ -9,11 +9,15 @@
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY,
-        PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, QUICK_SLOT_KEY_PREFIX,
-        REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH,
+        PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_STORAGE,
+        QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
+        WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
-    use crate::params::{PumpParams, GLOBAL_CURVE_SLOT_COUNT, MAX_SYNC_DIVISION};
+    use crate::params::{
+        with_test_persistence_failure, with_test_persistence_path, PumpParams,
+        TestPersistenceFailure, GLOBAL_CURVE_SLOT_COUNT, MAX_SYNC_DIVISION,
+    };
     use crate::{GuiStatus, GuiTransportTelemetry};
     use std::sync::Arc;
     use toybox::clack_extensions::gui::GuiSize;
@@ -1508,7 +1512,7 @@
         params
             .add_preset_from_current_state()
             .expect("preset insertion should succeed");
-        assert!(params.rename_preset(1, "Verse"));
+        assert!(params.rename_preset(1, "Verse").is_ok());
         params
             .load_preset(1)
             .expect("preset selection should succeed");
@@ -1568,6 +1572,52 @@
         assert_eq!(bank.selected, 2);
         assert_eq!(bank.presets[2].name, "Hook");
         assert!((bank.presets[2].mix - 0.74).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn persistence_failure_is_actionable_in_toybox_and_radiant_surfaces() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pump-gui-persistence-warning-{}-{stamp}.bin",
+            std::process::id()
+        ));
+
+        with_test_persistence_path(path.clone(), || {
+            let params = Arc::new(PumpParams::new());
+            let mut state = GuiState::new(
+                Arc::clone(&params),
+                Arc::new(GuiStatus::default()),
+                Arc::new(AutomationQueue::default()),
+                None,
+            );
+
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                state.reduce_action(UiAction::ButtonPressed {
+                    key: super::PRESET_ADD_KEY.to_string(),
+                });
+            });
+
+            let presets = state.snapshot_presets();
+            assert_eq!(presets.names[presets.selected], PRESET_WARNING_STORAGE);
+            assert_eq!(params.preset_bank_snapshot().presets.len(), 1);
+
+            let frame = radiant_editor_frame_for_params(
+                Arc::clone(&params),
+                Arc::new(GuiStatus::default()),
+                radiant::gui::types::Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+            );
+            assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+                matches!(
+                    primitive,
+                    radiant::runtime::PaintPrimitive::Text(text)
+                        if text.text.as_str() == PRESET_WARNING_STORAGE
+                )
+            }));
+        });
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
