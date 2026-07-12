@@ -2,7 +2,7 @@
 
 - Last Updated (UTC): 2026-07-12 16:41:03 UTC
 - Active Mission: Preallocate and bound Pump's CLAP audio-thread scratch and automation buffers for OPT-1140.
-- Current Workstream: Intended ready-for-review Pump PR on `wsvasek/opt-1140-pump-preallocate-clap-audio-thread-scratch-and-automation`. Scope: allocate stereo scratch, outgoing automation drain storage, and bounded CLAP parameter scheduling at activation; silence host blocks that exceed the declared maximum without allocation, panic, or realtime logging. Definition of Done: allocation-free normal process/flush coverage, first/max/in-place/separate/oversize/full-queue tests, default and VST3 CI, multi-size CLAP host smoke, and a fresh signed review artifact. Status: validated; opening ready-for-review PR.
+- Current Workstream: Pump PR #17 (`https://github.com/PORTALSURFER/pump/pull/17`) is ready for review on `wsvasek/opt-1140-pump-preallocate-clap-audio-thread-scratch-and-automation`. Scope: allocate stereo scratch, outgoing automation drain storage, and bounded CLAP parameter scheduling at activation; silence host blocks that exceed the declared maximum without allocation, panic, or realtime logging. Definition of Done: allocation-free normal process/flush coverage, first/max/in-place/separate/oversize/full-queue tests, default and VST3 CI, multi-size CLAP host smoke, and a fresh signed review artifact. Status: waiting for user review.
 
 ## Current State
 
@@ -47,4 +47,4 @@
 
 ## Immediate Next Action
 
-- Open the OPT-1140 PR ready for review, then wait for CI and explicit user review/sign-off.
+- Wait for CI and explicit user review/sign-off on ready-for-review Pump PR #17.
