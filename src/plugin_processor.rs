@@ -83,7 +83,8 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             ),
         );
 
-        let mut source_available = false;
+        let mut source_present = false;
+        let mut source_processed = false;
         for mut port_pair in &mut audio {
             let Some(mut channels) = port_pair.channels()?.into_f32() else {
                 continue;
@@ -95,10 +96,12 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             let Some(right_pair) = iter.next() else {
                 continue;
             };
-            source_available |=
+            source_present |=
+                channel_pair_has_input(&left_pair) && channel_pair_has_input(&right_pair);
+            source_processed |=
                 self.process_stereo_pair(left_pair, right_pair, &mut settings, transport);
         }
-        if !source_available {
+        if should_mark_waveform_unavailable(frame_count, source_present, source_processed) {
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -116,6 +119,18 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
 
         Ok(ProcessStatus::Continue)
     }
+}
+
+fn channel_pair_has_input(pair: &ChannelPair<'_, f32>) -> bool {
+    !matches!(pair, ChannelPair::OutputOnly(_))
+}
+
+fn should_mark_waveform_unavailable(
+    frame_count: usize,
+    source_present: bool,
+    source_processed: bool,
+) -> bool {
+    !source_present || (frame_count > 0 && !source_processed)
 }
 
 impl<'a> PumpAudioProcessor<'a> {
@@ -490,6 +505,29 @@ mod tests {
             .incoming_waveform_snapshot()
             .expect("enabled processing should publish the input envelope");
         assert!(snapshot.iter().copied().fold(0.0_f32, f32::max) >= 0.75);
+    }
+
+    #[test]
+    fn zero_frame_clap_block_preserves_present_source_but_not_missing_source() {
+        assert!(!should_mark_waveform_unavailable(0, true, false));
+        assert!(should_mark_waveform_unavailable(0, false, false));
+        assert!(should_mark_waveform_unavailable(64, true, false));
+        assert!(!should_mark_waveform_unavailable(64, true, true));
+    }
+
+    #[test]
+    fn output_only_clap_channels_do_not_count_as_input() {
+        let input = [0.0; 1];
+        let mut output = [0.0; 1];
+        assert!(channel_pair_has_input(&ChannelPair::InputOnly(&input)));
+        assert!(channel_pair_has_input(&ChannelPair::InputOutput(
+            &input,
+            &mut output
+        )));
+        assert!(channel_pair_has_input(&ChannelPair::InPlace(&mut output)));
+        assert!(!channel_pair_has_input(&ChannelPair::OutputOnly(
+            &mut output
+        )));
     }
 
     #[test]
