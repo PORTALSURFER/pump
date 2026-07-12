@@ -8,7 +8,8 @@ use radiant::gui::visualization::{
 };
 use radiant::layout::LayoutOutput;
 use radiant::prelude::{
-    column, custom_widget_mapped, row, slider, text, toggle, IntoView, TextAlign, ViewNode,
+    column, custom_widget, custom_widget_mapped, row, slider, text, toggle, IntoView, TextAlign,
+    ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
@@ -42,6 +43,8 @@ use super::{build_version_label, WINDOW_HEIGHT, WINDOW_WIDTH};
 
 const BUILD_LABEL_HEIGHT: f32 = 16.0;
 const CURVE_PREVIEW_HEIGHT: f32 = 68.0;
+const GAIN_REDUCTION_METER_WIDTH: f32 = 34.0;
+const GAIN_REDUCTION_METER_BAR_WIDTH: f32 = 8.0;
 const CURVE_SLOT_ROW_HEIGHT: f32 = 22.0;
 const CURVE_SLOT_SPACING: f32 = 4.0;
 const CURVE_SLOT_WIDTH: f32 = ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0)
@@ -268,6 +271,7 @@ impl RadiantPumpEditor {
         self.status.has_host_beats_timeline()
             || self.status.is_playing()
             || self.status.incoming_waveform_enabled()
+            || self.status.gain_reduction_needs_redraw()
     }
 
     /// Refresh and return the current backend-neutral paint plan.
@@ -370,21 +374,32 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             .align_text(TextAlign::Right)
             .height(BUILD_LABEL_HEIGHT)
             .fill_width(),
-            custom_widget_mapped(
-                CurvePreviewWidget::new(
-                    params.editable_curve_snapshot(),
-                    state.active_curve_node,
-                    state.active_curve_segment.as_ref().map(|drag| drag.index),
-                    state.hover_curve_node,
-                    state.preview_curve_node,
-                    state.hover_curve_segment,
-                    state.option_hover_held,
+            row([
+                custom_widget_mapped(
+                    CurvePreviewWidget::new(
+                        params.editable_curve_snapshot(),
+                        state.active_curve_node,
+                        state.active_curve_segment.as_ref().map(|drag| drag.index),
+                        state.hover_curve_node,
+                        state.preview_curve_node,
+                        state.hover_curve_segment,
+                        state.option_hover_held,
+                    )
+                    .with_incoming_waveform(state.status.incoming_waveform_snapshot())
+                    .with_sync_division(sync)
+                    .with_playhead_phase(playhead_phase),
+                    RadiantEditorMessage::Curve,
                 )
-                .with_incoming_waveform(state.status.incoming_waveform_snapshot())
-                .with_sync_division(sync)
-                .with_playhead_phase(playhead_phase),
-                RadiantEditorMessage::Curve,
-            )
+                .fill_width()
+                .height(CURVE_PREVIEW_HEIGHT),
+                custom_widget(
+                    GainReductionMeterWidget::new(state.status.gain_reduction_db()),
+                    |_| None,
+                )
+                .width(GAIN_REDUCTION_METER_WIDTH)
+                .height(CURVE_PREVIEW_HEIGHT),
+            ])
+            .spacing(4.0)
             .fill_width()
             .height(CURVE_PREVIEW_HEIGHT),
             curve_slot_row(state),
@@ -1371,6 +1386,114 @@ impl Widget for CurveSlotWidget {
 enum CurveSlotMessage {
     Load { index: usize },
     Store { index: usize },
+}
+
+#[derive(Clone)]
+struct GainReductionMeterWidget {
+    common: WidgetCommon,
+    reduction_db: f32,
+}
+
+impl GainReductionMeterWidget {
+    fn new(reduction_db: f32) -> Self {
+        Self {
+            common: WidgetCommon::fixed(0, GAIN_REDUCTION_METER_WIDTH, CURVE_PREVIEW_HEIGHT)
+                .without_default_chrome(),
+            reduction_db: reduction_db.clamp(0.0, crate::gui_status::GAIN_REDUCTION_METER_MAX_DB),
+        }
+    }
+}
+
+impl Widget for GainReductionMeterWidget {
+    fn common(&self) -> &WidgetCommon {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        &mut self.common
+    }
+
+    fn handle_input(&mut self, _bounds: Rect, _input: WidgetInput) -> Option<WidgetOutput> {
+        None
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        let title_height = 14.0;
+        let value_height = 14.0;
+        let bar_top = bounds.min.y + title_height;
+        let bar_height = (bounds.height() - title_height - value_height).max(1.0);
+        let bar_left = bounds.min.x + (bounds.width() - GAIN_REDUCTION_METER_BAR_WIDTH) * 0.5;
+        let bar = Rect::from_xy_size(
+            bar_left,
+            bar_top,
+            GAIN_REDUCTION_METER_BAR_WIDTH,
+            bar_height,
+        );
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.common.id,
+            rect: bar,
+            color: theme.border_emphasis,
+            width: 1.0,
+        }));
+        let fraction = crate::gui_status::gain_reduction_meter_fraction(self.reduction_db);
+        let fill_height = (bar.height() - 2.0).max(0.0) * fraction;
+        if fill_height > 0.0 {
+            primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+                widget_id: self.common.id,
+                rect: Rect::from_xy_size(
+                    bar.min.x + 1.0,
+                    bar.min.y + 1.0,
+                    (bar.width() - 2.0).max(0.0),
+                    fill_height,
+                ),
+                color: theme.accent_warning,
+            }));
+        }
+        for step in 1..3 {
+            let y = bar.min.y + bar.height() * step as f32 / 3.0;
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from([
+                    Point::new(bar.min.x - 2.0, y),
+                    Point::new(bar.max.x + 2.0, y),
+                ]),
+                color: theme.border_emphasis,
+                width: 1.0,
+            }));
+        }
+        for (text_value, rect) in [
+            (
+                "GR dB".to_string(),
+                Rect::from_xy_size(bounds.min.x, bounds.min.y, bounds.width(), title_height),
+            ),
+            (
+                format!("{:.1}", self.reduction_db),
+                Rect::from_xy_size(
+                    bounds.min.x,
+                    bounds.max.y - value_height,
+                    bounds.width(),
+                    value_height,
+                ),
+            ),
+        ] {
+            primitives.push(PaintPrimitive::Text(PaintTextRun {
+                widget_id: self.common.id,
+                text: PaintText::from(text_value),
+                rect,
+                font_size: 9.0,
+                baseline: None,
+                color: theme.text_muted,
+                align: PaintTextAlign::Center,
+                wrap: TextWrap::None,
+            }));
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -3280,6 +3403,45 @@ mod tests {
     }
 
     #[test]
+    fn gain_reduction_meter_paints_labeled_top_down_db_fill() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, GAIN_REDUCTION_METER_WIDTH, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut unity_primitives = Vec::new();
+        GainReductionMeterWidget::new(0.0).append_paint(
+            &mut unity_primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &theme,
+        );
+        assert!(!unity_primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::FillRect(fill) if fill.color == theme.accent_warning)
+        }));
+
+        let reduction_db = crate::gui_status::GAIN_REDUCTION_METER_MAX_DB * 0.5;
+        let mut reduced_primitives = Vec::new();
+        GainReductionMeterWidget::new(reduction_db).append_paint(
+            &mut reduced_primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &theme,
+        );
+        let fill = reduced_primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill) if fill.color == theme.accent_warning => Some(fill),
+                _ => None,
+            })
+            .expect("reduction should paint one meter fill");
+        assert!((fill.rect.min.y - 15.0).abs() < 1.0e-6);
+        assert!((fill.rect.height() - 19.0).abs() < 1.0e-6);
+        for expected in ["GR dB", "18.0"] {
+            assert!(reduced_primitives.iter().any(|primitive| {
+                matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == expected)
+            }));
+        }
+    }
+
+    #[test]
     fn curve_preview_widget_paints_hovered_active_node_outline() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let widget = CurvePreviewWidget::new(curve, Some(1), None, Some(1), None, None, false);
@@ -3407,6 +3569,52 @@ mod tests {
 
     #[cfg(feature = "vst3")]
     #[test]
+    fn radiant_editor_consumes_inactive_meter_clear_repaint() {
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        let mut editor = RadiantPumpEditor::new(
+            params,
+            Arc::clone(&status),
+            Arc::new(AutomationQueue::default()),
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        status.update(
+            0.0,
+            0.25,
+            GuiTransportTelemetry {
+                is_playing: true,
+                transport_is_playing: true,
+                has_host_beats_timeline: false,
+                beat_phase: 0.0,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        assert!(status.gain_reduction_db() > 0.0);
+        status.update_transport(
+            0.0,
+            GuiTransportTelemetry {
+                is_playing: false,
+                transport_is_playing: false,
+                has_host_beats_timeline: false,
+                beat_phase: 0.0,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        status.mark_gain_reduction_inactive();
+
+        assert!(editor.needs_realtime_redraw());
+        let _ = editor.paint_plan();
+        assert!(
+            !editor.needs_realtime_redraw(),
+            "painting zero must consume the one-shot clear repaint"
+        );
+    }
+
+    #[cfg(feature = "vst3")]
+    #[test]
     fn radiant_editor_reprojects_playhead_from_status_without_pointer_event() {
         let params = Arc::new(PumpParams::new());
         let status = Arc::new(GuiStatus::default());
@@ -3415,6 +3623,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.1,
                 tempo_bpm: 120.0,
@@ -3436,6 +3645,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.6,
                 tempo_bpm: 120.0,

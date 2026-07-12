@@ -19,8 +19,10 @@ fn extrapolate_phase(
 /// Transport telemetry payload mirrored from the audio thread to the GUI.
 #[derive(Debug, Copy, Clone)]
 pub struct GuiTransportTelemetry {
-    /// Whether host playback is currently running.
+    /// Whether phase feedback should continue advancing.
     pub is_playing: bool,
+    /// Whether the host transport itself is currently running.
+    pub transport_is_playing: bool,
     /// Whether host beat timeline is currently available.
     pub has_host_beats_timeline: bool,
     /// Normalized host beat phase in `[0, 1)`.
@@ -32,11 +34,16 @@ pub struct GuiTransportTelemetry {
 }
 
 /// Shared GUI telemetry values updated by the audio thread.
-#[derive(Default)]
 pub struct GuiStatus {
     phase: AtomicF32,
-    gain: AtomicF32,
+    gain_reduction_linear: AtomicF32,
+    gain_reduction_active: AtomicBool,
+    gain_reduction_last_update_micros: AtomicU64,
+    gain_reduction_display_db: AtomicF32,
+    gain_reduction_display_update_micros: AtomicU64,
+    gain_reduction_clear_repaint_pending: AtomicBool,
     is_playing: AtomicBool,
+    transport_is_playing: AtomicBool,
     has_host_beats_timeline: AtomicBool,
     beat_phase: AtomicF32,
     tempo_bpm: AtomicF32,
@@ -45,7 +52,41 @@ pub struct GuiStatus {
     incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer,
 }
 
+const GAIN_REDUCTION_STALE_MICROS: u64 = 250_000;
+const GAIN_REDUCTION_ATTACK_SECONDS: f32 = 0.025;
+const GAIN_REDUCTION_RELEASE_SECONDS: f32 = 0.180;
+pub(crate) const GAIN_REDUCTION_METER_MAX_DB: f32 = 36.0;
+
+impl Default for GuiStatus {
+    fn default() -> Self {
+        Self {
+            phase: AtomicF32::new(0.0),
+            gain_reduction_linear: AtomicF32::new(1.0),
+            gain_reduction_active: AtomicBool::new(false),
+            gain_reduction_last_update_micros: AtomicU64::new(0),
+            gain_reduction_display_db: AtomicF32::new(0.0),
+            gain_reduction_display_update_micros: AtomicU64::new(0),
+            gain_reduction_clear_repaint_pending: AtomicBool::new(false),
+            is_playing: AtomicBool::new(false),
+            transport_is_playing: AtomicBool::new(false),
+            has_host_beats_timeline: AtomicBool::new(false),
+            beat_phase: AtomicF32::new(0.0),
+            tempo_bpm: AtomicF32::new(120.0),
+            cycle_hz: AtomicF32::new(0.0),
+            last_update_micros: AtomicU64::new(0),
+            incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer::default(),
+        }
+    }
+}
+
 impl GuiStatus {
+    /// Update transport plus linear reduction gain for deterministic UI tests.
+    #[cfg(test)]
+    pub fn update(&self, phase: f32, reduction_gain: f32, transport: GuiTransportTelemetry) {
+        self.update_transport(phase, transport);
+        self.publish_gain_reduction(reduction_gain, true);
+    }
+
     /// Enable or disable the optional incoming-audio background visualization.
     pub fn set_incoming_waveform_enabled(&self, enabled: bool) {
         self.incoming_waveform.set_enabled(enabled);
@@ -68,13 +109,14 @@ impl GuiStatus {
         self.incoming_waveform.snapshot()
     }
     /// Update telemetry from the latest processed frame.
-    pub fn update(&self, phase: f32, gain: f32, transport: GuiTransportTelemetry) {
+    pub fn update_transport(&self, phase: f32, transport: GuiTransportTelemetry) {
         let safe_tempo = transport.tempo_bpm.clamp(20.0, 320.0);
         let safe_beats_per_cycle = transport.beats_per_cycle.max(1.0e-4);
         self.phase.store(phase, Ordering::Relaxed);
-        self.gain.store(gain, Ordering::Relaxed);
         self.is_playing
             .store(transport.is_playing, Ordering::Relaxed);
+        self.transport_is_playing
+            .store(transport.transport_is_playing, Ordering::Relaxed);
         self.has_host_beats_timeline
             .store(transport.has_host_beats_timeline, Ordering::Relaxed);
         self.beat_phase
@@ -88,6 +130,37 @@ impl GuiStatus {
             .store(monotonic_micros(), Ordering::Relaxed);
     }
 
+    /// Publish one block's strongest Pump attenuation without touching the audio path.
+    pub fn publish_gain_reduction(&self, reduction_gain: f32, input_active: bool) {
+        if !input_active {
+            self.mark_gain_reduction_inactive();
+            return;
+        }
+        self.gain_reduction_linear
+            .store(reduction_gain.clamp(0.0, 1.0), Ordering::Relaxed);
+        let was_active = self.gain_reduction_active.swap(true, Ordering::Relaxed);
+        if !was_active {
+            self.gain_reduction_display_update_micros
+                .store(0, Ordering::Relaxed);
+        }
+        self.gain_reduction_last_update_micros
+            .store(monotonic_micros(), Ordering::Relaxed);
+    }
+
+    /// Clear meter activity for silence, missing input, stopped processing, or bypass.
+    pub fn mark_gain_reduction_inactive(&self) {
+        self.gain_reduction_linear.store(1.0, Ordering::Relaxed);
+        let was_active = self.gain_reduction_active.swap(false, Ordering::Relaxed);
+        let displayed = self.gain_reduction_display_db.load(Ordering::Relaxed);
+        self.gain_reduction_display_db.store(0.0, Ordering::Relaxed);
+        self.gain_reduction_display_update_micros
+            .store(monotonic_micros(), Ordering::Relaxed);
+        if was_active || displayed > 0.0 {
+            self.gain_reduction_clear_repaint_pending
+                .store(true, Ordering::Release);
+        }
+    }
+
     /// Read latest phase value.
     pub fn phase(&self) -> f32 {
         extrapolate_phase(
@@ -99,9 +172,54 @@ impl GuiStatus {
         )
     }
 
-    /// Read latest linear gain value.
-    pub fn gain(&self) -> f32 {
-        self.gain.load(Ordering::Relaxed).max(0.0)
+    /// Read the smoothed live gain reduction in positive decibels.
+    pub fn gain_reduction_db(&self) -> f32 {
+        self.gain_reduction_db_at(monotonic_micros())
+    }
+
+    /// Keep the editor clock alive until an active or releasing meter reaches zero.
+    pub fn gain_reduction_needs_redraw(&self) -> bool {
+        self.gain_reduction_active.load(Ordering::Relaxed)
+            || self.gain_reduction_display_db.load(Ordering::Relaxed) > 0.0
+            || self
+                .gain_reduction_clear_repaint_pending
+                .load(Ordering::Acquire)
+    }
+
+    fn gain_reduction_db_at(&self, now_micros: u64) -> f32 {
+        // Reading the meter means this frame can paint the cleared value.
+        self.gain_reduction_clear_repaint_pending
+            .store(false, Ordering::Release);
+        let last_audio_update = self
+            .gain_reduction_last_update_micros
+            .load(Ordering::Relaxed);
+        let current = self.gain_reduction_display_db.load(Ordering::Relaxed);
+        let active = self.gain_reduction_active.load(Ordering::Relaxed)
+            && self.transport_is_playing.load(Ordering::Relaxed)
+            && last_audio_update > 0
+            && now_micros.saturating_sub(last_audio_update) <= GAIN_REDUCTION_STALE_MICROS;
+        if !active {
+            self.gain_reduction_active.store(false, Ordering::Relaxed);
+            self.gain_reduction_display_db.store(0.0, Ordering::Relaxed);
+            self.gain_reduction_display_update_micros
+                .store(now_micros, Ordering::Relaxed);
+            return 0.0;
+        }
+
+        let target =
+            gain_reduction_db_from_linear(self.gain_reduction_linear.load(Ordering::Relaxed));
+        let last_display_update = self
+            .gain_reduction_display_update_micros
+            .swap(now_micros, Ordering::Relaxed);
+        let displayed = if last_display_update == 0 || now_micros <= last_display_update {
+            target
+        } else {
+            let elapsed = (now_micros - last_display_update) as f32 / 1_000_000.0;
+            smooth_gain_reduction_db(current, target, elapsed)
+        };
+        self.gain_reduction_display_db
+            .store(displayed, Ordering::Relaxed);
+        displayed
     }
 
     /// Read whether host transport is currently playing.
@@ -140,6 +258,31 @@ impl GuiStatus {
     }
 }
 
+pub(crate) fn gain_reduction_db_from_linear(gain: f32) -> f32 {
+    if !gain.is_finite() || gain >= 1.0 {
+        return 0.0;
+    }
+    (-20.0
+        * gain
+            .max(10.0_f32.powf(-GAIN_REDUCTION_METER_MAX_DB / 20.0))
+            .log10())
+    .clamp(0.0, GAIN_REDUCTION_METER_MAX_DB)
+}
+
+pub(crate) fn gain_reduction_meter_fraction(db: f32) -> f32 {
+    (db / GAIN_REDUCTION_METER_MAX_DB).clamp(0.0, 1.0)
+}
+
+fn smooth_gain_reduction_db(current: f32, target: f32, elapsed_seconds: f32) -> f32 {
+    let time = if target > current {
+        GAIN_REDUCTION_ATTACK_SECONDS
+    } else {
+        GAIN_REDUCTION_RELEASE_SECONDS
+    };
+    let alpha = 1.0 - (-elapsed_seconds.max(0.0) / time).exp();
+    (current + (target - current) * alpha).clamp(0.0, GAIN_REDUCTION_METER_MAX_DB)
+}
+
 #[allow(clippy::question_mark)]
 impl<'a> PluginGuiImpl for PumpMainThread<'a> {
     toybox::patchbay_clap_gui_callbacks!(
@@ -161,11 +304,139 @@ mod tests {
     use crate::dsp::db_to_linear;
     use std::sync::atomic::Ordering;
 
-    use super::{extrapolate_phase, monotonic_micros, GuiStatus, GuiTransportTelemetry};
+    use super::{
+        extrapolate_phase, gain_reduction_db_from_linear, gain_reduction_meter_fraction,
+        monotonic_micros, smooth_gain_reduction_db, GuiStatus, GuiTransportTelemetry,
+        GAIN_REDUCTION_METER_MAX_DB, GAIN_REDUCTION_STALE_MICROS,
+    };
 
     #[test]
     fn db_to_linear_matches_unity_at_zero_db() {
         assert!((db_to_linear(0.0) - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gain_reduction_mapping_is_decibel_based_and_clamped() {
+        assert_eq!(gain_reduction_db_from_linear(1.0), 0.0);
+        assert!((gain_reduction_db_from_linear(0.5) - 6.0206).abs() < 1.0e-3);
+        assert_eq!(
+            gain_reduction_db_from_linear(0.0),
+            GAIN_REDUCTION_METER_MAX_DB
+        );
+        assert_eq!(gain_reduction_db_from_linear(f32::NAN), 0.0);
+        assert_eq!(gain_reduction_meter_fraction(-12.0), 0.0);
+        assert_eq!(
+            gain_reduction_meter_fraction(GAIN_REDUCTION_METER_MAX_DB * 2.0),
+            1.0
+        );
+    }
+
+    #[test]
+    fn gain_reduction_ballistics_attack_faster_than_release() {
+        let attack = smooth_gain_reduction_db(0.0, 24.0, 0.025);
+        let release = smooth_gain_reduction_db(24.0, 0.0, 0.025);
+        assert!(
+            attack > 12.0,
+            "attack should quickly approach a stronger reduction"
+        );
+        assert!(
+            release > 18.0,
+            "release should decay more slowly than attack"
+        );
+    }
+
+    #[test]
+    fn meter_clears_for_inactive_stopped_and_stale_states() {
+        let status = GuiStatus::default();
+        status.transport_is_playing.store(true, Ordering::Relaxed);
+        status.gain_reduction_linear.store(0.25, Ordering::Relaxed);
+        status.gain_reduction_active.store(true, Ordering::Relaxed);
+        status
+            .gain_reduction_last_update_micros
+            .store(1_000_000, Ordering::Relaxed);
+        assert!((status.gain_reduction_db_at(1_010_000) - 12.0412).abs() < 1.0e-3);
+
+        status.transport_is_playing.store(false, Ordering::Relaxed);
+        assert_eq!(status.gain_reduction_db_at(1_020_000), 0.0);
+
+        status.transport_is_playing.store(true, Ordering::Relaxed);
+        status.gain_reduction_active.store(true, Ordering::Relaxed);
+        assert_eq!(
+            status.gain_reduction_db_at(1_000_000 + GAIN_REDUCTION_STALE_MICROS + 1),
+            0.0
+        );
+
+        status
+            .gain_reduction_last_update_micros
+            .store(2_000_000, Ordering::Relaxed);
+        status.gain_reduction_active.store(true, Ordering::Relaxed);
+        status.mark_gain_reduction_inactive();
+        assert_eq!(status.gain_reduction_db_at(2_010_000), 0.0);
+    }
+
+    #[test]
+    fn stopped_meter_requests_one_clearing_ui_update() {
+        let status = GuiStatus::default();
+        status.gain_reduction_active.store(true, Ordering::Relaxed);
+        status
+            .gain_reduction_display_db
+            .store(12.0, Ordering::Relaxed);
+        status.transport_is_playing.store(false, Ordering::Relaxed);
+        assert!(status.gain_reduction_needs_redraw());
+        assert_eq!(status.gain_reduction_db_at(1_000_000), 0.0);
+        assert!(!status.gain_reduction_needs_redraw());
+    }
+
+    #[test]
+    fn inactive_clear_stays_pending_until_the_meter_is_read() {
+        let status = GuiStatus::default();
+        status.gain_reduction_active.store(true, Ordering::Relaxed);
+        status
+            .gain_reduction_display_db
+            .store(12.0, Ordering::Relaxed);
+
+        status.mark_gain_reduction_inactive();
+        status.mark_gain_reduction_inactive();
+        assert!(
+            status.gain_reduction_needs_redraw(),
+            "repeated inactive blocks must not consume the pending clear repaint"
+        );
+
+        assert_eq!(status.gain_reduction_db_at(1_000_000), 0.0);
+        assert!(!status.gain_reduction_needs_redraw());
+
+        status.mark_gain_reduction_inactive();
+        assert!(
+            !status.gain_reduction_needs_redraw(),
+            "already-cleared inactivity must not request unbounded repaints"
+        );
+    }
+
+    #[test]
+    fn meter_uses_raw_stopped_state_when_phase_fallback_is_running() {
+        let status = GuiStatus::default();
+        status.update(
+            0.25,
+            0.25,
+            GuiTransportTelemetry {
+                is_playing: true,
+                transport_is_playing: false,
+                has_host_beats_timeline: false,
+                beat_phase: 0.25,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        let last_audio_update = status
+            .gain_reduction_last_update_micros
+            .load(Ordering::Relaxed);
+
+        assert!(status.is_playing(), "phase fallback should remain active");
+        assert_eq!(
+            status.gain_reduction_db_at(last_audio_update),
+            0.0,
+            "raw stopped transport must clear the meter without a beat timeline"
+        );
     }
 
     #[test]
@@ -176,6 +447,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
@@ -189,6 +461,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.5,
                 tempo_bpm: 120.0,
@@ -202,6 +475,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: false,
+                transport_is_playing: false,
                 has_host_beats_timeline: true,
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
@@ -215,6 +489,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: false,
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
@@ -244,6 +519,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.2,
                 tempo_bpm: 120.0,
@@ -269,6 +545,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.73,
                 tempo_bpm: 123.0,

@@ -29,7 +29,7 @@ fn screenshot_renders_initial_ui() {
     let params = Arc::new(PumpParams::new());
     let status = Arc::new(GuiStatus::default());
     let queue = Arc::new(AutomationQueue::default());
-    let state = GuiState::new(params, status, queue, None);
+    let state = GuiState::new(params, Arc::clone(&status), queue, None);
 
     screenshot_harness::capture_initial_ui_screenshots_if_enabled(
         env!("CARGO_PKG_NAME"),
@@ -46,19 +46,8 @@ fn screenshot_renders_initial_ui() {
 fn screenshot_renders_initial_ui_with_playhead() {
     let params = Arc::new(PumpParams::new());
     let status = Arc::new(GuiStatus::default());
-    status.update(
-        0.37,
-        0.72,
-        GuiTransportTelemetry {
-            is_playing: true,
-            has_host_beats_timeline: true,
-            beat_phase: 0.37,
-            tempo_bpm: 120.0,
-            beats_per_cycle: 1.0,
-        },
-    );
     let queue = Arc::new(AutomationQueue::default());
-    let state = GuiState::new(params, status, queue, None);
+    let state = GuiState::new(params, Arc::clone(&status), queue, None);
 
     screenshot_harness::capture_initial_ui_screenshots_if_enabled(
         "pump-playhead",
@@ -66,7 +55,22 @@ fn screenshot_renders_initial_ui_with_playhead() {
             width: WINDOW_WIDTH,
             height: WINDOW_HEIGHT,
         },
-        |input| state.build_ui(input),
+        |input| {
+            status.mark_gain_reduction_inactive();
+            status.update(
+                0.37,
+                0.25,
+                GuiTransportTelemetry {
+                    is_playing: true,
+                    transport_is_playing: true,
+                    has_host_beats_timeline: true,
+                    beat_phase: 0.37,
+                    tempo_bpm: 120.0,
+                    beats_per_cycle: 1.0,
+                },
+            );
+            state.build_ui(input)
+        },
     )
     .expect("failed to capture pump playhead screenshots");
 }

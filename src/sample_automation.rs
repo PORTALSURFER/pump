@@ -162,6 +162,8 @@ pub(crate) fn process_stereo_block(
     let frame_count = left.len().min(right.len());
     let mut transport_for_sample = transport;
     let mut last_telemetry = None;
+    let mut minimum_reduction_gain = 1.0_f32;
+    let mut input_active = false;
 
     for sample_offset in 0..frame_count {
         schedule.apply_through(sample_offset, params, settings);
@@ -173,6 +175,10 @@ pub(crate) fn process_stereo_block(
             *settings,
             transport_for_sample,
         );
+        if input_left.abs().max(input_right.abs()) > 1.0e-5 {
+            input_active = true;
+            minimum_reduction_gain = minimum_reduction_gain.min(telemetry.reduction_gain);
+        }
         if let Some(capture) = waveform.as_mut() {
             capture.record(
                 telemetry.phase,
@@ -192,7 +198,11 @@ pub(crate) fn process_stereo_block(
             capture.finish();
         }
     }
-    last_telemetry
+    last_telemetry.map(|mut telemetry| {
+        telemetry.reduction_gain = minimum_reduction_gain;
+        telemetry.input_active = input_active;
+        telemetry
+    })
 }
 
 /// Process one stereo block through raw host pointers that may be in-place.
@@ -236,6 +246,8 @@ pub(crate) unsafe fn process_stereo_block_raw(
 ) -> Option<DspTelemetry> {
     let mut transport_for_sample = transport;
     let mut last_telemetry = None;
+    let mut minimum_reduction_gain = 1.0_f32;
+    let mut input_active = false;
 
     for sample_offset in 0..block.num_samples {
         schedule.apply_through(sample_offset, params, settings);
@@ -247,6 +259,10 @@ pub(crate) unsafe fn process_stereo_block_raw(
         let input_right = right;
         let telemetry =
             engine.process_sample(&mut left, &mut right, *settings, transport_for_sample);
+        if input_left.abs().max(input_right.abs()) > 1.0e-5 {
+            input_active = true;
+            minimum_reduction_gain = minimum_reduction_gain.min(telemetry.reduction_gain);
+        }
         if let Some(capture) = waveform.as_mut() {
             capture.record(
                 telemetry.phase,
@@ -270,7 +286,11 @@ pub(crate) unsafe fn process_stereo_block_raw(
             capture.finish();
         }
     }
-    last_telemetry
+    last_telemetry.map(|mut telemetry| {
+        telemetry.reduction_gain = minimum_reduction_gain;
+        telemetry.input_active = input_active;
+        telemetry
+    })
 }
 
 #[cfg(test)]
@@ -334,6 +354,52 @@ mod tests {
         );
         assert_eq!(left, right);
         assert!((params.mix() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn block_meter_uses_strongest_reduction_only_when_input_is_active() {
+        let params = PumpParams::new();
+        params.set_mix(1.0);
+        let mut engine = PumpEngine::new(48_000.0, constant_curve(0.25));
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(4);
+        let mut settings = dsp_settings_from_params(&params);
+        let mut left = [0.0, 1.0, 0.5, 0.0];
+        let mut right = [0.0, 0.5, 1.0, 0.0];
+        let telemetry = process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            playing_transport(0.0),
+            None,
+        )
+        .expect("non-empty block should return telemetry");
+        assert!(telemetry.input_active);
+        assert!((telemetry.reduction_gain - 0.25).abs() < 1.0e-6);
+
+        let mut silent_left = [0.0; 4];
+        let mut silent_right = [0.0; 4];
+        schedule.begin_block(4);
+        let telemetry = process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut silent_left,
+                right: &mut silent_right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            playing_transport(0.0),
+            None,
+        )
+        .expect("silent non-empty block should return telemetry");
+        assert!(!telemetry.input_active);
+        assert_eq!(telemetry.reduction_gain, 1.0);
     }
 
     #[test]

@@ -21,8 +21,13 @@ pub struct DspSettings {
 pub struct DspTelemetry {
     /// Last processed phase in `[0, 1)`.
     pub phase: f32,
-    /// Last processed linear gain.
+    /// Last processed total linear gain, retained for DSP verification.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub gain: f32,
+    /// Pump envelope gain before output trim, used only for gain-reduction metering.
+    pub reduction_gain: f32,
+    /// Whether this block contained at least one non-silent input sample.
+    pub input_active: bool,
 }
 
 /// Stateful real-time gain engine.
@@ -86,7 +91,12 @@ impl PumpEngine {
         *left *= gain;
         *right *= gain;
 
-        DspTelemetry { phase, gain }
+        DspTelemetry {
+            phase,
+            gain,
+            reduction_gain: blend_gain.clamp(0.0, 1.0),
+            input_active: false,
+        }
     }
 
     fn sample_active_curve(&mut self, phase: f32) -> f32 {
@@ -192,6 +202,35 @@ mod tests {
     fn db_to_linear_matches_reference_points() {
         assert!((db_to_linear(0.0) - 1.0).abs() < 1.0e-6);
         assert!((db_to_linear(6.0) - 1.9952623).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn reduction_telemetry_excludes_output_trim() {
+        let mut engine = PumpEngine::new(48_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
+        let mut left = 1.0;
+        let mut right = 1.0;
+        let settings = DspSettings {
+            mix: 1.0,
+            phase_offset: 0.0,
+            output_gain_db: 12.0,
+            beats_per_cycle: 1.0,
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(0.0),
+        };
+        let mut telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+        for _ in 0..8_000 {
+            left = 1.0;
+            right = 1.0;
+            telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+        }
+        assert!((telemetry.reduction_gain - 0.5).abs() < 1.0e-6);
+        assert!(
+            telemetry.gain > 1.0,
+            "output trim may boost total gain independently"
+        );
     }
 
     #[test]

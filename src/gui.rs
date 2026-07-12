@@ -103,12 +103,14 @@ const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
 const HEADER_STORAGE_WARNING_SECTION_PERCENT: u8 = 40;
 const HEADER_VERSION_LABEL_HEIGHT: u32 = 8;
+#[cfg(test)]
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_VERTICAL_MARGIN: u32 = 10;
+#[cfg(test)]
 const CURVE_H: u32 = resolve_curve_editor_height(resolve_vertical_slot_heights(WINDOW_HEIGHT).1);
-const METER_X_OFFSET: i32 = 12;
-const METER_Y_OFFSET: i32 = 10;
-const METER_WIDTH: i32 = 6;
+const CURVE_EDITOR_SECTION_WEIGHT: u16 = 92;
+const METER_SECTION_WEIGHT: u16 = 8;
+const METER_WIDTH: i32 = 8;
 const METER_STROKE: i32 = 1;
 const BASE_KNOB_DIAMETER: u32 = 92;
 const BASE_TEXT_SCALE: u32 = 2;

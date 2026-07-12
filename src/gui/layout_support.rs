@@ -191,10 +191,7 @@ pub(super) struct UiLayoutMetrics {
     pub(super) content_w: u32,
     pub(super) content_h: u32,
     pub(super) curve_h: u32,
-    pub(super) meter_x_offset: i32,
-    pub(super) meter_y_offset: i32,
-    pub(super) meter_width: u32,
-    pub(super) meter_stroke: u32,
+    pub(super) meter_panel_width: u32,
     pub(super) dropdown_control_w: u32,
     pub(super) dropdown_control_h: u32,
     pub(super) button_control_h: u32,
@@ -234,22 +231,20 @@ impl UiLayoutMetrics {
         let quick_shape_button_h = quick_shapes_h.max(1);
         let transport_indicator_size = TRANSPORT_INDICATOR_SIZE.max(1);
         let curve_editor_h = resolve_curve_editor_height(curve_h).max(1);
+        let curve_meter_widths = weighted_slot_lengths(
+            content_w,
+            &[CURVE_EDITOR_SECTION_WEIGHT, METER_SECTION_WEIGHT],
+        );
         let curve_size = Size {
-            width: content_w,
+            width: curve_meter_widths[0],
             height: curve_editor_h,
         };
-        let meter_x_offset = METER_X_OFFSET.max(0);
-        let meter_y_offset = METER_Y_OFFSET.max(0);
-        let meter_width = METER_WIDTH.max(0) as u32;
-        let meter_stroke = METER_STROKE.max(0) as u32;
+        let meter_panel_width = curve_meter_widths[1];
         Self {
             content_w,
             content_h,
             curve_h,
-            meter_x_offset,
-            meter_y_offset,
-            meter_width,
-            meter_stroke,
+            meter_panel_width,
             dropdown_control_w,
             dropdown_control_h,
             button_control_h,

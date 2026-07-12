@@ -1,4 +1,10 @@
 use super::*;
+
+#[cfg(test)]
+fn design_curve_size() -> Size {
+    UiLayoutMetrics::design_space().curve_size
+}
+
 pub(super) const fn fixed_box(width: u32, height: u32) -> LayoutBox {
     LayoutBox::fixed(width, height).max(width, height)
 }
@@ -266,13 +272,7 @@ pub(super) fn tension_delta_from_drag_for_segment(
 
 #[cfg(test)]
 pub(super) fn local_from_node(node: CurveNode) -> Point {
-    local_from_node_for_size(
-        node,
-        Size {
-            width: CURVE_W,
-            height: CURVE_H,
-        },
-    )
+    local_from_node_for_size(node, design_curve_size())
 }
 
 pub(super) fn local_from_node_for_size(node: CurveNode, curve_size: Size) -> Point {
@@ -338,15 +338,7 @@ pub(super) fn find_segment_line_hit_within(
     local_pointer: Point,
     radius: i32,
 ) -> Option<usize> {
-    find_segment_line_hit_within_for_size(
-        curve,
-        local_pointer,
-        radius,
-        Size {
-            width: CURVE_W,
-            height: CURVE_H,
-        },
-    )
+    find_segment_line_hit_within_for_size(curve, local_pointer, radius, design_curve_size())
 }
 
 pub(super) fn find_segment_line_hit_within_for_size(
@@ -420,10 +412,7 @@ pub(super) fn move_node_with_push_through(
         index,
         target,
         push_threshold_px,
-        Size {
-            width: CURVE_W,
-            height: CURVE_H,
-        },
+        design_curve_size(),
     )
 }
 
@@ -682,14 +671,7 @@ pub(super) fn preview_node_on_curve(
     curve: &EditableCurve,
     local_pointer: Point,
 ) -> Option<CurveNode> {
-    preview_node_on_curve_for_size(
-        curve,
-        local_pointer,
-        Size {
-            width: CURVE_W,
-            height: CURVE_H,
-        },
-    )
+    preview_node_on_curve_for_size(curve, local_pointer, design_curve_size())
 }
 
 pub(super) fn preview_node_on_curve_for_size(
@@ -721,14 +703,7 @@ pub(super) fn find_deletable_node_hit(
     curve: &EditableCurve,
     local_pointer: Point,
 ) -> Option<usize> {
-    find_deletable_node_hit_for_size(
-        curve,
-        local_pointer,
-        Size {
-            width: CURVE_W,
-            height: CURVE_H,
-        },
-    )
+    find_deletable_node_hit_for_size(curve, local_pointer, design_curve_size())
 }
 
 pub(super) fn find_deletable_node_hit_for_size(

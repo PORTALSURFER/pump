@@ -8,10 +8,7 @@ impl GuiRuntime {
             marquee_selection: None,
             curve_hovered: false,
             curve_local_pointer: Point { x: 0, y: 0 },
-            curve_size: Size {
-                width: CURVE_W,
-                height: CURVE_H,
-            },
+            curve_size: UiLayoutMetrics::design_space().curve_size,
             snap_enabled: false,
             snap_hovered: false,
             grid_override: None,
@@ -316,7 +313,6 @@ impl GuiState {
                 (self.status.has_host_beats_timeline() || self.status.is_playing())
                     .then_some(self.status.phase()),
             )
-            .widget_layout(fixed_box(metrics.content_w, metrics.curve_size.height))
             .fill();
         let waveform = controls
             .incoming_waveform_enabled
@@ -338,7 +334,50 @@ impl GuiState {
             curve_editor_view,
         ])
         .fill();
-        let spline_content = Node::padding_box(curve_content)
+        let meter_db = self.status.gain_reduction_db();
+        let meter_bar_height = metrics
+            .curve_size
+            .height
+            .saturating_sub(metrics.label_line_h.saturating_mul(2));
+        let meter_value = if meter_db < 0.5 {
+            "0".to_string()
+        } else {
+            format!("{meter_db:.0}")
+        };
+        let meter_panel = column(vec![
+            textbox("dB")
+                .text_align_center()
+                .text_color(theme.version_label)
+                .widget_layout(fixed_box(metrics.meter_panel_width, metrics.label_line_h)),
+            surface(
+                "gain-reduction-meter",
+                Size {
+                    width: metrics.meter_panel_width,
+                    height: meter_bar_height,
+                },
+                gain_reduction_meter_commands(
+                    Size {
+                        width: metrics.meter_panel_width,
+                        height: meter_bar_height,
+                    },
+                    theme,
+                    meter_db,
+                ),
+            ),
+            textbox(meter_value)
+                .text_align_center()
+                .text_color(theme.meter_fill)
+                .widget_layout(fixed_box(metrics.meter_panel_width, metrics.label_line_h)),
+        ])
+        .container_overflow(OverflowPolicy::Compress)
+        .fill();
+        let curve_and_meter = row_slots(vec![
+            weighted_slot(curve_content, CURVE_EDITOR_SECTION_WEIGHT),
+            weighted_slot(meter_panel, METER_SECTION_WEIGHT),
+        ])
+        .container_overflow(OverflowPolicy::Compress)
+        .fill();
+        let spline_content = Node::padding_box(curve_and_meter)
             .pad_xy(0, CURVE_VERTICAL_MARGIN as i32)
             .widget_layout(fixed_box(metrics.content_w, metrics.curve_h))
             .fill();
@@ -789,11 +828,12 @@ impl GuiState {
     }
 
     pub(super) fn build_ui(&self, input: &InputState) -> UiSpec {
+        let metrics = UiLayoutMetrics::design_space();
         self.sync_knob_gesture_state(input.mouse_down, input.mouse_secondary_down);
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.shortcut_snap_invert_held = input.shortcut_key_down(SHORTCUT_KEY_SNAP_INVERT);
+            runtime.curve_size = metrics.curve_size;
         }
-        let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
         let controls = self.snapshot_controls();
         let presets = self.snapshot_presets();
@@ -1899,15 +1939,6 @@ impl GuiState {
         let playhead_glow_radius = scaled_curve_i32(PLAYHEAD_DOT_GLOW_RADIUS, curve_size);
         let node_stroke = scaled_curve_i32(METER_STROKE, curve_size);
         let highlight_offset = scaled_curve_i32(1, curve_size);
-        let meter_x_offset = metrics.meter_x_offset.max(0);
-        let meter_y_offset = metrics.meter_y_offset.max(0);
-        let meter_width = metrics.meter_width.max(1);
-        let meter_width_i32 = i32::try_from(meter_width).unwrap_or(i32::MAX);
-        let meter_stroke_u32 = metrics.meter_stroke.max(1);
-        let meter_inner_width = metrics
-            .meter_width
-            .max(1)
-            .saturating_sub(meter_stroke_u32.saturating_mul(2));
 
         let mut commands = Vec::with_capacity(1024);
         commands.push(SurfaceCommand::FillRect {
@@ -2123,43 +2154,6 @@ impl GuiState {
             });
         }
 
-        let reduction = (1.0 - self.status.gain().clamp(0.0, 1.0)).clamp(0.0, 1.0);
-        let meter_rect = Rect {
-            origin: Point {
-                x: curve_size.width as i32 - meter_x_offset - meter_width_i32,
-                y: meter_y_offset,
-            },
-            size: Size {
-                width: meter_width,
-                height: curve_size
-                    .height
-                    .saturating_sub((meter_y_offset.saturating_mul(2)).max(0) as u32),
-            },
-        };
-        commands.push(SurfaceCommand::StrokeRect {
-            rect: meter_rect,
-            thickness: meter_stroke_u32,
-            color: theme.meter_outline,
-        });
-        let fill_height = ((meter_rect.size.height as f32) * reduction).round() as u32;
-        if fill_height > 0 {
-            commands.push(SurfaceCommand::FillRect {
-                rect: Rect {
-                    origin: Point {
-                        x: meter_rect.origin.x
-                            + i32::try_from(meter_stroke_u32).unwrap_or(i32::MAX),
-                        y: meter_rect.origin.y
-                            + i32::try_from(meter_stroke_u32).unwrap_or(i32::MAX),
-                    },
-                    size: Size {
-                        width: meter_inner_width,
-                        height: fill_height,
-                    },
-                },
-                color: theme.meter_fill,
-            });
-        }
-
         commands
     }
 
@@ -2318,6 +2312,67 @@ pub(super) fn incoming_waveform_underlay_commands(
             start: point(index - 1, false),
             end: point(index, false),
             color,
+        });
+    }
+    commands
+}
+
+pub(super) fn gain_reduction_meter_commands(
+    size: Size,
+    theme: PumpTheme,
+    reduction_db: f32,
+) -> Vec<SurfaceCommand> {
+    let stroke = METER_STROKE.max(1) as u32;
+    let meter_width = (METER_WIDTH.max(1) as u32).min(size.width.max(1));
+    let meter_height = size.height.max(1);
+    let meter_x = size.width.saturating_sub(meter_width) / 2;
+    let meter_rect = Rect {
+        origin: Point {
+            x: meter_x as i32,
+            y: 0,
+        },
+        size: Size {
+            width: meter_width,
+            height: meter_height,
+        },
+    };
+    let mut commands = vec![SurfaceCommand::StrokeRect {
+        rect: meter_rect,
+        thickness: stroke,
+        color: theme.meter_outline,
+    }];
+    let inner_width = meter_width.saturating_sub(stroke.saturating_mul(2));
+    let inner_height = meter_height.saturating_sub(stroke.saturating_mul(2));
+    let fill_height = ((inner_height as f32)
+        * crate::gui_status::gain_reduction_meter_fraction(reduction_db))
+    .round() as u32;
+    if fill_height > 0 && inner_width > 0 {
+        commands.push(SurfaceCommand::FillRect {
+            rect: Rect {
+                origin: Point {
+                    x: meter_rect.origin.x + stroke as i32,
+                    y: meter_rect.origin.y + stroke as i32,
+                },
+                size: Size {
+                    width: inner_width,
+                    height: fill_height,
+                },
+            },
+            color: theme.meter_fill,
+        });
+    }
+    for step in 1..3 {
+        let y = ((meter_height.saturating_sub(1) * step) / 3) as i32;
+        commands.push(SurfaceCommand::Line {
+            start: Point {
+                x: meter_rect.origin.x.saturating_sub(2),
+                y,
+            },
+            end: Point {
+                x: meter_rect.origin.x + meter_width as i32 + 1,
+                y,
+            },
+            color: theme.meter_outline,
         });
     }
     commands
