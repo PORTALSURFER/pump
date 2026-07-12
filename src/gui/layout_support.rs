@@ -124,7 +124,7 @@ impl PumpTheme {
             curve_bg: palette.background_primary,
             curve_border: palette.ui_secondary,
             curve_grid_vertical: palette.background_secondary,
-            curve_grid_emphasis: palette.text_primary,
+            curve_grid_emphasis: palette.ui_secondary,
             curve_grid_horizontal: palette.ui_secondary,
             curve_fill: Color::rgba(
                 palette.syntax_emphasis.r,

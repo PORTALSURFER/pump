@@ -1,8 +1,8 @@
     use super::{
-        constrained_host_size, find_deletable_node_hit, find_segment_line_hit_within,
-        local_from_node, local_from_node_for_size, move_node_with_push_through,
-        move_segment_translated,
-        build_version_label, preferred_window_size, preview_node_on_curve,
+        build_version_label, constrained_host_size, curve_beat_grid, find_deletable_node_hit,
+        find_segment_line_hit_within, local_from_node, local_from_node_for_size,
+        move_node_with_push_through, move_segment_translated, preferred_window_size,
+        preview_node_on_curve,
         radiant_editor_frame_for_params, recompute_move_node_from_origin_for_size,
         resolve_runtime_controls_slot_widths,
         resolve_vertical_slot_heights, segment_upward_tension_sign,
@@ -14,7 +14,7 @@
         QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
         WINDOW_HEIGHT, WINDOW_WIDTH,
     };
-    use super::state_impl::incoming_waveform_underlay_commands;
+    use super::state_impl::{curve_beat_grid_commands, incoming_waveform_underlay_commands};
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{
         with_test_persistence_failure, with_test_persistence_path, PumpParams,
@@ -829,6 +829,72 @@
     }
 
     #[test]
+    fn beat_grid_tracks_short_and_long_sync_lengths() {
+        let shortest = curve_beat_grid(0, 396.0);
+        assert_eq!(shortest, super::CurveBeatGrid::default());
+
+        let eighth_triplet = curve_beat_grid(1, 396.0);
+        assert_eq!(eighth_triplet.major, vec![0.5]);
+        assert_eq!(eighth_triplet.minor, vec![0.75]);
+
+        let two_bars = curve_beat_grid(7, 396.0);
+        assert_eq!(two_bars.major.len(), 7);
+        assert!((two_bars.major[0] - 0.125).abs() < 1.0e-6);
+        assert!((two_bars.major[6] - 0.875).abs() < 1.0e-6);
+        assert_eq!(two_bars.minor.len(), 24);
+    }
+
+    #[test]
+    fn beat_grid_thins_minor_lines_at_short_widths_without_losing_alignment() {
+        let wide = curve_beat_grid(7, 396.0);
+        let narrow = curve_beat_grid(7, 64.0);
+        assert!(narrow.minor.len() < wide.minor.len());
+        assert_eq!(narrow.major, wide.major);
+        assert!(narrow
+            .minor
+            .iter()
+            .chain(narrow.major.iter())
+            .all(|position| (position * 8.0 * 4.0).fract().abs() < 1.0e-5));
+    }
+
+    #[test]
+    fn beat_grid_has_stable_empty_behavior_for_unsupported_timing() {
+        assert_eq!(
+            curve_beat_grid(crate::params::SYNC_DIVISIONS.len(), 396.0),
+            super::CurveBeatGrid::default()
+        );
+        assert_eq!(curve_beat_grid(4, 0.0), super::CurveBeatGrid::default());
+    }
+
+    #[test]
+    fn beat_grid_commands_span_the_curve_and_distinguish_major_lines() {
+        let size = Size {
+            width: 200,
+            height: 80,
+        };
+        let theme = PumpTheme::main(UiLayoutMetrics::design_space());
+        let commands = curve_beat_grid_commands(size, theme, 7);
+        let verticals: Vec<_> = commands
+            .iter()
+            .filter_map(|command| match command {
+                SurfaceCommand::Line { start, end, color } if start.x == end.x => {
+                    Some((*start, *end, *color))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!verticals.is_empty());
+        assert!(verticals.iter().all(|(start, end, _)| start.y == 0
+            && end.y == size.height.saturating_sub(1) as i32));
+        assert!(verticals
+            .iter()
+            .any(|(_, _, color)| *color == theme.curve_grid_emphasis));
+        assert!(verticals
+            .iter()
+            .any(|(_, _, color)| *color == theme.curve_grid_vertical));
+    }
+
+    #[test]
     fn preferred_window_size_tracks_measured_layout() {
         let (preferred_width, preferred_height) = preferred_window_size();
         let state = GuiState::new(
@@ -1009,8 +1075,8 @@
             .expect("curve editor should exist");
         assert_eq!(
             curve_editor.grid.emphasized_verticals,
-            vec![0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875],
-            "1/8 grid override should brighten seven inner guide lines"
+            vec![0.5],
+            "a sub-beat grid override should retain a stable major midpoint"
         );
         assert!(curve_editor.interaction.snap.enabled);
         assert_eq!(
