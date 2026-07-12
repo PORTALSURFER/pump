@@ -40,6 +40,7 @@ mod curve_presets;
 mod dsp;
 mod gui;
 mod gui_status;
+mod incoming_waveform;
 mod params;
 mod plugin_main_thread_impl;
 mod plugin_metadata;

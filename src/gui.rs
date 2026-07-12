@@ -12,11 +12,12 @@ use toybox::clap::gui::{
 };
 use toybox::gui::declarative::{
     button, column, column_slots, curve_editor, dropdown, grid, indicator, knob, panel,
-    root_frame_sized, row_slots, spacer, surface, textbox, weighted_slot, weighted_slot_lengths,
-    CurveEditorStyle, CurveGridConfig, CurveHighlightMode, CurveInteractionOptions, CurveModel,
-    CurvePoint, CurveSegment as CurveEditorSegment, CurveSnapConfig, EndpointMode, GridTemplate,
-    LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, Slot, SlotAlign,
-    SlotCrossSize, SlotParams, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
+    root_frame_sized, row_slots, spacer, stack, surface, textbox, toggle, weighted_slot,
+    weighted_slot_lengths, CurveEditorStyle, CurveGridConfig, CurveHighlightMode,
+    CurveInteractionOptions, CurveModel, CurvePoint, CurveSegment as CurveEditorSegment,
+    CurveSnapConfig, EndpointMode, GridTemplate, LayoutBox, Node, OverflowPolicy,
+    RegionInteractionKind, RootScaleMode, Slot, SlotAlign, SlotCrossSize, SlotParams,
+    SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -69,6 +70,7 @@ const PHASE_KEY: &str = "phase";
 const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
 const SNAP_KEY: &str = "snap";
+const INCOMING_WAVEFORM_KEY: &str = "incoming-waveform";
 const GRID_OVERRIDE_KEY: &str = "grid-override";
 const PRESET_DROPDOWN_KEY: &str = "preset-dropdown";
 const PRESET_ADD_KEY: &str = "preset-add";
@@ -231,6 +233,7 @@ struct ControlSnapshot {
     phase_offset: f32,
     output_gain_db: f32,
     division: usize,
+    incoming_waveform_enabled: bool,
     snap_enabled: bool,
     snap_hovered: bool,
     grid_override: Option<usize>,

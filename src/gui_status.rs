@@ -42,9 +42,31 @@ pub struct GuiStatus {
     tempo_bpm: AtomicF32,
     cycle_hz: AtomicF32,
     last_update_micros: AtomicU64,
+    incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer,
 }
 
 impl GuiStatus {
+    /// Enable or disable the optional incoming-audio background visualization.
+    pub fn set_incoming_waveform_enabled(&self, enabled: bool) {
+        self.incoming_waveform.set_enabled(enabled);
+    }
+
+    /// Read whether incoming-audio visualization capture is enabled.
+    pub fn incoming_waveform_enabled(&self) -> bool {
+        self.incoming_waveform.is_enabled()
+    }
+
+    pub(crate) fn incoming_waveform_buffer(
+        &self,
+    ) -> &crate::incoming_waveform::IncomingWaveformBuffer {
+        &self.incoming_waveform
+    }
+
+    pub(crate) fn incoming_waveform_snapshot(
+        &self,
+    ) -> Option<crate::incoming_waveform::IncomingWaveformSnapshot> {
+        self.incoming_waveform.snapshot()
+    }
     /// Update telemetry from the latest processed frame.
     pub fn update(&self, phase: f32, gain: f32, transport: GuiTransportTelemetry) {
         let safe_tempo = transport.tempo_bpm.clamp(20.0, 320.0);

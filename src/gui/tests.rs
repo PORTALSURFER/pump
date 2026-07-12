@@ -8,11 +8,13 @@
         resolve_vertical_slot_heights, segment_upward_tension_sign,
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
-        GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, PRESET_DROPDOWN_KEY,
+        GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, INCOMING_WAVEFORM_KEY,
+        PRESET_DROPDOWN_KEY,
         PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_STORAGE,
         QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
         WINDOW_HEIGHT, WINDOW_WIDTH,
     };
+    use super::state_impl::incoming_waveform_underlay_commands;
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
     use crate::params::{
         with_test_persistence_failure, with_test_persistence_path, PumpParams,
@@ -768,6 +770,62 @@
         let (width, height) = state.measured_open_size();
         assert_eq!(width, WINDOW_WIDTH);
         assert_eq!(height, WINDOW_HEIGHT);
+    }
+
+    #[test]
+    fn incoming_waveform_toggle_controls_capture_and_empty_underlay_state() {
+        let status = Arc::new(GuiStatus::default());
+        let mut state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::clone(&status),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        assert!(!status.incoming_waveform_enabled());
+
+        state.reduce_action(UiAction::ToggleChanged {
+            key: INCOMING_WAVEFORM_KEY.to_string(),
+            value: true,
+        });
+        assert!(status.incoming_waveform_enabled());
+
+        let metrics = UiLayoutMetrics::design_space();
+        let theme = PumpTheme::main(metrics);
+        let commands = incoming_waveform_underlay_commands(metrics.curve_size, theme, None);
+        assert_eq!(commands.len(), 1, "unavailable input should draw only the stable background");
+        assert!(matches!(commands[0], SurfaceCommand::FillRect { .. }));
+
+        state.reduce_action(UiAction::ToggleChanged {
+            key: INCOMING_WAVEFORM_KEY.to_string(),
+            value: false,
+        });
+        assert!(!status.incoming_waveform_enabled());
+    }
+
+    #[test]
+    fn incoming_waveform_underlay_is_bounded_and_phase_aligned() {
+        let metrics = UiLayoutMetrics::design_space();
+        let theme = PumpTheme::main(metrics);
+        let mut waveform = [0.0; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
+        waveform[0] = 1.0;
+        waveform[crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT - 1] = 0.5;
+
+        let commands =
+            incoming_waveform_underlay_commands(metrics.curve_size, theme, Some(waveform));
+        assert_eq!(
+            commands.len(),
+            1 + 2 * (crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT - 1)
+        );
+        let first_line = commands.iter().find_map(|command| match command {
+            SurfaceCommand::Line { start, .. } => Some(start),
+            _ => None,
+        }).expect("waveform should emit line segments");
+        let last_line_end = commands.iter().rev().find_map(|command| match command {
+            SurfaceCommand::Line { end, .. } => Some(end),
+            _ => None,
+        }).expect("waveform should end with a line segment");
+        assert_eq!(first_line.x, 0);
+        assert_eq!(last_line_end.x, metrics.curve_size.width.saturating_sub(1) as i32);
     }
 
     #[test]

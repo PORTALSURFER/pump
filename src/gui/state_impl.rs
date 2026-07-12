@@ -71,6 +71,7 @@ impl GuiState {
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
             division: self.params.sync_division(),
+            incoming_waveform_enabled: self.status.incoming_waveform_enabled(),
             snap_enabled,
             snap_hovered,
             grid_override,
@@ -298,8 +299,12 @@ impl GuiState {
     ) -> Node {
         let editable_curve = self.params.editable_curve_snapshot();
         let effective_grid = effective_grid_division(controls.division, controls.grid_override);
+        let mut curve_style = curve_editor_style(theme);
+        if controls.incoming_waveform_enabled {
+            curve_style.background = Color::rgba(0, 0, 0, 0);
+        }
         let curve_editor_view = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
-            .curve_style(curve_editor_style(theme))
+            .curve_style(curve_style)
             .curve_grid(curve_editor_grid_config(effective_grid))
             .curve_interaction(curve_editor_interaction_options(
                 metrics.curve_size,
@@ -312,7 +317,25 @@ impl GuiState {
             )
             .widget_layout(fixed_box(metrics.content_w, metrics.curve_size.height))
             .fill();
-        let spline_content = Node::padding_box(curve_editor_view)
+        let curve_content = if controls.incoming_waveform_enabled {
+            stack(vec![
+                surface(
+                    "incoming-waveform-underlay",
+                    metrics.curve_size,
+                    incoming_waveform_underlay_commands(
+                        metrics.curve_size,
+                        theme,
+                        self.status.incoming_waveform_snapshot(),
+                    ),
+                )
+                .fill(),
+                curve_editor_view,
+            ])
+            .fill()
+        } else {
+            curve_editor_view
+        };
+        let spline_content = Node::padding_box(curve_content)
             .pad_xy(0, CURVE_VERTICAL_MARGIN as i32)
             .widget_layout(fixed_box(metrics.content_w, metrics.curve_h))
             .fill();
@@ -659,6 +682,33 @@ impl GuiState {
         ])
         .container_overflow(OverflowPolicy::Compress)
         .fill();
+        let waveform_row = row_slots(vec![
+            weighted_slot(
+                Node::align_box(
+                    textbox("Wave").widget_layout(fixed_box(
+                        metrics
+                            .dropdown_control_w
+                            .saturating_sub(snap_checkbox_size.saturating_add(8))
+                            .max(1),
+                        metrics.button_control_h,
+                    )),
+                )
+                .slot_align(SlotAlign::Start, SlotAlign::Center)
+                .fill(),
+                2,
+            ),
+            weighted_slot(
+                toggle(INCOMING_WAVEFORM_KEY, controls.incoming_waveform_enabled)
+                    .control_size(Size {
+                        width: snap_checkbox_size,
+                        height: snap_checkbox_size,
+                    })
+                    .widget_layout(fixed_box(snap_checkbox_size, snap_checkbox_size)),
+                1,
+            ),
+        ])
+        .container_overflow(OverflowPolicy::Compress)
+        .fill();
         let dropdown_slot_content = column(vec![
             dropdown(
                 DIVISION_KEY,
@@ -700,6 +750,7 @@ impl GuiState {
             ])
             .container_overflow(OverflowPolicy::Compress)
             .fill(),
+            waveform_row,
         ])
         .pad_all(0)
         .fill()
@@ -782,6 +833,9 @@ impl GuiState {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.snap_enabled = value;
                 }
+            }
+            UiAction::ToggleChanged { key, value } if key == INCOMING_WAVEFORM_KEY => {
+                self.status.set_incoming_waveform_enabled(value);
             }
             UiAction::RegionHover { key, hovered, .. } if key == SNAP_KEY => {
                 if let Ok(mut runtime) = self.runtime.lock() {
@@ -2209,4 +2263,59 @@ impl GuiState {
             .push_gesture_end(&self.automation_config, param_id);
         self.request_flush();
     }
+}
+
+pub(super) fn incoming_waveform_underlay_commands(
+    size: Size,
+    theme: PumpTheme,
+    waveform: Option<crate::incoming_waveform::IncomingWaveformSnapshot>,
+) -> Vec<SurfaceCommand> {
+    let rect = Rect {
+        origin: Point { x: 0, y: 0 },
+        size,
+    };
+    let mut commands = Vec::with_capacity(
+        crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT
+            .saturating_mul(2)
+            .saturating_add(1),
+    );
+    commands.push(SurfaceCommand::FillRect {
+        rect,
+        color: theme.curve_bg,
+    });
+    let Some(waveform) = waveform else {
+        return commands;
+    };
+
+    let center_y = size.height.saturating_sub(1) as f32 * 0.5;
+    let amplitude_scale = center_y * 0.86;
+    let color = Color::rgba(
+        theme.version_label.r,
+        theme.version_label.g,
+        theme.version_label.b,
+        88,
+    );
+    let point = |index: usize, upper: bool| {
+        let phase =
+            index as f32 / (crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT - 1) as f32;
+        let x = (phase * size.width.saturating_sub(1) as f32).round() as i32;
+        let offset = waveform[index].clamp(0.0, 1.0) * amplitude_scale;
+        Point {
+            x,
+            y: (center_y + if upper { -offset } else { offset }).round() as i32,
+        }
+    };
+    for index in 1..crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT {
+        commands.push(SurfaceCommand::Line {
+            start: point(index - 1, true),
+            end: point(index, true),
+            color,
+        });
+        commands.push(SurfaceCommand::Line {
+            start: point(index - 1, false),
+            end: point(index, false),
+            color,
+        });
+    }
+    commands
 }
