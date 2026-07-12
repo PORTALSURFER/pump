@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-11 18:46:43 UTC
-- Active Mission: Render Pump's declarative GUI entirely through Radiant while Toybox owns reusable plugin-host infrastructure.
-- Current Workstream: PR #12 on branch `codex/pump-radiant-curve-area-fill` is back in implementation after hosted testing exposed Pump's obsolete Cocoa primitive renderer.
+- Last Updated (UTC): 2026-07-12 08:41:49 UTC
+- Active Mission: Make Pump's curve playhead visually distinct from editable curve nodes for OPT-935.
+- Current Workstream: Branch `wsvasek/opt-935-pump-make-curve-playhead-dot-visually-distinct-from-curve` is signed off by the user after Bitwig review. Final CI is green; the intended Pump PR is ready to commit, push, open, and merge.
 
 ## Current State
 
@@ -34,7 +34,9 @@
 - A fresh signed artifact is installed at `dist/pump-v0.2.0-macos.vst3`; its binary SHA-256 is `fd6d7bd12e9b34a586fa7b77212b1ce37481206d601355e46df29412a4c0b6e5`.
 - Bitwig plugin-host PID `56167` still maps the previous binary and must unload or restart before testing this rebuild.
 - `scripts/run_agent_request.sh` is currently blocked by the root screenshot-coverage policy not listing Pump, which predates this GUI migration.
+- OPT-935 now reserves magenta for the playhead core/ring/glow in both Pump curve renderers instead of reusing normal, hovered, selected, or preview node colors. All 180 tests, VST3 clippy with warnings denied, focused VST3 playhead tests, and headless playback screenshots at 315x211, 420x282, 525x352, and 630x423 pass.
+- The signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `836aad651616489c112fefa74f787eef7af5e2970eedd7d230acbf3509b680be`; Bitwig loaded that exact binary and the user approved the visual result.
 
 ## Immediate Next Action
 
-- Complete Pump validation, build a fresh release VST3, and verify the Radiant/Vello surface and attenuation fill in a real host before returning PR #12 to user review.
+- Commit and push the signed-off Pump change, open and merge its ready-for-review PR, then advance the audiodev submodule pointer.

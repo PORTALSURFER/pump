@@ -7,6 +7,8 @@ All notable changes to this project are documented in this file.
 
 ### Bug Fixes
 
+- Make the curve playhead visually distinct from editable curve nodes (OPT-935)
+
 - Migrate pump GUI open path to open_parented_with (9eded5e)
 
 - Align pump with latest toybox and restore screenshot helpers (af020b8)
@@ -921,4 +923,3 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 - (state) Add malformed payload decode coverage (ebed91c)
 
 - (gui) Add non-windows dropdown-over-curve coverage (dd87705)
-

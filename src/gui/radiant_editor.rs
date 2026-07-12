@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use radiant::gui::types::{Point, Rect, Vector2};
+use radiant::gui::types::{Point, Rect, Rgba8, Vector2};
 use radiant::gui::visualization::{
     push_sampled_curve_area_fill, SampledCurveAreaBaseline, SampledCurveAreaFillParts,
 };
@@ -66,6 +66,9 @@ const CURVE_NODE_PUSH_THROUGH_MARGIN_PX: f32 = 10.0;
 const CURVE_NODE_MIN_SPACING_X: f32 = 1.0e-3;
 const CURVE_PLAYHEAD_MARKER_SIZE: f32 = 5.5;
 const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
+const CURVE_PLAYHEAD_GLOW_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 112);
+const CURVE_PLAYHEAD_CORE_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 255);
+const CURVE_PLAYHEAD_STROKE_COLOR: Rgba8 = Rgba8::new(255, 196, 232, 255);
 const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
 const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
@@ -1739,12 +1742,7 @@ impl CurvePreviewWidget {
         }
     }
 
-    fn push_playhead(
-        &self,
-        primitives: &mut Vec<PaintPrimitive>,
-        bounds: Rect,
-        theme: &ThemeTokens,
-    ) {
+    fn push_playhead(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect) {
         let Some(phase) = self.playhead_phase else {
             return;
         };
@@ -1766,7 +1764,7 @@ impl CurvePreviewWidget {
                 CURVE_PLAYHEAD_MARKER_GLOW_SIZE,
                 CURVE_PLAYHEAD_MARKER_GLOW_SIZE,
             ),
-            color: theme.accent_copper,
+            color: CURVE_PLAYHEAD_GLOW_COLOR,
         }));
         primitives.push(PaintPrimitive::FillRect(PaintFillRect {
             widget_id: self.common.id,
@@ -1776,7 +1774,7 @@ impl CurvePreviewWidget {
                 CURVE_PLAYHEAD_MARKER_SIZE,
                 CURVE_PLAYHEAD_MARKER_SIZE,
             ),
-            color: theme.accent_warning,
+            color: CURVE_PLAYHEAD_CORE_COLOR,
         }));
         primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
             widget_id: self.common.id,
@@ -1786,7 +1784,7 @@ impl CurvePreviewWidget {
                 CURVE_PLAYHEAD_MARKER_SIZE,
                 CURVE_PLAYHEAD_MARKER_SIZE,
             ),
-            color: theme.accent_mint,
+            color: CURVE_PLAYHEAD_STROKE_COLOR,
             width: 1.0,
         }));
     }
@@ -1899,7 +1897,7 @@ impl Widget for CurvePreviewWidget {
     ) {
         self.push_grid(primitives, bounds, theme);
         self.push_curve(primitives, bounds, theme);
-        self.push_playhead(primitives, bounds, theme);
+        self.push_playhead(primitives, bounds);
         self.push_nodes(primitives, bounds, theme);
     }
 }
@@ -3169,7 +3167,7 @@ mod tests {
             matches!(
                 primitive,
                 PaintPrimitive::FillRect(fill)
-                    if fill.color == theme.accent_warning
+                    if fill.color == CURVE_PLAYHEAD_CORE_COLOR
                         && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-4
                         && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-4
                         && ((fill.rect.min.x + fill.rect.width() * 0.5) - expected_center.x).abs()
@@ -3178,6 +3176,23 @@ mod tests {
                             < 1.0e-4
             )
         }));
+    }
+
+    #[test]
+    fn curve_playhead_palette_does_not_reuse_editable_node_states() {
+        let theme = ThemeTokens::default();
+        let editable_node_colors = [
+            theme.surface_raised,
+            theme.accent_warning,
+            theme.accent_mint,
+            theme.accent_copper,
+        ];
+
+        for editable_color in editable_node_colors {
+            assert_ne!(CURVE_PLAYHEAD_CORE_COLOR, editable_color);
+            assert_ne!(CURVE_PLAYHEAD_STROKE_COLOR, editable_color);
+        }
+        assert_ne!(CURVE_PLAYHEAD_CORE_COLOR, CURVE_PLAYHEAD_STROKE_COLOR);
     }
 
     #[cfg(feature = "vst3")]
@@ -3228,12 +3243,11 @@ mod tests {
 
     #[cfg(feature = "vst3")]
     fn playhead_marker_center(plan: &SurfacePaintPlan) -> Option<Point> {
-        let theme = ThemeTokens::default();
         plan.primitives
             .iter()
             .find_map(|primitive| match primitive {
                 PaintPrimitive::FillRect(fill)
-                    if fill.color == theme.accent_warning
+                    if fill.color == CURVE_PLAYHEAD_CORE_COLOR
                         && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
                         && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6 =>
                 {
