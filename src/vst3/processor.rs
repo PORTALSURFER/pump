@@ -282,12 +282,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         let process_data = unsafe { &*data };
-        if process_data.numSamples > 0
-            && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
-        {
-            return kInvalidArgument;
-        }
-
         for id in [
             PARAM_MIX_NUM,
             PARAM_PHASE_OFFSET_NUM,
@@ -299,6 +293,19 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             {
                 apply_normalized_param(self.shared.params.as_ref(), id, value);
             }
+        }
+
+        // VST3 hosts may call process with no audio buses to flush queued
+        // parameter changes. Those calls are valid even with a positive sample
+        // count because there is no audio range or sample format to validate.
+        if process_data.numInputs == 0 && process_data.numOutputs == 0 {
+            return process_ok();
+        }
+
+        if process_data.numSamples > 0
+            && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
+        {
+            return kInvalidArgument;
         }
 
         let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {

@@ -166,6 +166,18 @@ fn processor_accepts_an_empty_no_buffer_block() {
 }
 
 #[test]
+fn processor_accepts_a_positive_length_zero_bus_parameter_flush() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+    let mut process_data: ProcessData = unsafe { mem::zeroed() };
+    process_data.numSamples = 64;
+    process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+
+    let result = unsafe { processor.process(&mut process_data) };
+
+    assert_eq!(result, process_ok());
+}
+
+#[test]
 fn processor_silences_instead_of_waiting_for_reentrant_runtime_access() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let _runtime_guard = processor
