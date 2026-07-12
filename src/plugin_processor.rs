@@ -13,6 +13,8 @@ pub struct PumpAudioProcessor<'a> {
     scratch_right: Vec<f32>,
     /// Scratch vector for draining queued automation events.
     automation_drain: Vec<AutomationEvent>,
+    /// Reused sample-offset parameter schedule for the current block.
+    param_schedule: ParamEventSchedule,
 }
 
 impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioProcessor<'a> {
@@ -30,6 +32,9 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             scratch_left: Vec::new(),
             scratch_right: Vec::new(),
             automation_drain: Vec::new(),
+            param_schedule: ParamEventSchedule::with_capacity(
+                (audio_config.max_frames_count as usize).saturating_mul(4),
+            ),
         })
     }
 
@@ -39,9 +44,8 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        apply_param_events(events.input, |param_id, value| {
-            apply_param_event(self.shared.params.as_ref(), param_id, value as f32)
-        });
+        let frame_count = audio.frames_count() as usize;
+        collect_clap_param_points(events.input, frame_count, &mut self.param_schedule);
 
         let revision = self.shared.params.curve_revision();
         if revision != self.last_curve_revision {
@@ -50,12 +54,9 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             self.last_curve_revision = revision;
         }
 
-        let settings = DspSettings {
-            mix: self.shared.params.mix(),
-            phase_offset: self.shared.params.phase_offset(),
-            output_gain_db: self.shared.params.output_gain_db(),
-            beats_per_cycle: self.shared.params.sync_beats_per_cycle(),
-        };
+        let mut settings = dsp_settings_from_params(self.shared.params.as_ref());
+        self.param_schedule
+            .apply_through(0, self.shared.params.as_ref(), &mut settings);
 
         let transport = transport_state_from_transport(process.transport.copied());
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
@@ -80,8 +81,11 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             let Some(right_pair) = iter.next() else {
                 continue;
             };
-            self.process_stereo_pair(left_pair, right_pair, settings, transport);
+            self.process_stereo_pair(left_pair, right_pair, &mut settings, transport);
         }
+
+        self.param_schedule
+            .apply_remaining(self.shared.params.as_ref(), &mut settings);
 
         let _stats = self
             .shared
@@ -90,6 +94,26 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
 
         Ok(ProcessStatus::Continue)
     }
+}
+
+fn collect_clap_param_points(
+    input: &InputEvents<'_>,
+    frame_count: usize,
+    schedule: &mut ParamEventSchedule,
+) {
+    schedule.begin_block(frame_count);
+    for event in input {
+        if let Some(CoreEventSpace::ParamValue(param)) = event.as_core_event() {
+            if let Some(param_id) = param.param_id() {
+                schedule.push(
+                    i64::from(event.header().time()),
+                    param_id,
+                    param.value() as f32,
+                );
+            }
+        }
+    }
+    schedule.prepare();
 }
 
 impl PluginAudioProcessorParams for PumpAudioProcessor<'_> {
@@ -114,7 +138,7 @@ impl PumpAudioProcessor<'_> {
         &mut self,
         left_pair: ChannelPair<'_, f32>,
         right_pair: ChannelPair<'_, f32>,
-        settings: DspSettings,
+        settings: &mut DspSettings,
         transport: TransportState,
     ) {
         let (left_input, left_output, left_in_place) = split_channel(left_pair);
@@ -164,21 +188,18 @@ impl PumpAudioProcessor<'_> {
             };
         }
 
-        let mut transport_for_sample = transport;
-        let mut last_phase = 0.0_f32;
-        let mut last_gain = 1.0_f32;
-
-        for frame in 0..frames {
-            let telemetry = self.engine.process_sample(
-                &mut self.scratch_left[frame],
-                &mut self.scratch_right[frame],
-                settings,
-                transport_for_sample,
-            );
-            transport_for_sample.song_pos_beats = None;
-            last_phase = telemetry.phase;
-            last_gain = telemetry.gain;
-        }
+        let telemetry = process_stereo_block(
+            &mut self.engine,
+            &mut self.scratch_left[..frames],
+            &mut self.scratch_right[..frames],
+            self.shared.params.as_ref(),
+            &mut self.param_schedule,
+            settings,
+            transport,
+        );
+        let (last_phase, last_gain) = telemetry
+            .map(|telemetry| (telemetry.phase, telemetry.gain))
+            .unwrap_or((0.0, 1.0));
 
         self.shared.status.update(
             last_phase,
@@ -205,5 +226,37 @@ impl PumpAudioProcessor<'_> {
         if self.scratch_right.len() < frames {
             self.scratch_right.resize(frames, 0.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::params::PARAM_MIX_ID;
+    use toybox::clack_plugin::events::event_types::ParamValueEvent;
+    use toybox::clack_plugin::events::Pckn;
+    use toybox::clack_plugin::utils::Cookie;
+
+    #[test]
+    fn clap_points_retain_offsets_and_are_scheduled_chronologically() {
+        let events = [
+            ParamValueEvent::new(7, PARAM_MIX_ID, Pckn::match_all(), 0.7, Cookie::empty()),
+            ParamValueEvent::new(0, PARAM_MIX_ID, Pckn::match_all(), 0.2, Cookie::empty()),
+            ParamValueEvent::new(3, PARAM_MIX_ID, Pckn::match_all(), 0.4, Cookie::empty()),
+        ];
+        let input = InputEvents::from_buffer(&events);
+        let params = PumpParams::new();
+        let mut schedule = ParamEventSchedule::default();
+        collect_clap_param_points(&input, 5, &mut schedule);
+        let mut settings = dsp_settings_from_params(&params);
+
+        schedule.apply_through(0, &params, &mut settings);
+        assert!((params.mix() - 0.2).abs() < f32::EPSILON);
+        schedule.apply_through(2, &params, &mut settings);
+        assert!((params.mix() - 0.2).abs() < f32::EPSILON);
+        schedule.apply_through(3, &params, &mut settings);
+        assert!((params.mix() - 0.4).abs() < f32::EPSILON);
+        schedule.apply_remaining(&params, &mut settings);
+        assert!((params.mix() - 0.7).abs() < f32::EPSILON);
     }
 }

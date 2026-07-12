@@ -12,18 +12,22 @@ use toybox::clap::automation::AutomationQueue;
 use toybox::vst3::prelude::Steinberg::*;
 use toybox::vst3::prelude::*;
 
-use crate::dsp::{DspSettings, PumpEngine};
+use crate::dsp::PumpEngine;
 use crate::gui::preferred_window_size;
 #[cfg(not(target_os = "macos"))]
 use crate::gui::PumpGui;
+#[cfg(test)]
+use crate::params::PARAM_MIX_NUM;
 use crate::params::{
     apply_normalized_param_value, clap_id_from_vst3_param_id, decode_state_payload,
     encode_state_payload, format_plain_value_text, get_param_value, normalized_from_plain_value,
     param_count, parse_plain_value_text, plain_from_normalized_value, vst3_param_info_for_index,
-    PumpParams, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_NUM,
-    PARAM_SYNC_DIVISION_NUM,
+    PumpParams,
 };
 use crate::plugin_metadata::PLUGIN_NAME;
+use crate::sample_automation::{
+    dsp_settings_from_params, process_stereo_block_raw, ParamEventSchedule, RawStereoBlock,
+};
 use crate::transport::{gui_phase_from_transport, gui_transport_telemetry};
 use crate::GuiStatus;
 use toybox::dsp::TransportState;

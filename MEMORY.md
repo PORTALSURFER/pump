@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-12 08:59:09 UTC
-- Active Mission: Make Pump's curve playhead visually distinct from editable curve nodes for OPT-935.
-- Current Workstream: Pump PR #13 on branch `wsvasek/opt-935-pump-make-curve-playhead-dot-visually-distinct-from-curve` is signed off by the user and addressing one P2 review item before merge: node primitives must paint before the playhead so exact phase/node overlaps preserve the magenta indicator.
+- Last Updated (UTC): 2026-07-12 11:29:36 UTC
+- Active Mission: Honor sample offsets for Pump CLAP and VST3 parameter automation for OPT-1139.
+- Current Workstream: Pump PR #15 (`https://github.com/PORTALSURFER/pump/pull/15`) is ready for review on `wsvasek/opt-1139-pump-honor-sample-offsets-for-clap-and-vst3-parameter`. Status: waiting for user review. The P1 in-place VST3 buffer comment is addressed with alias-safe raw host-buffer processing and an exact in-place regression.
 
 ## Current State
 
@@ -37,7 +37,9 @@
 - OPT-935 now reserves magenta for the playhead core/ring/glow in both Pump curve renderers instead of reusing normal, hovered, selected, or preview node colors. All 180 tests, VST3 clippy with warnings denied, focused VST3 playhead tests, and headless playback screenshots at 315x211, 420x282, 525x352, and 630x423 pass.
 - The signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `e0a8e2490b65255eff755c2b9e78e34a768ea947984f180762fa1edfca13bfa8`. Bitwig PID `32966` still maps the previously approved binary, so it must fully unload or restart before testing this final rebuild.
 - The overlap-order fix moves playhead primitives after editable nodes and adds an exact phase-zero/default-endpoint regression. All 181 tests, focused VST3 coverage, warnings-denied clippy, artifact signing, and the final release build pass.
+- OPT-1139 adds shared exact-boundary processing tests, CLAP timestamp adapter coverage, VST3 normalization/step coverage, and exact in-place VST3 channel-buffer coverage. Default CI passes 186 tests and VST3 CI passes 210 tests.
+- The fresh signed OPT-1139 review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `c49186c74dd8efdf59f44fd7b709d8eb2b76658c9e59191e713632c5ca2f509c`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. Bitwig PID `32966` still maps the previous binary and must fully unload or restart before the large-buffer host smoke test.
 
 ## Immediate Next Action
 
-- Push the overlap-order follow-up to PR #13, wait for green checks, merge, then advance the audiodev submodule pointer.
+- Wait for the large-buffer host smoke test and explicit user review/sign-off on Pump PR #15. Do not start the dependent audiodev pointer PR until this active PR is resolved.
