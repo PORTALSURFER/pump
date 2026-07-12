@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-12 13:24:28 UTC
+- Last Updated (UTC): 2026-07-12 13:28:24 UTC
 - Active Mission: Bound serialized collection counts before allocation during Pump state decode for OPT-1141.
-- Current Workstream: Intended ready-for-review Pump PR for `wsvasek/opt-1141-pump-bound-quick-slot-counts-before-allocating-during-state`. Scope: validate semantic collection limits and minimum remaining payload bytes across host state, preset-bank persistence, and global curve-slot persistence before reserving or iterating. Definition of Done: fixed quick-slot counts, actionable non-mutating malformed-payload errors, sibling count-field audit, compatibility preservation, default and VST3 CI, and targeted malformed-count coverage. Status: validated.
+- Current Workstream: Pump PR #16 (`https://github.com/PORTALSURFER/pump/pull/16`) is ready for review on `wsvasek/opt-1141-pump-bound-quick-slot-counts-before-allocating-during-state`. Scope: validate semantic collection limits and minimum remaining payload bytes across host state, preset-bank persistence, and global curve-slot persistence before reserving or iterating. Definition of Done: fixed quick-slot counts, actionable non-mutating malformed-payload errors, sibling count-field audit, compatibility preservation, default and VST3 CI, and targeted malformed-count coverage. Status: waiting for user review.
 
 ## Current State
 
@@ -44,4 +44,4 @@
 
 ## Immediate Next Action
 
-- Commit and push the validated OPT-1141 branch, open its PR ready for review, then wait for explicit user review/sign-off.
+- Wait for CI and explicit user review/sign-off on ready-for-review Pump PR #16.
