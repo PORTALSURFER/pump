@@ -245,6 +245,9 @@ fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlo
     if count > GLOBAL_CURVE_SLOT_COUNT {
         return Err("invalid curve slot count bounds".to_string());
     }
+    if remaining_bytes(&cursor) < count {
+        return Err("invalid curve slot count byte length".to_string());
+    }
     let mut slots = Vec::with_capacity(count);
     for _ in 0..count {
         let occupied = read_u8(&mut cursor).ok_or_else(|| "invalid curve slot flag".to_string())?;
@@ -269,6 +272,10 @@ fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlo
 fn decode_curve(cursor: &mut Cursor<&[u8]>, node_count: usize) -> Result<EditableCurve, String> {
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds".to_string());
+    }
+    let required_bytes = node_count * 8 + node_count.saturating_sub(1) * 4;
+    if remaining_bytes(cursor) < required_bytes {
+        return Err("invalid curve byte count".to_string());
     }
     let mut nodes = Vec::with_capacity(node_count);
     for _ in 0..node_count {
@@ -300,6 +307,13 @@ fn read_u8(cursor: &mut Cursor<&[u8]>) -> Option<u8> {
     let mut bytes = [0_u8; 1];
     std::io::Read::read_exact(cursor, &mut bytes).ok()?;
     Some(bytes[0])
+}
+
+fn remaining_bytes(cursor: &Cursor<&[u8]>) -> usize {
+    cursor
+        .get_ref()
+        .len()
+        .saturating_sub(cursor.position() as usize)
 }
 
 #[cfg(test)]
@@ -358,5 +372,17 @@ mod tests {
         let error = decode_global_curve_slot_payload(&payload)
             .expect_err("invalid magic should be rejected");
         assert_eq!(error, "unknown curve slot store format");
+    }
+
+    #[test]
+    fn curve_slot_decode_validates_count_against_remaining_bytes() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(CURVE_SLOT_STORE_MAGIC);
+        payload.extend_from_slice(&CURVE_SLOT_STORE_VERSION.to_le_bytes());
+        payload.extend_from_slice(&(GLOBAL_CURVE_SLOT_COUNT as u32).to_le_bytes());
+
+        let error = decode_global_curve_slot_payload(&payload)
+            .expect_err("missing slot flags should be rejected before iteration");
+        assert_eq!(error, "invalid curve slot count byte length");
     }
 }

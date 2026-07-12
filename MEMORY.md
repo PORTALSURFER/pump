@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-12 11:29:36 UTC
-- Active Mission: Honor sample offsets for Pump CLAP and VST3 parameter automation for OPT-1139.
-- Current Workstream: Pump PR #15 (`https://github.com/PORTALSURFER/pump/pull/15`) is ready for review on `wsvasek/opt-1139-pump-honor-sample-offsets-for-clap-and-vst3-parameter`. Status: waiting for user review. The P1 in-place VST3 buffer comment is addressed with alias-safe raw host-buffer processing and an exact in-place regression.
+- Last Updated (UTC): 2026-07-12 13:24:28 UTC
+- Active Mission: Bound serialized collection counts before allocation during Pump state decode for OPT-1141.
+- Current Workstream: Intended ready-for-review Pump PR for `wsvasek/opt-1141-pump-bound-quick-slot-counts-before-allocating-during-state`. Scope: validate semantic collection limits and minimum remaining payload bytes across host state, preset-bank persistence, and global curve-slot persistence before reserving or iterating. Definition of Done: fixed quick-slot counts, actionable non-mutating malformed-payload errors, sibling count-field audit, compatibility preservation, default and VST3 CI, and targeted malformed-count coverage. Status: validated.
 
 ## Current State
 
@@ -39,7 +39,9 @@
 - The overlap-order fix moves playhead primitives after editable nodes and adds an exact phase-zero/default-endpoint regression. All 181 tests, focused VST3 coverage, warnings-denied clippy, artifact signing, and the final release build pass.
 - OPT-1139 adds shared exact-boundary processing tests, CLAP timestamp adapter coverage, VST3 normalization/step coverage, and exact in-place VST3 channel-buffer coverage. Default CI passes 186 tests and VST3 CI passes 210 tests.
 - The fresh signed OPT-1139 review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `c49186c74dd8efdf59f44fd7b709d8eb2b76658c9e59191e713632c5ca2f509c`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. Bitwig PID `32966` still maps the previous binary and must fully unload or restart before the large-buffer host smoke test.
+- OPT-1141 rejects host-state and preset-store quick-slot counts unless they equal `QUICK_SLOT_COUNT`, validates minimum remaining bytes before all state/persistence collection allocations, and applies the same rule to the global curve-slot store sibling decoder.
+- OPT-1141 default CI passes 194 tests and VST3 CI passes 218 tests. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `225509e1e00bb6f42fa9069327d5d88895e734bbeaf190998480f2a8bfc80c37`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. Bitwig PID `32966` still maps the previous binary and must fully unload or restart before testing.
 
 ## Immediate Next Action
 
-- Wait for the large-buffer host smoke test and explicit user review/sign-off on Pump PR #15. Do not start the dependent audiodev pointer PR until this active PR is resolved.
+- Commit and push the validated OPT-1141 branch, open its PR ready for review, then wait for explicit user review/sign-off.

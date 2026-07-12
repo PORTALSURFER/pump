@@ -60,6 +60,32 @@ fn first_preset_node_count_offset(payload: &[u8]) -> usize {
     preset_start + 4 + name_len + (5 * 4) + 1
 }
 
+fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
+    let node_count_offset = first_preset_node_count_offset(payload);
+    let node_count = read_u32(payload, node_count_offset) as usize;
+    let curve_bytes = node_count * 8 + node_count.saturating_sub(1) * 4;
+    node_count_offset + 4 + curve_bytes
+}
+
+fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
+    let mut payload = encode_state_payload(params);
+    let preset_bank_offset = first_preset_start(&payload) - 8;
+    let flag_offset = first_preset_node_count_offset(&payload) - 1;
+    let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
+    write_u32(&mut payload, OFFSET_VERSION, version);
+    match version {
+        2 => payload.truncate(preset_bank_offset),
+        3 => {
+            payload.remove(flag_offset);
+            payload.truncate(quick_slot_offset - 1);
+        }
+        4 => payload.truncate(quick_slot_offset),
+        5 => {}
+        _ => panic!("unsupported test state version"),
+    }
+    payload
+}
+
 fn sample_params() -> PumpParams {
     let params = PumpParams::new();
     params.set_mix(0.73);
@@ -117,6 +143,55 @@ fn decode_rejects_invalid_preset_curve_node_count_without_mutating_state() {
     write_u32(&mut payload, preset_node_count_offset, 1);
 
     assert_decode_error_preserves_state(&params, &payload, "invalid node count bounds");
+}
+
+#[test]
+fn decode_rejects_non_fixed_quick_slot_counts_without_mutating_state() {
+    for count in [u32::MAX, 0, 7, 9] {
+        let params = sample_params();
+        let mut payload = encode_state_payload(&params);
+        let count_offset = first_preset_quick_slot_count_offset(&payload);
+        write_u32(&mut payload, count_offset, count);
+
+        assert_decode_error_preserves_state(
+            &params,
+            &payload,
+            "invalid preset quick slot count bounds",
+        );
+    }
+}
+
+#[test]
+fn decode_rejects_truncated_quick_slots_without_mutating_state() {
+    let params = sample_params();
+    let mut payload = encode_state_payload(&params);
+    let count_offset = first_preset_quick_slot_count_offset(&payload);
+    payload.truncate(count_offset + 4);
+
+    assert_decode_error_preserves_state(
+        &params,
+        &payload,
+        "invalid preset quick slot count byte length",
+    );
+}
+
+#[test]
+fn decode_accepts_fixed_quick_slot_count() {
+    let params = sample_params();
+    let payload = encode_state_payload(&params);
+
+    decode_state_payload(&params, &payload).expect("fixed quick-slot count should decode");
+}
+
+#[test]
+fn decode_preserves_v2_through_v5_state_compatibility() {
+    for version in 2..=5 {
+        let params = sample_params();
+        let payload = payload_for_state_version(&params, version);
+
+        decode_state_payload(&params, &payload)
+            .unwrap_or_else(|error| panic!("state v{version} should decode: {error}"));
+    }
 }
 
 #[test]
