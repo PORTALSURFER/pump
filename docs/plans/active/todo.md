@@ -2,11 +2,11 @@
 
 Ordered queue for immediate execution:
 
-1. [x] Replace ambiguous preset mutation booleans/options with structured success and error outcomes.
-2. [x] Stage and persist every durable preset-bank mutation before committing runtime state.
-3. [x] Keep a persistent actionable storage warning visible in both Toybox and Radiant.
-4. [x] Inject directory-create, temporary-write, and final-rename failures and assert rollback plus reload behavior.
-5. [x] Validate a genuinely unwritable preset directory, default CI (206 tests), and VST3 CI (230 tests).
-6. [x] Build and audit the signed `dist/pump-v0.2.0-macos.vst3` review artifact.
-7. [x] Open Pump PR #18 ready for review.
-8. [ ] Wait for CI and explicit user review/sign-off on the OPT-1142 PR.
+1. [x] Add disabled-by-default fixed-size incoming-audio capture keyed to Pump's normalized cycle phase.
+2. [x] Invalidate stale data for disable, unavailable/silent input, and cycle wrap without blocking or allocating on the audio thread.
+3. [x] Add explicit waveform toggles and subordinate background rendering to the Toybox and Radiant curve editors.
+4. [x] Cover enabled, disabled, unavailable-input, alignment, render order, and allocation-free processing states.
+5. [x] Pass default CI (216 tests), VST3 CI (241 tests), and four-size screenshot validation.
+6. [ ] Commit and open the ready-for-review OPT-1112 PR.
+7. [ ] Build and audit the signed `dist/pump-v0.2.0-macos.vst3` review artifact.
+8. [ ] Wait for GitHub CI and explicit user review/sign-off on the OPT-1112 PR.

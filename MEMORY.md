@@ -1,8 +1,8 @@
 # Memory
 
 - Last Updated (UTC): 2026-07-12 17:02:54 UTC
-- Active Mission: Make preset persistence failures explicit, rollback-safe, and user-visible for OPT-1142.
-- Current Workstream: Pump PR #18 (`https://github.com/PORTALSURFER/pump/pull/18`) is ready for review on `wsvasek/opt-1142-pump-do-not-report-preset-changes-as-saved-when-persistence`. Scope: structured preset mutation outcomes, persist-before-commit rollback semantics, persistent Toybox/Radiant storage warnings, safe atomic replacement fallback, and injected create/write/rename failure coverage. Definition of Done: all durable mutations distinguish validation/capacity/persistence failure; runtime and disk remain aligned; both renderers warn; reload behavior is covered; default and VST3 CI pass; a fresh signed artifact is available. Status: waiting for user review; required hosted checks are tracked on the PR.
+- Active Mission: Add the optional incoming-audio waveform background for OPT-1112.
+- Current Workstream: `wsvasek/opt-1112-pump-optionally-show-the-incoming-waveform-or-kick-transient` is validated and being packaged as the single active Pump PR. Scope: a user-controlled background waveform in both Pump curve editors, fixed-size lock-free phase-aligned capture, stable empty/unavailable handling, and disabled-path cost removal. Definition of Done: the issue's enabled, disabled, unavailable-input, alignment, render-order, realtime-bound, and no-audio-change requirements pass default, VST3, and screenshot validation. Status: validated; ready-for-review PR and signed review artifact are the remaining steps.
 
 ## Current State
 
@@ -52,7 +52,10 @@
 - The PR #18 undo review fix only persists a history snapshot's preset bank when it differs from the current bank, so knob and curve undo/redo remain available during preset-store failures. Failed preset-history persistence leaves the history entry available for retry.
 - The real unwritable-directory regression probes write capability after applying Unix mode `0500`; environments such as UID 0 that can still create a file clean up and skip, while permission-enforcing environments exercise the real persistence failure.
 - Toybox renders preset persistence failure as an independent expanded header status, so `NOT SAVED - CHECK PRESET FOLDER` stays visible alongside an active rename textbox; the regression asserts both warning and rename draft in the same UI frame.
+- Pump PR #18 for OPT-1142 merged at `29474c9`; the branch cleanup and generated changelog left Pump `main` at `b115b00` before OPT-1112 began.
+- OPT-1112 adds a disabled-by-default `Wave` / `Input waveform` toggle in the Toybox and Radiant editors. Enabled capture aggregates pre-gain stereo peaks into 96 atomic bins keyed by the exact DSP cycle phase; generation changes remove stale bins on enable, disable, unavailable input, and cycle wrap without clearing arrays on the audio thread.
+- Incoming-waveform rendering is a low-contrast symmetric envelope behind the editable curve, nodes, playhead, and interaction feedback. Default CI passes 216 tests, VST3 CI passes 241 tests, and screenshot validation passes at 315x211, 420x282, 525x352, and 630x423.
 
 ## Immediate Next Action
 
-- Wait for GitHub CI and explicit user review/sign-off on ready-for-review Pump PR #18.
+- Open the ready-for-review OPT-1112 PR, build and audit a fresh signed VST3 artifact, then wait for GitHub CI and explicit user review/sign-off.

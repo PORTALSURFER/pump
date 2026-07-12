@@ -4,6 +4,7 @@ use toybox::clack_plugin::utils::ClapId;
 use toybox::dsp::TransportState;
 
 use crate::dsp::{DspSettings, DspTelemetry, PumpEngine};
+use crate::incoming_waveform::IncomingWaveformCapture;
 use crate::params::{apply_param_event, PumpParams};
 
 #[derive(Clone, Copy, Debug)]
@@ -143,31 +144,46 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
 }
 
 /// Process one stereo block while applying parameter points at sample boundaries.
+pub(crate) struct StereoBlockSlices<'a> {
+    pub(crate) left: &'a mut [f32],
+    pub(crate) right: &'a mut [f32],
+}
+
 pub(crate) fn process_stereo_block(
     engine: &mut PumpEngine,
-    left: &mut [f32],
-    right: &mut [f32],
+    block: StereoBlockSlices<'_>,
     params: &PumpParams,
     schedule: &mut ParamEventSchedule,
     settings: &mut DspSettings,
     transport: TransportState,
+    mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
+    let StereoBlockSlices { left, right } = block;
     let frame_count = left.len().min(right.len());
     let mut transport_for_sample = transport;
     let mut last_telemetry = None;
 
     for sample_offset in 0..frame_count {
         schedule.apply_through(sample_offset, params, settings);
-        last_telemetry = Some(engine.process_sample(
+        let input_left = left[sample_offset];
+        let input_right = right[sample_offset];
+        let telemetry = engine.process_sample(
             &mut left[sample_offset],
             &mut right[sample_offset],
             *settings,
             transport_for_sample,
-        ));
+        );
+        if let Some(capture) = waveform.as_mut() {
+            capture.record(telemetry.phase, input_left, input_right);
+        }
+        last_telemetry = Some(telemetry);
         transport_for_sample.song_pos_beats = None;
     }
 
     schedule.apply_remaining(params, settings);
+    if let Some(capture) = waveform {
+        capture.finish();
+    }
     last_telemetry
 }
 
@@ -208,6 +224,7 @@ pub(crate) unsafe fn process_stereo_block_raw(
     schedule: &mut ParamEventSchedule,
     settings: &mut DspSettings,
     transport: TransportState,
+    mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
     let mut transport_for_sample = transport;
     let mut last_telemetry = None;
@@ -218,8 +235,14 @@ pub(crate) unsafe fn process_stereo_block_raw(
         // buffers preserve the original stereo sample pair.
         let mut left = unsafe { block.input_left.add(sample_offset).read() };
         let mut right = unsafe { block.input_right.add(sample_offset).read() };
-        last_telemetry =
-            Some(engine.process_sample(&mut left, &mut right, *settings, transport_for_sample));
+        let input_left = left;
+        let input_right = right;
+        let telemetry =
+            engine.process_sample(&mut left, &mut right, *settings, transport_for_sample);
+        if let Some(capture) = waveform.as_mut() {
+            capture.record(telemetry.phase, input_left, input_right);
+        }
+        last_telemetry = Some(telemetry);
         unsafe {
             block.output_left.add(sample_offset).write(left);
             block.output_right.add(sample_offset).write(right);
@@ -228,6 +251,9 @@ pub(crate) unsafe fn process_stereo_block_raw(
     }
 
     schedule.apply_remaining(params, settings);
+    if let Some(capture) = waveform {
+        capture.finish();
+    }
     last_telemetry
 }
 
@@ -271,12 +297,15 @@ mod tests {
 
         process_stereo_block(
             &mut engine,
-            &mut left,
-            &mut right,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
             &params,
             &mut schedule,
             &mut settings,
             playing_transport(0.0),
+            None,
         );
 
         assert_eq!(&left[..2], &[0.0, 0.0]);
@@ -307,12 +336,15 @@ mod tests {
 
         process_stereo_block(
             &mut engine,
-            &mut left,
-            &mut right,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
             &params,
             &mut schedule,
             &mut settings,
             playing_transport(0.4),
+            None,
         );
 
         for (actual, expected) in left.iter().zip([0.4, 0.41, 0.42, 0.215, 0.22, 0.225]) {

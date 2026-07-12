@@ -118,6 +118,31 @@ fn processor_writes_the_full_normal_output_range() {
 }
 
 #[test]
+fn processor_publishes_enabled_input_waveform_and_clears_it_when_input_disappears() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared.status.set_incoming_waveform_enabled(true);
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(64, 9.0);
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    let snapshot = shared
+        .status
+        .incoming_waveform_snapshot()
+        .expect("VST3 input should publish a waveform snapshot");
+    assert!(snapshot.iter().copied().fold(0.0_f32, f32::max) >= 1.0);
+
+    fixture.process_data.inputs = ptr::null_mut();
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(shared.status.incoming_waveform_snapshot().is_none());
+}
+
+#[test]
 fn processor_supports_exact_in_place_channel_buffers() {
     let shared = Arc::new(PumpVst3Shared::new());
     shared.params.set_output_gain_db(-24.0);

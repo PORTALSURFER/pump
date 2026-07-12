@@ -1,4 +1,5 @@
 use super::*;
+use crate::incoming_waveform::IncomingWaveformWriter;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 const PENDING_SAMPLE_RATE: u8 = 1 << 0;
@@ -149,6 +150,7 @@ pub(super) struct PumpVst3Runtime {
     pub(super) param_schedule: ParamEventSchedule,
     pub(super) last_curve_revision: u32,
     pub(super) sample_rate: f32,
+    pub(super) waveform_writer: IncomingWaveformWriter,
 }
 
 impl PumpVst3Runtime {
@@ -159,6 +161,7 @@ impl PumpVst3Runtime {
             param_schedule: ParamEventSchedule::with_capacity(16_384),
             last_curve_revision: params.curve_revision(),
             sample_rate: 48_000.0,
+            waveform_writer: IncomingWaveformWriter::default(),
         }
     }
 

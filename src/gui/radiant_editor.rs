@@ -8,7 +8,7 @@ use radiant::gui::visualization::{
 };
 use radiant::layout::LayoutOutput;
 use radiant::prelude::{
-    column, custom_widget_mapped, row, slider, text, IntoView, TextAlign, ViewNode,
+    column, custom_widget_mapped, row, slider, text, toggle, IntoView, TextAlign, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
@@ -30,6 +30,7 @@ use crate::curve::{
     sample_editable_curve, CurveNode, CurveSegment, EditableCurve, MAX_EDITABLE_NODES,
     MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
+use crate::incoming_waveform::IncomingWaveformSnapshot;
 use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
     GLOBAL_CURVE_SLOT_COUNT, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB,
@@ -40,7 +41,7 @@ use crate::GuiStatus;
 use super::{build_version_label, WINDOW_HEIGHT, WINDOW_WIDTH};
 
 const BUILD_LABEL_HEIGHT: f32 = 16.0;
-const CURVE_PREVIEW_HEIGHT: f32 = 72.0;
+const CURVE_PREVIEW_HEIGHT: f32 = 68.0;
 const CURVE_SLOT_ROW_HEIGHT: f32 = 22.0;
 const CURVE_SLOT_SPACING: f32 = 4.0;
 const CURVE_SLOT_WIDTH: f32 = ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0)
@@ -178,6 +179,7 @@ enum RadiantEditorMessage {
     Phase(f32),
     OutputGain(f32),
     SyncDivision(f32),
+    IncomingWaveform(bool),
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
     NumericEntry(NumericEntryMessage),
@@ -264,7 +266,9 @@ impl RadiantPumpEditor {
 
     /// Return whether the hosted view should keep repainting without input.
     pub(crate) fn needs_realtime_redraw(&self) -> bool {
-        self.status.has_host_beats_timeline() || self.status.is_playing()
+        self.status.has_host_beats_timeline()
+            || self.status.is_playing()
+            || self.status.incoming_waveform_enabled()
     }
 
     /// Refresh and return the current backend-neutral paint plan.
@@ -377,12 +381,18 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                     state.hover_curve_segment,
                     state.option_hover_held,
                 )
+                .with_incoming_waveform(state.status.incoming_waveform_snapshot())
                 .with_playhead_phase(playhead_phase),
                 RadiantEditorMessage::Curve,
             )
             .fill_width()
             .height(CURVE_PREVIEW_HEIGHT),
             curve_slot_row(state),
+            toggle("Input waveform", state.status.incoming_waveform_enabled())
+                .subtle()
+                .message(RadiantEditorMessage::IncomingWaveform)
+                .fill_width()
+                .height(CONTROL_ROW_HEIGHT),
             control_row(
                 NumericEntryTarget::Mix,
                 format!("{:.0}%", params.mix() * 100.0),
@@ -498,6 +508,9 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             state
                 .params
                 .set_sync_division((value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round());
+        }
+        RadiantEditorMessage::IncomingWaveform(enabled) => {
+            state.status.set_incoming_waveform_enabled(enabled);
         }
         RadiantEditorMessage::Curve(message) => reduce_curve_message(state, message),
         RadiantEditorMessage::CurveSlot(message) => reduce_curve_slot_message(state, message),
@@ -1371,6 +1384,7 @@ struct CurvePreviewWidget {
     hover_segment: Option<usize>,
     option_hover_held: bool,
     playhead_phase: Option<f32>,
+    incoming_waveform: Option<IncomingWaveformSnapshot>,
 }
 
 impl CurvePreviewWidget {
@@ -1399,11 +1413,20 @@ impl CurvePreviewWidget {
             hover_segment,
             option_hover_held,
             playhead_phase: None,
+            incoming_waveform: None,
         }
     }
 
     fn with_playhead_phase(mut self, playhead_phase: Option<f32>) -> Self {
         self.playhead_phase = playhead_phase.map(|phase| phase.rem_euclid(1.0));
+        self
+    }
+
+    fn with_incoming_waveform(
+        mut self,
+        incoming_waveform: Option<IncomingWaveformSnapshot>,
+    ) -> Self {
+        self.incoming_waveform = incoming_waveform;
         self
     }
 
@@ -1642,6 +1665,47 @@ impl CurvePreviewWidget {
                 }));
             }
         }
+    }
+
+    fn push_incoming_waveform(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        theme: &ThemeTokens,
+    ) {
+        let Some(waveform) = self.incoming_waveform.as_ref() else {
+            return;
+        };
+        let center_y = bounds.min.y + bounds.height() * 0.5;
+        let amplitude_scale = bounds.height() * 0.43;
+        let points_for = |upper: bool| -> Arc<[Point]> {
+            Arc::from(
+                waveform
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, amplitude)| {
+                        let phase = index as f32 / (waveform.len() - 1) as f32;
+                        let x = bounds.min.x + phase * bounds.width();
+                        let offset = amplitude.clamp(0.0, 1.0) * amplitude_scale;
+                        Point::new(x, center_y + if upper { -offset } else { offset })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let color = theme.text_muted.with_alpha(88);
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: points_for(true),
+            color,
+            width: 1.0,
+        }));
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: points_for(false),
+            color,
+            width: 1.0,
+        }));
     }
 
     fn sample_curve_points(&self, bounds: Rect) -> Vec<Point> {
@@ -1900,6 +1964,7 @@ impl Widget for CurvePreviewWidget {
         theme: &ThemeTokens,
     ) {
         self.push_grid(primitives, bounds, theme);
+        self.push_incoming_waveform(primitives, bounds, theme);
         self.push_curve(primitives, bounds, theme);
         self.push_nodes(primitives, bounds, theme);
         self.push_playhead(primitives, bounds);
@@ -3086,6 +3151,54 @@ mod tests {
                 theme.accent_mint.with_alpha(CURVE_FILL_BOTTOM_ALPHA),
             ))
         );
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_incoming_waveform_before_curve_and_nodes() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut waveform = [0.0; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
+        waveform[crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT / 2] = 1.0;
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform));
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let waveform_color = theme.text_muted.with_alpha(88);
+        let waveform_indices: Vec<_> = primitives
+            .iter()
+            .enumerate()
+            .filter_map(|(index, primitive)| match primitive {
+                PaintPrimitive::StrokePolyline(stroke) if stroke.color == waveform_color => {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(waveform_indices.len(), 2);
+        let curve_index = primitives
+            .iter()
+            .position(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::StrokePolyline(stroke)
+                        if stroke.color == theme.accent_mint && (stroke.width - 2.0).abs() < 1.0e-6
+                )
+            })
+            .expect("editable curve stroke should be present");
+        let node_index = primitives
+            .iter()
+            .position(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::FillRect(fill) if fill.color == theme.surface_raised
+                )
+            })
+            .expect("curve nodes should be present");
+        assert!(waveform_indices.iter().all(|index| *index < curve_index));
+        assert!(waveform_indices.iter().all(|index| *index < node_index));
     }
 
     #[test]

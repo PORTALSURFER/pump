@@ -5,6 +5,7 @@
 //! isolated so host-facing changes and DSP changes are easier to review.
 
 use super::*;
+use crate::incoming_waveform::IncomingWaveformCapture;
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -285,6 +286,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         let frame_count = process_data.numSamples.max(0) as usize;
         let Some(mut runtime) = self.runtime.try_acquire() else {
             apply_vst3_param_points_immediately(process_data, self.shared.params.as_ref());
+            self.shared
+                .status
+                .incoming_waveform_buffer()
+                .mark_unavailable();
             if process_data.numOutputs == 0 {
                 return process_ok();
             }
@@ -308,6 +313,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         // parameter-only flushes. With no output bus there is no writable audio
         // range or sample format to validate after consuming parameter changes.
         if process_data.numOutputs == 0 {
+            self.shared
+                .status
+                .incoming_waveform_buffer()
+                .mark_unavailable();
+            runtime.waveform_writer.reset();
             apply_scheduled_vst3_points_remaining(
                 &mut runtime.param_schedule,
                 self.shared.params.as_ref(),
@@ -318,6 +328,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         if process_data.numSamples > 0
             && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
         {
+            self.shared
+                .status
+                .incoming_waveform_buffer()
+                .mark_unavailable();
+            runtime.waveform_writer.reset();
             apply_scheduled_vst3_points_remaining(
                 &mut runtime.param_schedule,
                 self.shared.params.as_ref(),
@@ -326,6 +341,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         let Some(buffers) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
+            self.shared
+                .status
+                .incoming_waveform_buffer()
+                .mark_unavailable();
+            runtime.waveform_writer.reset();
             apply_scheduled_vst3_points_remaining(
                 &mut runtime.param_schedule,
                 self.shared.params.as_ref(),
@@ -377,6 +397,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 &mut runtime.param_schedule,
                 &mut settings,
                 transport,
+                IncomingWaveformCapture::new(
+                    self.shared.status.incoming_waveform_buffer(),
+                    &mut runtime.waveform_writer,
+                ),
             )
         };
         let (last_phase, last_gain) = telemetry

@@ -1,4 +1,5 @@
 use super::*;
+use crate::incoming_waveform::{IncomingWaveformCapture, IncomingWaveformWriter};
 
 const CLAP_PARAM_EVENTS_PER_FRAME: usize = 4;
 const CLAP_BUFFER_ALLOCATION_ERROR: &str = "Unable to preallocate CLAP realtime processing buffers";
@@ -19,6 +20,8 @@ pub struct PumpAudioProcessor<'a> {
     automation_drain: Vec<AutomationEvent>,
     /// Reused sample-offset parameter schedule for the current block.
     param_schedule: ParamEventSchedule,
+    /// Bounded audio-owned peak aggregator for optional GUI visualization.
+    waveform_writer: IncomingWaveformWriter,
 }
 
 impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioProcessor<'a> {
@@ -39,6 +42,11 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
     ) -> Result<ProcessStatus, PluginError> {
         let frame_count = audio.frames_count() as usize;
         if frame_count > self.scratch_left.len() {
+            self.shared
+                .status
+                .incoming_waveform_buffer()
+                .mark_unavailable();
+            self.waveform_writer.reset();
             apply_param_events(events.input, |param_id, value| {
                 apply_param_event(self.shared.params.as_ref(), param_id, value as f32)
             });
@@ -75,6 +83,7 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             ),
         );
 
+        let mut source_available = false;
         for mut port_pair in &mut audio {
             let Some(mut channels) = port_pair.channels()?.into_f32() else {
                 continue;
@@ -86,7 +95,15 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             let Some(right_pair) = iter.next() else {
                 continue;
             };
-            self.process_stereo_pair(left_pair, right_pair, &mut settings, transport);
+            source_available |=
+                self.process_stereo_pair(left_pair, right_pair, &mut settings, transport);
+        }
+        if !source_available {
+            self.shared
+                .status
+                .incoming_waveform_buffer()
+                .mark_unavailable();
+            self.waveform_writer.reset();
         }
 
         self.param_schedule
@@ -126,6 +143,7 @@ impl<'a> PumpAudioProcessor<'a> {
             scratch_right,
             automation_drain,
             param_schedule,
+            waveform_writer: IncomingWaveformWriter::default(),
         })
     }
 }
@@ -206,7 +224,7 @@ impl PumpAudioProcessor<'_> {
         right_pair: ChannelPair<'_, f32>,
         settings: &mut DspSettings,
         transport: TransportState,
-    ) {
+    ) -> bool {
         let (left_input, left_output, left_in_place) = split_channel(left_pair);
         let (right_input, right_output, right_in_place) = split_channel(right_pair);
 
@@ -219,11 +237,11 @@ impl PumpAudioProcessor<'_> {
         .unwrap_or(0);
 
         if frames == 0 {
-            return;
+            return false;
         }
 
         if frames > self.scratch_left.len() || frames > self.scratch_right.len() {
-            return;
+            return false;
         }
 
         for frame in 0..frames {
@@ -258,12 +276,18 @@ impl PumpAudioProcessor<'_> {
 
         let telemetry = process_stereo_block(
             &mut self.engine,
-            &mut self.scratch_left[..frames],
-            &mut self.scratch_right[..frames],
+            crate::sample_automation::StereoBlockSlices {
+                left: &mut self.scratch_left[..frames],
+                right: &mut self.scratch_right[..frames],
+            },
             self.shared.params.as_ref(),
             &mut self.param_schedule,
             settings,
             transport,
+            IncomingWaveformCapture::new(
+                self.shared.status.incoming_waveform_buffer(),
+                &mut self.waveform_writer,
+            ),
         );
         let (last_phase, last_gain) = telemetry
             .map(|telemetry| (telemetry.phase, telemetry.gain))
@@ -285,6 +309,7 @@ impl PumpAudioProcessor<'_> {
         if let Some(out_right) = right_output {
             out_right[..frames].copy_from_slice(&self.scratch_right[..frames]);
         }
+        true
     }
 }
 
@@ -437,6 +462,34 @@ mod tests {
 
         assert_eq!(left_output, [0.0; 17]);
         assert_eq!(right_output, [0.0; 17]);
+    }
+
+    #[test]
+    fn enabled_waveform_capture_stays_allocation_free_in_clap_processing() {
+        const FRAMES: usize = 128;
+        let shared = shared();
+        shared.status.set_incoming_waveform_enabled(true);
+        let mut processor = processor(&shared, FRAMES as u32);
+        processor.param_schedule.begin_block(FRAMES);
+        let mut settings = dsp_settings_from_params(shared.params.as_ref());
+        let mut left = [0.75; FRAMES];
+        let mut right = [-0.25; FRAMES];
+        let _ = monotonic_micros();
+
+        assert_no_alloc(|| {
+            assert!(processor.process_stereo_pair(
+                ChannelPair::InPlace(&mut left),
+                ChannelPair::InPlace(&mut right),
+                &mut settings,
+                TransportState::default(),
+            ));
+        });
+
+        let snapshot = shared
+            .status
+            .incoming_waveform_snapshot()
+            .expect("enabled processing should publish the input envelope");
+        assert!(snapshot.iter().copied().fold(0.0_f32, f32::max) >= 0.75);
     }
 
     #[test]

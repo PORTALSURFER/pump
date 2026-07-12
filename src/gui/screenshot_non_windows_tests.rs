@@ -8,6 +8,7 @@ use super::{
     DIVISION_KEY, PRESET_DROPDOWN_KEY, WINDOW_HEIGHT, WINDOW_WIDTH,
 };
 use crate::params::SYNC_DIVISIONS;
+use crate::incoming_waveform::IncomingWaveformWriter;
 use crate::GuiTransportTelemetry;
 
 struct CapturedFrame {
@@ -68,6 +69,33 @@ fn screenshot_renders_initial_ui_with_playhead() {
         |input| state.build_ui(input),
     )
     .expect("failed to capture pump playhead screenshots");
+}
+
+#[test]
+fn screenshot_renders_incoming_waveform_behind_curve() {
+    let params = Arc::new(PumpParams::new());
+    let status = Arc::new(GuiStatus::default());
+    status.set_incoming_waveform_enabled(true);
+    let mut writer = IncomingWaveformWriter::default();
+    assert!(writer.begin_block(status.incoming_waveform_buffer()));
+    for index in 0..crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT {
+        let phase = index as f32 / crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT as f32;
+        let kick = (-phase * 8.0).exp() * (phase * 48.0).sin().abs();
+        writer.record(status.incoming_waveform_buffer(), phase, kick, -kick);
+    }
+    writer.finish_block(status.incoming_waveform_buffer());
+    let queue = Arc::new(AutomationQueue::default());
+    let state = GuiState::new(params, status, queue, None);
+
+    screenshot_harness::capture_initial_ui_screenshots_if_enabled(
+        "pump-incoming-waveform",
+        Size {
+            width: WINDOW_WIDTH,
+            height: WINDOW_HEIGHT,
+        },
+        |input| state.build_ui(input),
+    )
+    .expect("failed to capture Pump incoming-waveform screenshots");
 }
 
 #[test]
