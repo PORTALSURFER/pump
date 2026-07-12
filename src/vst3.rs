@@ -13,7 +13,9 @@ use toybox::vst3::prelude::Steinberg::*;
 use toybox::vst3::prelude::*;
 
 use crate::dsp::{DspSettings, PumpEngine};
-use crate::gui::{preferred_window_size, PumpGui};
+use crate::gui::preferred_window_size;
+#[cfg(not(target_os = "macos"))]
+use crate::gui::PumpGui;
 use crate::params::{
     apply_normalized_param_value, clap_id_from_vst3_param_id, decode_state_payload,
     encode_state_payload, format_plain_value_text, get_param_value, normalized_from_plain_value,
@@ -46,8 +48,6 @@ use transport_utils::transport_state_from_vst3_process_context;
 #[cfg(test)]
 use shared_state::{shared_registry, SharedRegistryEntry};
 
-#[cfg(target_os = "macos")]
-mod cocoa_gui;
 mod controller;
 mod factory;
 mod gui_adapter;

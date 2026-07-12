@@ -3,15 +3,18 @@
 use std::sync::Arc;
 
 use radiant::gui::types::{Point, Rect, Vector2};
+use radiant::gui::visualization::{
+    push_sampled_curve_area_fill, SampledCurveAreaBaseline, SampledCurveAreaFillParts,
+};
 use radiant::layout::LayoutOutput;
 use radiant::prelude::{
-    column, custom_widget_mapped, row, slider, text, IntoView, TextAlign, UiSurface, ViewNode,
+    column, custom_widget_mapped, row, slider, text, IntoView, TextAlign, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
 use radiant::runtime::{
-    DeclarativeSurfaceRuntime, PaintFillRect, PaintFillRectBatch, PaintPrimitive,
-    PaintStrokePolyline, PaintStrokeRect, PaintText, PaintTextAlign, PaintTextRun,
+    DeclarativeSurfaceRuntime, PaintBrush, PaintFillRect, PaintLinearGradient, PaintPrimitive,
+    PaintStrokePolyline, PaintStrokeRect, PaintText, PaintTextAlign, PaintTextRun, UiSurface,
 };
 #[cfg(feature = "vst3")]
 use radiant::runtime::{Event, SurfacePaintPlan};
@@ -51,6 +54,8 @@ const SURFACE_SPACING: f32 = 6.0;
 const CURVE_GRID_COLUMNS: usize = 8;
 const CURVE_GRID_ROWS: usize = 4;
 const CURVE_SAMPLE_COUNT: usize = 96;
+const CURVE_FILL_TOP_ALPHA: u8 = 96;
+const CURVE_FILL_BOTTOM_ALPHA: u8 = 12;
 const CURVE_NODE_SIZE: f32 = 5.0;
 const CURVE_PREVIEW_NODE_SIZE: f32 = 7.0;
 const CURVE_NODE_HIT_RADIUS: f32 = 10.0;
@@ -268,6 +273,37 @@ impl RadiantPumpEditor {
             .runtime
             .borrowed_frame_into(&self.theme, &mut self.paint_plan);
         &self.paint_plan
+    }
+}
+
+#[cfg(all(feature = "vst3", target_os = "macos"))]
+impl toybox::vst3::gui::RadiantVst3Editor for RadiantPumpEditor {
+    fn resize(&mut self, width: u32, height: u32) {
+        Self::resize(self, width, height);
+    }
+
+    fn dispatch_event(&mut self, event: Event) {
+        Self::dispatch_event(self, event);
+    }
+
+    fn paint_plan(&mut self) -> &SurfacePaintPlan {
+        Self::paint_plan(self)
+    }
+
+    fn needs_realtime_redraw(&self) -> bool {
+        Self::needs_realtime_redraw(self)
+    }
+
+    fn dispatch_key_press(&mut self, key: WidgetKey) -> bool {
+        Self::dispatch_key_press(self, key)
+    }
+
+    fn dispatch_character(&mut self, character: char) -> bool {
+        Self::dispatch_character(self, character)
+    }
+
+    fn cancel_text_entry(&mut self) -> bool {
+        Self::cancel_numeric_entry(self)
     }
 }
 
@@ -1552,31 +1588,30 @@ impl CurvePreviewWidget {
 
     fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
         let points = self.sample_curve_points(bounds);
-        let fill_rects: Vec<Rect> = (0..CURVE_SAMPLE_COUNT)
-            .map(|step| {
-                let phase = (step as f32 + 0.5) / CURVE_SAMPLE_COUNT as f32;
-                let left =
-                    bounds.min.x + bounds.width() * (step as f32 / CURVE_SAMPLE_COUNT as f32);
-                let right =
-                    bounds.min.x + bounds.width() * ((step + 1) as f32 / CURVE_SAMPLE_COUNT as f32);
-                let top = Self::curve_point(
+        let gradient = PaintLinearGradient::vertical(
+            bounds,
+            theme.accent_mint.with_alpha(CURVE_FILL_TOP_ALPHA),
+            theme.accent_mint.with_alpha(CURVE_FILL_BOTTOM_ALPHA),
+        );
+        push_sampled_curve_area_fill(
+            primitives,
+            SampledCurveAreaFillParts::new(
+                self.common.id,
+                bounds,
+                CURVE_SAMPLE_COUNT,
+                SampledCurveAreaBaseline::Bottom,
+                PaintBrush::linear_gradient(gradient),
+            ),
+            |phase| {
+                Some(Self::curve_point(
                     bounds,
                     CurveNode {
                         x: phase,
                         y: sample_editable_curve(&self.curve, phase),
                     },
-                )
-                .y;
-                Rect::from_xy_size(left, top, (right - left).max(0.0), bounds.max.y - top)
-            })
-            .collect();
-        primitives.push(PaintPrimitive::FillRectBatch(PaintFillRectBatch {
-            widget_id: self.common.id,
-            rects: Arc::from(fill_rects),
-            color: theme
-                .bg_secondary
-                .blend_opaque_toward(theme.accent_mint, 0.2),
-        }));
+                ))
+            },
+        );
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
             points: Arc::from(points),
@@ -3036,25 +3071,19 @@ mod tests {
         let fill = primitives
             .iter()
             .find_map(|primitive| match primitive {
-                PaintPrimitive::FillRectBatch(fill)
-                    if fill.color
-                        == theme
-                            .bg_secondary
-                            .blend_opaque_toward(theme.accent_mint, 0.2) =>
-                {
-                    Some(fill)
-                }
+                PaintPrimitive::FillPath(fill) => Some(fill),
                 _ => None,
             })
-            .expect("curve preview should emit one host-visible attenuation fill batch");
-        assert_eq!(fill.rects.len(), CURVE_SAMPLE_COUNT);
-        assert_eq!(fill.color.a, 255);
-        assert!((fill.rects[0].min.x - bounds.min.x).abs() < 1.0e-6);
-        assert!((fill.rects[fill.rects.len() - 1].max.x - bounds.max.x).abs() < 1.0e-4);
-        assert!(fill
-            .rects
-            .iter()
-            .all(|rect| (rect.max.y - bounds.max.y).abs() < 1.0e-6));
+            .expect("curve preview should emit one gradient attenuation fill path");
+        assert_eq!(fill.path.commands().len(), CURVE_SAMPLE_COUNT + 4);
+        assert_eq!(
+            fill.brush,
+            PaintBrush::linear_gradient(PaintLinearGradient::vertical(
+                bounds,
+                theme.accent_mint.with_alpha(CURVE_FILL_TOP_ALPHA),
+                theme.accent_mint.with_alpha(CURVE_FILL_BOTTOM_ALPHA),
+            ))
+        );
     }
 
     #[test]

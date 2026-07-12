@@ -236,6 +236,16 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (46ca808)
 
+- (changelog) Update changelog [skip ci] (5189443)
+
+- (changelog) Update changelog [skip ci] (670d44e)
+
+- Record Pump curve fill validation (8ac64be)
+
+- Finalize Pump curve fill handoff (820205c)
+
+- Mark Pump curve fill ready for review (1dbea99)
+
 
 ### Features
 
@@ -829,6 +839,44 @@ OPT-925: Support sticky curve point drag-through (baa6434)
 - Merge pull request #11 from PORTALSURFER/codex/pump-attenuation-fill
 
 Add subtle attenuation fill beneath Pump curve (e75ab67)
+
+- Use Radiant curve area fill in Pump (8ca663e)
+
+- Route Pump VST3 GUI through Radiant (05eff54)
+
+- Pin Toybox first-paint sizing fix (89134a6)
+
+- Record rebuilt Pump test artifact (b4beca8)
+
+- Pin Toybox key forwarding fix (2e93856)
+
+- Record rebuilt Pump key-forwarding artifact (581833d)
+
+- Pin Toybox hosted-size preservation (d33ab75)
+
+- Record rebuilt Pump size-preservation artifact (4198ca3)
+
+- Pin Toybox modifier-safe text input (80c24e0)
+
+- Record rebuilt Pump modifier-input artifact (c5c1125)
+
+- Pin Toybox CI authentication update (9f254f4)
+
+- Record rebuilt Pump CI-auth artifact (a129635)
+
+- Pin embedded surface recovery fix (ea5b7c3)
+
+- Record rebuilt Pump surface-recovery artifact (949103b)
+
+- Pin shared embedded clip validation (8841960)
+
+- Record rebuilt clip-validation artifact (bcc4b93)
+
+- Pin embedded text options support (6f0f5a6)
+
+- Record rebuilt text-options artifact (66a2af1)
+
+- Pin embedded animation clock fix (f57d100)
 
 
 ### Refactoring

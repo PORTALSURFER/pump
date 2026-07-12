@@ -1,18 +1,41 @@
 use super::*;
 pub(super) struct PumpVst3GuiAdapter {
+    #[cfg(not(target_os = "macos"))]
     shared: Arc<PumpVst3Shared>,
+    #[cfg(not(target_os = "macos"))]
     gui: PumpGui,
     #[cfg(target_os = "macos")]
-    cocoa_gui: super::cocoa_gui::CocoaPumpEditor,
+    radiant_gui: toybox::vst3::gui::RadiantVst3HostedGui,
 }
 
 impl PumpVst3GuiAdapter {
     pub(super) fn new(shared: Arc<PumpVst3Shared>) -> Self {
-        Self {
-            shared,
-            gui: PumpGui::default(),
-            #[cfg(target_os = "macos")]
-            cocoa_gui: super::cocoa_gui::CocoaPumpEditor::default(),
+        #[cfg(target_os = "macos")]
+        {
+            let (width, height) = preferred_window_size();
+            let editor = crate::gui::RadiantPumpEditor::new(
+                Arc::clone(&shared.params),
+                Arc::clone(&shared.status),
+                Arc::clone(&shared.automation_queue),
+                width,
+                height,
+            );
+            Self {
+                radiant_gui: toybox::vst3::gui::RadiantVst3HostedGui::new(
+                    "PumpRadiantVst3EditorView",
+                    editor,
+                    width,
+                    height,
+                ),
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self {
+                shared,
+                gui: PumpGui::default(),
+            }
         }
     }
 
@@ -51,18 +74,15 @@ impl PumpVst3GuiAdapter {
 impl Vst3HostedGui for PumpVst3GuiAdapter {
     fn set_parent_raw(&mut self, parent: toybox::raw_window_handle::RawWindowHandle) {
         #[cfg(target_os = "macos")]
-        self.cocoa_gui.set_parent_raw(parent);
+        self.radiant_gui.set_parent_raw(parent);
+        #[cfg(not(target_os = "macos"))]
         self.gui.set_parent_raw(parent);
     }
 
     fn open(&mut self) -> bool {
         #[cfg(target_os = "macos")]
         {
-            self.cocoa_gui.open(
-                Arc::clone(&self.shared.params),
-                Arc::clone(&self.shared.status),
-                Arc::clone(&self.shared.automation_queue),
-            )
+            self.radiant_gui.open()
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -80,14 +100,15 @@ impl Vst3HostedGui for PumpVst3GuiAdapter {
 
     fn close(&mut self) {
         #[cfg(target_os = "macos")]
-        self.cocoa_gui.close();
+        self.radiant_gui.close();
+        #[cfg(not(target_os = "macos"))]
         self.gui.close();
     }
 
     fn last_size(&self) -> Option<(u32, u32)> {
         #[cfg(target_os = "macos")]
         {
-            self.cocoa_gui.last_size()
+            self.radiant_gui.last_size()
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -99,7 +120,7 @@ impl Vst3HostedGui for PumpVst3GuiAdapter {
     fn request_resize(&self, width: u32, height: u32) {
         #[cfg(target_os = "macos")]
         {
-            self.cocoa_gui.request_resize(width, height);
+            self.radiant_gui.request_resize(width, height);
         }
 
         #[cfg(not(target_os = "macos"))]

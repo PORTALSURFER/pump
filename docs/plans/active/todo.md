@@ -2,8 +2,7 @@
 
 Ordered queue for immediate execution:
 
-1. Run `bash scripts/run_agent_request.sh` before any substantive change.
-2. Update `MEMORY.md` in present tense whenever mission or next action changes.
-3. Keep `AGENTS.md` as a portal and keep detailed plan state in `docs/`.
-4. Run `bash scripts/update_changelog.sh` before pushing.
-5. Run `bash scripts/ci_local.sh` before handoff, then commit and push coherent changes.
+1. Validate Pump against the pinned Radiant embedded renderer and Toybox hosted-view API.
+2. Build a fresh Pump VST3 and verify the actual hosted UI and curve fill.
+3. Update the existing Pump PR and dependent audiodev pointer PR for user review.
+4. Keep `MEMORY.md` current, run `bash scripts/update_changelog.sh`, and run the available CI lanes before pushing.
