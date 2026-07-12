@@ -246,6 +246,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (a874324)
 
+- (changelog) Update changelog [skip ci] (ce4614c)
+
 
 ### Features
 
@@ -919,6 +921,26 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 * OPT-1140 Preallocate CLAP realtime buffers
 
 * docs: record OPT-1140 review state (b577961)
+
+- OPT-1142 Report preset persistence failures (#18)
+
+* Fix preset persistence failure reporting
+
+* Update OPT-1142 review handoff
+
+* Record OPT-1142 CI success
+
+* Preserve undo across preset write failures
+
+* Update OPT-1142 review artifact
+
+* Make unwritable preset test root-safe
+
+* Update OPT-1142 review artifact hash
+
+* Keep preset warning visible during rename
+
+* Update OPT-1142 review artifact hash (29474c9)
 
 
 ### Refactoring
