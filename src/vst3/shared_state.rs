@@ -1,4 +1,60 @@
 use super::*;
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+
+const PENDING_SAMPLE_RATE: u8 = 1 << 0;
+const PENDING_STATE_RESTORE: u8 = 1 << 1;
+
+#[derive(Debug, Copy, Clone)]
+pub(super) struct PendingRuntimeChanges {
+    pub(super) sample_rate: Option<f32>,
+    pub(super) state_restored: bool,
+}
+
+/// Single-producer/multi-producer handoff into the audio-owned DSP runtime.
+///
+/// Setup and state callbacks only publish fixed-size atomic messages. The
+/// realtime callback consumes them without taking ownership away from the
+/// audio thread or waiting for another thread to release a lock.
+pub(super) struct RuntimeHandoff {
+    sample_rate_bits: AtomicU32,
+    pending: AtomicU8,
+}
+
+impl RuntimeHandoff {
+    pub(super) fn new() -> Self {
+        Self {
+            sample_rate_bits: AtomicU32::new(48_000.0_f32.to_bits()),
+            pending: AtomicU8::new(0),
+        }
+    }
+
+    pub(super) fn publish_sample_rate(&self, sample_rate: f64) {
+        let sample_rate = if sample_rate.is_finite() {
+            sample_rate.max(1.0) as f32
+        } else {
+            48_000.0
+        };
+        self.sample_rate_bits
+            .store(sample_rate.to_bits(), Ordering::Release);
+        self.pending
+            .fetch_or(PENDING_SAMPLE_RATE, Ordering::Release);
+    }
+
+    pub(super) fn publish_state_restore(&self) {
+        self.pending
+            .fetch_or(PENDING_STATE_RESTORE, Ordering::Release);
+    }
+
+    pub(super) fn take_pending(&self) -> PendingRuntimeChanges {
+        let pending = self.pending.swap(0, Ordering::AcqRel);
+        PendingRuntimeChanges {
+            sample_rate: (pending & PENDING_SAMPLE_RATE != 0)
+                .then(|| f32::from_bits(self.sample_rate_bits.load(Ordering::Acquire)).max(1.0)),
+            state_restored: pending & PENDING_STATE_RESTORE != 0,
+        }
+    }
+}
+
 /// Shared VST3 state used by processor, controller, and hosted GUI.
 pub(super) struct PumpVst3Shared {
     pub(super) params: Arc<PumpParams>,

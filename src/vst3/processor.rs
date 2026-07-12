@@ -5,16 +5,74 @@
 //! isolated so host-facing changes and DSP changes are easier to review.
 
 use super::*;
+use std::cell::UnsafeCell;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub(super) struct RealtimeRuntime {
+    inner: UnsafeCell<PumpVst3Runtime>,
+    in_process: AtomicBool,
+}
+
+impl RealtimeRuntime {
+    fn new(runtime: PumpVst3Runtime) -> Self {
+        Self {
+            inner: UnsafeCell::new(runtime),
+            in_process: AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn try_acquire(&self) -> Option<RealtimeRuntimeGuard<'_>> {
+        self.in_process
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| RealtimeRuntimeGuard { owner: self })
+    }
+}
+
+// SAFETY: `inner` is only exposed through `RealtimeRuntimeGuard`, and the
+// atomic guard permits at most one mutable borrower. Setup/state callbacks do
+// not access `inner`; they publish fixed-size messages through `RuntimeHandoff`.
+unsafe impl Sync for RealtimeRuntime {}
+
+pub(super) struct RealtimeRuntimeGuard<'a> {
+    owner: &'a RealtimeRuntime,
+}
+
+impl Deref for RealtimeRuntimeGuard<'_> {
+    type Target = PumpVst3Runtime;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: successful guard acquisition gives this guard exclusive
+        // access until `Drop` clears `in_process`.
+        unsafe { &*self.owner.inner.get() }
+    }
+}
+
+impl DerefMut for RealtimeRuntimeGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: see the `Deref` implementation above.
+        unsafe { &mut *self.owner.inner.get() }
+    }
+}
+
+impl Drop for RealtimeRuntimeGuard<'_> {
+    fn drop(&mut self) {
+        self.owner.in_process.store(false, Ordering::Release);
+    }
+}
 
 pub(super) struct PumpVst3Processor {
     shared: Arc<PumpVst3Shared>,
-    runtime: Mutex<PumpVst3Runtime>,
+    pub(super) runtime: RealtimeRuntime,
+    pub(super) runtime_handoff: RuntimeHandoff,
 }
 
 impl PumpVst3Processor {
     pub(super) fn new(shared: Arc<PumpVst3Shared>) -> Self {
         Self {
-            runtime: Mutex::new(PumpVst3Runtime::new(shared.params.as_ref())),
+            runtime: RealtimeRuntime::new(PumpVst3Runtime::new(shared.params.as_ref())),
+            runtime_handoff: RuntimeHandoff::new(),
             shared,
         }
     }
@@ -136,12 +194,7 @@ impl IComponentTrait for PumpVst3Processor {
             return kInvalidArgument;
         }
 
-        if let Ok(mut runtime) = self.runtime.lock() {
-            runtime
-                .engine
-                .set_target_curve(self.shared.params.curve_snapshot());
-            runtime.last_curve_revision = self.shared.params.curve_revision();
-        }
+        self.runtime_handoff.publish_state_restore();
 
         kResultOk
     }
@@ -214,9 +267,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         let setup = unsafe { &*setup };
-        if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.set_sample_rate(setup.sampleRate, self.shared.params.as_ref());
-        }
+        self.runtime_handoff.publish_sample_rate(setup.sampleRate);
 
         kResultOk
     }
@@ -231,7 +282,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         let process_data = unsafe { &*data };
-
         for id in [
             PARAM_MIX_NUM,
             PARAM_PHASE_OFFSET_NUM,
@@ -245,10 +295,42 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             }
         }
 
-        let mut runtime = match self.runtime.lock() {
-            Ok(runtime) => runtime,
-            Err(_) => return process_ok(),
+        // VST3 hosts may omit a deactivated trailing output bus, including for
+        // parameter-only flushes. With no output bus there is no writable audio
+        // range or sample format to validate after consuming parameter changes.
+        if process_data.numOutputs == 0 {
+            return process_ok();
+        }
+
+        if process_data.numSamples > 0
+            && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
+        {
+            return kInvalidArgument;
+        }
+
+        let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
+            return unsafe { silence_valid_stereo_output(process_data) };
         };
+
+        let Some(mut runtime) = self.runtime.try_acquire() else {
+            buffers.output_left.fill(0.0);
+            buffers.output_right.fill(0.0);
+            // SAFETY: successful stereo buffer extraction validated one
+            // writable output bus above.
+            unsafe { (*process_data.outputs).silenceFlags = 0b11 };
+            return process_ok();
+        };
+
+        let pending = self.runtime_handoff.take_pending();
+        if let Some(sample_rate) = pending.sample_rate {
+            runtime.set_sample_rate(sample_rate.into(), self.shared.params.as_ref());
+        }
+        if pending.state_restored {
+            runtime
+                .engine
+                .set_target_curve(self.shared.params.curve_snapshot());
+            runtime.last_curve_revision = self.shared.params.curve_revision();
+        }
 
         let revision = self.shared.params.curve_revision();
         if revision != runtime.last_curve_revision {
@@ -276,10 +358,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             ),
         );
 
-        let Some(buffers) = (unsafe { stereo_f32_buffers(process_data) }) else {
-            return process_ok();
-        };
-
         let mut last_phase = 0.0_f32;
         let mut last_gain = 1.0_f32;
         let mut transport_for_sample = transport;
@@ -298,6 +376,9 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             buffers.output_left[sample_index] = left;
             buffers.output_right[sample_index] = right;
         }
+        // SAFETY: successful stereo buffer extraction validated one writable
+        // output bus, and the full range now contains processed audio.
+        unsafe { (*process_data.outputs).silenceFlags = 0 };
         self.shared.status.update(
             last_phase,
             last_gain,
@@ -314,6 +395,40 @@ impl IAudioProcessorTrait for PumpVst3Processor {
     unsafe fn getTailSamples(&self) -> u32 {
         0
     }
+}
+
+/// Silence a writable stereo f32 output when a full input/output block cannot
+/// be formed. Invalid output descriptions return an error instead of claiming
+/// successful processing while leaving host memory untouched.
+unsafe fn silence_valid_stereo_output(data: &ProcessData) -> tresult {
+    if data.numSamples < 0 {
+        return kInvalidArgument;
+    }
+    if data.numSamples == 0 {
+        return process_ok();
+    }
+    if data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
+        || data.numOutputs != 1
+        || data.outputs.is_null()
+    {
+        return kInvalidArgument;
+    }
+
+    let output = unsafe { &mut *data.outputs };
+    if output.numChannels != 2 || output.__field0.channelBuffers32.is_null() {
+        return kInvalidArgument;
+    }
+
+    let channels = unsafe { slice::from_raw_parts(output.__field0.channelBuffers32, 2) };
+    if channels.iter().any(|channel| channel.is_null()) {
+        return kInvalidArgument;
+    }
+
+    let num_samples = data.numSamples as usize;
+    unsafe { slice::from_raw_parts_mut(channels[0], num_samples) }.fill(0.0);
+    unsafe { slice::from_raw_parts_mut(channels[1], num_samples) }.fill(0.0);
+    output.silenceFlags = 0b11;
+    process_ok()
 }
 
 impl IProcessContextRequirementsTrait for PumpVst3Processor {
