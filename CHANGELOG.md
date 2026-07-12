@@ -248,6 +248,12 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (ce4614c)
 
+- (changelog) Update changelog [skip ci] (b115b00)
+
+- Track OPT-1112 review state (472ef61)
+
+- Record OPT-1112 review readiness (c01350b)
+
 
 ### Features
 
@@ -941,6 +947,24 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 * Keep preset warning visible during rename
 
 * Update OPT-1142 review artifact hash (29474c9)
+
+- OPT-1112 Add incoming waveform background (4e6e902)
+
+- OPT-1112 Invalidate waveform on backward seeks (7373ab3)
+
+- OPT-1112 Ignore empty blocks in waveform capture (c160167)
+
+- OPT-1112 Let silent waveform data expire (d073fd6)
+
+- OPT-1112 Reset waveform on forward seeks (7df178a)
+
+- OPT-1112 Preserve CLAP waveform on empty blocks (5c12ab7)
+
+- OPT-1112 Reset waveform on cycle remapping (f991670)
+
+- Merge pull request #19 from PORTALSURFER/wsvasek/opt-1112-pump-optionally-show-the-incoming-waveform-or-kick-transient
+
+OPT-1112 Add incoming waveform behind the Pump curve (8a24ba1)
 
 
 ### Refactoring
