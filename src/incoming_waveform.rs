@@ -9,6 +9,7 @@ use crate::time_utils::monotonic_micros;
 pub(crate) const INCOMING_WAVEFORM_BIN_COUNT: usize = 96;
 const SNAPSHOT_STALE_AFTER_MICROS: u64 = 750_000;
 const SILENCE_FLOOR: f32 = 1.0e-4;
+const BACKWARD_PHASE_EPSILON: f32 = 1.0e-5;
 
 /// A bounded GUI snapshot of peak input amplitude over one normalized cycle.
 pub(crate) type IncomingWaveformSnapshot = [f32; INCOMING_WAVEFORM_BIN_COUNT];
@@ -150,7 +151,7 @@ impl IncomingWaveformWriter {
         let phase = phase.rem_euclid(1.0);
         if self
             .last_phase
-            .is_some_and(|previous| previous - phase > 0.5)
+            .is_some_and(|previous| phase + BACKWARD_PHASE_EPSILON < previous)
         {
             self.generation = buffer.begin_next_generation();
             self.current_bin = None;
@@ -280,6 +281,41 @@ mod tests {
         assert!(
             (snapshot[(0.1 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.4).abs() < 1.0e-6
         );
+    }
+
+    #[test]
+    fn smaller_backward_seek_invalidates_later_phase_bins() {
+        let buffer = IncomingWaveformBuffer::default();
+        buffer.set_enabled(true);
+        let mut writer = IncomingWaveformWriter::default();
+        assert!(writer.begin_block(&buffer));
+        writer.record(&buffer, 0.45, 0.9, 0.0);
+        writer.record(&buffer, 0.2, 0.4, 0.0);
+        writer.finish_block(&buffer);
+
+        let snapshot = buffer.snapshot().expect("post-seek signal should remain");
+        assert_eq!(
+            snapshot[(0.45 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize],
+            0.0,
+            "bins after a sub-half-cycle backward seek must not remain visible"
+        );
+        assert!(
+            (snapshot[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.4).abs() < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn insignificant_backward_noise_does_not_restart_the_generation() {
+        let buffer = IncomingWaveformBuffer::default();
+        buffer.set_enabled(true);
+        let mut writer = IncomingWaveformWriter::default();
+        assert!(writer.begin_block(&buffer));
+        writer.record(&buffer, 0.45, 0.9, 0.0);
+        writer.record(&buffer, 0.45 - BACKWARD_PHASE_EPSILON * 0.5, 0.4, 0.0);
+        writer.finish_block(&buffer);
+
+        let snapshot = buffer.snapshot().expect("signal should remain available");
+        assert!(snapshot.iter().copied().fold(0.0_f32, f32::max) >= 0.9);
     }
 
     #[test]
