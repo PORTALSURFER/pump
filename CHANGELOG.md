@@ -244,6 +244,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (eb7d4f9)
 
+- (changelog) Update changelog [skip ci] (a874324)
+
 
 ### Features
 
@@ -911,6 +913,12 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 * OPT-1141 Bound state decode collection counts
 
 * docs: record OPT-1141 review state (6fac47c)
+
+- OPT-1140 Preallocate CLAP realtime buffers (#17)
+
+* OPT-1140 Preallocate CLAP realtime buffers
+
+* docs: record OPT-1140 review state (b577961)
 
 
 ### Refactoring
