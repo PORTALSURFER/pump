@@ -2,7 +2,7 @@
 
 - Last Updated (UTC): 2026-07-12 17:02:54 UTC
 - Active Mission: Make preset persistence failures explicit, rollback-safe, and user-visible for OPT-1142.
-- Current Workstream: Pump PR #18 (`https://github.com/PORTALSURFER/pump/pull/18`) is ready for review on `wsvasek/opt-1142-pump-do-not-report-preset-changes-as-saved-when-persistence`. Scope: structured preset mutation outcomes, persist-before-commit rollback semantics, persistent Toybox/Radiant storage warnings, safe atomic replacement fallback, and injected create/write/rename failure coverage. Definition of Done: all durable mutations distinguish validation/capacity/persistence failure; runtime and disk remain aligned; both renderers warn; reload behavior is covered; default and VST3 CI pass; a fresh signed artifact is available. Status: waiting for user review; GitHub `checks` and `windows-gui-regressions` passed.
+- Current Workstream: Pump PR #18 (`https://github.com/PORTALSURFER/pump/pull/18`) is ready for review on `wsvasek/opt-1142-pump-do-not-report-preset-changes-as-saved-when-persistence`. Scope: structured preset mutation outcomes, persist-before-commit rollback semantics, persistent Toybox/Radiant storage warnings, safe atomic replacement fallback, and injected create/write/rename failure coverage. Definition of Done: all durable mutations distinguish validation/capacity/persistence failure; runtime and disk remain aligned; both renderers warn; reload behavior is covered; default and VST3 CI pass; a fresh signed artifact is available. Status: waiting for user review; required hosted checks are tracked on the PR.
 
 ## Current State
 
@@ -48,7 +48,7 @@
 - OPT-1142 stages create, overwrite, rename, full-bank replacement, legacy preset quick-slot, and selected-index changes, persists the candidate first, and commits runtime state only after success. Failed preset selection also leaves active parameters unchanged.
 - `PresetMutationError` separates invalid index/name, capacity, state access, and persistence failures. A persistence failure remains visible as `NOT SAVED - CHECK PRESET FOLDER` in both Toybox and Radiant until a later preset-bank write succeeds.
 - Preset persistence tests inject directory-create, temporary-write, and final-rename failures; assert rollback and reload state; exercise a genuinely unwritable directory; and verify the existing durable bank remains readable after finalization failure.
-- OPT-1142 default CI passes 206 tests and VST3 CI passes 230 tests. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `6f1ba898e18ba214e8f93bb8853ef0725204c73c04236d4eb7d838cd9346469d`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass.
+- OPT-1142 default CI passes 206 tests and VST3 CI passes 230 tests. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `29ba7b587d884cf647404cfa46131d66848c526a380881758aad4e1c08a4e81e`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass.
 - The PR #18 undo review fix only persists a history snapshot's preset bank when it differs from the current bank, so knob and curve undo/redo remain available during preset-store failures. Failed preset-history persistence leaves the history entry available for retry.
 
 ## Immediate Next Action
