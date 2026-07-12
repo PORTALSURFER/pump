@@ -7,8 +7,6 @@ All notable changes to this project are documented in this file.
 
 ### Bug Fixes
 
-- Make the curve playhead visually distinct from editable curve nodes (OPT-935)
-
 - Migrate pump GUI open path to open_parented_with (9eded5e)
 
 - Align pump with latest toybox and restore screenshot helpers (af020b8)
@@ -239,14 +237,6 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (46ca808)
 
 - (changelog) Update changelog [skip ci] (5189443)
-
-- (changelog) Update changelog [skip ci] (670d44e)
-
-- Record Pump curve fill validation (8ac64be)
-
-- Finalize Pump curve fill handoff (820205c)
-
-- Mark Pump curve fill ready for review (1dbea99)
 
 
 ### Features
@@ -842,43 +832,69 @@ OPT-925: Support sticky curve point drag-through (baa6434)
 
 Add subtle attenuation fill beneath Pump curve (e75ab67)
 
-- Use Radiant curve area fill in Pump (8ca663e)
+- Render Pump VST3 GUI through Radiant (#12)
 
-- Route Pump VST3 GUI through Radiant (05eff54)
+* Use Radiant curve area fill in Pump
 
-- Pin Toybox first-paint sizing fix (89134a6)
+* docs(changelog): update changelog [skip ci]
 
-- Record rebuilt Pump test artifact (b4beca8)
+* docs: record Pump curve fill validation
 
-- Pin Toybox key forwarding fix (2e93856)
+* docs: finalize Pump curve fill handoff
 
-- Record rebuilt Pump key-forwarding artifact (581833d)
+* docs: mark Pump curve fill ready for review
 
-- Pin Toybox hosted-size preservation (d33ab75)
+* Route Pump VST3 GUI through Radiant
 
-- Record rebuilt Pump size-preservation artifact (4198ca3)
+* Pin Toybox first-paint sizing fix
 
-- Pin Toybox modifier-safe text input (80c24e0)
+* Record rebuilt Pump test artifact
 
-- Record rebuilt Pump modifier-input artifact (c5c1125)
+* Pin Toybox key forwarding fix
 
-- Pin Toybox CI authentication update (9f254f4)
+* Record rebuilt Pump key-forwarding artifact
 
-- Record rebuilt Pump CI-auth artifact (a129635)
+* Pin Toybox hosted-size preservation
 
-- Pin embedded surface recovery fix (ea5b7c3)
+* Record rebuilt Pump size-preservation artifact
 
-- Record rebuilt Pump surface-recovery artifact (949103b)
+* Pin Toybox modifier-safe text input
 
-- Pin shared embedded clip validation (8841960)
+* Record rebuilt Pump modifier-input artifact
 
-- Record rebuilt clip-validation artifact (bcc4b93)
+* Pin Toybox CI authentication update
 
-- Pin embedded text options support (6f0f5a6)
+* Record rebuilt Pump CI-auth artifact
 
-- Record rebuilt text-options artifact (66a2af1)
+* Pin embedded surface recovery fix
 
-- Pin embedded animation clock fix (f57d100)
+* Record rebuilt Pump surface-recovery artifact
+
+* Pin shared embedded clip validation
+
+* Record rebuilt clip-validation artifact
+
+* Pin embedded text options support
+
+* Record rebuilt text-options artifact
+
+* Pin embedded animation clock fix
+
+* Record rebuilt animation-clock artifact
+
+* Pin Toybox hosted-size reopen fix
+
+* Pin Toybox VST3 key callback fix
+
+* Pin Toybox secondary-drag fix
+
+* Pin Toybox drag modifier ordering fix
+
+* Pin Toybox AppKit function-key fix
+
+* Pin merged Radiant and Toybox stack (a246e51)
+
+- Distinguish curve playhead from editable nodes (#13) (5f25e11)
 
 
 ### Refactoring
@@ -923,3 +939,4 @@ Add subtle attenuation fill beneath Pump curve (e75ab67)
 - (state) Add malformed payload decode coverage (ebed91c)
 
 - (gui) Add non-windows dropdown-over-curve coverage (dd87705)
+
