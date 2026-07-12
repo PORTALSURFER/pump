@@ -19,8 +19,10 @@ fn extrapolate_phase(
 /// Transport telemetry payload mirrored from the audio thread to the GUI.
 #[derive(Debug, Copy, Clone)]
 pub struct GuiTransportTelemetry {
-    /// Whether host playback is currently running.
+    /// Whether phase feedback should continue advancing.
     pub is_playing: bool,
+    /// Whether the host transport itself is currently running.
+    pub transport_is_playing: bool,
     /// Whether host beat timeline is currently available.
     pub has_host_beats_timeline: bool,
     /// Normalized host beat phase in `[0, 1)`.
@@ -40,6 +42,7 @@ pub struct GuiStatus {
     gain_reduction_display_db: AtomicF32,
     gain_reduction_display_update_micros: AtomicU64,
     is_playing: AtomicBool,
+    transport_is_playing: AtomicBool,
     has_host_beats_timeline: AtomicBool,
     beat_phase: AtomicF32,
     tempo_bpm: AtomicF32,
@@ -63,6 +66,7 @@ impl Default for GuiStatus {
             gain_reduction_display_db: AtomicF32::new(0.0),
             gain_reduction_display_update_micros: AtomicU64::new(0),
             is_playing: AtomicBool::new(false),
+            transport_is_playing: AtomicBool::new(false),
             has_host_beats_timeline: AtomicBool::new(false),
             beat_phase: AtomicF32::new(0.0),
             tempo_bpm: AtomicF32::new(120.0),
@@ -109,6 +113,8 @@ impl GuiStatus {
         self.phase.store(phase, Ordering::Relaxed);
         self.is_playing
             .store(transport.is_playing, Ordering::Relaxed);
+        self.transport_is_playing
+            .store(transport.transport_is_playing, Ordering::Relaxed);
         self.has_host_beats_timeline
             .store(transport.has_host_beats_timeline, Ordering::Relaxed);
         self.beat_phase
@@ -176,7 +182,7 @@ impl GuiStatus {
             .load(Ordering::Relaxed);
         let current = self.gain_reduction_display_db.load(Ordering::Relaxed);
         let active = self.gain_reduction_active.load(Ordering::Relaxed)
-            && self.is_playing()
+            && self.transport_is_playing.load(Ordering::Relaxed)
             && last_audio_update > 0
             && now_micros.saturating_sub(last_audio_update) <= GAIN_REDUCTION_STALE_MICROS;
         if !active {
@@ -329,7 +335,7 @@ mod tests {
     #[test]
     fn meter_clears_for_inactive_stopped_and_stale_states() {
         let status = GuiStatus::default();
-        status.is_playing.store(true, Ordering::Relaxed);
+        status.transport_is_playing.store(true, Ordering::Relaxed);
         status.gain_reduction_linear.store(0.25, Ordering::Relaxed);
         status.gain_reduction_active.store(true, Ordering::Relaxed);
         status
@@ -337,10 +343,10 @@ mod tests {
             .store(1_000_000, Ordering::Relaxed);
         assert!((status.gain_reduction_db_at(1_010_000) - 12.0412).abs() < 1.0e-3);
 
-        status.is_playing.store(false, Ordering::Relaxed);
+        status.transport_is_playing.store(false, Ordering::Relaxed);
         assert_eq!(status.gain_reduction_db_at(1_020_000), 0.0);
 
-        status.is_playing.store(true, Ordering::Relaxed);
+        status.transport_is_playing.store(true, Ordering::Relaxed);
         status.gain_reduction_active.store(true, Ordering::Relaxed);
         assert_eq!(
             status.gain_reduction_db_at(1_000_000 + GAIN_REDUCTION_STALE_MICROS + 1),
@@ -362,10 +368,37 @@ mod tests {
         status
             .gain_reduction_display_db
             .store(12.0, Ordering::Relaxed);
-        status.is_playing.store(false, Ordering::Relaxed);
+        status.transport_is_playing.store(false, Ordering::Relaxed);
         assert!(status.gain_reduction_needs_redraw());
         assert_eq!(status.gain_reduction_db_at(1_000_000), 0.0);
         assert!(!status.gain_reduction_needs_redraw());
+    }
+
+    #[test]
+    fn meter_uses_raw_stopped_state_when_phase_fallback_is_running() {
+        let status = GuiStatus::default();
+        status.update(
+            0.25,
+            0.25,
+            GuiTransportTelemetry {
+                is_playing: true,
+                transport_is_playing: false,
+                has_host_beats_timeline: false,
+                beat_phase: 0.25,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 1.0,
+            },
+        );
+        let last_audio_update = status
+            .gain_reduction_last_update_micros
+            .load(Ordering::Relaxed);
+
+        assert!(status.is_playing(), "phase fallback should remain active");
+        assert_eq!(
+            status.gain_reduction_db_at(last_audio_update),
+            0.0,
+            "raw stopped transport must clear the meter without a beat timeline"
+        );
     }
 
     #[test]
@@ -376,6 +409,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
@@ -389,6 +423,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.5,
                 tempo_bpm: 120.0,
@@ -402,6 +437,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: false,
+                transport_is_playing: false,
                 has_host_beats_timeline: true,
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
@@ -415,6 +451,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: false,
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
@@ -444,6 +481,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.2,
                 tempo_bpm: 120.0,
@@ -469,6 +507,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.73,
                 tempo_bpm: 123.0,

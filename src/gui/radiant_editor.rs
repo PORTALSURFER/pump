@@ -3577,6 +3577,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.1,
                 tempo_bpm: 120.0,
@@ -3598,6 +3599,7 @@ mod tests {
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.6,
                 tempo_bpm: 120.0,

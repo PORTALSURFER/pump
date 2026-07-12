@@ -42,6 +42,7 @@ pub(crate) fn gui_transport_telemetry(
 ) -> GuiTransportTelemetry {
     GuiTransportTelemetry {
         is_playing: phase_running_from_transport(transport),
+        transport_is_playing: transport.is_playing,
         has_host_beats_timeline: transport.song_pos_beats.is_some(),
         beat_phase: host_beat_phase(transport).unwrap_or(fallback_beat_phase),
         tempo_bpm: transport.tempo_bpm,
@@ -136,8 +137,25 @@ mod tests {
         };
         let telemetry = gui_transport_telemetry(transport, 4.0, 0.37);
         assert!(telemetry.is_playing);
+        assert!(telemetry.transport_is_playing);
         assert!(!telemetry.has_host_beats_timeline);
         assert!((telemetry.beat_phase - 0.37).abs() < 1.0e-6);
         assert!((telemetry.beats_per_cycle - 4.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gui_transport_telemetry_keeps_raw_stopped_state_during_phase_fallback() {
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: false,
+            song_pos_beats: None,
+        };
+        let telemetry = gui_transport_telemetry(transport, 4.0, 0.37);
+
+        assert!(telemetry.is_playing, "phase fallback should keep advancing");
+        assert!(
+            !telemetry.transport_is_playing,
+            "meter activity must retain the raw stopped state"
+        );
     }
 }

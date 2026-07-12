@@ -515,6 +515,7 @@
             gain,
             GuiTransportTelemetry {
                 is_playing,
+                transport_is_playing: is_playing,
                 has_host_beats_timeline,
                 beat_phase: phase.rem_euclid(1.0),
                 tempo_bpm: 120.0,
@@ -2056,6 +2057,7 @@
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
@@ -2072,6 +2074,7 @@
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: true,
                 beat_phase: 0.5,
                 tempo_bpm: 120.0,
@@ -2088,6 +2091,7 @@
             1.0,
             GuiTransportTelemetry {
                 is_playing: true,
+                transport_is_playing: true,
                 has_host_beats_timeline: false,
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,

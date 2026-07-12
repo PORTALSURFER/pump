@@ -62,6 +62,7 @@ fn screenshot_renders_initial_ui_with_playhead() {
                 0.25,
                 GuiTransportTelemetry {
                     is_playing: true,
+                    transport_is_playing: true,
                     has_host_beats_timeline: true,
                     beat_phase: 0.37,
                     tempo_bpm: 120.0,
