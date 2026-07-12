@@ -10,6 +10,7 @@ pub(crate) const INCOMING_WAVEFORM_BIN_COUNT: usize = 96;
 const SNAPSHOT_STALE_AFTER_MICROS: u64 = 750_000;
 const SILENCE_FLOOR: f32 = 1.0e-4;
 const BACKWARD_PHASE_EPSILON: f32 = 1.0e-5;
+const FORWARD_PHASE_DISCONTINUITY: f32 = 0.05;
 
 /// A bounded GUI snapshot of peak input amplitude over one normalized cycle.
 pub(crate) type IncomingWaveformSnapshot = [f32; INCOMING_WAVEFORM_BIN_COUNT];
@@ -156,13 +157,15 @@ impl IncomingWaveformWriter {
         right: f32,
     ) {
         let phase = phase.rem_euclid(1.0);
-        if self
-            .last_phase
-            .is_some_and(|previous| phase + BACKWARD_PHASE_EPSILON < previous)
-        {
+        let phase_discontinuity = self.last_phase.is_some_and(|previous| {
+            phase + BACKWARD_PHASE_EPSILON < previous
+                || phase - previous > FORWARD_PHASE_DISCONTINUITY
+        });
+        if phase_discontinuity {
             self.generation = buffer.begin_next_generation();
             self.current_bin = None;
             self.current_peak = 0.0;
+            self.block_has_signal = false;
         }
         self.last_phase = Some(phase);
 
@@ -249,8 +252,15 @@ mod tests {
         buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
         assert!(writer.begin_block(&buffer));
-        writer.record(&buffer, 0.25, 0.75, 0.2);
-        writer.record(&buffer, 0.75, 0.4, -0.5);
+        for step in 25..=75 {
+            let phase = step as f32 / 100.0;
+            let peak = match step {
+                25 => 0.75,
+                75 => 0.5,
+                _ => 0.0,
+            };
+            writer.record(&buffer, phase, peak, -peak);
+        }
         writer.finish_block(&buffer);
 
         let snapshot = buffer.snapshot().expect("signal should be available");
@@ -330,6 +340,42 @@ mod tests {
 
         let snapshot = buffer.snapshot().expect("signal should remain available");
         assert!(snapshot.iter().copied().fold(0.0_f32, f32::max) >= 0.9);
+    }
+
+    #[test]
+    fn large_forward_seek_invalidates_earlier_phase_bins() {
+        let buffer = IncomingWaveformBuffer::default();
+        buffer.set_enabled(true);
+        let mut writer = IncomingWaveformWriter::default();
+        assert!(writer.begin_block(&buffer));
+        writer.record(&buffer, 0.2, 0.8, 0.0);
+        writer.record(&buffer, 0.6, 0.4, 0.0);
+        writer.finish_block(&buffer);
+
+        let snapshot = buffer.snapshot().expect("post-seek signal should remain");
+        assert_eq!(
+            snapshot[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize],
+            0.0,
+            "bins before a large forward seek must not remain visible"
+        );
+        assert!(
+            (snapshot[(0.6 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.4).abs() < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn ordinary_forward_progression_keeps_the_current_generation() {
+        let buffer = IncomingWaveformBuffer::default();
+        buffer.set_enabled(true);
+        let mut writer = IncomingWaveformWriter::default();
+        assert!(writer.begin_block(&buffer));
+        writer.record(&buffer, 0.2, 0.8, 0.0);
+        writer.record(&buffer, 0.21, 0.4, 0.0);
+        writer.finish_block(&buffer);
+
+        let snapshot = buffer.snapshot().expect("signal should remain available");
+        assert!(snapshot[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] >= 0.8);
+        assert!(snapshot[(0.21 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] >= 0.4);
     }
 
     #[test]
