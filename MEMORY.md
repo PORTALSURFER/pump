@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-12 13:28:24 UTC
-- Active Mission: Bound serialized collection counts before allocation during Pump state decode for OPT-1141.
-- Current Workstream: Pump PR #16 (`https://github.com/PORTALSURFER/pump/pull/16`) is ready for review on `wsvasek/opt-1141-pump-bound-quick-slot-counts-before-allocating-during-state`. Scope: validate semantic collection limits and minimum remaining payload bytes across host state, preset-bank persistence, and global curve-slot persistence before reserving or iterating. Definition of Done: fixed quick-slot counts, actionable non-mutating malformed-payload errors, sibling count-field audit, compatibility preservation, default and VST3 CI, and targeted malformed-count coverage. Status: waiting for user review.
+- Last Updated (UTC): 2026-07-12 16:41:03 UTC
+- Active Mission: Preallocate and bound Pump's CLAP audio-thread scratch and automation buffers for OPT-1140.
+- Current Workstream: Pump PR #17 (`https://github.com/PORTALSURFER/pump/pull/17`) is ready for review on `wsvasek/opt-1140-pump-preallocate-clap-audio-thread-scratch-and-automation`. Scope: allocate stereo scratch, outgoing automation drain storage, and bounded CLAP parameter scheduling at activation; silence host blocks that exceed the declared maximum without allocation, panic, or realtime logging. Definition of Done: allocation-free normal process/flush coverage, first/max/in-place/separate/oversize/full-queue tests, default and VST3 CI, multi-size CLAP host smoke, and a fresh signed review artifact. Status: waiting for user review.
 
 ## Current State
 
@@ -41,7 +41,10 @@
 - The fresh signed OPT-1139 review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `c49186c74dd8efdf59f44fd7b709d8eb2b76658c9e59191e713632c5ca2f509c`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. Bitwig PID `32966` still maps the previous binary and must fully unload or restart before the large-buffer host smoke test.
 - OPT-1141 rejects host-state and preset-store quick-slot counts unless they equal `QUICK_SLOT_COUNT`, validates minimum remaining bytes before all state/persistence collection allocations, and applies the same rule to the global curve-slot store sibling decoder.
 - OPT-1141 default CI passes 194 tests and VST3 CI passes 218 tests. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `225509e1e00bb6f42fa9069327d5d88895e734bbeaf190998480f2a8bfc80c37`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. Bitwig PID `32966` still maps the previous binary and must fully unload or restart before testing.
+- OPT-1140 preallocates both CLAP stereo scratch vectors to `max_frames_count`, reserves the bounded Toybox automation queue capacity in the audio-thread drain vector, and caps CLAP parameter scheduling at four points per declared frame without growing in `process`.
+- Oversized CLAP host blocks apply parameter changes, silence writable outputs, and drain outgoing automation without allocating, panicking, returning an error, or triggering realtime logging.
+- OPT-1140 default CI passes 200 tests and VST3 CI passes 224 tests. CLAP host smoke passes at 16, 64, 512, and 2048 frames with zero xruns. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `bb00d2a5c52701cb3fb9e061409d11a7c3188079badbb4357ab50fc74aa69e20`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass.
 
 ## Immediate Next Action
 
-- Wait for CI and explicit user review/sign-off on ready-for-review Pump PR #16.
+- Wait for CI and explicit user review/sign-off on ready-for-review Pump PR #17.

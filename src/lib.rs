@@ -50,6 +50,73 @@ mod transport;
 #[cfg(feature = "vst3")]
 mod vst3;
 
+#[cfg(test)]
+mod test_alloc {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static TRACKING: Cell<bool> = const { Cell::new(false) };
+        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    struct TrackingAllocator;
+
+    #[global_allocator]
+    static GLOBAL_ALLOCATOR: TrackingAllocator = TrackingAllocator;
+
+    unsafe impl GlobalAlloc for TrackingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            record_allocation();
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            record_allocation();
+            unsafe { System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            record_allocation();
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    fn record_allocation() {
+        TRACKING.with(|tracking| {
+            if tracking.get() {
+                ALLOCATIONS.with(|allocations| allocations.set(allocations.get() + 1));
+            }
+        });
+    }
+
+    struct TrackingGuard;
+
+    impl Drop for TrackingGuard {
+        fn drop(&mut self) {
+            TRACKING.with(|tracking| tracking.set(false));
+        }
+    }
+
+    pub(crate) fn assert_no_alloc<T>(operation: impl FnOnce() -> T) -> T {
+        ALLOCATIONS.with(|allocations| allocations.set(0));
+        TRACKING.with(|tracking| tracking.set(true));
+        let guard = TrackingGuard;
+        let result = operation();
+        drop(guard);
+        let allocations = ALLOCATIONS.with(Cell::get);
+        assert_eq!(
+            allocations, 0,
+            "realtime callback allocated {allocations} times"
+        );
+        result
+    }
+}
+
 /// Versioned state payload magic (`PUMP`).
 const STATE_MAGIC: u32 = u32::from_le_bytes(*b"PUMP");
 /// Versioned state payload format version.

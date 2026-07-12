@@ -1,4 +1,8 @@
 use super::*;
+
+const CLAP_PARAM_EVENTS_PER_FRAME: usize = 4;
+const CLAP_BUFFER_ALLOCATION_ERROR: &str = "Unable to preallocate CLAP realtime processing buffers";
+
 /// Audio-thread processor for Pump.
 pub struct PumpAudioProcessor<'a> {
     /// Shared plugin resources.
@@ -24,18 +28,7 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         shared: &'a PumpShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
-        let curve = shared.params.curve_snapshot();
-        Ok(Self {
-            shared,
-            engine: PumpEngine::new(audio_config.sample_rate as f32, curve),
-            last_curve_revision: shared.params.curve_revision(),
-            scratch_left: Vec::new(),
-            scratch_right: Vec::new(),
-            automation_drain: Vec::new(),
-            param_schedule: ParamEventSchedule::with_capacity(
-                (audio_config.max_frames_count as usize).saturating_mul(4),
-            ),
-        })
+        Self::new(shared, audio_config)
     }
 
     fn process(
@@ -45,6 +38,18 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         let frame_count = audio.frames_count() as usize;
+        if frame_count > self.scratch_left.len() {
+            apply_param_events(events.input, |param_id, value| {
+                apply_param_event(self.shared.params.as_ref(), param_id, value as f32)
+            });
+            silence_audio(&mut audio);
+            let _stats = self
+                .shared
+                .automation_queue
+                .drain_to_output(events.output, &mut self.automation_drain);
+            return Ok(ProcessStatus::Continue);
+        }
+
         collect_clap_param_points(events.input, frame_count, &mut self.param_schedule);
 
         let revision = self.shared.params.curve_revision();
@@ -96,6 +101,67 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
     }
 }
 
+impl<'a> PumpAudioProcessor<'a> {
+    fn new(
+        shared: &'a PumpShared,
+        audio_config: PluginAudioConfiguration,
+    ) -> Result<Self, PluginError> {
+        let curve = shared.params.curve_snapshot();
+        let max_frames = audio_config.max_frames_count as usize;
+        let scratch_left = try_zeroed_vec(max_frames)?;
+        let scratch_right = try_zeroed_vec(max_frames)?;
+        let mut automation_drain = Vec::new();
+        automation_drain
+            .try_reserve_exact(shared.automation_queue.config().max_events)
+            .map_err(|_| PluginError::Message(CLAP_BUFFER_ALLOCATION_ERROR))?;
+        let param_capacity = max_frames.saturating_mul(CLAP_PARAM_EVENTS_PER_FRAME);
+        let param_schedule = ParamEventSchedule::try_with_capacity(param_capacity)
+            .map_err(|_| PluginError::Message(CLAP_BUFFER_ALLOCATION_ERROR))?;
+
+        Ok(Self {
+            shared,
+            engine: PumpEngine::new(audio_config.sample_rate as f32, curve),
+            last_curve_revision: shared.params.curve_revision(),
+            scratch_left,
+            scratch_right,
+            automation_drain,
+            param_schedule,
+        })
+    }
+}
+
+fn try_zeroed_vec(len: usize) -> Result<Vec<f32>, PluginError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| PluginError::Message(CLAP_BUFFER_ALLOCATION_ERROR))?;
+    values.resize(len, 0.0);
+    Ok(values)
+}
+
+fn silence_audio(audio: &mut Audio<'_>) {
+    for mut port_pair in audio {
+        let Ok(channels) = port_pair.channels() else {
+            continue;
+        };
+        let Some(mut channels) = channels.into_f32() else {
+            continue;
+        };
+        for channel in channels.iter_mut() {
+            silence_channel(channel);
+        }
+    }
+}
+
+fn silence_channel(channel: ChannelPair<'_, f32>) {
+    match channel {
+        ChannelPair::InputOnly(_) => {}
+        ChannelPair::OutputOnly(output)
+        | ChannelPair::InputOutput(_, output)
+        | ChannelPair::InPlace(output) => output.fill(0.0),
+    }
+}
+
 fn collect_clap_param_points(
     input: &InputEvents<'_>,
     frame_count: usize,
@@ -105,7 +171,7 @@ fn collect_clap_param_points(
     for event in input {
         if let Some(CoreEventSpace::ParamValue(param)) = event.as_core_event() {
             if let Some(param_id) = param.param_id() {
-                schedule.push(
+                schedule.push_bounded(
                     i64::from(event.header().time()),
                     param_id,
                     param.value() as f32,
@@ -156,7 +222,9 @@ impl PumpAudioProcessor<'_> {
             return;
         }
 
-        self.ensure_scratch(frames);
+        if frames > self.scratch_left.len() || frames > self.scratch_right.len() {
+            return;
+        }
 
         for frame in 0..frames {
             self.scratch_left[frame] = if left_in_place {
@@ -218,24 +286,51 @@ impl PumpAudioProcessor<'_> {
             out_right[..frames].copy_from_slice(&self.scratch_right[..frames]);
         }
     }
-
-    fn ensure_scratch(&mut self, frames: usize) {
-        if self.scratch_left.len() < frames {
-            self.scratch_left.resize(frames, 0.0);
-        }
-        if self.scratch_right.len() < frames {
-            self.scratch_right.resize(frames, 0.0);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::params::PARAM_MIX_ID;
+    use crate::test_alloc::assert_no_alloc;
     use toybox::clack_plugin::events::event_types::ParamValueEvent;
+    use toybox::clack_plugin::events::io::{OutputEventBuffer, TryPushError};
     use toybox::clack_plugin::events::Pckn;
+    use toybox::clack_plugin::events::UnknownEvent;
     use toybox::clack_plugin::utils::Cookie;
+    use toybox::clap::automation::{AutomationConfig, DEFAULT_AUTOMATION_QUEUE_MAX_EVENTS};
+
+    fn shared() -> PumpShared {
+        PumpShared {
+            params: Arc::new(PumpParams::new()),
+            status: Arc::new(GuiStatus::default()),
+            automation_queue: Arc::new(AutomationQueue::default()),
+        }
+    }
+
+    fn processor(shared: &PumpShared, max_frames_count: u32) -> PumpAudioProcessor<'_> {
+        PumpAudioProcessor::new(
+            shared,
+            PluginAudioConfiguration {
+                sample_rate: 48_000.0,
+                min_frames_count: 1,
+                max_frames_count,
+            },
+        )
+        .expect("processor buffers should preallocate")
+    }
+
+    #[derive(Default)]
+    struct CountingOutput {
+        count: usize,
+    }
+
+    impl OutputEventBuffer for CountingOutput {
+        fn try_push(&mut self, _event: &UnknownEvent) -> Result<(), TryPushError> {
+            self.count += 1;
+            Ok(())
+        }
+    }
 
     #[test]
     fn clap_points_retain_offsets_and_are_scheduled_chronologically() {
@@ -258,5 +353,133 @@ mod tests {
         assert!((params.mix() - 0.4).abs() < f32::EPSILON);
         schedule.apply_remaining(&params, &mut settings);
         assert!((params.mix() - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn activation_preallocates_declared_scratch_and_bounded_event_storage() {
+        let shared = shared();
+        let processor = processor(&shared, 512);
+
+        assert_eq!(processor.scratch_left.len(), 512);
+        assert_eq!(processor.scratch_right.len(), 512);
+        assert!(processor.automation_drain.is_empty());
+        assert!(processor.automation_drain.capacity() >= DEFAULT_AUTOMATION_QUEUE_MAX_EVENTS);
+        assert_eq!(
+            processor.param_schedule.event_storage().2,
+            512 * CLAP_PARAM_EVENTS_PER_FRAME
+        );
+    }
+
+    #[test]
+    fn first_maximum_block_with_separate_buffers_is_allocation_free() {
+        const FRAMES: usize = 512;
+        let shared = shared();
+        shared.params.set_mix(0.0);
+        let mut processor = processor(&shared, FRAMES as u32);
+        processor.param_schedule.begin_block(FRAMES);
+        let mut settings = dsp_settings_from_params(shared.params.as_ref());
+        let left_input = [0.25; FRAMES];
+        let right_input = [-0.5; FRAMES];
+        let mut left_output = [0.0; FRAMES];
+        let mut right_output = [0.0; FRAMES];
+
+        assert_no_alloc(|| {
+            processor.process_stereo_pair(
+                ChannelPair::InputOutput(&left_input, &mut left_output),
+                ChannelPair::InputOutput(&right_input, &mut right_output),
+                &mut settings,
+                TransportState::default(),
+            );
+        });
+
+        assert!(left_output.iter().all(|sample| sample.is_finite()));
+        assert!(right_output.iter().all(|sample| sample.is_finite()));
+        for (left, right) in left_output.iter().zip(right_output) {
+            assert!((right + 2.0 * left).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn in_place_block_uses_preallocated_scratch() {
+        const FRAMES: usize = 64;
+        let shared = shared();
+        shared.params.set_mix(0.0);
+        let mut processor = processor(&shared, FRAMES as u32);
+        processor.param_schedule.begin_block(FRAMES);
+        let mut settings = dsp_settings_from_params(shared.params.as_ref());
+        let mut left = [0.125; FRAMES];
+        let mut right = [-0.25; FRAMES];
+
+        processor.process_stereo_pair(
+            ChannelPair::InPlace(&mut left),
+            ChannelPair::InPlace(&mut right),
+            &mut settings,
+            TransportState::default(),
+        );
+
+        assert!(left.iter().all(|sample| sample.is_finite()));
+        assert!(right.iter().all(|sample| sample.is_finite()));
+        for (left, right) in left.iter().zip(right) {
+            assert!((right + 2.0 * left).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn oversized_host_block_is_silenced_without_using_scratch() {
+        let shared = shared();
+        let processor = processor(&shared, 16);
+        assert!(17 > processor.scratch_left.len());
+
+        let mut left_output = [2.0; 17];
+        let mut right_output = [3.0; 17];
+        silence_channel(ChannelPair::InPlace(&mut left_output));
+        silence_channel(ChannelPair::OutputOnly(&mut right_output));
+
+        assert_eq!(left_output, [0.0; 17]);
+        assert_eq!(right_output, [0.0; 17]);
+    }
+
+    #[test]
+    fn realtime_flush_drains_a_full_automation_queue_without_allocating() {
+        let shared = shared();
+        let mut processor = processor(&shared, 64);
+        let config = AutomationConfig::default();
+        for index in 0..DEFAULT_AUTOMATION_QUEUE_MAX_EVENTS {
+            let param_id = ClapId::new((index as u32).saturating_add(1));
+            assert_eq!(
+                shared.automation_queue.push_value(&config, param_id, 0.5),
+                toybox::clap::automation::AutomationEnqueueStatus::Enqueued
+            );
+        }
+        let input_events: [ParamValueEvent; 0] = [];
+        let input = InputEvents::from_buffer(&input_events);
+        let mut sink = CountingOutput::default();
+        let mut output = OutputEvents::from_buffer(&mut sink);
+
+        assert_no_alloc(|| processor.flush(&input, &mut output));
+
+        assert_eq!(sink.count, DEFAULT_AUTOMATION_QUEUE_MAX_EVENTS);
+        assert!(processor.automation_drain.is_empty());
+    }
+
+    #[test]
+    fn dense_parameter_input_is_truncated_at_preallocated_capacity() {
+        let params = PumpParams::new();
+        let mut schedule = ParamEventSchedule::with_capacity(2);
+        let events = [
+            ParamValueEvent::new(0, PARAM_MIX_ID, Pckn::match_all(), 0.1, Cookie::empty()),
+            ParamValueEvent::new(1, PARAM_MIX_ID, Pckn::match_all(), 0.2, Cookie::empty()),
+            ParamValueEvent::new(2, PARAM_MIX_ID, Pckn::match_all(), 0.3, Cookie::empty()),
+        ];
+        let input = InputEvents::from_buffer(&events);
+
+        assert_no_alloc(|| collect_clap_param_points(&input, 16, &mut schedule));
+
+        assert_eq!(schedule.event_storage(), (2, 2, 2));
+
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+        schedule.apply_remaining(&params, &mut settings);
+        assert!((params.mix() - 0.2).abs() < f32::EPSILON);
     }
 }
