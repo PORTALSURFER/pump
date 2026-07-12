@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-12 19:40:10 UTC
+- Last Updated (UTC): 2026-07-12 19:42:32 UTC
 - Active Mission: Add sync-aware vertical beat divisions to both Pump curve editors for OPT-1111.
-- Current Workstream: Pump PR #20 (`https://github.com/PORTALSURFER/pump/pull/20`) is ready for review on `wsvasek/opt-1111-pump-show-sync-aware-vertical-beat-divisions-in-the-curve`. Scope: display-only major/minor beat divisions derived from Pump's sync length, adaptive minor-line density, exact normalized resize mapping, and stable empty unsupported/shortest-cycle behavior. Definition of Done: both Toybox and Radiant editors update from sync state without changing snapping, hit testing, playhead, curve data, or DSP. Status: waiting for user review; signed review artifact creation remains.
+- Current Workstream: Pump PR #20 (`https://github.com/PORTALSURFER/pump/pull/20`) is ready for review on `wsvasek/opt-1111-pump-show-sync-aware-vertical-beat-divisions-in-the-curve`. Scope: display-only major/minor beat divisions derived from Pump's sync length, adaptive minor-line density, exact normalized resize mapping, and stable empty unsupported/shortest-cycle behavior. Definition of Done: both Toybox and Radiant editors update from sync state without changing snapping, hit testing, playhead, curve data, or DSP. Status: waiting for user review; a fresh signed review artifact is available.
 
 ## Current State
 
@@ -57,7 +57,8 @@
 - Incoming-waveform rendering is a low-contrast symmetric envelope behind the editable curve, nodes, playhead, and interaction feedback. Backward phase discontinuities larger than a small floating-point epsilon, forward jumps above 5% of a cycle, and changes to beats-per-cycle or phase-offset mapping start a new capture generation, while ordinary per-sample progression remains continuous. Zero-frame and all-silent processing blocks do not publish or refresh capture data, so stale input ages out during parameter-only, keepalive, or silent traffic without abruptly erasing a useful transient. CLAP zero-frame callbacks preserve an existing capture when a real input bus is present, while missing and output-only buses clear it. Default CI passes 224 tests, VST3 CI passes 251 tests, and screenshot validation passes at 315x211, 420x282, 525x352, and 630x423.
 - The OPT-1112 review artifact is `dist/pump-v0.2.0-macos.vst3`; signing, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. The final binary hash is recorded on PR #19 after the last documentation commit and rebuild.
 - OPT-1111 now projects the same normalized musical grid into the Toybox and Radiant curve editors: sixteenth-note boundaries are subtle minor lines, full quarter-note beats are major lines, narrow widths thin minor lines below an eight-pixel spacing floor, and the shortest supported 1/16 cycle plus unsupported timing states render no internal vertical lines. Default CI passes 229 tests, VST3 CI passes 256 tests, and screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 with and without a playhead. Existing snap positions stay on their prior independent path.
+- The OPT-1111 review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. Its binary SHA-256 is `7da1e9fa5cc13d012e962c4c627c2563f9f82bfe5204a9df445e5181224590e8`. Bitwig plugin-host PID `91183` still maps the prior binary and must fully unload or restart before testing.
 
 ## Immediate Next Action
 
-- Build and audit the signed VST3 review artifact for ready-for-review Pump PR #20.
+- Wait for GitHub CI and explicit user review/sign-off on ready-for-review Pump PR #20.
