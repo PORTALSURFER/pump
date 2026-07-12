@@ -905,13 +905,15 @@ impl GuiState {
         }
     }
 
-    fn apply_history_state(&self, snapshot: &UiHistorySnapshot) {
-        if self
-            .params
-            .set_preset_bank(snapshot.preset_bank.clone())
-            .is_err()
+    fn apply_history_state(&self, snapshot: &UiHistorySnapshot) -> bool {
+        let current_bank = self.params.preset_bank_snapshot();
+        if current_bank != snapshot.preset_bank
+            && self
+                .params
+                .set_preset_bank(snapshot.preset_bank.clone())
+                .is_err()
         {
-            return;
+            return false;
         }
         self.params.set_mix(snapshot.mix);
         self.params.set_phase_offset(snapshot.phase_offset);
@@ -919,6 +921,7 @@ impl GuiState {
         self.params.set_sync_division(snapshot.sync_division as f32);
         self.params.set_editable_curve(&snapshot.editable_curve);
         self.push_all_param_updates();
+        true
     }
 
     fn push_history_snapshot(stack: &mut Vec<UiHistorySnapshot>, snapshot: UiHistorySnapshot) {
@@ -1132,9 +1135,17 @@ impl GuiState {
 
     fn apply_undo(&self) {
         let current = self.snapshot_history_state();
-        let mut target = None;
-        if let Ok(mut runtime) = self.runtime.lock() {
-            if let Some(snapshot) = runtime.undo_history.pop() {
+        let target = self
+            .runtime
+            .lock()
+            .ok()
+            .and_then(|runtime| runtime.undo_history.last().cloned());
+        if let Some(snapshot) = target {
+            if !self.apply_history_state(&snapshot) {
+                return;
+            }
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.undo_history.pop();
                 Self::push_history_snapshot(&mut runtime.redo_history, current);
                 runtime.knob_history_anchor = None;
                 runtime.curve_history_anchor = None;
@@ -1147,19 +1158,23 @@ impl GuiState {
                 runtime.preset_name_draft.clear();
                 runtime.preset_warning_frames = 0;
                 runtime.preset_warning_text = None;
-                target = Some(snapshot);
             }
-        }
-        if let Some(snapshot) = target {
-            self.apply_history_state(&snapshot);
         }
     }
 
     fn apply_redo(&self) {
         let current = self.snapshot_history_state();
-        let mut target = None;
-        if let Ok(mut runtime) = self.runtime.lock() {
-            if let Some(snapshot) = runtime.redo_history.pop() {
+        let target = self
+            .runtime
+            .lock()
+            .ok()
+            .and_then(|runtime| runtime.redo_history.last().cloned());
+        if let Some(snapshot) = target {
+            if !self.apply_history_state(&snapshot) {
+                return;
+            }
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.redo_history.pop();
                 Self::push_history_snapshot(&mut runtime.undo_history, current);
                 runtime.knob_history_anchor = None;
                 runtime.curve_history_anchor = None;
@@ -1172,11 +1187,7 @@ impl GuiState {
                 runtime.preset_name_draft.clear();
                 runtime.preset_warning_frames = 0;
                 runtime.preset_warning_text = None;
-                target = Some(snapshot);
             }
-        }
-        if let Some(snapshot) = target {
-            self.apply_history_state(&snapshot);
         }
     }
 

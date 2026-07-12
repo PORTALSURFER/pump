@@ -1480,30 +1480,85 @@
 
     #[test]
     fn undo_and_redo_hotkeys_restore_previous_mix_value() {
-        let params = Arc::new(PumpParams::new());
-        let mut state = GuiState::new(
-            Arc::clone(&params),
-            Arc::new(GuiStatus::default()),
-            Arc::new(AutomationQueue::default()),
-            None,
-        );
-        let original_mix = params.mix();
+        let path = std::env::temp_dir().join(format!(
+            "pump-gui-history-persistence-{}",
+            std::process::id()
+        ));
+        with_test_persistence_path(path.clone(), || {
+            let params = Arc::new(PumpParams::new());
+            let mut state = GuiState::new(
+                Arc::clone(&params),
+                Arc::new(GuiStatus::default()),
+                Arc::new(AutomationQueue::default()),
+                None,
+            );
+            let original_mix = params.mix();
 
-        state.reduce_action(UiAction::KnobChanged {
-            key: "mix".to_string(),
-            value: 0.17,
-        });
-        assert!((params.mix() - 0.17).abs() < 1.0e-6);
+            state.reduce_action(UiAction::KnobChanged {
+                key: "mix".to_string(),
+                value: 0.17,
+            });
+            assert!((params.mix() - 0.17).abs() < 1.0e-6);
 
-        state.reduce_action(UiAction::ButtonPressed {
-            key: UNDO_KEY.to_string(),
-        });
-        assert!((params.mix() - original_mix).abs() < 1.0e-6);
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                state.reduce_action(UiAction::ButtonPressed {
+                    key: UNDO_KEY.to_string(),
+                });
+            });
+            assert!((params.mix() - original_mix).abs() < 1.0e-6);
+            assert_eq!(params.preset_persistence_warning(), None);
 
-        state.reduce_action(UiAction::ButtonPressed {
-            key: REDO_KEY.to_string(),
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                state.reduce_action(UiAction::ButtonPressed {
+                    key: REDO_KEY.to_string(),
+                });
+            });
+            assert!((params.mix() - 0.17).abs() < 1.0e-6);
         });
-        assert!((params.mix() - 0.17).abs() < 1.0e-6);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn failed_preset_undo_remains_available_for_retry() {
+        let path = std::env::temp_dir().join(format!(
+            "pump-gui-preset-history-retry-{}",
+            std::process::id()
+        ));
+        with_test_persistence_path(path.clone(), || {
+            let params = Arc::new(PumpParams::new());
+            let mut state = GuiState::new(
+                Arc::clone(&params),
+                Arc::new(GuiStatus::default()),
+                Arc::new(AutomationQueue::default()),
+                None,
+            );
+            state.reduce_action(UiAction::ButtonPressed {
+                key: super::PRESET_ADD_KEY.to_string(),
+            });
+            assert_eq!(params.preset_bank_snapshot().presets.len(), 2);
+
+            with_test_persistence_failure(TestPersistenceFailure::WriteTemporary, || {
+                state.reduce_action(UiAction::ButtonPressed {
+                    key: UNDO_KEY.to_string(),
+                });
+            });
+            assert_eq!(params.preset_bank_snapshot().presets.len(), 2);
+            assert_eq!(
+                state
+                    .runtime
+                    .lock()
+                    .expect("runtime lock should succeed")
+                    .undo_history
+                    .len(),
+                1
+            );
+
+            state.reduce_action(UiAction::ButtonPressed {
+                key: UNDO_KEY.to_string(),
+            });
+            assert_eq!(params.preset_bank_snapshot().presets.len(), 1);
+        });
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -48,7 +48,8 @@
 - OPT-1142 stages create, overwrite, rename, full-bank replacement, legacy preset quick-slot, and selected-index changes, persists the candidate first, and commits runtime state only after success. Failed preset selection also leaves active parameters unchanged.
 - `PresetMutationError` separates invalid index/name, capacity, state access, and persistence failures. A persistence failure remains visible as `NOT SAVED - CHECK PRESET FOLDER` in both Toybox and Radiant until a later preset-bank write succeeds.
 - Preset persistence tests inject directory-create, temporary-write, and final-rename failures; assert rollback and reload state; exercise a genuinely unwritable directory; and verify the existing durable bank remains readable after finalization failure.
-- OPT-1142 default CI passes 205 tests and VST3 CI passes 229 tests. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `6f1ba898e18ba214e8f93bb8853ef0725204c73c04236d4eb7d838cd9346469d`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass.
+- OPT-1142 default CI passes 206 tests and VST3 CI passes 230 tests. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `6f1ba898e18ba214e8f93bb8853ef0725204c73c04236d4eb7d838cd9346469d`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass.
+- The PR #18 undo review fix only persists a history snapshot's preset bank when it differs from the current bank, so knob and curve undo/redo remain available during preset-store failures. Failed preset-history persistence leaves the history entry available for retry.
 
 ## Immediate Next Action
 
