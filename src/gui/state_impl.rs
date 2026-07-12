@@ -8,10 +8,7 @@ impl GuiRuntime {
             marquee_selection: None,
             curve_hovered: false,
             curve_local_pointer: Point { x: 0, y: 0 },
-            curve_size: Size {
-                width: CURVE_W,
-                height: CURVE_H,
-            },
+            curve_size: UiLayoutMetrics::design_space().curve_size,
             snap_enabled: false,
             snap_hovered: false,
             grid_override: None,
@@ -316,7 +313,6 @@ impl GuiState {
                 (self.status.has_host_beats_timeline() || self.status.is_playing())
                     .then_some(self.status.phase()),
             )
-            .widget_layout(fixed_box(metrics.content_w, metrics.curve_size.height))
             .fill();
         let waveform = controls
             .incoming_waveform_enabled
@@ -832,11 +828,12 @@ impl GuiState {
     }
 
     pub(super) fn build_ui(&self, input: &InputState) -> UiSpec {
+        let metrics = UiLayoutMetrics::design_space();
         self.sync_knob_gesture_state(input.mouse_down, input.mouse_secondary_down);
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.shortcut_snap_invert_held = input.shortcut_key_down(SHORTCUT_KEY_SNAP_INVERT);
+            runtime.curve_size = metrics.curve_size;
         }
-        let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
         let controls = self.snapshot_controls();
         let presets = self.snapshot_presets();

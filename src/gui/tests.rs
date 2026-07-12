@@ -997,7 +997,7 @@
     }
 
     #[test]
-    fn build_ui_places_curve_editor_at_full_spline_extent() {
+    fn build_ui_reserves_meter_width_from_curve_editor_extent() {
         let state = GuiState::new(
             Arc::new(PumpParams::new()),
             Arc::new(GuiStatus::default()),
@@ -1013,7 +1013,44 @@
         });
         let curve_editor_layout = find_curve_editor_layout(spec.root.content())
             .expect("curve editor should exist");
+        let metrics = UiLayoutMetrics::design_space();
         assert_eq!(curve_editor_layout, LayoutBox::fill());
+        assert!(metrics.curve_size.width < metrics.content_w);
+        assert_eq!(
+            state.runtime.lock().expect("runtime lock should succeed").curve_size,
+            metrics.curve_size
+        );
+    }
+
+    #[test]
+    fn visual_curve_right_edge_targets_wrapped_endpoint() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let metrics = UiLayoutMetrics::design_space();
+        let right_endpoint = Point {
+            x: metrics.curve_size.width.saturating_sub(1) as i32,
+            y: 0,
+        };
+
+        state.reduce_curve_interaction(
+            RegionInteractionKind::Pressed,
+            right_endpoint,
+            right_endpoint,
+            false,
+        );
+
+        let runtime = state.runtime.lock().expect("runtime lock should succeed");
+        assert_eq!(runtime.curve_size, metrics.curve_size);
+        assert_eq!(
+            runtime.selected_node,
+            Some(params.editable_curve_snapshot().nodes.len() - 1),
+            "the visual right edge must map to phase 1 instead of the pre-meter full width"
+        );
     }
 
     #[test]
