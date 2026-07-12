@@ -2,7 +2,7 @@
 
 - Last Updated (UTC): 2026-07-12 17:02:54 UTC
 - Active Mission: Make preset persistence failures explicit, rollback-safe, and user-visible for OPT-1142.
-- Current Workstream: Pump PR #18 (`https://github.com/PORTALSURFER/pump/pull/18`) is ready for review on `wsvasek/opt-1142-pump-do-not-report-preset-changes-as-saved-when-persistence`. Scope: structured preset mutation outcomes, persist-before-commit rollback semantics, persistent Toybox/Radiant storage warnings, safe atomic replacement fallback, and injected create/write/rename failure coverage. Definition of Done: all durable mutations distinguish validation/capacity/persistence failure; runtime and disk remain aligned; both renderers warn; reload behavior is covered; default and VST3 CI pass; a fresh signed artifact is available. Status: waiting for user review; GitHub CI queued after PR creation.
+- Current Workstream: Pump PR #18 (`https://github.com/PORTALSURFER/pump/pull/18`) is ready for review on `wsvasek/opt-1142-pump-do-not-report-preset-changes-as-saved-when-persistence`. Scope: structured preset mutation outcomes, persist-before-commit rollback semantics, persistent Toybox/Radiant storage warnings, safe atomic replacement fallback, and injected create/write/rename failure coverage. Definition of Done: all durable mutations distinguish validation/capacity/persistence failure; runtime and disk remain aligned; both renderers warn; reload behavior is covered; default and VST3 CI pass; a fresh signed artifact is available. Status: waiting for user review; GitHub `checks` and `windows-gui-regressions` passed.
 
 ## Current State
 
