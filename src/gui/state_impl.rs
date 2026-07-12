@@ -90,7 +90,8 @@ impl GuiState {
                 .collect()
         };
         let selected = bank.selected.min(names.len().saturating_sub(1));
-        if self.params.preset_persistence_warning().is_some() {
+        let persistence_warning = self.params.preset_persistence_warning().is_some();
+        if persistence_warning {
             names[selected] = PRESET_WARNING_STORAGE.to_string();
         }
         let dirty = self.params.current_state_differs_from_selected_preset();
@@ -121,6 +122,7 @@ impl GuiState {
             dirty,
             rename_active,
             rename_draft,
+            persistence_warning,
             warning_blink_visible,
         }
     }
@@ -140,12 +142,19 @@ impl GuiState {
         presets: &PresetSnapshot,
     ) -> Node {
         let header_h = resolve_vertical_slot_heights(metrics.content_h).0.max(1);
+        let right_section_percent = if presets.persistence_warning {
+            HEADER_STORAGE_WARNING_SECTION_PERCENT
+        } else {
+            HEADER_INDICATOR_SECTION_PERCENT
+        };
+        let left_section_percent = if presets.persistence_warning {
+            100_u8.saturating_sub(HEADER_STORAGE_WARNING_SECTION_PERCENT)
+        } else {
+            HEADER_EMPTY_SECTION_PERCENT
+        };
         let header_slot_widths = weighted_slot_lengths(
             metrics.content_w.max(1),
-            &[
-                HEADER_EMPTY_SECTION_PERCENT as u16,
-                HEADER_INDICATOR_SECTION_PERCENT as u16,
-            ],
+            &[left_section_percent as u16, right_section_percent as u16],
         );
         let left_width = header_slot_widths.first().copied().unwrap_or(1).max(1);
         let right_width = header_slot_widths.get(1).copied().unwrap_or(1).max(1);
@@ -168,19 +177,27 @@ impl GuiState {
         )
         .slot_align(SlotAlign::Center, SlotAlign::Center)
         .fill();
-        let version_label = Node::align_box(
-            textbox(build_version_label())
-                .text_color(theme.version_label)
-                .text_align_center()
-                .widget_layout(fixed_box(
-                    right_width,
-                    HEADER_VERSION_LABEL_HEIGHT.min(header_h).max(1),
-                )),
+        let status_label = Node::align_box(
+            textbox(if presets.persistence_warning {
+                PRESET_WARNING_STORAGE.to_string()
+            } else {
+                build_version_label()
+            })
+            .text_color(if presets.persistence_warning {
+                theme.preset_dirty_highlight
+            } else {
+                theme.version_label
+            })
+            .text_align_center()
+            .widget_layout(fixed_box(
+                right_width,
+                HEADER_VERSION_LABEL_HEIGHT.min(header_h).max(1),
+            )),
         )
         .slot_align(SlotAlign::Center, SlotAlign::Center)
         .fill();
         let right_status = column_slots(vec![
-            weighted_slot(version_label, 8),
+            weighted_slot(status_label, 8),
             weighted_slot(indicator_node, 11),
         ])
         .container_overflow(OverflowPolicy::Compress)
@@ -265,8 +282,8 @@ impl GuiState {
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let header_content = row_slots(vec![
-            weighted_slot(left_controls, HEADER_EMPTY_SECTION_PERCENT as u16),
-            weighted_slot(right_status, HEADER_INDICATOR_SECTION_PERCENT as u16),
+            weighted_slot(left_controls, left_section_percent as u16),
+            weighted_slot(right_status, right_section_percent as u16),
         ])
         .container_overflow(OverflowPolicy::Compress);
         panel("header", header_content).pad_all(0)

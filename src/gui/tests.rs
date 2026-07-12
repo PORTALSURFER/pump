@@ -1654,10 +1654,27 @@
                     key: super::PRESET_ADD_KEY.to_string(),
                 });
             });
+            state.reduce_action(UiAction::ButtonPressed {
+                key: PRESET_RENAME_BUTTON_KEY.to_string(),
+            });
 
             let presets = state.snapshot_presets();
             assert_eq!(presets.names[presets.selected], PRESET_WARNING_STORAGE);
+            assert!(presets.persistence_warning);
+            assert!(presets.rename_active);
             assert_eq!(params.preset_bank_snapshot().presets.len(), 1);
+
+            let spec = state.build_ui(&InputState {
+                window_size: Size {
+                    width: WINDOW_WIDTH,
+                    height: WINDOW_HEIGHT,
+                },
+                ..InputState::default()
+            });
+            let mut texts = Vec::new();
+            collect_textbox_texts(spec.root.content(), &mut texts);
+            assert!(texts.iter().any(|text| text == PRESET_WARNING_STORAGE));
+            assert!(texts.iter().any(|text| text == "Init"));
 
             let frame = radiant_editor_frame_for_params(
                 Arc::clone(&params),

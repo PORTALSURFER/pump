@@ -99,6 +99,7 @@ const DROPDOWN_SECTION_WEIGHT: u16 = 30;
 const QUICK_SHAPE_BUTTONS_PER_ROW: usize = 8;
 const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
+const HEADER_STORAGE_WARNING_SECTION_PERCENT: u8 = 40;
 const HEADER_VERSION_LABEL_HEIGHT: u32 = 8;
 const CURVE_W: u32 = WINDOW_WIDTH;
 const CURVE_VERTICAL_MARGIN: u32 = 10;
@@ -261,6 +262,7 @@ struct PresetSnapshot {
     dirty: bool,
     rename_active: bool,
     rename_draft: String,
+    persistence_warning: bool,
     warning_blink_visible: bool,
 }
 

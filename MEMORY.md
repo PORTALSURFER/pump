@@ -51,6 +51,7 @@
 - OPT-1142 default CI passes 206 tests and VST3 CI passes 230 tests. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `a11e16051d5f79a449786e4cd64779d616d5eb5d1cd6eb02cbf4f4e9f3733823`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass.
 - The PR #18 undo review fix only persists a history snapshot's preset bank when it differs from the current bank, so knob and curve undo/redo remain available during preset-store failures. Failed preset-history persistence leaves the history entry available for retry.
 - The real unwritable-directory regression probes write capability after applying Unix mode `0500`; environments such as UID 0 that can still create a file clean up and skip, while permission-enforcing environments exercise the real persistence failure.
+- Toybox renders preset persistence failure as an independent expanded header status, so `NOT SAVED - CHECK PRESET FOLDER` stays visible alongside an active rename textbox; the regression asserts both warning and rename draft in the same UI frame.
 
 ## Immediate Next Action
 
