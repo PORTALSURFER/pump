@@ -1,4 +1,7 @@
 use super::*;
+
+const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
+const MIN_ENCODED_CURVE_BYTES: usize = 4 + MIN_CURVE_BYTES;
 /// Encode all parameter state including curve table into bytes.
 pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     let editable = params.editable_curve_snapshot();
@@ -147,6 +150,10 @@ fn decode_curve(
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds");
     }
+    let required_bytes = node_count * 8 + node_count.saturating_sub(1) * 4;
+    if remaining_bytes(cursor) < required_bytes {
+        return Err("invalid curve byte count");
+    }
     let mut nodes = Vec::with_capacity(node_count);
     for _ in 0..node_count {
         let Some(x) = read_f32(cursor) else {
@@ -180,6 +187,9 @@ fn decode_preset_bank(
     if count == 0 || count > MAX_PRESETS {
         return Err("invalid preset count bounds");
     }
+    if remaining_bytes(cursor) < count * 4 {
+        return Err("invalid preset count byte length");
+    }
     let mut presets = Vec::with_capacity(count);
     for index in 0..count {
         let Some(name_len) = read_u32(cursor).map(|value| value as usize) else {
@@ -187,6 +197,9 @@ fn decode_preset_bank(
         };
         if name_len == 0 || name_len > 256 {
             return Err("invalid preset name length bounds");
+        }
+        if remaining_bytes(cursor) < name_len {
+            return Err("invalid preset name byte length");
         }
         let mut name_bytes = vec![0_u8; name_len];
         std::io::Read::read_exact(cursor, &mut name_bytes).map_err(|_| "invalid preset name")?;
@@ -243,6 +256,12 @@ fn decode_quick_slots(cursor: &mut Cursor<&[u8]>) -> Result<Vec<QuickShapeSlot>,
     let Some(count) = read_u32(cursor).map(|value| value as usize) else {
         return Err("invalid preset quick slot count");
     };
+    if count != QUICK_SLOT_COUNT {
+        return Err("invalid preset quick slot count bounds");
+    }
+    if remaining_bytes(cursor) < count * MIN_ENCODED_CURVE_BYTES {
+        return Err("invalid preset quick slot count byte length");
+    }
     let mut slots = Vec::with_capacity(count);
     for _ in 0..count {
         let Some(node_count) = read_u32(cursor).map(|value| value as usize) else {
@@ -328,4 +347,11 @@ fn read_u8(cursor: &mut Cursor<&[u8]>) -> Option<u8> {
     let mut bytes = [0_u8; 1];
     std::io::Read::read_exact(cursor, &mut bytes).ok()?;
     Some(bytes[0])
+}
+
+fn remaining_bytes(cursor: &Cursor<&[u8]>) -> usize {
+    cursor
+        .get_ref()
+        .len()
+        .saturating_sub(cursor.position() as usize)
 }

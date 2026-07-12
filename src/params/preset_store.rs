@@ -10,6 +10,8 @@ const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
 const PRESET_STORE_VERSION: u32 = 2;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
+const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
+const MIN_ENCODED_CURVE_BYTES: usize = 4 + MIN_CURVE_BYTES;
 
 #[cfg(test)]
 thread_local! {
@@ -217,6 +219,9 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
     if count == 0 || count > MAX_PRESETS {
         return Err("invalid preset count bounds".to_string());
     }
+    if remaining_bytes(&cursor) < count * 4 {
+        return Err("invalid preset count byte length".to_string());
+    }
     let mut presets = Vec::with_capacity(count);
     for index in 0..count {
         let name_len = read_u32(&mut cursor)
@@ -224,6 +229,9 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             .ok_or_else(|| "invalid preset name length".to_string())?;
         if name_len == 0 || name_len > 256 {
             return Err("invalid preset name length bounds".to_string());
+        }
+        if remaining_bytes(&cursor) < name_len {
+            return Err("invalid preset name byte length".to_string());
         }
         let mut name_bytes = vec![0_u8; name_len];
         std::io::Read::read_exact(&mut cursor, &mut name_bytes)
@@ -273,6 +281,10 @@ fn decode_curve(cursor: &mut Cursor<&[u8]>, node_count: usize) -> Result<Editabl
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds".to_string());
     }
+    let required_bytes = node_count * 8 + node_count.saturating_sub(1) * 4;
+    if remaining_bytes(cursor) < required_bytes {
+        return Err("invalid curve byte count".to_string());
+    }
     let mut nodes = Vec::with_capacity(node_count);
     for _ in 0..node_count {
         let x = read_f32(cursor).ok_or_else(|| "invalid curve node x".to_string())?;
@@ -291,6 +303,12 @@ fn decode_quick_slots(cursor: &mut Cursor<&[u8]>) -> Result<Vec<QuickShapeSlot>,
     let count = read_u32(cursor)
         .map(|value| value as usize)
         .ok_or_else(|| "invalid preset quick slot count".to_string())?;
+    if count != QUICK_SLOT_COUNT {
+        return Err("invalid preset quick slot count bounds".to_string());
+    }
+    if remaining_bytes(cursor) < count * MIN_ENCODED_CURVE_BYTES {
+        return Err("invalid preset quick slot count byte length".to_string());
+    }
     let mut slots = Vec::with_capacity(count);
     for _ in 0..count {
         let node_count = read_u32(cursor)
@@ -314,9 +332,54 @@ fn read_u32(cursor: &mut Cursor<&[u8]>) -> Option<u32> {
     Some(u32::from_le_bytes(bytes))
 }
 
+fn remaining_bytes(cursor: &Cursor<&[u8]>) -> usize {
+    cursor
+        .get_ref()
+        .len()
+        .saturating_sub(cursor.position() as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FIRST_PRESET_OFFSET: usize = 16;
+
+    fn payload_u32(payload: &[u8], offset: usize) -> u32 {
+        let bytes = payload
+            .get(offset..offset + 4)
+            .expect("u32 offset should be in bounds");
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+
+    fn write_payload_u32(payload: &mut [u8], offset: usize, value: u32) {
+        payload[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn quick_slot_count_offset(payload: &[u8]) -> usize {
+        let name_len = payload_u32(payload, FIRST_PRESET_OFFSET) as usize;
+        let node_count_offset = FIRST_PRESET_OFFSET + 4 + name_len + 5 * 4;
+        let node_count = payload_u32(payload, node_count_offset) as usize;
+        let curve_bytes = node_count * 8 + node_count.saturating_sub(1) * 4;
+        node_count_offset + 4 + curve_bytes
+    }
+
+    fn encoded_single_preset_bank() -> Vec<u8> {
+        encode_preset_bank_payload(&PumpPresetBank {
+            selected: 0,
+            presets: vec![PumpPreset {
+                name: "Init".to_string(),
+                is_read_only: false,
+                mix: 1.0,
+                depth: 1.0,
+                phase_offset: 0.0,
+                output_gain_db: 0.0,
+                sync_division: 4,
+                editable_curve: default_editable_curve(),
+                quick_slots: seeded_quick_shape_slots(),
+            }],
+        })
+    }
 
     fn temp_path(label: &str) -> PathBuf {
         let stamp = SystemTime::now()
@@ -415,5 +478,37 @@ mod tests {
         let decoded =
             decode_preset_bank_payload(&payload).expect("v1 preset store payload should decode");
         assert_eq!(decoded.presets[0].quick_slots, seeded_quick_shape_slots());
+    }
+
+    #[test]
+    fn preset_store_rejects_non_fixed_quick_slot_counts() {
+        for count in [u32::MAX, 0, 7, 9] {
+            let mut payload = encoded_single_preset_bank();
+            let count_offset = quick_slot_count_offset(&payload);
+            write_payload_u32(&mut payload, count_offset, count);
+
+            let error = decode_preset_bank_payload(&payload)
+                .expect_err("non-fixed quick-slot count should be rejected");
+            assert_eq!(error, "invalid preset quick slot count bounds");
+        }
+    }
+
+    #[test]
+    fn preset_store_rejects_truncated_quick_slots() {
+        let mut payload = encoded_single_preset_bank();
+        let count_offset = quick_slot_count_offset(&payload);
+        payload.truncate(count_offset + 4);
+
+        let error = decode_preset_bank_payload(&payload)
+            .expect_err("truncated quick slots should be rejected");
+        assert_eq!(error, "invalid preset quick slot count byte length");
+    }
+
+    #[test]
+    fn preset_store_accepts_fixed_quick_slot_count() {
+        let payload = encoded_single_preset_bank();
+        let decoded =
+            decode_preset_bank_payload(&payload).expect("fixed quick-slot count should decode");
+        assert_eq!(decoded.presets[0].quick_slots.len(), QUICK_SLOT_COUNT);
     }
 }
