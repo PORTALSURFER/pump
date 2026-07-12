@@ -59,6 +59,12 @@ All notable changes to this project are documented in this file.
 
 - Render attenuation fill with visible primitives (a0c079f)
 
+- (gui) Align curve interaction width (adb8d27)
+
+- (gui) Clear meter from raw transport state (70cb29f)
+
+- (gui) Preserve inactive meter repaint (7045759)
+
 
 ### CI
 
@@ -261,6 +267,10 @@ All notable changes to this project are documented in this file.
 - Record OPT-1111 review artifact (19d4615)
 
 - Defer final artifact hash to PR (3b4f6d3)
+
+- (changelog) Update changelog [skip ci] (e0b8ddc)
+
+- Record OPT-1114 review state (87cd029)
 
 
 ### Features
@@ -979,6 +989,12 @@ OPT-1112 Add incoming waveform behind the Pump curve (8a24ba1)
 - Merge pull request #20 from PORTALSURFER/wsvasek/opt-1111-pump-show-sync-aware-vertical-beat-divisions-in-the-curve
 
 OPT-1111 Show sync-aware beat divisions in the Pump curve (11590ad)
+
+- OPT-1114 Add live gain reduction meter (d74e9f9)
+
+- Merge pull request #21 from PORTALSURFER/wsvasek/opt-1114-pump-add-a-compact-live-gain-reduction-meter-beside-the
+
+OPT-1114 Pump: add a compact live gain-reduction meter beside the curve editor (1e20f6b)
 
 
 ### Refactoring
