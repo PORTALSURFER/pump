@@ -52,7 +52,6 @@ const CONTROL_LABEL_WIDTH: f32 = 54.0;
 const CONTROL_VALUE_WIDTH: f32 = 60.0;
 const SURFACE_PADDING: f32 = 12.0;
 const SURFACE_SPACING: f32 = 6.0;
-const CURVE_GRID_COLUMNS: usize = 8;
 const CURVE_GRID_ROWS: usize = 4;
 const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_FILL_TOP_ALPHA: u8 = 96;
@@ -382,6 +381,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                     state.option_hover_held,
                 )
                 .with_incoming_waveform(state.status.incoming_waveform_snapshot())
+                .with_sync_division(sync)
                 .with_playhead_phase(playhead_phase),
                 RadiantEditorMessage::Curve,
             )
@@ -1385,6 +1385,7 @@ struct CurvePreviewWidget {
     option_hover_held: bool,
     playhead_phase: Option<f32>,
     incoming_waveform: Option<IncomingWaveformSnapshot>,
+    sync_division: usize,
 }
 
 impl CurvePreviewWidget {
@@ -1414,6 +1415,7 @@ impl CurvePreviewWidget {
             option_hover_held,
             playhead_phase: None,
             incoming_waveform: None,
+            sync_division: crate::params::DEFAULT_SYNC_DIVISION_INDEX,
         }
     }
 
@@ -1427,6 +1429,11 @@ impl CurvePreviewWidget {
         incoming_waveform: Option<IncomingWaveformSnapshot>,
     ) -> Self {
         self.incoming_waveform = incoming_waveform;
+        self
+    }
+
+    fn with_sync_division(mut self, sync_division: usize) -> Self {
+        self.sync_division = sync_division;
         self
     }
 
@@ -1590,14 +1597,20 @@ impl CurvePreviewWidget {
             rect: bounds,
             color: theme.bg_secondary,
         }));
-        for step in 1..CURVE_GRID_COLUMNS {
-            let x = bounds.min.x + bounds.width() * (step as f32 / CURVE_GRID_COLUMNS as f32);
-            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
-                widget_id: self.common.id,
-                points: Arc::from([Point::new(x, bounds.min.y), Point::new(x, bounds.max.y)]),
-                color: theme.grid_soft,
-                width: 1.0,
-            }));
+        let grid = super::curve_beat_grid(self.sync_division, bounds.width());
+        for (positions, color) in [
+            (grid.minor.as_slice(), theme.grid_soft),
+            (grid.major.as_slice(), theme.grid_strong),
+        ] {
+            for position in positions {
+                let x = bounds.min.x + (bounds.width().max(1.0) - 1.0) * position;
+                primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                    widget_id: self.common.id,
+                    points: Arc::from([Point::new(x, bounds.min.y), Point::new(x, bounds.max.y)]),
+                    color,
+                    width: 1.0,
+                }));
+            }
         }
         for step in 1..CURVE_GRID_ROWS {
             let y = bounds.min.y + bounds.height() * (step as f32 / CURVE_GRID_ROWS as f32);
@@ -3151,6 +3164,41 @@ mod tests {
                 theme.accent_mint.with_alpha(CURVE_FILL_BOTTOM_ALPHA),
             ))
         );
+    }
+
+    #[test]
+    fn curve_preview_widget_grid_tracks_sync_length_and_resize_geometry() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let theme = ThemeTokens::default();
+        let grid_x_positions = |width: f32| {
+            let widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_sync_division(7);
+            let bounds = Rect::from_xy_size(0.0, 0.0, width, CURVE_PREVIEW_HEIGHT);
+            let mut primitives = Vec::new();
+            widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+            primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    PaintPrimitive::StrokePolyline(stroke)
+                        if stroke.color == theme.grid_strong
+                            && stroke.points.len() == 2
+                            && (stroke.points[0].x - stroke.points[1].x).abs() < 1.0e-6 =>
+                    {
+                        Some(stroke.points[0].x)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let wide = grid_x_positions(396.0);
+        let narrow = grid_x_positions(198.0);
+        assert_eq!(wide.len(), 7);
+        assert_eq!(narrow.len(), 7);
+        for (wide_x, narrow_x) in wide.iter().zip(narrow.iter()) {
+            assert!((*wide_x / 395.0 - *narrow_x / 197.0).abs() < 1.0e-4);
+        }
     }
 
     #[test]

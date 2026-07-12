@@ -78,8 +78,69 @@ pub(super) fn curve_editor_style(theme: PumpTheme) -> CurveEditorStyle {
 
 pub(super) fn curve_editor_grid_config(grid_division: usize) -> CurveGridConfig {
     CurveGridConfig {
-        emphasized_verticals: vertical_grid_positions_for_division(grid_division),
+        emphasized_verticals: curve_beat_grid(grid_division, WINDOW_WIDTH as f32).major,
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct CurveBeatGrid {
+    pub(super) minor: Vec<f32>,
+    pub(super) major: Vec<f32>,
+}
+
+/// Build normalized beat-grid positions for one synchronized curve cycle.
+///
+/// Full quarter-note beats are major divisions and sixteenth-note boundaries
+/// are minor divisions. Minor divisions are thinned when their projected
+/// spacing would become illegible. Sub-beat cycles longer than a sixteenth
+/// keep a stable half-cycle emphasis; a sixteenth-note cycle has no internal
+/// musical boundary and therefore deliberately renders no vertical line.
+/// Unknown timing states also return an empty grid.
+pub(super) fn curve_beat_grid(sync_division: usize, width: f32) -> CurveBeatGrid {
+    const SIXTEENTH_NOTE_BEATS: f32 = 0.25;
+    const MIN_MINOR_SPACING_PX: f32 = 8.0;
+    const POSITION_EPSILON: f32 = 1.0e-5;
+
+    let Some(division) = crate::params::SYNC_DIVISIONS.get(sync_division) else {
+        return CurveBeatGrid::default();
+    };
+    let cycle_beats = division.beats;
+    if !cycle_beats.is_finite() || cycle_beats <= 0.0 || !width.is_finite() || width <= 0.0 {
+        return CurveBeatGrid::default();
+    }
+    if cycle_beats <= SIXTEENTH_NOTE_BEATS + POSITION_EPSILON {
+        return CurveBeatGrid::default();
+    }
+
+    let mut major = Vec::new();
+    let mut beat = 1.0;
+    while beat < cycle_beats - POSITION_EPSILON {
+        major.push(beat / cycle_beats);
+        beat += 1.0;
+    }
+    if major.is_empty() {
+        major.push(0.5);
+    }
+
+    let mut minor = Vec::new();
+    let mut interval_beats = SIXTEENTH_NOTE_BEATS;
+    while interval_beats < cycle_beats
+        && width * interval_beats / cycle_beats < MIN_MINOR_SPACING_PX
+    {
+        interval_beats *= 2.0;
+    }
+    let mut subdivision = interval_beats;
+    while subdivision < cycle_beats - POSITION_EPSILON {
+        minor.push(subdivision / cycle_beats);
+        subdivision += interval_beats;
+    }
+    minor.retain(|position| {
+        !major
+            .iter()
+            .any(|major_position| (major_position - *position).abs() <= POSITION_EPSILON)
+    });
+
+    CurveBeatGrid { minor, major }
 }
 
 pub(super) fn curve_editor_interaction_options(

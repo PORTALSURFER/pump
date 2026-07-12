@@ -300,9 +300,10 @@ impl GuiState {
         let editable_curve = self.params.editable_curve_snapshot();
         let effective_grid = effective_grid_division(controls.division, controls.grid_override);
         let mut curve_style = curve_editor_style(theme);
-        if controls.incoming_waveform_enabled {
-            curve_style.background = Color::rgba(0, 0, 0, 0);
-        }
+        curve_style.background = Color::rgba(0, 0, 0, 0);
+        curve_style.grid_vertical = Color::rgba(0, 0, 0, 0);
+        curve_style.grid_vertical_emphasis = Color::rgba(0, 0, 0, 0);
+        curve_style.grid_horizontal = Color::rgba(0, 0, 0, 0);
         let curve_editor_view = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
             .curve_style(curve_style)
             .curve_grid(curve_editor_grid_config(effective_grid))
@@ -317,24 +318,26 @@ impl GuiState {
             )
             .widget_layout(fixed_box(metrics.content_w, metrics.curve_size.height))
             .fill();
-        let curve_content = if controls.incoming_waveform_enabled {
-            stack(vec![
-                surface(
-                    "incoming-waveform-underlay",
-                    metrics.curve_size,
-                    incoming_waveform_underlay_commands(
-                        metrics.curve_size,
-                        theme,
-                        self.status.incoming_waveform_snapshot(),
-                    ),
-                )
-                .fill(),
-                curve_editor_view,
-            ])
-            .fill()
-        } else {
-            curve_editor_view
-        };
+        let waveform = controls
+            .incoming_waveform_enabled
+            .then(|| self.status.incoming_waveform_snapshot())
+            .flatten();
+        let curve_content = stack(vec![
+            surface(
+                "incoming-waveform-underlay",
+                metrics.curve_size,
+                incoming_waveform_underlay_commands(metrics.curve_size, theme, waveform),
+            )
+            .fill(),
+            surface(
+                "curve-beat-grid",
+                metrics.curve_size,
+                curve_beat_grid_commands(metrics.curve_size, theme, effective_grid),
+            )
+            .fill(),
+            curve_editor_view,
+        ])
+        .fill();
         let spline_content = Node::padding_box(curve_content)
             .pad_xy(0, CURVE_VERTICAL_MARGIN as i32)
             .widget_layout(fixed_box(metrics.content_w, metrics.curve_h))
@@ -2316,6 +2319,40 @@ pub(super) fn incoming_waveform_underlay_commands(
             end: point(index, false),
             color,
         });
+    }
+    commands
+}
+
+pub(super) fn curve_beat_grid_commands(
+    size: Size,
+    theme: PumpTheme,
+    sync_division: usize,
+) -> Vec<SurfaceCommand> {
+    let max_x = size.width.saturating_sub(1) as f32;
+    let max_y = size.height.saturating_sub(1) as i32;
+    let grid = curve_beat_grid(sync_division, size.width as f32);
+    let mut commands = Vec::with_capacity(grid.minor.len() + grid.major.len() + 3);
+
+    for step in 1..4 {
+        let y = (max_y * step) / 4;
+        commands.push(SurfaceCommand::Line {
+            start: Point { x: 0, y },
+            end: Point { x: max_x as i32, y },
+            color: theme.curve_grid_horizontal,
+        });
+    }
+    for (positions, color) in [
+        (grid.minor.as_slice(), theme.curve_grid_vertical),
+        (grid.major.as_slice(), theme.curve_grid_emphasis),
+    ] {
+        for position in positions {
+            let x = (position * max_x).round() as i32;
+            commands.push(SurfaceCommand::Line {
+                start: Point { x, y: 0 },
+                end: Point { x, y: max_y },
+                color,
+            });
+        }
     }
     commands
 }
