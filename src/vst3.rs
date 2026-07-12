@@ -41,7 +41,8 @@ mod transport_utils;
 
 use param_bridge::{apply_normalized_param, from_normalized, read_plain_param, to_normalized};
 use shared_state::{
-    acquire_shared_for_role, release_shared_for_role, PumpVst3Runtime, PumpVst3Shared, SharedRole,
+    acquire_shared_for_role, release_shared_for_role, PumpVst3Runtime, PumpVst3Shared,
+    RuntimeHandoff, SharedRole,
 };
 use transport_utils::transport_state_from_vst3_process_context;
 
