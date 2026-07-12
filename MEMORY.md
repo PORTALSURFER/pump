@@ -50,6 +50,7 @@
 - Preset persistence tests inject directory-create, temporary-write, and final-rename failures; assert rollback and reload state; exercise a genuinely unwritable directory; and verify the existing durable bank remains readable after finalization failure.
 - OPT-1142 default CI passes 206 tests and VST3 CI passes 230 tests. The fresh signed review artifact is `dist/pump-v0.2.0-macos.vst3` with binary SHA-256 `29ba7b587d884cf647404cfa46131d66848c526a380881758aad4e1c08a4e81e`; signature, plist, arm64 Mach-O, and VST3 entry-symbol audits pass.
 - The PR #18 undo review fix only persists a history snapshot's preset bank when it differs from the current bank, so knob and curve undo/redo remain available during preset-store failures. Failed preset-history persistence leaves the history entry available for retry.
+- The real unwritable-directory regression probes write capability after applying Unix mode `0500`; environments such as UID 0 that can still create a file clean up and skip, while permission-enforcing environments exercise the real persistence failure.
 
 ## Immediate Next Action
 

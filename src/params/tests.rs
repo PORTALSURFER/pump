@@ -328,6 +328,20 @@ fn preset_create_rolls_back_when_preset_directory_is_unwritable() {
     std::fs::create_dir_all(&directory).expect("test directory should be created");
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))
         .expect("test directory should become unwritable");
+    let probe_path = directory.join("write-probe");
+    if let Ok(probe) = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe_path)
+    {
+        drop(probe);
+        let _ = std::fs::remove_file(probe_path);
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .expect("test directory permissions should be restored");
+        std::fs::remove_dir_all(directory).expect("test directory should be removed");
+        eprintln!("skipping unwritable-directory assertion: process can write through mode 0500");
+        return;
+    }
     let store_path = directory.join("preset-bank.bin");
 
     super::preset_store::with_test_persistence_path(store_path, || {
