@@ -11,6 +11,6 @@ Ordered queue for immediate execution:
 7. [x] Build and audit the signed `dist/pump-v0.2.0-macos.vst3` artifact from the exact review head.
 8. [x] Reopen PR #22 implementation after user review requested a dedicated left reference-label gutter.
 9. [x] Reserve the gutter in both renderers and align curve rendering plus hit testing to the reduced viewport.
-10. [ ] Re-run focused tests, multi-size screenshots, default CI, and VST3 CI; push the PR follow-up.
-11. [ ] Rebuild and audit the exact-head review artifact.
+10. [x] Re-run focused tests, multi-size screenshots, default CI, and VST3 CI; push the PR follow-up.
+11. [x] Rebuild and audit the exact-head review artifact.
 12. [ ] Wait for explicit user review/sign-off before merge.
