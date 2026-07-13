@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-13 18:19:44 UTC
+- Last Updated (UTC): 2026-07-13 18:21:09 UTC
 - Active Mission: Add horizontal 0 dB, −6 dB, −12 dB, and −∞ gain-reference guides to both Pump curve editors for OPT-1110.
-- Current Workstream: Intended Pump PR for `wsvasek/opt-1110-pump-add-horizontal-db-reference-markings-to-the-curve`. Scope: replace the unlabeled horizontal grid with subtle labeled gain references derived from the editable curve's linear-gain mapping in both Toybox and Radiant, without changing curve interaction or DSP. Definition of Done: shared gain-domain positions, readable restrained labels at supported sizes, silence-floor alignment, unchanged interactions, focused dual-renderer coverage, repository CI, and a fresh signed review artifact. Status: validated; ready to commit and open for review.
+- Current Workstream: Pump PR #22 (`https://github.com/PORTALSURFER/pump/pull/22`) is ready for review on `wsvasek/opt-1110-pump-add-horizontal-db-reference-markings-to-the-curve`. Scope: replace the unlabeled horizontal grid with subtle labeled gain references derived from the editable curve's linear-gain mapping in both Toybox and Radiant, without changing curve interaction or DSP. Definition of Done: shared gain-domain positions, readable restrained labels at supported sizes, silence-floor alignment, unchanged interactions, focused dual-renderer coverage, repository CI, and a fresh signed review artifact. Status: waiting for user review.
 
 ## Current State
 
@@ -64,7 +64,8 @@
 - The OPT-1114 review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. The final binary SHA-256 is recorded on PR #21 after the last documentation commit and rebuild. Bitwig plugin-host PID `25378` still maps the previous binary and must fully unload or restart before testing.
 - Pump PR #21 for OPT-1114 merged on 2026-07-12; no active Pump PR remained before OPT-1110 began.
 - OPT-1110 now defines one shared linear-gain reference model for 0 dB, −6 dB, −12 dB, and the zero-gain silence floor. Toybox and Radiant project those values through their existing curve-point mappings, paint low-contrast labeled guides below the curve and nodes, and leave all interaction geometry unchanged. Default CI passes 243 tests, VST3 CI passes 271 tests, and Toybox screenshots pass at 315x211, 420x282, 525x352, and 630x423 with and without the playhead.
+- The OPT-1110 review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. The exact-head binary SHA-256 is recorded on PR #22 after the final documentation commit and rebuild. Bitwig plugin-host PID `2062` still maps the previous binary and must fully unload or restart before testing.
 
 ## Immediate Next Action
 
-- Run full default and VST3 CI, open the OPT-1110 PR ready for review, and build/audit the exact-head signed VST3 artifact.
+- Wait for explicit user review/sign-off on ready-for-review Pump PR #22.
