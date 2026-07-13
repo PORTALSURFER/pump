@@ -1,8 +1,8 @@
     use super::{
-        build_version_label, constrained_host_size, curve_beat_grid, find_deletable_node_hit,
-        find_segment_line_hit_within, local_from_node, local_from_node_for_size,
-        move_node_with_push_through, move_segment_translated, preferred_window_size,
-        preview_node_on_curve,
+        build_version_label, constrained_host_size, curve_beat_grid, curve_gain_references,
+        find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
+        local_from_node_for_size, move_node_with_push_through, move_segment_translated,
+        preferred_window_size, preview_node_on_curve,
         radiant_editor_frame_for_params, recompute_move_node_from_origin_for_size,
         resolve_runtime_controls_slot_widths,
         resolve_vertical_slot_heights, segment_upward_tension_sign,
@@ -16,7 +16,7 @@
         WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use super::state_impl::{
-        curve_beat_grid_commands, gain_reduction_meter_commands,
+        curve_beat_grid_commands, curve_gain_reference_commands, gain_reduction_meter_commands,
         incoming_waveform_underlay_commands,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
@@ -895,6 +895,66 @@
         assert!(verticals
             .iter()
             .any(|(_, _, color)| *color == theme.curve_grid_vertical));
+    }
+
+    #[test]
+    fn gain_references_use_curve_linear_gain_mapping_and_silence_floor() {
+        let references = curve_gain_references();
+        assert_eq!(
+            references.map(|reference| reference.label),
+            ["0 dB", "−6 dB", "−12 dB", "−∞"]
+        );
+        assert!((references[0].gain - crate::dsp::db_to_linear(0.0)).abs() < 1.0e-6);
+        assert!((references[1].gain - crate::dsp::db_to_linear(-6.0)).abs() < 1.0e-6);
+        assert!((references[2].gain - crate::dsp::db_to_linear(-12.0)).abs() < 1.0e-6);
+        assert_eq!(references[3].gain, 0.0);
+    }
+
+    #[test]
+    fn gain_reference_commands_position_and_label_all_guides() {
+        let size = Size {
+            width: 200,
+            height: 80,
+        };
+        let metrics = UiLayoutMetrics::design_space();
+        let theme = PumpTheme::main(metrics);
+        let commands = curve_gain_reference_commands(size, theme, metrics.text_scale);
+        let guide_y_positions: Vec<_> = commands
+            .iter()
+            .filter_map(|command| match command {
+                SurfaceCommand::Line { start, end, color }
+                    if *color == theme.curve_reference_line && start.y == end.y =>
+                {
+                    Some(start.y)
+                }
+                _ => None,
+            })
+            .collect();
+        let labels: Vec<_> = commands
+            .iter()
+            .filter_map(|command| match command {
+                SurfaceCommand::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let expected_y_positions: Vec<_> = curve_gain_references()
+            .iter()
+            .map(|reference| {
+                local_from_node_for_size(
+                    CurveNode {
+                        x: 0.0,
+                        y: reference.gain,
+                    },
+                    size,
+                )
+                .y
+            })
+            .collect();
+
+        assert_eq!(guide_y_positions, expected_y_positions);
+        assert_eq!(labels, ["0 dB", "-6 dB", "-12 dB", "-INF"]);
+        assert_eq!(guide_y_positions[0], 0);
+        assert_eq!(guide_y_positions[3], size.height as i32 - 1);
     }
 
     #[test]

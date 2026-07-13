@@ -55,7 +55,6 @@ const CONTROL_LABEL_WIDTH: f32 = 54.0;
 const CONTROL_VALUE_WIDTH: f32 = 60.0;
 const SURFACE_PADDING: f32 = 12.0;
 const SURFACE_SPACING: f32 = 6.0;
-const CURVE_GRID_ROWS: usize = 4;
 const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_FILL_TOP_ALPHA: u8 = 96;
 const CURVE_FILL_BOTTOM_ALPHA: u8 = 12;
@@ -72,6 +71,9 @@ const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
 const CURVE_PLAYHEAD_GLOW_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 112);
 const CURVE_PLAYHEAD_CORE_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 255);
 const CURVE_PLAYHEAD_STROKE_COLOR: Rgba8 = Rgba8::new(255, 196, 232, 255);
+const CURVE_REFERENCE_LABEL_WIDTH: f32 = 48.0;
+const CURVE_REFERENCE_LABEL_HEIGHT: f32 = 12.0;
+const CURVE_REFERENCE_FONT_SIZE: f32 = 9.0;
 const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
 const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
@@ -1735,21 +1737,59 @@ impl CurvePreviewWidget {
                 }));
             }
         }
-        for step in 1..CURVE_GRID_ROWS {
-            let y = bounds.min.y + bounds.height() * (step as f32 / CURVE_GRID_ROWS as f32);
-            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
-                widget_id: self.common.id,
-                points: Arc::from([Point::new(bounds.min.x, y), Point::new(bounds.max.x, y)]),
-                color: theme.grid_soft,
-                width: 1.0,
-            }));
-        }
         primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
             widget_id: self.common.id,
             rect: bounds,
             color: theme.border_emphasis,
             width: 1.0,
         }));
+    }
+
+    fn push_gain_references(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        theme: &ThemeTokens,
+    ) {
+        let label_width = CURVE_REFERENCE_LABEL_WIDTH.min((bounds.width() - 8.0).max(1.0));
+        let label_height = CURVE_REFERENCE_LABEL_HEIGHT.min(bounds.height().max(1.0));
+        let label_left = (bounds.min.x + 4.0).min(bounds.max.x - label_width);
+        let min_top = bounds.min.y;
+        let max_top = (bounds.max.y - label_height).max(min_top);
+
+        for reference in super::curve_gain_references() {
+            let y = Self::curve_point(
+                bounds,
+                CurveNode {
+                    x: 0.0,
+                    y: reference.gain,
+                },
+            )
+            .y;
+            let label_top = (y - label_height * 0.5).clamp(min_top, max_top);
+            let label_rect = Rect::from_xy_size(label_left, label_top, label_width, label_height);
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from([Point::new(bounds.min.x, y), Point::new(bounds.max.x, y)]),
+                color: theme.text_muted.with_alpha(72),
+                width: 1.0,
+            }));
+            primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+                widget_id: self.common.id,
+                rect: label_rect,
+                color: theme.bg_secondary.with_alpha(224),
+            }));
+            primitives.push(PaintPrimitive::Text(PaintTextRun {
+                widget_id: self.common.id,
+                text: PaintText::from(reference.label),
+                rect: label_rect,
+                font_size: CURVE_REFERENCE_FONT_SIZE,
+                baseline: None,
+                color: theme.text_muted,
+                align: PaintTextAlign::Left,
+                wrap: TextWrap::None,
+            }));
+        }
     }
 
     fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
@@ -2101,6 +2141,7 @@ impl Widget for CurvePreviewWidget {
     ) {
         self.push_grid(primitives, bounds, theme);
         self.push_incoming_waveform(primitives, bounds, theme);
+        self.push_gain_references(primitives, bounds, theme);
         self.push_curve(primitives, bounds, theme);
         self.push_nodes(primitives, bounds, theme);
         self.push_playhead(primitives, bounds);
@@ -3321,6 +3362,69 @@ mod tests {
         assert_eq!(narrow.len(), 7);
         for (wide_x, narrow_x) in wide.iter().zip(narrow.iter()) {
             assert!((*wide_x / 395.0 - *narrow_x / 197.0).abs() < 1.0e-4);
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_gain_references_track_curve_mapping_and_stay_labeled() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let theme = ThemeTokens::default();
+
+        for bounds in [
+            Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT),
+            Rect::from_xy_size(0.0, 0.0, 270.0, 51.0),
+        ] {
+            let widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+            let mut primitives = Vec::new();
+            widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+            let guide_y_positions: Vec<_> = primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    PaintPrimitive::StrokePolyline(stroke)
+                        if stroke.color == theme.text_muted.with_alpha(72)
+                            && stroke.points.len() == 2
+                            && (stroke.points[0].y - stroke.points[1].y).abs() < 1.0e-6 =>
+                    {
+                        Some(stroke.points[0].y)
+                    }
+                    _ => None,
+                })
+                .collect();
+            let expected_y_positions: Vec<_> = super::super::curve_gain_references()
+                .iter()
+                .map(|reference| {
+                    CurvePreviewWidget::curve_point(
+                        bounds,
+                        CurveNode {
+                            x: 0.0,
+                            y: reference.gain,
+                        },
+                    )
+                    .y
+                })
+                .collect();
+            let labels: Vec<_> = primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    PaintPrimitive::Text(text)
+                        if ["0 dB", "−6 dB", "−12 dB", "−∞"].contains(&text.text.as_str()) =>
+                    {
+                        assert!(text.rect.min.x >= bounds.min.x);
+                        assert!(text.rect.min.y >= bounds.min.y);
+                        assert!(text.rect.max.x <= bounds.max.x);
+                        assert!(text.rect.max.y <= bounds.max.y);
+                        Some(text.text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            assert_eq!(guide_y_positions, expected_y_positions);
+            assert_eq!(labels, ["0 dB", "−6 dB", "−12 dB", "−∞"]);
+            assert!((guide_y_positions[0] - bounds.min.y).abs() < 1.0e-6);
+            assert!((guide_y_positions[3] - (bounds.max.y - 1.0)).abs() < 1.0e-6);
         }
     }
 

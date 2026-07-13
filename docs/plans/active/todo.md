@@ -2,11 +2,11 @@
 
 Ordered queue for immediate execution:
 
-1. [x] Publish strongest per-block Pump-envelope attenuation from non-silent input without audio-thread allocation or blocking.
-2. [x] Add bounded dB mapping, clamping, fast-attack/slow-release ballistics, and stable stopped/silent/missing/stale behavior.
-3. [x] Place a compact labeled meter beside the Toybox and Radiant curve editors without changing DSP, automation, curve evaluation, or interaction semantics.
-4. [x] Add focused value-mapping, clamping, inactive-state, block aggregation, output-trim isolation, repaint, and dual-renderer paint tests.
-5. [x] Pass default CI, VST3 CI, and four-size idle/live screenshot validation.
-6. [x] Commit and open Pump PR #21 ready for review.
-7. [x] Build and audit the signed `dist/pump-v0.2.0-macos.vst3` review artifact; record its exact-head SHA-256 on PR #21.
-8. [ ] Wait for GitHub CI and explicit user review/sign-off on the OPT-1114 PR.
+1. [x] Replace unlabeled horizontal grid rows with shared 0 dB, −6 dB, −12 dB, and −∞ gain references.
+2. [x] Render restrained lines and readable labels in both Toybox and Radiant below the editable curve and nodes.
+3. [x] Add focused shared-mapping, silence-floor, label, resize, and dual-renderer paint coverage.
+4. [x] Verify Toybox screenshots at 315x211, 420x282, 525x352, and 630x423 with and without the playhead.
+5. [x] Pass default and VST3 repository CI.
+6. [ ] Commit, push, and open the OPT-1110 Pump PR ready for review.
+7. [ ] Build and audit the signed `dist/pump-v0.2.0-macos.vst3` artifact from the exact review head.
+8. [ ] Wait for explicit user review/sign-off before merge.

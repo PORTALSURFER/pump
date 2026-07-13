@@ -331,6 +331,12 @@ impl GuiState {
                 curve_beat_grid_commands(metrics.curve_size, theme, effective_grid),
             )
             .fill(),
+            surface(
+                "curve-gain-references",
+                metrics.curve_size,
+                curve_gain_reference_commands(metrics.curve_size, theme, metrics.text_scale),
+            )
+            .fill(),
             curve_editor_view,
         ])
         .fill();
@@ -1998,17 +2004,11 @@ impl GuiState {
             });
         }
 
-        for step in 1..4 {
-            let y = ((curve_size.height as i32 - 1) * step) / 4;
-            commands.push(SurfaceCommand::Line {
-                start: Point { x: 0, y },
-                end: Point {
-                    x: curve_size.width as i32 - 1,
-                    y,
-                },
-                color: theme.curve_grid_horizontal,
-            });
-        }
+        commands.extend(curve_gain_reference_commands(
+            curve_size,
+            *theme,
+            metrics.text_scale,
+        ));
 
         for segment_index in 0..editable_curve.segments.len() {
             let left = editable_curve.nodes[segment_index];
@@ -2386,16 +2386,7 @@ pub(super) fn curve_beat_grid_commands(
     let max_x = size.width.saturating_sub(1) as f32;
     let max_y = size.height.saturating_sub(1) as i32;
     let grid = curve_beat_grid(sync_division, size.width as f32);
-    let mut commands = Vec::with_capacity(grid.minor.len() + grid.major.len() + 3);
-
-    for step in 1..4 {
-        let y = (max_y * step) / 4;
-        commands.push(SurfaceCommand::Line {
-            start: Point { x: 0, y },
-            end: Point { x: max_x as i32, y },
-            color: theme.curve_grid_horizontal,
-        });
-    }
+    let mut commands = Vec::with_capacity(grid.minor.len() + grid.major.len());
     for (positions, color) in [
         (grid.minor.as_slice(), theme.curve_grid_vertical),
         (grid.major.as_slice(), theme.curve_grid_emphasis),
@@ -2409,5 +2400,70 @@ pub(super) fn curve_beat_grid_commands(
             });
         }
     }
+    commands
+}
+
+pub(super) fn curve_gain_reference_commands(
+    size: Size,
+    theme: PumpTheme,
+    text_scale: u32,
+) -> Vec<SurfaceCommand> {
+    let max_x = size.width.saturating_sub(1) as i32;
+    let text_scale = text_scale.max(1);
+    let glyph_advance = 6_u32.saturating_mul(text_scale);
+    let glyph_height = 7_u32.saturating_mul(text_scale);
+    let label_left = 4_i32;
+    let label_padding = 2_u32;
+    let mut commands = Vec::with_capacity(12);
+
+    for reference in curve_gain_references() {
+        let y = local_from_node_for_size(
+            CurveNode {
+                x: 0.0,
+                y: reference.gain,
+            },
+            size,
+        )
+        .y;
+        let text_width =
+            (reference.bitmap_label.chars().count() as u32).saturating_mul(glyph_advance);
+        let plate_width = text_width
+            .saturating_add(label_padding.saturating_mul(2))
+            .min(size.width.saturating_sub(label_left.max(0) as u32));
+        let plate_height = glyph_height
+            .saturating_add(label_padding.saturating_mul(2))
+            .min(size.height);
+        let plate_top =
+            (y - plate_height as i32 / 2).clamp(0, size.height.saturating_sub(plate_height) as i32);
+        let plate = Rect {
+            origin: Point {
+                x: label_left.min(max_x.max(0)),
+                y: plate_top,
+            },
+            size: Size {
+                width: plate_width,
+                height: plate_height,
+            },
+        };
+        commands.push(SurfaceCommand::Line {
+            start: Point { x: 0, y },
+            end: Point { x: max_x, y },
+            color: theme.curve_reference_line,
+        });
+        commands.push(SurfaceCommand::FillRect {
+            rect: plate,
+            color: theme.curve_reference_label_bg,
+        });
+        commands.push(SurfaceCommand::Text {
+            origin: Point {
+                x: plate.origin.x.saturating_add(label_padding as i32),
+                y: plate.origin.y.saturating_add(label_padding as i32),
+            },
+            text: reference.bitmap_label.to_string(),
+            color: theme.curve_reference_label,
+            scale: text_scale,
+        });
+    }
+
     commands
 }

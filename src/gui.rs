@@ -138,6 +138,42 @@ const CURVE_TENSION_PIXEL_SCALE: f32 = 120.0;
 const NODE_PUSH_THROUGH_PX: i32 = 10;
 const NODE_X_MIN_SPACING: f32 = 1.0e-3;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CurveGainReference {
+    gain: f32,
+    label: &'static str,
+    bitmap_label: &'static str,
+}
+
+/// Gain references shared by both Pump curve-editor renderers.
+///
+/// Curve Y values are linear amplitude gains, so finite dB references must be
+/// converted into that same domain before either renderer projects them.
+fn curve_gain_references() -> [CurveGainReference; 4] {
+    [
+        CurveGainReference {
+            gain: crate::dsp::db_to_linear(0.0),
+            label: "0 dB",
+            bitmap_label: "0 dB",
+        },
+        CurveGainReference {
+            gain: crate::dsp::db_to_linear(-6.0),
+            label: "−6 dB",
+            bitmap_label: "-6 dB",
+        },
+        CurveGainReference {
+            gain: crate::dsp::db_to_linear(-12.0),
+            label: "−12 dB",
+            bitmap_label: "-12 dB",
+        },
+        CurveGainReference {
+            gain: 0.0,
+            label: "−∞",
+            bitmap_label: "-INF",
+        },
+    ]
+}
+
 pub(crate) fn build_version_label() -> String {
     format!(
         "{}+{}",
