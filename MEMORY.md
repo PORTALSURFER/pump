@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-13 18:21:09 UTC
+- Last Updated (UTC): 2026-07-13 19:08:00 UTC
 - Active Mission: Add horizontal 0 dB, −6 dB, −12 dB, and −∞ gain-reference guides to both Pump curve editors for OPT-1110.
-- Current Workstream: Pump PR #22 (`https://github.com/PORTALSURFER/pump/pull/22`) is ready for review on `wsvasek/opt-1110-pump-add-horizontal-db-reference-markings-to-the-curve`. Scope: replace the unlabeled horizontal grid with subtle labeled gain references derived from the editable curve's linear-gain mapping in both Toybox and Radiant, without changing curve interaction or DSP. Definition of Done: shared gain-domain positions, readable restrained labels at supported sizes, silence-floor alignment, unchanged interactions, focused dual-renderer coverage, repository CI, and a fresh signed review artifact. Status: waiting for user review.
+- Current Workstream: Pump PR #22 (`https://github.com/PORTALSURFER/pump/pull/22`) on `wsvasek/opt-1110-pump-add-horizontal-db-reference-markings-to-the-curve`. Scope: replace the unlabeled horizontal grid with subtle labeled gain references derived from the editable curve's linear-gain mapping in both Toybox and Radiant, without changing curve interaction or DSP. Review follow-up: reserve a dedicated noninteractive left label gutter, matching the supplied reference, so the curve, nodes, waveform, grid, and playhead begin to its right instead of painting behind the labels. Status: validated; preparing the review-head update.
 
 ## Current State
 

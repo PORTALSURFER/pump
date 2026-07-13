@@ -16,7 +16,8 @@
         WINDOW_HEIGHT, WINDOW_WIDTH,
     };
     use super::state_impl::{
-        curve_beat_grid_commands, curve_gain_reference_commands, gain_reduction_meter_commands,
+        curve_beat_grid_commands, curve_gain_reference_label_commands,
+        curve_gain_reference_line_commands, gain_reduction_meter_commands,
         incoming_waveform_underlay_commands,
     };
     use crate::curve::{sample_editable_curve, CurveNode, CurveSegment, EditableCurve};
@@ -918,8 +919,8 @@
         };
         let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
-        let commands = curve_gain_reference_commands(size, theme, metrics.text_scale);
-        let guide_y_positions: Vec<_> = commands
+        let line_commands = curve_gain_reference_line_commands(size, theme);
+        let guide_y_positions: Vec<_> = line_commands
             .iter()
             .filter_map(|command| match command {
                 SurfaceCommand::Line { start, end, color }
@@ -930,7 +931,8 @@
                 _ => None,
             })
             .collect();
-        let labels: Vec<_> = commands
+        let label_commands = curve_gain_reference_label_commands(size, theme, metrics.text_scale);
+        let labels: Vec<_> = label_commands
             .iter()
             .filter_map(|command| match command {
                 SurfaceCommand::Text { text, .. } => Some(text.as_str()),
@@ -955,6 +957,13 @@
         assert_eq!(labels, ["0 dB", "-6 dB", "-12 dB", "-INF"]);
         assert_eq!(guide_y_positions[0], 0);
         assert_eq!(guide_y_positions[3], size.height as i32 - 1);
+        assert!(line_commands.iter().all(|command| {
+            matches!(command, SurfaceCommand::Line { start, end, .. }
+                if start.x == 0 && end.x == size.width as i32 - 1)
+        }));
+        assert!(label_commands
+            .iter()
+            .all(|command| !matches!(command, SurfaceCommand::Line { .. })));
     }
 
     #[test]
@@ -1077,6 +1086,14 @@
         let metrics = UiLayoutMetrics::design_space();
         assert_eq!(curve_editor_layout, LayoutBox::fill());
         assert!(metrics.curve_size.width < metrics.content_w);
+        assert!(metrics.curve_reference_gutter_width > 0);
+        assert_eq!(
+            metrics.curve_reference_gutter_width
+                + metrics.curve_size.width
+                + metrics.meter_panel_width,
+            metrics.content_w,
+            "reference gutter, curve viewport, and meter should consume the full row"
+        );
         assert_eq!(
             state.runtime.lock().expect("runtime lock should succeed").curve_size,
             metrics.curve_size

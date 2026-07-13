@@ -72,7 +72,6 @@ pub(super) struct PumpTheme {
     pub(super) curve_grid_horizontal: Color,
     pub(super) curve_reference_line: Color,
     pub(super) curve_reference_label: Color,
-    pub(super) curve_reference_label_bg: Color,
     pub(super) curve_fill: Color,
     pub(super) curve_line: Color,
     pub(super) curve_line_highlight: Color,
@@ -136,12 +135,6 @@ impl PumpTheme {
                 88,
             ),
             curve_reference_label: palette.text_muted,
-            curve_reference_label_bg: Color::rgba(
-                palette.background_primary.r,
-                palette.background_primary.g,
-                palette.background_primary.b,
-                224,
-            ),
             curve_fill: Color::rgba(
                 palette.syntax_emphasis.r,
                 palette.syntax_emphasis.g,
@@ -207,6 +200,7 @@ pub(super) struct UiLayoutMetrics {
     pub(super) content_w: u32,
     pub(super) content_h: u32,
     pub(super) curve_h: u32,
+    pub(super) curve_reference_gutter_width: u32,
     pub(super) meter_panel_width: u32,
     pub(super) dropdown_control_w: u32,
     pub(super) dropdown_control_h: u32,
@@ -251,8 +245,11 @@ impl UiLayoutMetrics {
             content_w,
             &[CURVE_EDITOR_SECTION_WEIGHT, METER_SECTION_WEIGHT],
         );
+        let curve_panel_width = curve_meter_widths[0];
+        let curve_reference_gutter_width =
+            CURVE_REFERENCE_GUTTER_WIDTH.min(curve_panel_width.saturating_sub(1));
         let curve_size = Size {
-            width: curve_meter_widths[0],
+            width: curve_panel_width.saturating_sub(curve_reference_gutter_width),
             height: curve_editor_h,
         };
         let meter_panel_width = curve_meter_widths[1];
@@ -260,6 +257,7 @@ impl UiLayoutMetrics {
             content_w,
             content_h,
             curve_h,
+            curve_reference_gutter_width,
             meter_panel_width,
             dropdown_control_w,
             dropdown_control_h,

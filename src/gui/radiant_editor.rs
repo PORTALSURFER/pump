@@ -71,7 +71,7 @@ const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
 const CURVE_PLAYHEAD_GLOW_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 112);
 const CURVE_PLAYHEAD_CORE_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 255);
 const CURVE_PLAYHEAD_STROKE_COLOR: Rgba8 = Rgba8::new(255, 196, 232, 255);
-const CURVE_REFERENCE_LABEL_WIDTH: f32 = 48.0;
+const CURVE_REFERENCE_GUTTER_WIDTH: f32 = 52.0;
 const CURVE_REFERENCE_LABEL_HEIGHT: f32 = 12.0;
 const CURVE_REFERENCE_FONT_SIZE: f32 = 9.0;
 const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
@@ -1562,21 +1562,43 @@ impl CurvePreviewWidget {
         self
     }
 
+    fn curve_bounds(bounds: Rect) -> Rect {
+        let gutter_width = CURVE_REFERENCE_GUTTER_WIDTH.min((bounds.width() - 1.0).max(0.0));
+        Rect::from_xy_size(
+            bounds.min.x + gutter_width,
+            bounds.min.y,
+            (bounds.width() - gutter_width).max(1.0),
+            bounds.height(),
+        )
+    }
+
+    fn reference_gutter_bounds(bounds: Rect) -> Rect {
+        let curve_bounds = Self::curve_bounds(bounds);
+        Rect::from_xy_size(
+            bounds.min.x,
+            bounds.min.y,
+            (curve_bounds.min.x - bounds.min.x).max(0.0),
+            bounds.height(),
+        )
+    }
+
     fn curve_point(bounds: Rect, node: CurveNode) -> Point {
-        let width = bounds.width().max(1.0) - 1.0;
-        let height = bounds.height().max(1.0) - 1.0;
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = curve_bounds.width().max(1.0) - 1.0;
+        let height = curve_bounds.height().max(1.0) - 1.0;
         Point::new(
-            bounds.min.x + node.x.clamp(0.0, 1.0) * width,
-            bounds.min.y + (1.0 - node.y.clamp(0.0, 1.0)) * height,
+            curve_bounds.min.x + node.x.clamp(0.0, 1.0) * width,
+            curve_bounds.min.y + (1.0 - node.y.clamp(0.0, 1.0)) * height,
         )
     }
 
     fn node_from_point(bounds: Rect, position: Point) -> CurveNode {
-        let width = (bounds.width().max(1.0) - 1.0).max(1.0);
-        let height = (bounds.height().max(1.0) - 1.0).max(1.0);
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let height = (curve_bounds.height().max(1.0) - 1.0).max(1.0);
         CurveNode {
-            x: ((position.x - bounds.min.x) / width).clamp(0.0, 1.0),
-            y: (1.0 - ((position.y - bounds.min.y) / height)).clamp(0.0, 1.0),
+            x: ((position.x - curve_bounds.min.x) / width).clamp(0.0, 1.0),
+            y: (1.0 - ((position.y - curve_bounds.min.y) / height)).clamp(0.0, 1.0),
         }
     }
 
@@ -1585,6 +1607,9 @@ impl CurvePreviewWidget {
     }
 
     fn hit_node_within(&self, bounds: Rect, position: Point, radius: f32) -> Option<usize> {
+        if !Self::curve_bounds(bounds).contains(position) {
+            return None;
+        }
         let radius_squared = radius.max(0.0) * radius.max(0.0);
         self.curve
             .nodes
@@ -1603,7 +1628,7 @@ impl CurvePreviewWidget {
     }
 
     fn insert_node_at(&self, bounds: Rect, position: Point) -> Option<CurveNode> {
-        if !bounds.contains(position)
+        if !Self::curve_bounds(bounds).contains(position)
             || self.curve.nodes.len() < 2
             || self.curve.nodes.len() >= MAX_EDITABLE_NODES
         {
@@ -1614,12 +1639,13 @@ impl CurvePreviewWidget {
     }
 
     fn hover_at(&self, bounds: Rect, position: Point) -> CurveHoverState {
-        let node = if bounds.contains(position) {
+        let curve_bounds = Self::curve_bounds(bounds);
+        let node = if curve_bounds.contains(position) {
             self.hit_node(bounds, position)
         } else {
             None
         };
-        let segment = if node.is_none() && bounds.contains(position) {
+        let segment = if node.is_none() && curve_bounds.contains(position) {
             self.hit_segment(bounds, position, CURVE_SEGMENT_HOVER_RADIUS)
         } else {
             None
@@ -1642,7 +1668,7 @@ impl CurvePreviewWidget {
         position: Point,
         segment: Option<usize>,
     ) -> Option<CurveNode> {
-        if !bounds.contains(position)
+        if !Self::curve_bounds(bounds).contains(position)
             || self.curve.nodes.len() < 2
             || self.curve.nodes.len() >= MAX_EDITABLE_NODES
             || self
@@ -1722,21 +1748,34 @@ impl CurvePreviewWidget {
             rect: bounds,
             color: theme.bg_secondary,
         }));
-        let grid = super::curve_beat_grid(self.sync_division, bounds.width());
+        let curve_bounds = Self::curve_bounds(bounds);
+        let grid = super::curve_beat_grid(self.sync_division, curve_bounds.width());
         for (positions, color) in [
             (grid.minor.as_slice(), theme.grid_soft),
             (grid.major.as_slice(), theme.grid_strong),
         ] {
             for position in positions {
-                let x = bounds.min.x + (bounds.width().max(1.0) - 1.0) * position;
+                let x = curve_bounds.min.x + (curve_bounds.width().max(1.0) - 1.0) * position;
                 primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
                     widget_id: self.common.id,
-                    points: Arc::from([Point::new(x, bounds.min.y), Point::new(x, bounds.max.y)]),
+                    points: Arc::from([
+                        Point::new(x, curve_bounds.min.y),
+                        Point::new(x, curve_bounds.max.y),
+                    ]),
                     color,
                     width: 1.0,
                 }));
             }
         }
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: Arc::from([
+                Point::new(curve_bounds.min.x, curve_bounds.min.y),
+                Point::new(curve_bounds.min.x, curve_bounds.max.y),
+            ]),
+            color: theme.border_emphasis,
+            width: 1.0,
+        }));
         primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
             widget_id: self.common.id,
             rect: bounds,
@@ -1751,9 +1790,11 @@ impl CurvePreviewWidget {
         bounds: Rect,
         theme: &ThemeTokens,
     ) {
-        let label_width = CURVE_REFERENCE_LABEL_WIDTH.min((bounds.width() - 8.0).max(1.0));
+        let curve_bounds = Self::curve_bounds(bounds);
+        let gutter_bounds = Self::reference_gutter_bounds(bounds);
+        let label_width = (gutter_bounds.width() - 8.0).max(1.0);
         let label_height = CURVE_REFERENCE_LABEL_HEIGHT.min(bounds.height().max(1.0));
-        let label_left = (bounds.min.x + 4.0).min(bounds.max.x - label_width);
+        let label_left = gutter_bounds.min.x + 4.0;
         let min_top = bounds.min.y;
         let max_top = (bounds.max.y - label_height).max(min_top);
 
@@ -1770,14 +1811,12 @@ impl CurvePreviewWidget {
             let label_rect = Rect::from_xy_size(label_left, label_top, label_width, label_height);
             primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
                 widget_id: self.common.id,
-                points: Arc::from([Point::new(bounds.min.x, y), Point::new(bounds.max.x, y)]),
+                points: Arc::from([
+                    Point::new(curve_bounds.min.x, y),
+                    Point::new(curve_bounds.max.x, y),
+                ]),
                 color: theme.text_muted.with_alpha(72),
                 width: 1.0,
-            }));
-            primitives.push(PaintPrimitive::FillRect(PaintFillRect {
-                widget_id: self.common.id,
-                rect: label_rect,
-                color: theme.bg_secondary.with_alpha(224),
             }));
             primitives.push(PaintPrimitive::Text(PaintTextRun {
                 widget_id: self.common.id,
@@ -1786,16 +1825,17 @@ impl CurvePreviewWidget {
                 font_size: CURVE_REFERENCE_FONT_SIZE,
                 baseline: None,
                 color: theme.text_muted,
-                align: PaintTextAlign::Left,
+                align: PaintTextAlign::Right,
                 wrap: TextWrap::None,
             }));
         }
     }
 
     fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
+        let curve_bounds = Self::curve_bounds(bounds);
         let points = self.sample_curve_points(bounds);
         let gradient = PaintLinearGradient::vertical(
-            bounds,
+            curve_bounds,
             theme.accent_mint.with_alpha(CURVE_FILL_TOP_ALPHA),
             theme.accent_mint.with_alpha(CURVE_FILL_BOTTOM_ALPHA),
         );
@@ -1803,7 +1843,7 @@ impl CurvePreviewWidget {
             primitives,
             SampledCurveAreaFillParts::new(
                 self.common.id,
-                bounds,
+                curve_bounds,
                 CURVE_SAMPLE_COUNT,
                 SampledCurveAreaBaseline::Bottom,
                 PaintBrush::linear_gradient(gradient),
@@ -1852,8 +1892,9 @@ impl CurvePreviewWidget {
         let Some(waveform) = self.incoming_waveform.as_ref() else {
             return;
         };
-        let center_y = bounds.min.y + bounds.height() * 0.5;
-        let amplitude_scale = bounds.height() * 0.43;
+        let curve_bounds = Self::curve_bounds(bounds);
+        let center_y = curve_bounds.min.y + curve_bounds.height() * 0.5;
+        let amplitude_scale = curve_bounds.height() * 0.43;
         let points_for = |upper: bool| -> Arc<[Point]> {
             Arc::from(
                 waveform
@@ -1862,7 +1903,7 @@ impl CurvePreviewWidget {
                     .enumerate()
                     .map(|(index, amplitude)| {
                         let phase = index as f32 / (waveform.len() - 1) as f32;
-                        let x = bounds.min.x + phase * bounds.width();
+                        let x = curve_bounds.min.x + phase * curve_bounds.width();
                         let offset = amplitude.clamp(0.0, 1.0) * amplitude_scale;
                         Point::new(x, center_y + if upper { -offset } else { offset })
                     })
@@ -2968,6 +3009,40 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_reserves_noninteractive_reference_gutter() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+        let gutter_position = Point::new(bounds.min.x + 10.0, bounds.min.y + 30.0);
+
+        assert!(!curve_bounds.contains(gutter_position));
+        assert_eq!(widget.hit_node(bounds, gutter_position), None);
+        assert_eq!(widget.insert_node_at(bounds, gutter_position), None);
+        assert!(widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: gutter_position,
+                    button: PointerButton::Primary,
+                    modifiers: Default::default(),
+                },
+            )
+            .is_none());
+        assert!(
+            (CurvePreviewWidget::curve_point(bounds, curve.nodes[0]).x - curve_bounds.min.x).abs()
+                < 1.0e-6
+        );
+        assert!(
+            (CurvePreviewWidget::curve_point(bounds, *curve.nodes.last().unwrap()).x
+                - (curve_bounds.max.x - 1.0))
+                .abs()
+                < 1.0e-6
+        );
+    }
+
+    #[test]
     fn curve_preview_widget_emits_preview_for_segment_hover() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget =
@@ -3323,7 +3398,7 @@ mod tests {
         assert_eq!(
             fill.brush,
             PaintBrush::linear_gradient(PaintLinearGradient::vertical(
-                bounds,
+                CurvePreviewWidget::curve_bounds(bounds),
                 theme.accent_mint.with_alpha(CURVE_FILL_TOP_ALPHA),
                 theme.accent_mint.with_alpha(CURVE_FILL_BOTTOM_ALPHA),
             ))
@@ -3341,7 +3416,8 @@ mod tests {
             let bounds = Rect::from_xy_size(0.0, 0.0, width, CURVE_PREVIEW_HEIGHT);
             let mut primitives = Vec::new();
             widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
-            primitives
+            let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+            let positions = primitives
                 .iter()
                 .filter_map(|primitive| match primitive {
                     PaintPrimitive::StrokePolyline(stroke)
@@ -3353,15 +3429,19 @@ mod tests {
                     }
                     _ => None,
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (curve_bounds, positions)
         };
 
-        let wide = grid_x_positions(396.0);
-        let narrow = grid_x_positions(198.0);
+        let (wide_bounds, wide) = grid_x_positions(396.0);
+        let (narrow_bounds, narrow) = grid_x_positions(198.0);
         assert_eq!(wide.len(), 7);
         assert_eq!(narrow.len(), 7);
         for (wide_x, narrow_x) in wide.iter().zip(narrow.iter()) {
-            assert!((*wide_x / 395.0 - *narrow_x / 197.0).abs() < 1.0e-4);
+            let wide_normalized = (*wide_x - wide_bounds.min.x) / (wide_bounds.width() - 1.0);
+            let narrow_normalized =
+                (*narrow_x - narrow_bounds.min.x) / (narrow_bounds.width() - 1.0);
+            assert!((wide_normalized - narrow_normalized).abs() < 1.0e-4);
         }
     }
 
@@ -3379,7 +3459,7 @@ mod tests {
             let mut primitives = Vec::new();
             widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
 
-            let guide_y_positions: Vec<_> = primitives
+            let guides: Vec<_> = primitives
                 .iter()
                 .filter_map(|primitive| match primitive {
                     PaintPrimitive::StrokePolyline(stroke)
@@ -3387,11 +3467,13 @@ mod tests {
                             && stroke.points.len() == 2
                             && (stroke.points[0].y - stroke.points[1].y).abs() < 1.0e-6 =>
                     {
-                        Some(stroke.points[0].y)
+                        Some((stroke.points[0].y, stroke.points[0].x, stroke.points[1].x))
                     }
                     _ => None,
                 })
                 .collect();
+            let guide_y_positions: Vec<_> = guides.iter().map(|(y, _, _)| *y).collect();
+            let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
             let expected_y_positions: Vec<_> = super::super::curve_gain_references()
                 .iter()
                 .map(|reference| {
@@ -3415,6 +3497,7 @@ mod tests {
                         assert!(text.rect.min.y >= bounds.min.y);
                         assert!(text.rect.max.x <= bounds.max.x);
                         assert!(text.rect.max.y <= bounds.max.y);
+                        assert!(text.rect.max.x <= curve_bounds.min.x);
                         Some(text.text.as_str())
                     }
                     _ => None,
@@ -3422,6 +3505,10 @@ mod tests {
                 .collect();
 
             assert_eq!(guide_y_positions, expected_y_positions);
+            assert!(guides.iter().all(|(_, start_x, end_x)| {
+                (*start_x - curve_bounds.min.x).abs() < 1.0e-6
+                    && (*end_x - curve_bounds.max.x).abs() < 1.0e-6
+            }));
             assert_eq!(labels, ["0 dB", "−6 dB", "−12 dB", "−∞"]);
             assert!((guide_y_positions[0] - bounds.min.y).abs() < 1.0e-6);
             assert!((guide_y_positions[3] - (bounds.max.y - 1.0)).abs() < 1.0e-6);

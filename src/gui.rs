@@ -110,6 +110,7 @@ const CURVE_VERTICAL_MARGIN: u32 = 10;
 const CURVE_H: u32 = resolve_curve_editor_height(resolve_vertical_slot_heights(WINDOW_HEIGHT).1);
 const CURVE_EDITOR_SECTION_WEIGHT: u16 = 92;
 const METER_SECTION_WEIGHT: u16 = 8;
+const CURVE_REFERENCE_GUTTER_WIDTH: u32 = 76;
 const METER_WIDTH: i32 = 8;
 const METER_STROKE: i32 = 1;
 const BASE_KNOB_DIAMETER: u32 = 92;

@@ -318,7 +318,7 @@ impl GuiState {
             .incoming_waveform_enabled
             .then(|| self.status.incoming_waveform_snapshot())
             .flatten();
-        let curve_content = stack(vec![
+        let curve_viewport = stack(vec![
             surface(
                 "incoming-waveform-underlay",
                 metrics.curve_size,
@@ -334,11 +334,33 @@ impl GuiState {
             surface(
                 "curve-gain-references",
                 metrics.curve_size,
-                curve_gain_reference_commands(metrics.curve_size, theme, metrics.text_scale),
+                curve_gain_reference_line_commands(metrics.curve_size, theme),
             )
             .fill(),
             curve_editor_view,
         ])
+        .fill();
+        let reference_gutter_size = Size {
+            width: metrics.curve_reference_gutter_width,
+            height: metrics.curve_size.height,
+        };
+        let curve_content = row_slots(vec![
+            weighted_slot(
+                surface(
+                    "curve-gain-reference-labels",
+                    reference_gutter_size,
+                    curve_gain_reference_label_commands(
+                        reference_gutter_size,
+                        theme,
+                        metrics.text_scale,
+                    ),
+                )
+                .fill(),
+                metrics.curve_reference_gutter_width as u16,
+            ),
+            weighted_slot(curve_viewport, metrics.curve_size.width as u16),
+        ])
+        .container_overflow(OverflowPolicy::Compress)
         .fill();
         let meter_db = self.status.gain_reduction_db();
         let meter_bar_height = metrics
@@ -2004,11 +2026,7 @@ impl GuiState {
             });
         }
 
-        commands.extend(curve_gain_reference_commands(
-            curve_size,
-            *theme,
-            metrics.text_scale,
-        ));
+        commands.extend(curve_gain_reference_line_commands(curve_size, *theme));
 
         for segment_index in 0..editable_curve.segments.len() {
             let left = editable_curve.nodes[segment_index];
@@ -2403,18 +2421,49 @@ pub(super) fn curve_beat_grid_commands(
     commands
 }
 
-pub(super) fn curve_gain_reference_commands(
+pub(super) fn curve_gain_reference_line_commands(
+    size: Size,
+    theme: PumpTheme,
+) -> Vec<SurfaceCommand> {
+    let max_x = size.width.saturating_sub(1) as i32;
+    curve_gain_references()
+        .into_iter()
+        .map(|reference| {
+            let y = local_from_node_for_size(
+                CurveNode {
+                    x: 0.0,
+                    y: reference.gain,
+                },
+                size,
+            )
+            .y;
+            SurfaceCommand::Line {
+                start: Point { x: 0, y },
+                end: Point { x: max_x, y },
+                color: theme.curve_reference_line,
+            }
+        })
+        .collect()
+}
+
+pub(super) fn curve_gain_reference_label_commands(
     size: Size,
     theme: PumpTheme,
     text_scale: u32,
 ) -> Vec<SurfaceCommand> {
-    let max_x = size.width.saturating_sub(1) as i32;
     let text_scale = text_scale.max(1);
     let glyph_advance = 6_u32.saturating_mul(text_scale);
     let glyph_height = 7_u32.saturating_mul(text_scale);
-    let label_left = 4_i32;
-    let label_padding = 2_u32;
-    let mut commands = Vec::with_capacity(12);
+    let label_right_padding = 4_u32;
+    let label_vertical_padding = 2_u32;
+    let mut commands = Vec::with_capacity(5);
+    commands.push(SurfaceCommand::FillRect {
+        rect: Rect {
+            origin: Point { x: 0, y: 0 },
+            size,
+        },
+        color: theme.curve_bg,
+    });
 
     for reference in curve_gain_references() {
         let y = local_from_node_for_size(
@@ -2427,37 +2476,19 @@ pub(super) fn curve_gain_reference_commands(
         .y;
         let text_width =
             (reference.bitmap_label.chars().count() as u32).saturating_mul(glyph_advance);
-        let plate_width = text_width
-            .saturating_add(label_padding.saturating_mul(2))
-            .min(size.width.saturating_sub(label_left.max(0) as u32));
         let plate_height = glyph_height
-            .saturating_add(label_padding.saturating_mul(2))
+            .saturating_add(label_vertical_padding.saturating_mul(2))
             .min(size.height);
         let plate_top =
             (y - plate_height as i32 / 2).clamp(0, size.height.saturating_sub(plate_height) as i32);
-        let plate = Rect {
-            origin: Point {
-                x: label_left.min(max_x.max(0)),
-                y: plate_top,
-            },
-            size: Size {
-                width: plate_width,
-                height: plate_height,
-            },
-        };
-        commands.push(SurfaceCommand::Line {
-            start: Point { x: 0, y },
-            end: Point { x: max_x, y },
-            color: theme.curve_reference_line,
-        });
-        commands.push(SurfaceCommand::FillRect {
-            rect: plate,
-            color: theme.curve_reference_label_bg,
-        });
+        let text_x = size
+            .width
+            .saturating_sub(text_width)
+            .saturating_sub(label_right_padding) as i32;
         commands.push(SurfaceCommand::Text {
             origin: Point {
-                x: plate.origin.x.saturating_add(label_padding as i32),
-                y: plate.origin.y.saturating_add(label_padding as i32),
+                x: text_x,
+                y: plate_top.saturating_add(label_vertical_padding as i32),
             },
             text: reference.bitmap_label.to_string(),
             color: theme.curve_reference_label,
