@@ -79,6 +79,20 @@ const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
 const VALUE_LABEL_FONT_SIZE: f32 = 12.0;
 
+fn curve_reference_gutter_width(preview_width: f32) -> f32 {
+    CURVE_REFERENCE_GUTTER_WIDTH.min((preview_width - 1.0).max(0.0))
+}
+
+fn curve_viewport_width(preview_width: f32) -> f32 {
+    (preview_width - curve_reference_gutter_width(preview_width)).max(1.0)
+}
+
+fn curve_node_push_through_threshold_x() -> f32 {
+    let preview_width = (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0);
+    CURVE_NODE_PUSH_THROUGH_MARGIN_PX
+        / (curve_viewport_width(preview_width).max(1.0) - 1.0).max(1.0)
+}
+
 #[derive(Clone)]
 struct ActiveCurveNodeDrag {
     origin_index: usize,
@@ -826,8 +840,7 @@ fn move_curve_node_with_push_through(
     }
 
     let mut moved_index = index;
-    let threshold_x = CURVE_NODE_PUSH_THROUGH_MARGIN_PX
-        / ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(2.0) - 1.0);
+    let threshold_x = curve_node_push_through_threshold_x();
     while moved_index + 1 < curve.nodes.len().saturating_sub(1)
         && target.x > curve.nodes[moved_index + 1].x + threshold_x
     {
@@ -1563,11 +1576,11 @@ impl CurvePreviewWidget {
     }
 
     fn curve_bounds(bounds: Rect) -> Rect {
-        let gutter_width = CURVE_REFERENCE_GUTTER_WIDTH.min((bounds.width() - 1.0).max(0.0));
+        let gutter_width = curve_reference_gutter_width(bounds.width());
         Rect::from_xy_size(
             bounds.min.x + gutter_width,
             bounds.min.y,
-            (bounds.width() - gutter_width).max(1.0),
+            curve_viewport_width(bounds.width()),
             bounds.height(),
         )
     }
@@ -2593,8 +2606,11 @@ mod tests {
         .normalized();
         params.set_editable_curve(&curve);
         let mut state = editor_state(Arc::clone(&params));
-        let threshold_x = CURVE_NODE_PUSH_THROUGH_MARGIN_PX
-            / ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(2.0) - 1.0);
+        let threshold_x = curve_node_push_through_threshold_x();
+        let preview_width = (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0);
+        let visible_margin_px =
+            threshold_x * (curve_viewport_width(preview_width).max(1.0) - 1.0).max(1.0);
+        assert!((visible_margin_px - CURVE_NODE_PUSH_THROUGH_MARGIN_PX).abs() < f32::EPSILON);
 
         reduce_editor_message(
             &mut state,

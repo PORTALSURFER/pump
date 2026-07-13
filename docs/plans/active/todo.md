@@ -13,4 +13,7 @@ Ordered queue for immediate execution:
 9. [x] Reserve the gutter in both renderers and align curve rendering plus hit testing to the reduced viewport.
 10. [x] Re-run focused tests, multi-size screenshots, default CI, and VST3 CI; push the PR follow-up.
 11. [x] Rebuild and audit the exact-head review artifact.
-12. [ ] Wait for explicit user review/sign-off before merge.
+12. [x] Reopen PR #22 implementation for the Radiant push-through viewport-width review finding.
+13. [x] Derive the push-through threshold from the reduced curve viewport and add focused regression coverage.
+14. [x] Re-run validation, push the review fix, and rebuild the exact-head review artifact.
+15. [ ] Wait for explicit user review/sign-off before merge.
