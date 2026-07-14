@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-12 20:39:53 UTC
-- Active Mission: Add a compact live gain-reduction meter beside both Pump curve editors for OPT-1114.
-- Current Workstream: Pump PR #21 (`https://github.com/PORTALSURFER/pump/pull/21`) is ready for review on `wsvasek/opt-1114-pump-add-a-compact-live-gain-reduction-meter-beside-the`. Scope: publish the strongest Pump-envelope attenuation from non-silent input once per audio block, render a labeled 0-36 dB meter beside both Toybox and Radiant curve editors, apply GUI-side attack/release ballistics, and clear stopped, silent, missing-input, bypass/stale, and unavailable processing states without changing gain processing or interaction. Status: waiting for user review; a fresh signed review artifact is available.
+- Last Updated (UTC): 2026-07-14 08:24:49 UTC
+- Active Mission: Add horizontal 0 dB, −6 dB, −12 dB, and −∞ gain-reference guides to both Pump curve editors for OPT-1110.
+- Current Workstream: Pump PR #22 (`https://github.com/PORTALSURFER/pump/pull/22`) on `wsvasek/opt-1110-pump-add-horizontal-db-reference-markings-to-the-curve`. Scope: replace the unlabeled horizontal grid with subtle labeled gain references derived from the editable curve's linear-gain mapping in both Toybox and Radiant, without changing curve interaction or DSP. Review follow-up: reserve a dedicated noninteractive left label gutter, matching the supplied reference, so the curve, nodes, waveform, grid, and playhead begin to its right instead of painting behind the labels. The Radiant node push-through threshold derives from the active widget bounds and travels with drag/release messages so the guard remains ten visible pixels beside the fixed meter and while resizing. Status: waiting for user review.
 
 ## Current State
 
@@ -62,7 +62,11 @@
 - The OPT-1114 meter uses a 36 dB top-down scale with fixed tick marks, compact dB labeling, a fast attack and slower release, and a narrow side strip in both Toybox and Radiant editors. Stopped transport, silence, missing input, unavailable processing, and telemetry older than 250 ms clear to zero; raw host playback state is tracked separately from no-timeline phase fallback so stopped audio cannot keep the meter active. A bounded atomic clear flag keeps one Radiant repaint pending until the GUI reads the zero meter value, then remains idle during repeated inactive blocks.
 - OPT-1114 default CI passes 240 tests, VST3 CI passes 268 tests, and Toybox screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 for idle and 12 dB reduction states. Toybox interaction geometry uses the same reserved curve width as the underlay and grid, including at the visual right edge beside the meter.
 - The OPT-1114 review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. The final binary SHA-256 is recorded on PR #21 after the last documentation commit and rebuild. Bitwig plugin-host PID `25378` still maps the previous binary and must fully unload or restart before testing.
+- Pump PR #21 for OPT-1114 merged on 2026-07-12; no active Pump PR remained before OPT-1110 began.
+- OPT-1110 now defines one shared linear-gain reference model for 0 dB, −6 dB, −12 dB, and the zero-gain silence floor. Toybox and Radiant project those values through the editable curve mapping, reserve a dedicated noninteractive label gutter, and start the low-contrast lines, curve, nodes, waveform, grid, and playhead at the reduced curve viewport. Default CI passes 245 tests, VST3 CI passes 273 tests, and Toybox screenshots pass at 315x211, 420x282, 525x352, and 630x423 with and without the playhead.
+- The PR #22 push-through review fix derives the normalized ten-pixel node-removal guard from the active Radiant curve widget bounds and carries it through drag/release messages. A two-width widget regression proves both messages retain ten visible viewport pixels; focused sticky-boundary and seven-test curve-drag lanes, all 47 Radiant editor tests, default CI, and VST3 CI pass.
+- The OPT-1110 review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. The exact-head binary SHA-256 is recorded on PR #22 after the final documentation commit and rebuild. Bitwig plugin-host PID `89953` still maps the previous binary and must fully unload or restart before testing.
 
 ## Immediate Next Action
 
-- Wait for GitHub CI and explicit user review/sign-off on ready-for-review Pump PR #21.
+- Wait for explicit user review/sign-off on ready-for-review Pump PR #22.

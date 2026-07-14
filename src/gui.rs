@@ -110,6 +110,7 @@ const CURVE_VERTICAL_MARGIN: u32 = 10;
 const CURVE_H: u32 = resolve_curve_editor_height(resolve_vertical_slot_heights(WINDOW_HEIGHT).1);
 const CURVE_EDITOR_SECTION_WEIGHT: u16 = 92;
 const METER_SECTION_WEIGHT: u16 = 8;
+const CURVE_REFERENCE_GUTTER_WIDTH: u32 = 76;
 const METER_WIDTH: i32 = 8;
 const METER_STROKE: i32 = 1;
 const BASE_KNOB_DIAMETER: u32 = 92;
@@ -137,6 +138,42 @@ const CURVE_DRAG_START_THRESHOLD_PX: i32 = 2;
 const CURVE_TENSION_PIXEL_SCALE: f32 = 120.0;
 const NODE_PUSH_THROUGH_PX: i32 = 10;
 const NODE_X_MIN_SPACING: f32 = 1.0e-3;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CurveGainReference {
+    gain: f32,
+    label: &'static str,
+    bitmap_label: &'static str,
+}
+
+/// Gain references shared by both Pump curve-editor renderers.
+///
+/// Curve Y values are linear amplitude gains, so finite dB references must be
+/// converted into that same domain before either renderer projects them.
+fn curve_gain_references() -> [CurveGainReference; 4] {
+    [
+        CurveGainReference {
+            gain: crate::dsp::db_to_linear(0.0),
+            label: "0 dB",
+            bitmap_label: "0 dB",
+        },
+        CurveGainReference {
+            gain: crate::dsp::db_to_linear(-6.0),
+            label: "−6 dB",
+            bitmap_label: "-6 dB",
+        },
+        CurveGainReference {
+            gain: crate::dsp::db_to_linear(-12.0),
+            label: "−12 dB",
+            bitmap_label: "-12 dB",
+        },
+        CurveGainReference {
+            gain: 0.0,
+            label: "−∞",
+            bitmap_label: "-INF",
+        },
+    ]
+}
 
 pub(crate) fn build_version_label() -> String {
     format!(

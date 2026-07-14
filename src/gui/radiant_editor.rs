@@ -55,7 +55,6 @@ const CONTROL_LABEL_WIDTH: f32 = 54.0;
 const CONTROL_VALUE_WIDTH: f32 = 60.0;
 const SURFACE_PADDING: f32 = 12.0;
 const SURFACE_SPACING: f32 = 6.0;
-const CURVE_GRID_ROWS: usize = 4;
 const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_FILL_TOP_ALPHA: u8 = 96;
 const CURVE_FILL_BOTTOM_ALPHA: u8 = 12;
@@ -72,10 +71,26 @@ const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
 const CURVE_PLAYHEAD_GLOW_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 112);
 const CURVE_PLAYHEAD_CORE_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 255);
 const CURVE_PLAYHEAD_STROKE_COLOR: Rgba8 = Rgba8::new(255, 196, 232, 255);
+const CURVE_REFERENCE_GUTTER_WIDTH: f32 = 52.0;
+const CURVE_REFERENCE_LABEL_HEIGHT: f32 = 12.0;
+const CURVE_REFERENCE_FONT_SIZE: f32 = 9.0;
 const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
 const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
 const VALUE_LABEL_FONT_SIZE: f32 = 12.0;
+
+fn curve_reference_gutter_width(preview_width: f32) -> f32 {
+    CURVE_REFERENCE_GUTTER_WIDTH.min((preview_width - 1.0).max(0.0))
+}
+
+fn curve_viewport_width(preview_width: f32) -> f32 {
+    (preview_width - curve_reference_gutter_width(preview_width)).max(1.0)
+}
+
+fn curve_node_push_through_threshold_x(preview_width: f32) -> f32 {
+    CURVE_NODE_PUSH_THROUGH_MARGIN_PX
+        / (curve_viewport_width(preview_width).max(1.0) - 1.0).max(1.0)
+}
 
 #[derive(Clone)]
 struct ActiveCurveNodeDrag {
@@ -713,9 +728,13 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
-        CurvePreviewMessage::DragNode { index, node } => {
+        CurvePreviewMessage::DragNode {
+            index,
+            node,
+            push_through_threshold_x,
+        } => {
             let (curve, moved_index) = if let Some(drag) = state.active_curve_node_drag.as_ref() {
-                curve_with_dragged_node(drag, node)
+                curve_with_dragged_node(drag, node, push_through_threshold_x)
             } else {
                 let mut curve = state.params.editable_curve_snapshot();
                 update_curve_node(&mut curve, index, node);
@@ -728,9 +747,13 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
-        CurvePreviewMessage::ReleaseNode { index, node } => {
+        CurvePreviewMessage::ReleaseNode {
+            index,
+            node,
+            push_through_threshold_x,
+        } => {
             let (curve, moved_index) = if let Some(drag) = state.active_curve_node_drag.as_ref() {
-                curve_with_dragged_node(drag, node)
+                curve_with_dragged_node(drag, node, push_through_threshold_x)
             } else {
                 let mut curve = state.params.editable_curve_snapshot();
                 update_curve_node(&mut curve, index, node);
@@ -796,9 +819,15 @@ fn start_curve_node_drag(curve: &EditableCurve, index: usize) -> Option<ActiveCu
 fn curve_with_dragged_node(
     drag: &ActiveCurveNodeDrag,
     target: CurveNode,
+    push_through_threshold_x: f32,
 ) -> (EditableCurve, usize) {
     let mut curve = drag.origin_curve.clone();
-    let moved_index = move_curve_node_with_push_through(&mut curve, drag.origin_index, target);
+    let moved_index = move_curve_node_with_push_through(
+        &mut curve,
+        drag.origin_index,
+        target,
+        push_through_threshold_x,
+    );
     curve.normalize_in_place();
     (curve, moved_index)
 }
@@ -807,6 +836,7 @@ fn move_curve_node_with_push_through(
     curve: &mut EditableCurve,
     index: usize,
     target: CurveNode,
+    push_through_threshold_x: f32,
 ) -> usize {
     if index >= curve.nodes.len() {
         return index;
@@ -824,8 +854,7 @@ fn move_curve_node_with_push_through(
     }
 
     let mut moved_index = index;
-    let threshold_x = CURVE_NODE_PUSH_THROUGH_MARGIN_PX
-        / ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(2.0) - 1.0);
+    let threshold_x = push_through_threshold_x.max(0.0);
     while moved_index + 1 < curve.nodes.len().saturating_sub(1)
         && target.x > curve.nodes[moved_index + 1].x + threshold_x
     {
@@ -1560,21 +1589,43 @@ impl CurvePreviewWidget {
         self
     }
 
+    fn curve_bounds(bounds: Rect) -> Rect {
+        let gutter_width = curve_reference_gutter_width(bounds.width());
+        Rect::from_xy_size(
+            bounds.min.x + gutter_width,
+            bounds.min.y,
+            curve_viewport_width(bounds.width()),
+            bounds.height(),
+        )
+    }
+
+    fn reference_gutter_bounds(bounds: Rect) -> Rect {
+        let curve_bounds = Self::curve_bounds(bounds);
+        Rect::from_xy_size(
+            bounds.min.x,
+            bounds.min.y,
+            (curve_bounds.min.x - bounds.min.x).max(0.0),
+            bounds.height(),
+        )
+    }
+
     fn curve_point(bounds: Rect, node: CurveNode) -> Point {
-        let width = bounds.width().max(1.0) - 1.0;
-        let height = bounds.height().max(1.0) - 1.0;
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = curve_bounds.width().max(1.0) - 1.0;
+        let height = curve_bounds.height().max(1.0) - 1.0;
         Point::new(
-            bounds.min.x + node.x.clamp(0.0, 1.0) * width,
-            bounds.min.y + (1.0 - node.y.clamp(0.0, 1.0)) * height,
+            curve_bounds.min.x + node.x.clamp(0.0, 1.0) * width,
+            curve_bounds.min.y + (1.0 - node.y.clamp(0.0, 1.0)) * height,
         )
     }
 
     fn node_from_point(bounds: Rect, position: Point) -> CurveNode {
-        let width = (bounds.width().max(1.0) - 1.0).max(1.0);
-        let height = (bounds.height().max(1.0) - 1.0).max(1.0);
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let height = (curve_bounds.height().max(1.0) - 1.0).max(1.0);
         CurveNode {
-            x: ((position.x - bounds.min.x) / width).clamp(0.0, 1.0),
-            y: (1.0 - ((position.y - bounds.min.y) / height)).clamp(0.0, 1.0),
+            x: ((position.x - curve_bounds.min.x) / width).clamp(0.0, 1.0),
+            y: (1.0 - ((position.y - curve_bounds.min.y) / height)).clamp(0.0, 1.0),
         }
     }
 
@@ -1583,6 +1634,9 @@ impl CurvePreviewWidget {
     }
 
     fn hit_node_within(&self, bounds: Rect, position: Point, radius: f32) -> Option<usize> {
+        if !Self::curve_bounds(bounds).contains(position) {
+            return None;
+        }
         let radius_squared = radius.max(0.0) * radius.max(0.0);
         self.curve
             .nodes
@@ -1601,7 +1655,7 @@ impl CurvePreviewWidget {
     }
 
     fn insert_node_at(&self, bounds: Rect, position: Point) -> Option<CurveNode> {
-        if !bounds.contains(position)
+        if !Self::curve_bounds(bounds).contains(position)
             || self.curve.nodes.len() < 2
             || self.curve.nodes.len() >= MAX_EDITABLE_NODES
         {
@@ -1612,12 +1666,13 @@ impl CurvePreviewWidget {
     }
 
     fn hover_at(&self, bounds: Rect, position: Point) -> CurveHoverState {
-        let node = if bounds.contains(position) {
+        let curve_bounds = Self::curve_bounds(bounds);
+        let node = if curve_bounds.contains(position) {
             self.hit_node(bounds, position)
         } else {
             None
         };
-        let segment = if node.is_none() && bounds.contains(position) {
+        let segment = if node.is_none() && curve_bounds.contains(position) {
             self.hit_segment(bounds, position, CURVE_SEGMENT_HOVER_RADIUS)
         } else {
             None
@@ -1640,7 +1695,7 @@ impl CurvePreviewWidget {
         position: Point,
         segment: Option<usize>,
     ) -> Option<CurveNode> {
-        if !bounds.contains(position)
+        if !Self::curve_bounds(bounds).contains(position)
             || self.curve.nodes.len() < 2
             || self.curve.nodes.len() >= MAX_EDITABLE_NODES
             || self
@@ -1720,30 +1775,34 @@ impl CurvePreviewWidget {
             rect: bounds,
             color: theme.bg_secondary,
         }));
-        let grid = super::curve_beat_grid(self.sync_division, bounds.width());
+        let curve_bounds = Self::curve_bounds(bounds);
+        let grid = super::curve_beat_grid(self.sync_division, curve_bounds.width());
         for (positions, color) in [
             (grid.minor.as_slice(), theme.grid_soft),
             (grid.major.as_slice(), theme.grid_strong),
         ] {
             for position in positions {
-                let x = bounds.min.x + (bounds.width().max(1.0) - 1.0) * position;
+                let x = curve_bounds.min.x + (curve_bounds.width().max(1.0) - 1.0) * position;
                 primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
                     widget_id: self.common.id,
-                    points: Arc::from([Point::new(x, bounds.min.y), Point::new(x, bounds.max.y)]),
+                    points: Arc::from([
+                        Point::new(x, curve_bounds.min.y),
+                        Point::new(x, curve_bounds.max.y),
+                    ]),
                     color,
                     width: 1.0,
                 }));
             }
         }
-        for step in 1..CURVE_GRID_ROWS {
-            let y = bounds.min.y + bounds.height() * (step as f32 / CURVE_GRID_ROWS as f32);
-            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
-                widget_id: self.common.id,
-                points: Arc::from([Point::new(bounds.min.x, y), Point::new(bounds.max.x, y)]),
-                color: theme.grid_soft,
-                width: 1.0,
-            }));
-        }
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: Arc::from([
+                Point::new(curve_bounds.min.x, curve_bounds.min.y),
+                Point::new(curve_bounds.min.x, curve_bounds.max.y),
+            ]),
+            color: theme.border_emphasis,
+            width: 1.0,
+        }));
         primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
             widget_id: self.common.id,
             rect: bounds,
@@ -1752,10 +1811,58 @@ impl CurvePreviewWidget {
         }));
     }
 
+    fn push_gain_references(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        theme: &ThemeTokens,
+    ) {
+        let curve_bounds = Self::curve_bounds(bounds);
+        let gutter_bounds = Self::reference_gutter_bounds(bounds);
+        let label_width = (gutter_bounds.width() - 8.0).max(1.0);
+        let label_height = CURVE_REFERENCE_LABEL_HEIGHT.min(bounds.height().max(1.0));
+        let label_left = gutter_bounds.min.x + 4.0;
+        let min_top = bounds.min.y;
+        let max_top = (bounds.max.y - label_height).max(min_top);
+
+        for reference in super::curve_gain_references() {
+            let y = Self::curve_point(
+                bounds,
+                CurveNode {
+                    x: 0.0,
+                    y: reference.gain,
+                },
+            )
+            .y;
+            let label_top = (y - label_height * 0.5).clamp(min_top, max_top);
+            let label_rect = Rect::from_xy_size(label_left, label_top, label_width, label_height);
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from([
+                    Point::new(curve_bounds.min.x, y),
+                    Point::new(curve_bounds.max.x, y),
+                ]),
+                color: theme.text_muted.with_alpha(72),
+                width: 1.0,
+            }));
+            primitives.push(PaintPrimitive::Text(PaintTextRun {
+                widget_id: self.common.id,
+                text: PaintText::from(reference.label),
+                rect: label_rect,
+                font_size: CURVE_REFERENCE_FONT_SIZE,
+                baseline: None,
+                color: theme.text_muted,
+                align: PaintTextAlign::Right,
+                wrap: TextWrap::None,
+            }));
+        }
+    }
+
     fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
+        let curve_bounds = Self::curve_bounds(bounds);
         let points = self.sample_curve_points(bounds);
         let gradient = PaintLinearGradient::vertical(
-            bounds,
+            curve_bounds,
             theme.accent_mint.with_alpha(CURVE_FILL_TOP_ALPHA),
             theme.accent_mint.with_alpha(CURVE_FILL_BOTTOM_ALPHA),
         );
@@ -1763,7 +1870,7 @@ impl CurvePreviewWidget {
             primitives,
             SampledCurveAreaFillParts::new(
                 self.common.id,
-                bounds,
+                curve_bounds,
                 CURVE_SAMPLE_COUNT,
                 SampledCurveAreaBaseline::Bottom,
                 PaintBrush::linear_gradient(gradient),
@@ -1812,8 +1919,9 @@ impl CurvePreviewWidget {
         let Some(waveform) = self.incoming_waveform.as_ref() else {
             return;
         };
-        let center_y = bounds.min.y + bounds.height() * 0.5;
-        let amplitude_scale = bounds.height() * 0.43;
+        let curve_bounds = Self::curve_bounds(bounds);
+        let center_y = curve_bounds.min.y + curve_bounds.height() * 0.5;
+        let amplitude_scale = curve_bounds.height() * 0.43;
         let points_for = |upper: bool| -> Arc<[Point]> {
             Arc::from(
                 waveform
@@ -1822,7 +1930,7 @@ impl CurvePreviewWidget {
                     .enumerate()
                     .map(|(index, amplitude)| {
                         let phase = index as f32 / (waveform.len() - 1) as f32;
-                        let x = bounds.min.x + phase * bounds.width();
+                        let x = curve_bounds.min.x + phase * curve_bounds.width();
                         let offset = amplitude.clamp(0.0, 1.0) * amplitude_scale;
                         Point::new(x, center_y + if upper { -offset } else { offset })
                     })
@@ -2040,6 +2148,9 @@ impl Widget for CurvePreviewWidget {
                     Some(CurvePreviewMessage::DragNode {
                         index,
                         node: Self::node_from_point(bounds, position),
+                        push_through_threshold_x: curve_node_push_through_threshold_x(
+                            bounds.width(),
+                        ),
                     })
                 } else if let Some(index) = self.active_segment {
                     Some(CurvePreviewMessage::DragSegment { index, position })
@@ -2074,6 +2185,9 @@ impl Widget for CurvePreviewWidget {
                     Some(CurvePreviewMessage::ReleaseNode {
                         index,
                         node: Self::node_from_point(bounds, position),
+                        push_through_threshold_x: curve_node_push_through_threshold_x(
+                            bounds.width(),
+                        ),
                     })
                 } else {
                     self.active_segment
@@ -2101,6 +2215,7 @@ impl Widget for CurvePreviewWidget {
     ) {
         self.push_grid(primitives, bounds, theme);
         self.push_incoming_waveform(primitives, bounds, theme);
+        self.push_gain_references(primitives, bounds, theme);
         self.push_curve(primitives, bounds, theme);
         self.push_nodes(primitives, bounds, theme);
         self.push_playhead(primitives, bounds);
@@ -2129,10 +2244,12 @@ enum CurvePreviewMessage {
     DragNode {
         index: usize,
         node: CurveNode,
+        push_through_threshold_x: f32,
     },
     ReleaseNode {
         index: usize,
         node: CurveNode,
+        push_through_threshold_x: f32,
     },
     PressSegment {
         index: usize,
@@ -2189,6 +2306,10 @@ mod tests {
             Arc::new(GuiStatus::default()),
             Arc::new(AutomationQueue::default()),
         )
+    }
+
+    fn test_curve_push_through_threshold_x() -> f32 {
+        curve_node_push_through_threshold_x(300.0)
     }
 
     #[test]
@@ -2470,6 +2591,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 1,
                 node: CurveNode { x: 0.2, y: 0.25 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
         let curve = params.editable_curve_snapshot();
@@ -2482,6 +2604,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseNode {
                 index: 1,
                 node: CurveNode { x: 0.24, y: 0.3 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
         let curve = params.editable_curve_snapshot();
@@ -2511,8 +2634,11 @@ mod tests {
         .normalized();
         params.set_editable_curve(&curve);
         let mut state = editor_state(Arc::clone(&params));
-        let threshold_x = CURVE_NODE_PUSH_THROUGH_MARGIN_PX
-            / ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(2.0) - 1.0);
+        let preview_width = 300.0;
+        let threshold_x = curve_node_push_through_threshold_x(preview_width);
+        let visible_margin_px =
+            threshold_x * (curve_viewport_width(preview_width).max(1.0) - 1.0).max(1.0);
+        assert!((visible_margin_px - CURVE_NODE_PUSH_THROUGH_MARGIN_PX).abs() < f32::EPSILON);
 
         reduce_editor_message(
             &mut state,
@@ -2526,6 +2652,7 @@ mod tests {
                     x: curve.nodes[3].x + threshold_x - 1.0e-3,
                     y: 0.4,
                 },
+                push_through_threshold_x: threshold_x,
             }),
         );
 
@@ -2567,6 +2694,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 2,
                 node: CurveNode { x: 0.95, y: 0.4 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -2611,6 +2739,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 1,
                 node: CurveNode { x: 0.98, y: 0.45 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -2653,6 +2782,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 2,
                 node: CurveNode { x: 0.95, y: 0.4 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
         assert_eq!(
@@ -2665,6 +2795,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 2,
                 node: CurveNode { x: 0.55, y: 0.4 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -2706,6 +2837,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseNode {
                 index: 2,
                 node: CurveNode { x: 0.95, y: 0.4 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -2740,6 +2872,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 0,
                 node: CurveNode { x: 0.9, y: 0.31 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -2927,6 +3060,91 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_reserves_noninteractive_reference_gutter() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+        let gutter_position = Point::new(bounds.min.x + 10.0, bounds.min.y + 30.0);
+
+        assert!(!curve_bounds.contains(gutter_position));
+        assert_eq!(widget.hit_node(bounds, gutter_position), None);
+        assert_eq!(widget.insert_node_at(bounds, gutter_position), None);
+        assert!(widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: gutter_position,
+                    button: PointerButton::Primary,
+                    modifiers: Default::default(),
+                },
+            )
+            .is_none());
+        assert!(
+            (CurvePreviewWidget::curve_point(bounds, curve.nodes[0]).x - curve_bounds.min.x).abs()
+                < 1.0e-6
+        );
+        assert!(
+            (CurvePreviewWidget::curve_point(bounds, *curve.nodes.last().unwrap()).x
+                - (curve_bounds.max.x - 1.0))
+                .abs()
+                < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn curve_preview_widget_push_through_threshold_tracks_actual_bounds() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget = CurvePreviewWidget::new(curve, Some(1), None, None, None, None, false);
+        let mut thresholds = Vec::new();
+
+        for preview_width in [220.0, 396.0] {
+            let bounds = Rect::from_xy_size(0.0, 0.0, preview_width, CURVE_PREVIEW_HEIGHT);
+            let position = Point::new(bounds.max.x - 20.0, bounds.min.y + 30.0);
+            let curve_pixel_width =
+                (CurvePreviewWidget::curve_bounds(bounds).width().max(1.0) - 1.0).max(1.0);
+
+            let drag = widget
+                .handle_input(bounds, WidgetInput::PointerMove { position })
+                .expect("active node move should emit a drag message");
+            let drag_threshold = match drag.typed_copied() {
+                Some(CurvePreviewMessage::DragNode {
+                    push_through_threshold_x,
+                    ..
+                }) => push_through_threshold_x,
+                other => panic!("unexpected drag output: {other:?}"),
+            };
+            assert!(
+                (drag_threshold * curve_pixel_width - CURVE_NODE_PUSH_THROUGH_MARGIN_PX).abs()
+                    < 1.0e-5
+            );
+
+            let release = widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerRelease {
+                        position,
+                        button: PointerButton::Primary,
+                        modifiers: Default::default(),
+                    },
+                )
+                .expect("active node release should emit a release message");
+            let release_threshold = match release.typed_copied() {
+                Some(CurvePreviewMessage::ReleaseNode {
+                    push_through_threshold_x,
+                    ..
+                }) => push_through_threshold_x,
+                other => panic!("unexpected release output: {other:?}"),
+            };
+            assert!((release_threshold - drag_threshold).abs() < f32::EPSILON);
+            thresholds.push(drag_threshold);
+        }
+
+        assert!(thresholds[0] > thresholds[1]);
+    }
+
+    #[test]
     fn curve_preview_widget_emits_preview_for_segment_hover() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget =
@@ -3091,6 +3309,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: inserted,
                 node: CurveNode { x: 0.62, y: 0.42 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
         let curve = params.editable_curve_snapshot();
@@ -3282,7 +3501,7 @@ mod tests {
         assert_eq!(
             fill.brush,
             PaintBrush::linear_gradient(PaintLinearGradient::vertical(
-                bounds,
+                CurvePreviewWidget::curve_bounds(bounds),
                 theme.accent_mint.with_alpha(CURVE_FILL_TOP_ALPHA),
                 theme.accent_mint.with_alpha(CURVE_FILL_BOTTOM_ALPHA),
             ))
@@ -3300,7 +3519,8 @@ mod tests {
             let bounds = Rect::from_xy_size(0.0, 0.0, width, CURVE_PREVIEW_HEIGHT);
             let mut primitives = Vec::new();
             widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
-            primitives
+            let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+            let positions = primitives
                 .iter()
                 .filter_map(|primitive| match primitive {
                     PaintPrimitive::StrokePolyline(stroke)
@@ -3312,15 +3532,89 @@ mod tests {
                     }
                     _ => None,
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (curve_bounds, positions)
         };
 
-        let wide = grid_x_positions(396.0);
-        let narrow = grid_x_positions(198.0);
+        let (wide_bounds, wide) = grid_x_positions(396.0);
+        let (narrow_bounds, narrow) = grid_x_positions(198.0);
         assert_eq!(wide.len(), 7);
         assert_eq!(narrow.len(), 7);
         for (wide_x, narrow_x) in wide.iter().zip(narrow.iter()) {
-            assert!((*wide_x / 395.0 - *narrow_x / 197.0).abs() < 1.0e-4);
+            let wide_normalized = (*wide_x - wide_bounds.min.x) / (wide_bounds.width() - 1.0);
+            let narrow_normalized =
+                (*narrow_x - narrow_bounds.min.x) / (narrow_bounds.width() - 1.0);
+            assert!((wide_normalized - narrow_normalized).abs() < 1.0e-4);
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_gain_references_track_curve_mapping_and_stay_labeled() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let theme = ThemeTokens::default();
+
+        for bounds in [
+            Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT),
+            Rect::from_xy_size(0.0, 0.0, 270.0, 51.0),
+        ] {
+            let widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+            let mut primitives = Vec::new();
+            widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+            let guides: Vec<_> = primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    PaintPrimitive::StrokePolyline(stroke)
+                        if stroke.color == theme.text_muted.with_alpha(72)
+                            && stroke.points.len() == 2
+                            && (stroke.points[0].y - stroke.points[1].y).abs() < 1.0e-6 =>
+                    {
+                        Some((stroke.points[0].y, stroke.points[0].x, stroke.points[1].x))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let guide_y_positions: Vec<_> = guides.iter().map(|(y, _, _)| *y).collect();
+            let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+            let expected_y_positions: Vec<_> = super::super::curve_gain_references()
+                .iter()
+                .map(|reference| {
+                    CurvePreviewWidget::curve_point(
+                        bounds,
+                        CurveNode {
+                            x: 0.0,
+                            y: reference.gain,
+                        },
+                    )
+                    .y
+                })
+                .collect();
+            let labels: Vec<_> = primitives
+                .iter()
+                .filter_map(|primitive| match primitive {
+                    PaintPrimitive::Text(text)
+                        if ["0 dB", "−6 dB", "−12 dB", "−∞"].contains(&text.text.as_str()) =>
+                    {
+                        assert!(text.rect.min.x >= bounds.min.x);
+                        assert!(text.rect.min.y >= bounds.min.y);
+                        assert!(text.rect.max.x <= bounds.max.x);
+                        assert!(text.rect.max.y <= bounds.max.y);
+                        assert!(text.rect.max.x <= curve_bounds.min.x);
+                        Some(text.text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            assert_eq!(guide_y_positions, expected_y_positions);
+            assert!(guides.iter().all(|(_, start_x, end_x)| {
+                (*start_x - curve_bounds.min.x).abs() < 1.0e-6
+                    && (*end_x - curve_bounds.max.x).abs() < 1.0e-6
+            }));
+            assert_eq!(labels, ["0 dB", "−6 dB", "−12 dB", "−∞"]);
+            assert!((guide_y_positions[0] - bounds.min.y).abs() < 1.0e-6);
+            assert!((guide_y_positions[3] - (bounds.max.y - 1.0)).abs() < 1.0e-6);
         }
     }
 
