@@ -1021,10 +1021,15 @@ impl GuiState {
                 local_pointer,
                 raw_local_pointer,
                 alt_down,
+                command_down,
                 ..
-            } if key == CURVE_KEY => {
-                self.reduce_curve_interaction(kind, local_pointer, raw_local_pointer, alt_down)
-            }
+            } if key == CURVE_KEY => self.reduce_curve_interaction_with_modifiers(
+                kind,
+                local_pointer,
+                raw_local_pointer,
+                alt_down,
+                command_down,
+            ),
             UiAction::RegionInteracted {
                 key,
                 kind,
@@ -1547,12 +1552,30 @@ impl GuiState {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn reduce_curve_interaction(
         &mut self,
         kind: RegionInteractionKind,
         local_pointer: Point,
         raw_local_pointer: Point,
         alt_down: bool,
+    ) {
+        self.reduce_curve_interaction_with_modifiers(
+            kind,
+            local_pointer,
+            raw_local_pointer,
+            alt_down,
+            false,
+        );
+    }
+
+    fn reduce_curve_interaction_with_modifiers(
+        &mut self,
+        kind: RegionInteractionKind,
+        local_pointer: Point,
+        raw_local_pointer: Point,
+        alt_down: bool,
+        command_down: bool,
     ) {
         let Ok(mut runtime) = self.runtime.lock() else {
             return;
@@ -1603,6 +1626,32 @@ impl GuiState {
                     return;
                 }
 
+                let near_segment = find_segment_line_hit_within_for_size(
+                    &editable,
+                    local_pointer,
+                    segment_near_hit_radius(runtime.curve_size),
+                    runtime.curve_size,
+                );
+
+                if command_down && !alt_down {
+                    if let Some(index) = near_segment {
+                        let right_index = (index + 1).min(editable.nodes.len().saturating_sub(1));
+                        runtime.drag_mode = Some(CurveDragMode::MoveSegment {
+                            index,
+                            start_pointer: local_pointer,
+                            start_left_x: editable.nodes[index].x,
+                            start_right_x: editable.nodes[right_index].x,
+                            start_left_y: editable.nodes[index].y,
+                            start_right_y: editable.nodes[right_index].y,
+                            dragging: false,
+                        });
+                        runtime.selected_node = None;
+                        runtime.selected_nodes.clear();
+                        runtime.marquee_selection = None;
+                        return;
+                    }
+                }
+
                 if !alt_down
                     && find_segment_line_hit_within_for_size(
                         &editable,
@@ -1641,41 +1690,25 @@ impl GuiState {
                     return;
                 }
 
-                if let Some(index) = find_segment_line_hit_within_for_size(
-                    &editable,
-                    local_pointer,
-                    segment_near_hit_radius(runtime.curve_size),
-                    runtime.curve_size,
-                ) {
-                    runtime.drag_mode = if alt_down {
+                if alt_down {
+                    if let Some(index) = near_segment {
                         let start_tension = editable
                             .segments
                             .get(index)
                             .copied()
                             .unwrap_or(CurveSegment { tension: 0.0 })
                             .tension;
-                        Some(CurveDragMode::AdjustSegmentCurve {
+                        runtime.drag_mode = Some(CurveDragMode::AdjustSegmentCurve {
                             index,
                             start_pointer: local_pointer,
                             start_tension,
                             dragging: false,
-                        })
-                    } else {
-                        let right_index = (index + 1).min(editable.nodes.len().saturating_sub(1));
-                        Some(CurveDragMode::MoveSegment {
-                            index,
-                            start_pointer: local_pointer,
-                            start_left_x: editable.nodes[index].x,
-                            start_right_x: editable.nodes[right_index].x,
-                            start_left_y: editable.nodes[index].y,
-                            start_right_y: editable.nodes[right_index].y,
-                            dragging: false,
-                        })
-                    };
-                    runtime.selected_node = None;
-                    runtime.selected_nodes.clear();
-                    runtime.marquee_selection = None;
-                    return;
+                        });
+                        runtime.selected_node = None;
+                        runtime.selected_nodes.clear();
+                        runtime.marquee_selection = None;
+                        return;
+                    }
                 }
 
                 if let Some(index) = find_node_hit_within_for_size(
@@ -1807,6 +1840,9 @@ impl GuiState {
                             start_right_y,
                             mut dragging,
                         } => {
+                            if !command_down {
+                                return;
+                            }
                             if !dragging
                                 && !drag_threshold_crossed(
                                     start_pointer,

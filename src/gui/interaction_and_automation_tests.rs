@@ -1,7 +1,9 @@
 mod interaction_and_automation_tests {
     use super::*;
     use super::super::{
-        CurveDragMode, CurveMarqueeSelection, RegionInteractionKind, QUICK_SLOT_KEY_PREFIX,
+        find_segment_line_hit_within_for_size, segment_direct_hit_radius,
+        segment_near_hit_radius, CurveDragMode, CurveMarqueeSelection, RegionInteractionKind,
+        QUICK_SLOT_KEY_PREFIX,
     };
     use crate::curve::MAX_EDITABLE_NODES;
     use crate::curve_presets::quick_slot_seeds;
@@ -254,6 +256,161 @@ mod interaction_and_automation_tests {
         assert!(
             runtime.drag_mode.is_none(),
             "release should end the active curve drag mode"
+        );
+    }
+
+    #[test]
+    fn curve_region_segment_move_requires_command_modifier() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.9 },
+                CurveNode { x: 0.25, y: 0.4 },
+                CurveNode { x: 0.75, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.9 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        };
+        let curve_size = UiLayoutMetrics::design_space().curve_size;
+        let mut pointer = local_from_node_for_size(CurveNode { x: 0.5, y: 0.4 }, curve_size);
+        pointer.y += 6;
+        assert_eq!(
+            find_segment_line_hit_within_for_size(
+                &curve,
+                pointer,
+                segment_near_hit_radius(curve_size),
+                curve_size,
+            ),
+            Some(1),
+            "regression pointer must be inside the segment move radius"
+        );
+        assert_eq!(
+            find_segment_line_hit_within_for_size(
+                &curve,
+                pointer,
+                segment_direct_hit_radius(curve_size),
+                curve_size,
+            ),
+            None,
+            "regression pointer must stay outside the direct insertion radius"
+        );
+
+        let plain_params = Arc::new(PumpParams::new());
+        plain_params.set_editable_curve(&curve);
+        let mut plain_state = GuiState::new(
+            Arc::clone(&plain_params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        plain_state.reduce_action(UiAction::RegionInteracted {
+            key: CURVE_KEY.to_string(),
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: pointer,
+            raw_local_pointer: pointer,
+            alt_down: false,
+            command_down: false,
+            shift_down: false,
+        });
+        assert!(
+            !matches!(
+                plain_state
+                    .runtime
+                    .lock()
+                    .expect("runtime lock should succeed")
+                    .drag_mode,
+                Some(CurveDragMode::MoveSegment { .. })
+            ),
+            "an unmodified press near a segment must not start grouped movement"
+        );
+
+        let command_params = Arc::new(PumpParams::new());
+        command_params.set_editable_curve(&curve);
+        let mut command_state = GuiState::new(
+            Arc::clone(&command_params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        command_state.reduce_action(UiAction::RegionInteracted {
+            key: CURVE_KEY.to_string(),
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: pointer,
+            raw_local_pointer: pointer,
+            alt_down: false,
+            command_down: true,
+            shift_down: false,
+        });
+        assert!(matches!(
+            command_state
+                .runtime
+                .lock()
+                .expect("runtime lock should succeed")
+                .drag_mode,
+            Some(CurveDragMode::MoveSegment { index: 1, .. })
+        ));
+
+        let moved = Point {
+            x: pointer.x + 20,
+            y: pointer.y - 12,
+        };
+        command_state.reduce_action(UiAction::RegionInteracted {
+            key: CURVE_KEY.to_string(),
+            kind: RegionInteractionKind::Dragged,
+            local_pointer: moved,
+            raw_local_pointer: moved,
+            alt_down: false,
+            command_down: true,
+            shift_down: false,
+        });
+        let translated = command_params.editable_curve_snapshot();
+        assert!(translated.nodes[1].x > curve.nodes[1].x);
+        assert!(translated.nodes[1].y > curve.nodes[1].y);
+        assert!((translated.nodes[2].x - translated.nodes[1].x - 0.5).abs() < 1.0e-6);
+        assert!((translated.nodes[2].y - translated.nodes[1].y).abs() < 1.0e-6);
+
+        let canceled_params = Arc::new(PumpParams::new());
+        canceled_params.set_editable_curve(&curve);
+        let mut canceled_state = GuiState::new(
+            Arc::clone(&canceled_params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        canceled_state.reduce_action(UiAction::RegionInteracted {
+            key: CURVE_KEY.to_string(),
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: pointer,
+            raw_local_pointer: pointer,
+            alt_down: false,
+            command_down: true,
+            shift_down: false,
+        });
+        canceled_state.reduce_action(UiAction::RegionInteracted {
+            key: CURVE_KEY.to_string(),
+            kind: RegionInteractionKind::Dragged,
+            local_pointer: moved,
+            raw_local_pointer: moved,
+            alt_down: false,
+            command_down: false,
+            shift_down: false,
+        });
+        assert_eq!(
+            canceled_params.editable_curve_snapshot(),
+            curve,
+            "releasing Command before movement must cancel the grouped drag"
+        );
+        assert!(
+            canceled_state
+                .runtime
+                .lock()
+                .expect("runtime lock should succeed")
+                .drag_mode
+                .is_none(),
+            "a modifier-canceled grouped drag must not remain active"
         );
     }
 
