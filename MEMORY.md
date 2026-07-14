@@ -1,22 +1,17 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-14 20:49:36 UTC
-- Active Mission: Add Command-gated two-point curve-segment movement with dedicated feedback to both Pump curve editors for OPT-1118.
-- Current Workstream: Pump PR #23 on `wsvasek/opt-1118-pump-cmd-drag-curve-segments-as-a-unit-with-distinct-hover`. Scope: repin merged Toybox OPT-1169, opt the declarative editor into Command-gated grouped segment movement, and implement matching Radiant/VST3 behavior with a dedicated blue target color, point/segment/empty-canvas precedence, group clamping, endpoint constraints, and reliable modifier/focus cleanup. Status: waiting for explicit user review/sign-off.
+- Last Updated (UTC): 2026-07-14 21:31:36 UTC
+- Active Mission: Add Shift-constrained horizontal curve-point dragging to both Pump curve editors for OPT-1116.
+- Current Workstream: Intended Pump PR on `wsvasek/opt-1116-pump-hold-shift-to-constrain-curve-point-movement`. Scope: integrate reusable Toybox point-axis constraint support and implement matching Radiant/VST3 stable gain anchoring, mid-gesture Shift transitions, no-jump release, Shift+Command composition, endpoint/order preservation, and focused coverage. Status: implementing; blocked on Toybox OPT-1173 and on OPT-1115 for the required Command beat-grid snap composition.
 
 ## Current State
 
-- Toybox OPT-1169 merged through PR #6 at `9d46db3af42dc0e22afe668870ba707f10c53f8c`; Pump now pins that revision and enables `.curve_segment_move(CurveSegmentMoveOptions::new(CurveEditorModifier::Command, color))`.
-- Both Pump editors reserve blue (`rgb(96, 176, 255)`) for grouped segment movement, distinct from curve/tension, node, transport, meter, and muted-history colors.
-- Command interaction precedence is point drag first, line-between-points grouped movement second, and existing empty-canvas behavior otherwise. Option segment-tension adjustment remains unchanged.
-- Segment movement applies one shared x/y delta to both endpoints. Vertical bounds, neighboring points, minimum spacing, fixed endpoint x anchors, and wrapped endpoint y coupling clamp the pair together without changing its length or slope.
-- Radiant modifier release and focus loss clear grouped-move hover/active state; focused tests cover translation, slope preservation, pair clamping, endpoint-adjacent segments, hit precedence, dedicated paint color, and Command-release cancellation before mutation.
-- The PR #23 P1 review fix forwards `command_down` through Pump's declarative `CURVE_KEY` reducer, starts grouped movement only for a Command-gated near-segment hit, and cancels the reducer drag before mutation if Command is released. A reducer-level regression proves plain near-segment presses cannot start `MoveSegment`, while Command presses translate the pair without changing its slope.
-- The PR #23 Command-latch review fix records `command_hover_held` when `PressSegmentMove` starts a Radiant `MovePair`, so the first Command-up event cancels the active segment before any unmodified drag can mutate it. The cancellation regression now begins through the real press message instead of pre-seeding reducer state.
-- The PR #23 Option-click review fix restores an Option-only empty-canvas press to a no-op while preserving Option segment-tension targeting and Command empty-canvas insertion. A widget-level regression covers the restored no-op precedence.
-- Default CI passes 255 tests, VST3 CI passes 283 tests, and release screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 with and without the playhead.
-- Pump PR #23 is open and ready for review at `https://github.com/PORTALSURFER/pump/pull/23`; user review is required before merge.
-- The OPT-1118 signed review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. Its final exact-head SHA-256 is recorded on PR #23.
+- Pump PR #23 for OPT-1118 merged at `fedfa70`; generated changelog commit `c8cb2d8` is the clean OPT-1116 branch base.
+- Toybox OPT-1173 is the implementation-ready reusable prerequisite for Shift horizontal point constraints. It blocks OPT-1116 and is related to OPT-1115.
+- The Radiant/VST3 path now tracks a drag-local horizontal gain anchor, last raw pointer gain, and post-release vertical offset. Shift held from press locks gain; mid-drag engage captures the visible gain; release preserves continuity before normal two-axis movement resumes.
+- Radiant point movement still recomputes from the existing origin curve, preserving sticky drag-through removal/restoration, ordering, minimum spacing, and wrapped endpoint coupling.
+- Focused default and VST3 Radiant lanes pass 57 and 59 tests respectively, including Shift-from-start, vertical drift, mid-gesture engage/release, wrapped endpoints, consecutive gestures, and Shift+Command point precedence. Warnings-denied VST3 clippy passes.
+- The declarative/Toybox half and exact Shift+Command beat-grid snapping remain unimplemented until OPT-1173 and OPT-1115 land; full repository validation, PR creation, and the signed review artifact remain pending.
 
 - `AGENTS.md` is a portal that points to current-state and plan files.
 - Active execution order lives in `docs/plans/active/todo.md`.
@@ -81,4 +76,4 @@
 
 ## Immediate Next Action
 
-- Wait for explicit user review/sign-off on PR #23 before merge.
+- Land Toybox OPT-1173, then repin Pump and finish the declarative editor integration. Complete Shift+Command snap composition after OPT-1115 is available, then run full validation and open the ready OPT-1116 PR.

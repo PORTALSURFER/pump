@@ -2,12 +2,14 @@
 
 Ordered queue for immediate execution:
 
-1. [x] Repin Pump to merged Toybox OPT-1169 and opt the declarative editor into Command-gated segment movement.
-2. [x] Add matching Radiant/VST3 segment targeting, grouped translation, modifier cleanup, and dedicated blue feedback.
-3. [x] Preserve point, segment, Option-tension, and empty-canvas hit precedence.
-4. [x] Clamp segment pairs together at gain, ordering, spacing, and endpoint boundaries.
-5. [x] Add focused dual-renderer configuration, palette, translation, slope, boundary, endpoint, precedence, and cleanup coverage.
-6. [x] Pass default CI, VST3 CI, and multi-size release screenshot validation.
-7. [x] Commit, push, and open the OPT-1118 Pump PR ready for review.
-8. [x] Build and audit the exact-head signed `dist/pump-v0.2.0-macos.vst3` artifact.
-9. [ ] Wait for explicit user review/sign-off before merge.
+1. [x] Resolve the OPT-1116 architecture boundary and create implementation-ready Toybox prerequisite OPT-1173.
+2. [x] Add Radiant/VST3 stable Shift gain anchoring, mid-gesture engage/release, and cleanup state.
+3. [x] Cover Radiant Shift-from-start, vertical drift, no-jump release, ordering/push-through boundaries, wrapped endpoints, Shift+Command point precedence, and consecutive gestures.
+4. [x] Pass focused default/VST3 Radiant tests and warnings-denied VST3 clippy.
+5. [ ] Land Toybox OPT-1173 and repin Pump to its merged revision.
+6. [ ] Opt the declarative Pump editor into the reusable Shift horizontal point constraint.
+7. [ ] Integrate and verify the OPT-1115 Command beat-grid snap path so Shift+Command composes exactly as specified.
+8. [ ] Run full default CI, VST3 CI, and multi-size release screenshot validation.
+9. [ ] Commit, push, and open the OPT-1116 Pump PR ready for review.
+10. [ ] Build and audit the exact-head signed `dist/pump-v0.2.0-macos.vst3` review artifact.
+11. [ ] Wait for explicit user review/sign-off before merge.
