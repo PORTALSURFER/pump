@@ -2255,6 +2255,7 @@ impl Widget for CurvePreviewWidget {
                         (false, true, Some(index)) => {
                             Some(CurvePreviewMessage::PressSegment { index, position })
                         }
+                        (false, true, None) => None,
                         _ => hover
                             .preview_node
                             .or_else(|| self.insert_node_at(bounds, position))
@@ -3502,6 +3503,28 @@ mod tests {
             output.typed_copied(),
             Some(CurvePreviewMessage::PressSegment { index: 1, position })
         );
+    }
+
+    #[test]
+    fn curve_preview_widget_option_press_on_empty_canvas_is_no_op() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.72, y: 0.18 });
+
+        assert!(widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers {
+                        alt: true,
+                        ..PointerModifiers::default()
+                    },
+                },
+            )
+            .is_none());
     }
 
     #[test]
