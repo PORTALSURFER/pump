@@ -313,6 +313,7 @@ impl GuiState {
                 CurveEditorModifier::Command,
                 theme.curve_segment_move,
             ))
+            .curve_point_horizontal_constraint(CurveEditorModifier::Shift)
             .curve_playhead_x(
                 (self.status.has_host_beats_timeline() || self.status.is_playing())
                     .then_some(self.status.phase()),

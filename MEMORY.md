@@ -1,17 +1,18 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-14 21:31:36 UTC
+- Last Updated (UTC): 2026-07-14 23:12:38 UTC
 - Active Mission: Add Shift-constrained horizontal curve-point dragging to both Pump curve editors for OPT-1116.
-- Current Workstream: Intended Pump PR on `wsvasek/opt-1116-pump-hold-shift-to-constrain-curve-point-movement`. Scope: integrate reusable Toybox point-axis constraint support and implement matching Radiant/VST3 stable gain anchoring, mid-gesture Shift transitions, no-jump release, Shift+Command composition, endpoint/order preservation, and focused coverage. Status: implementing; blocked on Toybox OPT-1173 and on OPT-1115 for the required Command beat-grid snap composition.
+- Current Workstream: Intended Pump PR on `wsvasek/opt-1116-pump-hold-shift-to-constrain-curve-point-movement`. Scope: integrate reusable Toybox point-axis constraint support and implement matching Radiant/VST3 stable gain anchoring, mid-gesture Shift transitions, no-jump release, Shift+Command composition, endpoint/order preservation, and focused coverage. Status: implementing; Toybox OPT-1173 is merged and integrated, with OPT-1115 now the only remaining blocker for required Command beat-grid snap composition.
 
 ## Current State
 
 - Pump PR #23 for OPT-1118 merged at `fedfa70`; generated changelog commit `c8cb2d8` is the clean OPT-1116 branch base.
-- Toybox OPT-1173 is the implementation-ready reusable prerequisite for Shift horizontal point constraints. It blocks OPT-1116 and is related to OPT-1115.
+- Toybox OPT-1173 merged through PR #8 at `c99ab4205984e342bc97288ab0f6f431723604a5`. Pump pins that exact revision and enables `.curve_point_horizontal_constraint(CurveEditorModifier::Shift)` alongside the existing Command segment-move decorator.
 - The Radiant/VST3 path now tracks a drag-local horizontal gain anchor, last raw pointer gain, and post-release vertical offset. Shift held from press locks gain; mid-drag engage captures the visible gain; release preserves continuity before normal two-axis movement resumes.
 - Radiant point movement still recomputes from the existing origin curve, preserving sticky drag-through removal/restoration, ordering, minimum spacing, and wrapped endpoint coupling.
-- Focused default and VST3 Radiant lanes pass 57 and 59 tests respectively, including Shift-from-start, vertical drift, mid-gesture engage/release, wrapped endpoints, consecutive gestures, and Shift+Command point precedence. Warnings-denied VST3 clippy passes.
-- The declarative/Toybox half and exact Shift+Command beat-grid snapping remain unimplemented until OPT-1173 and OPT-1115 land; full repository validation, PR creation, and the signed review artifact remain pending.
+- Focused GUI lanes pass 151 default and 153 VST3 tests, including Shift-from-start, vertical drift, mid-gesture engage/release, wrapped endpoints, consecutive gestures, and Shift+Command point precedence.
+- Full repository CI passes 260 default tests and 288 VST3 tests with warnings denied. Release screenshot validation passes, including both initial and playhead states across the configured sizes.
+- Exact Shift+Command beat-grid snapping remains blocked until OPT-1115 lands; PR creation and the signed review artifact remain pending because OPT-1116 is not yet review-ready.
 
 - `AGENTS.md` is a portal that points to current-state and plan files.
 - Active execution order lives in `docs/plans/active/todo.md`.
@@ -76,4 +77,4 @@
 
 ## Immediate Next Action
 
-- Land Toybox OPT-1173, then repin Pump and finish the declarative editor integration. Complete Shift+Command snap composition after OPT-1115 is available, then run full validation and open the ready OPT-1116 PR.
+- Land OPT-1115, then integrate and verify exact Shift+Command beat-grid snapping in both Pump editors. Rerun full validation, open the ready OPT-1116 PR, and build the signed review artifact.
