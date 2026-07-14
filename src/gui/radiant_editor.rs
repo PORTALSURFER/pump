@@ -815,6 +815,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 state.active_curve_node = None;
                 state.active_curve_node_drag = None;
                 state.active_curve_segment = Some(drag);
+                state.command_hover_held = true;
                 state.hover_curve_node = None;
                 state.preview_curve_node = None;
                 state.hover_curve_segment = Some(index);
@@ -3248,11 +3249,19 @@ mod tests {
     fn radiant_editor_command_release_clears_segment_move_without_mutation() {
         let params = Arc::new(PumpParams::new());
         let mut state = editor_state(Arc::clone(&params));
-        state.command_hover_held = true;
-        state.hover_curve_segment = Some(1);
         let before = params.editable_curve_snapshot();
-        state.active_curve_segment =
-            start_curve_segment_move_drag(&before, 1, Point::new(120.0, 40.0));
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressSegmentMove {
+                index: 1,
+                position: Point::new(120.0, 40.0),
+            }),
+        );
+        assert!(state.command_hover_held);
+        assert!(state
+            .active_curve_segment
+            .as_ref()
+            .is_some_and(|drag| drag.mode == CurveSegmentDragMode::MovePair));
 
         reduce_editor_message(
             &mut state,

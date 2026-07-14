@@ -1,6 +1,6 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-14 20:38:57 UTC
+- Last Updated (UTC): 2026-07-14 20:43:59 UTC
 - Active Mission: Add Command-gated two-point curve-segment movement with dedicated feedback to both Pump curve editors for OPT-1118.
 - Current Workstream: Pump PR #23 on `wsvasek/opt-1118-pump-cmd-drag-curve-segments-as-a-unit-with-distinct-hover`. Scope: repin merged Toybox OPT-1169, opt the declarative editor into Command-gated grouped segment movement, and implement matching Radiant/VST3 behavior with a dedicated blue target color, point/segment/empty-canvas precedence, group clamping, endpoint constraints, and reliable modifier/focus cleanup. Status: waiting for explicit user review/sign-off.
 
@@ -12,6 +12,7 @@
 - Segment movement applies one shared x/y delta to both endpoints. Vertical bounds, neighboring points, minimum spacing, fixed endpoint x anchors, and wrapped endpoint y coupling clamp the pair together without changing its length or slope.
 - Radiant modifier release and focus loss clear grouped-move hover/active state; focused tests cover translation, slope preservation, pair clamping, endpoint-adjacent segments, hit precedence, dedicated paint color, and Command-release cancellation before mutation.
 - The PR #23 P1 review fix forwards `command_down` through Pump's declarative `CURVE_KEY` reducer, starts grouped movement only for a Command-gated near-segment hit, and cancels the reducer drag before mutation if Command is released. A reducer-level regression proves plain near-segment presses cannot start `MoveSegment`, while Command presses translate the pair without changing its slope.
+- The PR #23 Command-latch review fix records `command_hover_held` when `PressSegmentMove` starts a Radiant `MovePair`, so the first Command-up event cancels the active segment before any unmodified drag can mutate it. The cancellation regression now begins through the real press message instead of pre-seeding reducer state.
 - Default CI passes 254 tests, VST3 CI passes 282 tests, and release screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 with and without the playhead.
 - Pump PR #23 is open and ready for review at `https://github.com/PORTALSURFER/pump/pull/23`; user review is required before merge.
 - The OPT-1118 signed review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. Its final exact-head SHA-256 is recorded on PR #23.
