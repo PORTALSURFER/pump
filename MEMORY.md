@@ -1,10 +1,17 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-14 08:24:49 UTC
-- Active Mission: Add horizontal 0 dB, −6 dB, −12 dB, and −∞ gain-reference guides to both Pump curve editors for OPT-1110.
-- Current Workstream: Pump PR #22 (`https://github.com/PORTALSURFER/pump/pull/22`) on `wsvasek/opt-1110-pump-add-horizontal-db-reference-markings-to-the-curve`. Scope: replace the unlabeled horizontal grid with subtle labeled gain references derived from the editable curve's linear-gain mapping in both Toybox and Radiant, without changing curve interaction or DSP. Review follow-up: reserve a dedicated noninteractive left label gutter, matching the supplied reference, so the curve, nodes, waveform, grid, and playhead begin to its right instead of painting behind the labels. The Radiant node push-through threshold derives from the active widget bounds and travels with drag/release messages so the guard remains ten visible pixels beside the fixed meter and while resizing. Status: waiting for user review.
+- Last Updated (UTC): 2026-07-14 19:46:48 UTC
+- Active Mission: Add Command-gated two-point curve-segment movement with dedicated feedback to both Pump curve editors for OPT-1118.
+- Current Workstream: Intended Pump PR on `wsvasek/opt-1118-pump-cmd-drag-curve-segments-as-a-unit-with-distinct-hover`. Scope: repin merged Toybox OPT-1169, opt the declarative editor into Command-gated grouped segment movement, and implement matching Radiant/VST3 behavior with a dedicated blue target color, point/segment/empty-canvas precedence, group clamping, endpoint constraints, and reliable modifier/focus cleanup. Status: validated; preparing the ready-for-review PR and exact-head artifact.
 
 ## Current State
+
+- Toybox OPT-1169 merged through PR #6 at `9d46db3af42dc0e22afe668870ba707f10c53f8c`; Pump now pins that revision and enables `.curve_segment_move(CurveSegmentMoveOptions::new(CurveEditorModifier::Command, color))`.
+- Both Pump editors reserve blue (`rgb(96, 176, 255)`) for grouped segment movement, distinct from curve/tension, node, transport, meter, and muted-history colors.
+- Command interaction precedence is point drag first, line-between-points grouped movement second, and existing empty-canvas behavior otherwise. Option segment-tension adjustment remains unchanged.
+- Segment movement applies one shared x/y delta to both endpoints. Vertical bounds, neighboring points, minimum spacing, fixed endpoint x anchors, and wrapped endpoint y coupling clamp the pair together without changing its length or slope.
+- Radiant modifier release and focus loss clear grouped-move hover/active state; focused tests cover translation, slope preservation, pair clamping, endpoint-adjacent segments, hit precedence, dedicated paint color, and Command-release cancellation before mutation.
+- Default CI passes 253 tests, VST3 CI passes 281 tests, and release screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 with and without the playhead.
 
 - `AGENTS.md` is a portal that points to current-state and plan files.
 - Active execution order lives in `docs/plans/active/todo.md`.
@@ -69,4 +76,4 @@
 
 ## Immediate Next Action
 
-- Wait for explicit user review/sign-off on ready-for-review Pump PR #22.
+- Commit and push OPT-1118, open the PR ready for review, then build and audit the exact-head signed VST3 artifact before requesting user review.

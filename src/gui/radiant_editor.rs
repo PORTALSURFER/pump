@@ -71,6 +71,7 @@ const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
 const CURVE_PLAYHEAD_GLOW_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 112);
 const CURVE_PLAYHEAD_CORE_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 255);
 const CURVE_PLAYHEAD_STROKE_COLOR: Rgba8 = Rgba8::new(255, 196, 232, 255);
+const CURVE_SEGMENT_MOVE_COLOR: Rgba8 = Rgba8::new(96, 176, 255, 255);
 const CURVE_REFERENCE_GUTTER_WIDTH: f32 = 52.0;
 const CURVE_REFERENCE_LABEL_HEIGHT: f32 = 12.0;
 const CURVE_REFERENCE_FONT_SIZE: f32 = 9.0;
@@ -103,7 +104,13 @@ struct ActiveCurveSegmentDrag {
     index: usize,
     origin_curve: EditableCurve,
     start_pointer: Point,
-    start_tension: f32,
+    mode: CurveSegmentDragMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CurveSegmentDragMode {
+    AdjustTension { start_tension: f32 },
+    MovePair,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +193,7 @@ struct RadiantEditorState {
     preview_curve_node: Option<CurveNode>,
     hover_curve_segment: Option<usize>,
     option_hover_held: bool,
+    command_hover_held: bool,
     loaded_global_curve_slot: Option<usize>,
     numeric_entry: Option<NumericEntryState>,
 }
@@ -366,6 +374,7 @@ impl RadiantEditorState {
             preview_curve_node: None,
             hover_curve_segment: None,
             option_hover_held: false,
+            command_hover_held: false,
             loaded_global_curve_slot: None,
             numeric_entry: None,
         }
@@ -399,6 +408,13 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                         state.preview_curve_node,
                         state.hover_curve_segment,
                         state.option_hover_held,
+                    )
+                    .with_command_hover_held(state.command_hover_held)
+                    .with_active_segment_move(
+                        state
+                            .active_curve_segment
+                            .as_ref()
+                            .is_some_and(|drag| drag.mode == CurveSegmentDragMode::MovePair),
                     )
                     .with_incoming_waveform(state.status.incoming_waveform_snapshot())
                     .with_sync_division(sync)
@@ -685,10 +701,25 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = preview_node;
             state.hover_curve_segment = segment;
         }
-        CurvePreviewMessage::OptionHoverChanged { option_held } => {
+        CurvePreviewMessage::ModifiersChanged {
+            option_held,
+            command_held,
+        } => {
+            let command_released = state.command_hover_held && !command_held;
             state.option_hover_held = option_held;
-            if option_held {
+            state.command_hover_held = command_held;
+            if option_held || command_held {
                 state.preview_curve_node = None;
+            }
+            if command_released {
+                if state
+                    .active_curve_segment
+                    .as_ref()
+                    .is_some_and(|drag| drag.mode == CurveSegmentDragMode::MovePair)
+                {
+                    state.active_curve_segment = None;
+                }
+                state.hover_curve_segment = None;
             }
         }
         CurvePreviewMessage::PressNode { index } => {
@@ -769,7 +800,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         }
         CurvePreviewMessage::PressSegment { index, position } => {
             let curve = state.params.editable_curve_snapshot();
-            if let Some(drag) = start_curve_segment_drag(&curve, index, position) {
+            if let Some(drag) = start_curve_segment_tension_drag(&curve, index, position) {
                 state.active_curve_node = None;
                 state.active_curve_node_drag = None;
                 state.active_curve_segment = Some(drag);
@@ -778,22 +809,48 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 state.hover_curve_segment = Some(index);
             }
         }
-        CurvePreviewMessage::DragSegment { index: _, position } => {
+        CurvePreviewMessage::PressSegmentMove { index, position } => {
+            let curve = state.params.editable_curve_snapshot();
+            if let Some(drag) = start_curve_segment_move_drag(&curve, index, position) {
+                state.active_curve_node = None;
+                state.active_curve_node_drag = None;
+                state.active_curve_segment = Some(drag);
+                state.hover_curve_node = None;
+                state.preview_curve_node = None;
+                state.hover_curve_segment = Some(index);
+            }
+        }
+        CurvePreviewMessage::DragSegment {
+            index: _,
+            position,
+            curve_size,
+        } => {
             if let Some(drag) = state.active_curve_segment.as_ref() {
-                let curve = curve_with_adjusted_segment_tension(drag, position);
+                let curve = curve_with_dragged_segment(drag, position, curve_size);
                 state.params.set_editable_curve(&curve);
                 state.hover_curve_node = None;
                 state.preview_curve_node = None;
                 state.hover_curve_segment = Some(drag.index);
             }
         }
-        CurvePreviewMessage::ReleaseSegment { index: _, position } => {
+        CurvePreviewMessage::ReleaseSegment {
+            index: _,
+            position,
+            curve_size,
+        } => {
             if let Some(drag) = state.active_curve_segment.take() {
-                let curve = curve_with_adjusted_segment_tension(&drag, position);
+                let curve = curve_with_dragged_segment(&drag, position, curve_size);
                 state.params.set_editable_curve(&curve);
                 state.hover_curve_node = None;
                 state.preview_curve_node = None;
-                state.hover_curve_segment = state.option_hover_held.then_some(drag.index);
+                state.hover_curve_segment = match drag.mode {
+                    CurveSegmentDragMode::MovePair => {
+                        state.command_hover_held.then_some(drag.index)
+                    }
+                    CurveSegmentDragMode::AdjustTension { .. } => {
+                        state.option_hover_held.then_some(drag.index)
+                    }
+                };
             }
         }
         CurvePreviewMessage::Cancel => {
@@ -804,6 +861,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
             state.option_hover_held = false;
+            state.command_hover_held = false;
         }
     }
 }
@@ -930,7 +988,7 @@ fn enforce_wrapped_curve_endpoints(curve: &mut EditableCurve) {
     set_wrapped_curve_endpoint_y(curve, curve.nodes[0].y);
 }
 
-fn start_curve_segment_drag(
+fn start_curve_segment_tension_drag(
     curve: &EditableCurve,
     index: usize,
     start_pointer: Point,
@@ -941,24 +999,60 @@ fn start_curve_segment_drag(
         index,
         origin_curve: normalized,
         start_pointer,
-        start_tension,
+        mode: CurveSegmentDragMode::AdjustTension { start_tension },
     })
 }
 
-fn curve_with_adjusted_segment_tension(
+fn start_curve_segment_move_drag(
+    curve: &EditableCurve,
+    index: usize,
+    start_pointer: Point,
+) -> Option<ActiveCurveSegmentDrag> {
+    let normalized = curve.clone().normalized();
+    (index + 1 < normalized.nodes.len()).then_some(ActiveCurveSegmentDrag {
+        index,
+        origin_curve: normalized,
+        start_pointer,
+        mode: CurveSegmentDragMode::MovePair,
+    })
+}
+
+fn curve_with_dragged_segment(
     drag: &ActiveCurveSegmentDrag,
     current_pointer: Point,
+    curve_size: Vector2,
 ) -> EditableCurve {
     let mut curve = drag.origin_curve.clone();
-    let delta = segment_tension_delta_from_drag(
-        &drag.origin_curve,
-        drag.index,
-        drag.start_pointer,
-        current_pointer,
-    );
-    if let Some(segment) = curve.segments.get_mut(drag.index) {
-        segment.tension =
-            (drag.start_tension + delta).clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
+    match drag.mode {
+        CurveSegmentDragMode::AdjustTension { start_tension } => {
+            let delta = segment_tension_delta_from_drag(
+                &drag.origin_curve,
+                drag.index,
+                drag.start_pointer,
+                current_pointer,
+            );
+            if let Some(segment) = curve.segments.get_mut(drag.index) {
+                segment.tension =
+                    (start_tension + delta).clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
+            }
+        }
+        CurveSegmentDragMode::MovePair => {
+            let curve_width = curve_size.x.max(2.0);
+            let curve_height = curve_size.y.max(2.0);
+            let delta = (
+                (current_pointer.x - drag.start_pointer.x) / (curve_width - 1.0),
+                (drag.start_pointer.y - current_pointer.y) / (curve_height - 1.0),
+            );
+            let left = drag.origin_curve.nodes[drag.index];
+            let right = drag.origin_curve.nodes[drag.index + 1];
+            super::move_segment_translated(
+                &mut curve,
+                drag.index,
+                (left.x, left.y),
+                (right.x, right.y),
+                delta,
+            );
+        }
     }
     curve.normalize_in_place();
     curve
@@ -1535,6 +1629,8 @@ struct CurvePreviewWidget {
     preview_node: Option<CurveNode>,
     hover_segment: Option<usize>,
     option_hover_held: bool,
+    command_hover_held: bool,
+    active_segment_move: bool,
     playhead_phase: Option<f32>,
     incoming_waveform: Option<IncomingWaveformSnapshot>,
     sync_division: usize,
@@ -1565,6 +1661,8 @@ impl CurvePreviewWidget {
             preview_node,
             hover_segment,
             option_hover_held,
+            command_hover_held: false,
+            active_segment_move: false,
             playhead_phase: None,
             incoming_waveform: None,
             sync_division: crate::params::DEFAULT_SYNC_DIVISION_INDEX,
@@ -1573,6 +1671,16 @@ impl CurvePreviewWidget {
 
     fn with_playhead_phase(mut self, playhead_phase: Option<f32>) -> Self {
         self.playhead_phase = playhead_phase.map(|phase| phase.rem_euclid(1.0));
+        self
+    }
+
+    fn with_command_hover_held(mut self, command_hover_held: bool) -> Self {
+        self.command_hover_held = command_hover_held;
+        self
+    }
+
+    fn with_active_segment_move(mut self, active_segment_move: bool) -> Self {
+        self.active_segment_move = active_segment_move;
         self
     }
 
@@ -1677,11 +1785,12 @@ impl CurvePreviewWidget {
         } else {
             None
         };
-        let preview_node = if self.option_hover_held && segment.is_some() {
-            None
-        } else {
-            self.preview_node_at(bounds, position, segment)
-        };
+        let preview_node =
+            if (self.option_hover_held || self.command_hover_held) && segment.is_some() {
+                None
+            } else {
+                self.preview_node_at(bounds, position, segment)
+            };
         CurveHoverState {
             node,
             preview_node,
@@ -1892,18 +2001,32 @@ impl CurvePreviewWidget {
             width: 2.0,
         }));
 
-        let highlighted_segment = self.active_segment.or_else(|| {
-            self.option_hover_held
-                .then_some(self.hover_segment)
-                .flatten()
-        });
-        if let Some(segment) = highlighted_segment {
+        let move_segment = (self.active_segment_move && self.active_segment.is_some())
+            .then_some(self.active_segment)
+            .flatten()
+            .or_else(|| {
+                self.command_hover_held
+                    .then_some(self.hover_segment)
+                    .flatten()
+            });
+        let tension_segment = (!self.active_segment_move)
+            .then_some(self.active_segment)
+            .flatten()
+            .or_else(|| {
+                (!self.command_hover_held && self.option_hover_held)
+                    .then_some(self.hover_segment)
+                    .flatten()
+            });
+        if let Some((segment, color)) = move_segment
+            .map(|segment| (segment, CURVE_SEGMENT_MOVE_COLOR))
+            .or_else(|| tension_segment.map(|segment| (segment, theme.accent_warning)))
+        {
             let points = self.sample_segment_points(bounds, segment);
             if points.len() > 1 {
                 primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
                     widget_id: self.common.id,
                     points: Arc::from(points),
-                    color: theme.accent_warning,
+                    color,
                     width: 3.5,
                 }));
             }
@@ -2122,16 +2245,19 @@ impl Widget for CurvePreviewWidget {
                     Some(CurvePreviewMessage::PressNode { index })
                 } else {
                     let hover = self.hover_at(bounds, position);
+                    let command_held = self.command_hover_held || modifiers.command;
                     let option_held = self.option_hover_held || modifiers.alt;
-                    if option_held {
-                        hover
-                            .segment
-                            .map(|index| CurvePreviewMessage::PressSegment { index, position })
-                    } else {
-                        hover
+                    match (command_held, option_held, hover.segment) {
+                        (true, _, Some(index)) => {
+                            Some(CurvePreviewMessage::PressSegmentMove { index, position })
+                        }
+                        (false, true, Some(index)) => {
+                            Some(CurvePreviewMessage::PressSegment { index, position })
+                        }
+                        _ => hover
                             .preview_node
                             .or_else(|| self.insert_node_at(bounds, position))
-                            .map(|node| CurvePreviewMessage::InsertNode { node })
+                            .map(|node| CurvePreviewMessage::InsertNode { node }),
                     }
                 }
             }
@@ -2153,7 +2279,14 @@ impl Widget for CurvePreviewWidget {
                         ),
                     })
                 } else if let Some(index) = self.active_segment {
-                    Some(CurvePreviewMessage::DragSegment { index, position })
+                    Some(CurvePreviewMessage::DragSegment {
+                        index,
+                        position,
+                        curve_size: Vector2::new(
+                            Self::curve_bounds(bounds).width(),
+                            Self::curve_bounds(bounds).height(),
+                        ),
+                    })
                 } else {
                     let hover = self.hover_at(bounds, position);
                     (hover.node != self.hover_node
@@ -2167,9 +2300,11 @@ impl Widget for CurvePreviewWidget {
                 }
             }
             WidgetInput::PointerModifiersChanged { modifiers } => (modifiers.alt
-                != self.option_hover_held)
-                .then_some(CurvePreviewMessage::OptionHoverChanged {
+                != self.option_hover_held
+                || modifiers.command != self.command_hover_held)
+                .then_some(CurvePreviewMessage::ModifiersChanged {
                     option_held: modifiers.alt,
+                    command_held: modifiers.command,
                 }),
             WidgetInput::PointerRelease {
                 position,
@@ -2191,7 +2326,14 @@ impl Widget for CurvePreviewWidget {
                     })
                 } else {
                     self.active_segment
-                        .map(|index| CurvePreviewMessage::ReleaseSegment { index, position })
+                        .map(|index| CurvePreviewMessage::ReleaseSegment {
+                            index,
+                            position,
+                            curve_size: Vector2::new(
+                                Self::curve_bounds(bounds).width(),
+                                Self::curve_bounds(bounds).height(),
+                            ),
+                        })
                 }
             }
             WidgetInput::FocusChanged(false) => (self.active_node.is_some()
@@ -2199,7 +2341,8 @@ impl Widget for CurvePreviewWidget {
                 || self.hover_node.is_some()
                 || self.preview_node.is_some()
                 || self.hover_segment.is_some()
-                || self.option_hover_held)
+                || self.option_hover_held
+                || self.command_hover_held)
                 .then_some(CurvePreviewMessage::Cancel),
             _ => None,
         }?;
@@ -2229,8 +2372,9 @@ enum CurvePreviewMessage {
         preview_node: Option<CurveNode>,
         segment: Option<usize>,
     },
-    OptionHoverChanged {
+    ModifiersChanged {
         option_held: bool,
+        command_held: bool,
     },
     PressNode {
         index: usize,
@@ -2255,13 +2399,19 @@ enum CurvePreviewMessage {
         index: usize,
         position: Point,
     },
+    PressSegmentMove {
+        index: usize,
+        position: Point,
+    },
     DragSegment {
         index: usize,
         position: Point,
+        curve_size: Vector2,
     },
     ReleaseSegment {
         index: usize,
         position: Point,
+        curve_size: Vector2,
     },
     Cancel,
 }
@@ -2966,8 +3116,9 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::OptionHoverChanged {
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ModifiersChanged {
                 option_held: true,
+                command_held: false,
             }),
         );
 
@@ -3009,6 +3160,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragSegment {
                 index: 0,
                 position: Point::new(start.x, start.y - 24.0),
+                curve_size: Vector2::new(320.0, CURVE_PREVIEW_HEIGHT),
             }),
         );
         let upward_midpoint = sample_editable_curve(&params.editable_curve_snapshot(), 0.25);
@@ -3019,6 +3171,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragSegment {
                 index: 0,
                 position: Point::new(start.x, start.y + 24.0),
+                curve_size: Vector2::new(320.0, CURVE_PREVIEW_HEIGHT),
             }),
         );
         let downward_midpoint = sample_editable_curve(&params.editable_curve_snapshot(), 0.25);
@@ -3029,9 +3182,90 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseSegment {
                 index: 0,
                 position: Point::new(start.x, start.y + 24.0),
+                curve_size: Vector2::new(320.0, CURVE_PREVIEW_HEIGHT),
             }),
         );
         assert!(state.active_curve_segment.is_none());
+    }
+
+    #[test]
+    fn radiant_editor_command_segment_drag_translates_pair_without_changing_slope() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.2 },
+                CurveNode { x: 0.25, y: 0.3 },
+                CurveNode { x: 0.55, y: 0.7 },
+                CurveNode { x: 0.8, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.2 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        state.command_hover_held = true;
+        let start = Point::new(140.0, 40.0);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressSegmentMove {
+                index: 1,
+                position: start,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragSegment {
+                index: 1,
+                position: Point::new(start.x + 24.0, start.y - 12.0),
+                curve_size: Vector2::new(320.0, CURVE_PREVIEW_HEIGHT),
+            }),
+        );
+
+        let moved = params.editable_curve_snapshot();
+        let left_delta = (
+            moved.nodes[1].x - curve.nodes[1].x,
+            moved.nodes[1].y - curve.nodes[1].y,
+        );
+        let right_delta = (
+            moved.nodes[2].x - curve.nodes[2].x,
+            moved.nodes[2].y - curve.nodes[2].y,
+        );
+        assert!((left_delta.0 - right_delta.0).abs() < 1.0e-6);
+        assert!((left_delta.1 - right_delta.1).abs() < 1.0e-6);
+        assert!(
+            ((moved.nodes[2].y - moved.nodes[1].y) - (curve.nodes[2].y - curve.nodes[1].y)).abs()
+                < 1.0e-6
+        );
+        assert!(state
+            .active_curve_segment
+            .as_ref()
+            .is_some_and(|drag| { drag.mode == CurveSegmentDragMode::MovePair }));
+    }
+
+    #[test]
+    fn radiant_editor_command_release_clears_segment_move_without_mutation() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+        state.command_hover_held = true;
+        state.hover_curve_segment = Some(1);
+        let before = params.editable_curve_snapshot();
+        state.active_curve_segment =
+            start_curve_segment_move_drag(&before, 1, Point::new(120.0, 40.0));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ModifiersChanged {
+                option_held: false,
+                command_held: false,
+            }),
+        );
+
+        assert_eq!(params.editable_curve_snapshot(), before);
+        assert!(state.active_curve_segment.is_none());
+        assert_eq!(state.hover_curve_segment, None);
+        assert!(!state.command_hover_held);
     }
 
     #[test]
@@ -3355,8 +3589,80 @@ mod tests {
             .expect("option press should emit option-hover state");
         assert_eq!(
             output.typed_copied(),
-            Some(CurvePreviewMessage::OptionHoverChanged { option_held: true })
+            Some(CurvePreviewMessage::ModifiersChanged {
+                option_held: true,
+                command_held: false,
+            })
         );
+    }
+
+    #[test]
+    fn curve_preview_widget_command_press_prefers_point_then_segment_then_empty_canvas() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let modifiers = PointerModifiers {
+            command: true,
+            ..PointerModifiers::default()
+        };
+
+        let mut point_widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let point = CurvePreviewWidget::curve_point(bounds, curve.nodes[1]);
+        let point_output = point_widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: point,
+                    button: PointerButton::Primary,
+                    modifiers,
+                },
+            )
+            .expect("command point press should remain a point gesture");
+        assert_eq!(
+            point_output.typed_copied(),
+            Some(CurvePreviewMessage::PressNode { index: 1 })
+        );
+
+        let mut segment_widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let segment = CurvePreviewWidget::curve_point(
+            bounds,
+            CurveNode {
+                x: 0.2,
+                y: sample_editable_curve(&curve, 0.2),
+            },
+        );
+        let segment_output = segment_widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: segment,
+                    button: PointerButton::Primary,
+                    modifiers,
+                },
+            )
+            .expect("command line press should start grouped movement");
+        assert!(matches!(
+            segment_output.typed_copied(),
+            Some(CurvePreviewMessage::PressSegmentMove { index: 1, .. })
+        ));
+
+        let mut empty_widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+        let empty = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.72, y: 0.18 });
+        let empty_output = empty_widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: empty,
+                    button: PointerButton::Primary,
+                    modifiers,
+                },
+            )
+            .expect("command empty-canvas press should retain insertion behavior");
+        assert!(matches!(
+            empty_output.typed_copied(),
+            Some(CurvePreviewMessage::InsertNode { .. })
+        ));
     }
 
     #[test]
@@ -3474,6 +3780,31 @@ mod tests {
                 primitive,
                 PaintPrimitive::StrokePolyline(polyline)
                     if polyline.color == theme.accent_warning
+                        && (polyline.width - 3.5).abs() < 1.0e-6
+                        && polyline.points.len() > 2
+            )
+        }));
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_command_hovered_segment_in_dedicated_color() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, Some(1), false)
+            .with_command_hover_held(true);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        assert_ne!(CURVE_SEGMENT_MOVE_COLOR, theme.accent_warning);
+        assert_ne!(CURVE_SEGMENT_MOVE_COLOR, theme.accent_mint);
+        assert_ne!(CURVE_SEGMENT_MOVE_COLOR, CURVE_PLAYHEAD_CORE_COLOR);
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == CURVE_SEGMENT_MOVE_COLOR
                         && (polyline.width - 3.5).abs() < 1.0e-6
                         && polyline.points.len() > 2
             )

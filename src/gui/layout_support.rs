@@ -76,6 +76,7 @@ pub(super) struct PumpTheme {
     pub(super) curve_line: Color,
     pub(super) curve_line_highlight: Color,
     pub(super) curve_line_highlight_glow: Color,
+    pub(super) curve_segment_move: Color,
     pub(super) preview_fill: Color,
     pub(super) preview_stroke: Color,
     pub(super) node_fill: Color,
@@ -144,6 +145,10 @@ impl PumpTheme {
             curve_line: palette.syntax_emphasis,
             curve_line_highlight: palette.accent_focus,
             curve_line_highlight_glow: palette.text_primary,
+            // Blue is reserved for translating a complete curve segment. It
+            // stays distinct from mint curve/node feedback, amber tension
+            // adjustment, magenta transport, and muted history rendering.
+            curve_segment_move: Color::rgb(96, 176, 255),
             preview_fill: palette.literals,
             preview_stroke: palette.identifiers,
             node_fill: palette.text_primary,

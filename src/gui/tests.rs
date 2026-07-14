@@ -9,7 +9,7 @@
         tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, INCOMING_WAVEFORM_KEY,
-        METER_STROKE, METER_WIDTH,
+        METER_STROKE, METER_WIDTH, NODE_X_MIN_SPACING,
         PRESET_DROPDOWN_KEY,
         PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_STORAGE,
         QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
@@ -433,6 +433,76 @@
     }
 
     #[test]
+    fn segment_translation_clamps_vertical_motion_as_one_pair() {
+        let mut curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.4 },
+                CurveNode { x: 0.3, y: 0.2 },
+                CurveNode { x: 0.6, y: 0.7 },
+                CurveNode { x: 1.0, y: 0.4 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        };
+
+        move_segment_translated(&mut curve, 1, (0.3, 0.2), (0.6, 0.7), (0.0, 1.0));
+
+        assert!((curve.nodes[1].y - 0.5).abs() < 1.0e-6);
+        assert!((curve.nodes[2].y - 1.0).abs() < 1.0e-6);
+        assert!(((curve.nodes[2].y - curve.nodes[1].y) - 0.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn segment_translation_clamps_pair_at_neighbor_spacing() {
+        let mut curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.2 },
+                CurveNode { x: 0.25, y: 0.3 },
+                CurveNode { x: 0.5, y: 0.6 },
+                CurveNode { x: 0.75, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.2 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+        };
+
+        move_segment_translated(&mut curve, 1, (0.25, 0.3), (0.5, 0.6), (1.0, 0.0));
+
+        assert!((curve.nodes[1].x - 0.499).abs() < 1.0e-6);
+        assert!((curve.nodes[2].x - 0.749).abs() < 1.0e-6);
+        assert!(((curve.nodes[2].x - curve.nodes[1].x) - 0.25).abs() < 1.0e-6);
+        assert!((curve.nodes[3].x - curve.nodes[2].x - NODE_X_MIN_SPACING).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn endpoint_adjacent_segment_translation_keeps_anchor_x_and_pair_slope() {
+        let mut curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.2 },
+                CurveNode { x: 0.3, y: 0.5 },
+                CurveNode { x: 0.7, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.2 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.0 },
+            ],
+        };
+
+        move_segment_translated(&mut curve, 0, (0.0, 0.2), (0.3, 0.5), (0.4, 0.25));
+
+        assert!((curve.nodes[0].x - 0.0).abs() < 1.0e-6);
+        assert!((curve.nodes[1].x - 0.3).abs() < 1.0e-6);
+        assert!((curve.nodes[0].y - 0.45).abs() < 1.0e-6);
+        assert!((curve.nodes[1].y - 0.75).abs() < 1.0e-6);
+        assert!(((curve.nodes[1].y - curve.nodes[0].y) - 0.3).abs() < 1.0e-6);
+        assert!((curve.nodes.last().expect("right anchor").y - 0.45).abs() < 1.0e-6);
+    }
+
+    #[test]
     fn upward_bend_sign_tracks_segment_direction() {
         let rising = EditableCurve {
             nodes: vec![CurveNode { x: 0.0, y: 0.2 }, CurveNode { x: 1.0, y: 0.8 }],
@@ -700,6 +770,29 @@
             theme.playhead_dot_glow.a < theme.playhead_dot_core.a,
             "playhead glow should support the indicator without reading as another solid node"
         );
+    }
+
+    #[test]
+    fn segment_move_palette_is_distinct_from_curve_nodes_transport_and_meter() {
+        let theme = PumpTheme::main(UiLayoutMetrics::design_space());
+        for other in [
+            theme.curve_line,
+            theme.curve_line_highlight,
+            theme.curve_line_highlight_glow,
+            theme.preview_fill,
+            theme.preview_stroke,
+            theme.node_fill,
+            theme.node_hover_fill,
+            theme.node_selected_fill,
+            theme.playhead_dot_core,
+            theme.playhead_dot_stroke,
+            theme.meter_fill,
+        ] {
+            assert_ne!(
+                theme.curve_segment_move, other,
+                "segment movement must retain its own visual vocabulary"
+            );
+        }
     }
 
     #[test]

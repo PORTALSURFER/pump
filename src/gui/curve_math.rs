@@ -504,10 +504,14 @@ pub(super) fn move_segment_translated(
         let max_dx = curve.nodes[right_index + 1].x - NODE_X_MIN_SPACING - start_right_x;
         applied_dx = applied_dx.clamp(min_dx, max_dx);
     }
-    curve.nodes[segment_index].x = (start_left_x + applied_dx).clamp(0.0, 1.0);
-    curve.nodes[right_index].x = (start_right_x + applied_dx).clamp(0.0, 1.0);
-    curve.nodes[segment_index].y = (start_left_y + delta_y).clamp(0.0, 1.0);
-    curve.nodes[right_index].y = (start_right_y + delta_y).clamp(0.0, 1.0);
+    let min_dy = -start_left_y.min(start_right_y);
+    let max_dy = 1.0 - start_left_y.max(start_right_y);
+    let applied_dy = delta_y.clamp(min_dy, max_dy);
+
+    curve.nodes[segment_index].x = start_left_x + applied_dx;
+    curve.nodes[right_index].x = start_right_x + applied_dx;
+    curve.nodes[segment_index].y = start_left_y + applied_dy;
+    curve.nodes[right_index].y = start_right_y + applied_dy;
 
     if segment_index == 0 {
         set_wrapped_endpoint_y(curve, curve.nodes[0].y);

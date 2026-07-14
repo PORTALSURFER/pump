@@ -309,6 +309,10 @@ impl GuiState {
                 effective_grid,
                 controls.effective_snap_enabled(),
             ))
+            .curve_segment_move(CurveSegmentMoveOptions::new(
+                CurveEditorModifier::Command,
+                theme.curve_segment_move,
+            ))
             .curve_playhead_x(
                 (self.status.has_host_beats_timeline() || self.status.is_playing())
                     .then_some(self.status.phase()),
