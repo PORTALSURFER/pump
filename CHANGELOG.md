@@ -65,6 +65,12 @@ All notable changes to this project are documented in this file.
 
 - (gui) Preserve inactive meter repaint (7045759)
 
+- (gui) Reserve space for dB reference labels (d80e32c)
+
+- (gui) Preserve Radiant push-through margin (f859009)
+
+- (gui) Derive push-through from widget bounds (3eca60c)
+
 
 ### CI
 
@@ -272,6 +278,12 @@ All notable changes to this project are documented in this file.
 
 - Record OPT-1114 review state (87cd029)
 
+- (changelog) Update changelog [skip ci] (06d2d0c)
+
+- Record OPT-1110 review state (babe3a3)
+
+- Record OPT-1110 review follow-up (3df9713)
+
 
 ### Features
 
@@ -280,6 +292,8 @@ All notable changes to this project are documented in this file.
 - (presets) Make init preset fully writable (253dec6)
 
 - Add attenuation fill beneath curve (8584e02)
+
+- (gui) Add curve dB reference guides (4c6b000)
 
 
 ### Other
@@ -995,6 +1009,10 @@ OPT-1111 Show sync-aware beat divisions in the Pump curve (11590ad)
 - Merge pull request #21 from PORTALSURFER/wsvasek/opt-1114-pump-add-a-compact-live-gain-reduction-meter-beside-the
 
 OPT-1114 Pump: add a compact live gain-reduction meter beside the curve editor (1e20f6b)
+
+- Merge pull request #22 from PORTALSURFER/wsvasek/opt-1110-pump-add-horizontal-db-reference-markings-to-the-curve
+
+OPT-1110 Pump: add horizontal dB reference markings to the curve editor (358b88c)
 
 
 ### Refactoring
