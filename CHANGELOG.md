@@ -71,6 +71,12 @@ All notable changes to this project are documented in this file.
 
 - (gui) Derive push-through from widget bounds (3eca60c)
 
+- Fix gate declarative segment drag on Command (3428a3a)
+
+- Fix latch Command on segment move press (46dd92b)
+
+- Fix preserve Option empty canvas no-op (1ab9c98)
+
 
 ### CI
 
@@ -283,6 +289,12 @@ All notable changes to this project are documented in this file.
 - Record OPT-1110 review state (babe3a3)
 
 - Record OPT-1110 review follow-up (3df9713)
+
+- (changelog) Update changelog [skip ci] (0e4de15)
+
+- Docs record OPT-1118 review state (601b833)
+
+- Docs mark OPT-1118 ready for review (7b91f5c)
 
 
 ### Features
@@ -1013,6 +1025,12 @@ OPT-1114 Pump: add a compact live gain-reduction meter beside the curve editor (
 - Merge pull request #22 from PORTALSURFER/wsvasek/opt-1110-pump-add-horizontal-db-reference-markings-to-the-curve
 
 OPT-1110 Pump: add horizontal dB reference markings to the curve editor (358b88c)
+
+- OPT-1118 add Command segment dragging (d031074)
+
+- Merge pull request #23 from PORTALSURFER/wsvasek/opt-1118-pump-cmd-drag-curve-segments-as-a-unit-with-distinct-hover
+
+OPT-1118 Pump: Cmd-drag curve segments as a unit (fedfa70)
 
 
 ### Refactoring
