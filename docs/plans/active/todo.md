@@ -16,4 +16,7 @@ Ordered queue for immediate execution:
 12. [x] Reopen PR #22 implementation for the Radiant push-through viewport-width review finding.
 13. [x] Derive the push-through threshold from the reduced curve viewport and add focused regression coverage.
 14. [x] Re-run validation, push the review fix, and rebuild the exact-head review artifact.
-15. [ ] Wait for explicit user review/sign-off before merge.
+15. [x] Reopen PR #22 implementation for the active-widget-bounds push-through review finding.
+16. [x] Carry the bounds-derived threshold through Radiant drag/release messages with resize-focused coverage.
+17. [x] Re-run validation, push the second review fix, and rebuild the exact-head review artifact.
+18. [ ] Wait for explicit user review/sign-off before merge.

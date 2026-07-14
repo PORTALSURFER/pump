@@ -87,8 +87,7 @@ fn curve_viewport_width(preview_width: f32) -> f32 {
     (preview_width - curve_reference_gutter_width(preview_width)).max(1.0)
 }
 
-fn curve_node_push_through_threshold_x() -> f32 {
-    let preview_width = (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0);
+fn curve_node_push_through_threshold_x(preview_width: f32) -> f32 {
     CURVE_NODE_PUSH_THROUGH_MARGIN_PX
         / (curve_viewport_width(preview_width).max(1.0) - 1.0).max(1.0)
 }
@@ -729,9 +728,13 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
-        CurvePreviewMessage::DragNode { index, node } => {
+        CurvePreviewMessage::DragNode {
+            index,
+            node,
+            push_through_threshold_x,
+        } => {
             let (curve, moved_index) = if let Some(drag) = state.active_curve_node_drag.as_ref() {
-                curve_with_dragged_node(drag, node)
+                curve_with_dragged_node(drag, node, push_through_threshold_x)
             } else {
                 let mut curve = state.params.editable_curve_snapshot();
                 update_curve_node(&mut curve, index, node);
@@ -744,9 +747,13 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
-        CurvePreviewMessage::ReleaseNode { index, node } => {
+        CurvePreviewMessage::ReleaseNode {
+            index,
+            node,
+            push_through_threshold_x,
+        } => {
             let (curve, moved_index) = if let Some(drag) = state.active_curve_node_drag.as_ref() {
-                curve_with_dragged_node(drag, node)
+                curve_with_dragged_node(drag, node, push_through_threshold_x)
             } else {
                 let mut curve = state.params.editable_curve_snapshot();
                 update_curve_node(&mut curve, index, node);
@@ -812,9 +819,15 @@ fn start_curve_node_drag(curve: &EditableCurve, index: usize) -> Option<ActiveCu
 fn curve_with_dragged_node(
     drag: &ActiveCurveNodeDrag,
     target: CurveNode,
+    push_through_threshold_x: f32,
 ) -> (EditableCurve, usize) {
     let mut curve = drag.origin_curve.clone();
-    let moved_index = move_curve_node_with_push_through(&mut curve, drag.origin_index, target);
+    let moved_index = move_curve_node_with_push_through(
+        &mut curve,
+        drag.origin_index,
+        target,
+        push_through_threshold_x,
+    );
     curve.normalize_in_place();
     (curve, moved_index)
 }
@@ -823,6 +836,7 @@ fn move_curve_node_with_push_through(
     curve: &mut EditableCurve,
     index: usize,
     target: CurveNode,
+    push_through_threshold_x: f32,
 ) -> usize {
     if index >= curve.nodes.len() {
         return index;
@@ -840,7 +854,7 @@ fn move_curve_node_with_push_through(
     }
 
     let mut moved_index = index;
-    let threshold_x = curve_node_push_through_threshold_x();
+    let threshold_x = push_through_threshold_x.max(0.0);
     while moved_index + 1 < curve.nodes.len().saturating_sub(1)
         && target.x > curve.nodes[moved_index + 1].x + threshold_x
     {
@@ -2134,6 +2148,9 @@ impl Widget for CurvePreviewWidget {
                     Some(CurvePreviewMessage::DragNode {
                         index,
                         node: Self::node_from_point(bounds, position),
+                        push_through_threshold_x: curve_node_push_through_threshold_x(
+                            bounds.width(),
+                        ),
                     })
                 } else if let Some(index) = self.active_segment {
                     Some(CurvePreviewMessage::DragSegment { index, position })
@@ -2168,6 +2185,9 @@ impl Widget for CurvePreviewWidget {
                     Some(CurvePreviewMessage::ReleaseNode {
                         index,
                         node: Self::node_from_point(bounds, position),
+                        push_through_threshold_x: curve_node_push_through_threshold_x(
+                            bounds.width(),
+                        ),
                     })
                 } else {
                     self.active_segment
@@ -2224,10 +2244,12 @@ enum CurvePreviewMessage {
     DragNode {
         index: usize,
         node: CurveNode,
+        push_through_threshold_x: f32,
     },
     ReleaseNode {
         index: usize,
         node: CurveNode,
+        push_through_threshold_x: f32,
     },
     PressSegment {
         index: usize,
@@ -2284,6 +2306,10 @@ mod tests {
             Arc::new(GuiStatus::default()),
             Arc::new(AutomationQueue::default()),
         )
+    }
+
+    fn test_curve_push_through_threshold_x() -> f32 {
+        curve_node_push_through_threshold_x(300.0)
     }
 
     #[test]
@@ -2565,6 +2591,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 1,
                 node: CurveNode { x: 0.2, y: 0.25 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
         let curve = params.editable_curve_snapshot();
@@ -2577,6 +2604,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseNode {
                 index: 1,
                 node: CurveNode { x: 0.24, y: 0.3 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
         let curve = params.editable_curve_snapshot();
@@ -2606,8 +2634,8 @@ mod tests {
         .normalized();
         params.set_editable_curve(&curve);
         let mut state = editor_state(Arc::clone(&params));
-        let threshold_x = curve_node_push_through_threshold_x();
-        let preview_width = (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0);
+        let preview_width = 300.0;
+        let threshold_x = curve_node_push_through_threshold_x(preview_width);
         let visible_margin_px =
             threshold_x * (curve_viewport_width(preview_width).max(1.0) - 1.0).max(1.0);
         assert!((visible_margin_px - CURVE_NODE_PUSH_THROUGH_MARGIN_PX).abs() < f32::EPSILON);
@@ -2624,6 +2652,7 @@ mod tests {
                     x: curve.nodes[3].x + threshold_x - 1.0e-3,
                     y: 0.4,
                 },
+                push_through_threshold_x: threshold_x,
             }),
         );
 
@@ -2665,6 +2694,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 2,
                 node: CurveNode { x: 0.95, y: 0.4 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -2709,6 +2739,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 1,
                 node: CurveNode { x: 0.98, y: 0.45 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -2751,6 +2782,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 2,
                 node: CurveNode { x: 0.95, y: 0.4 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
         assert_eq!(
@@ -2763,6 +2795,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 2,
                 node: CurveNode { x: 0.55, y: 0.4 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -2804,6 +2837,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseNode {
                 index: 2,
                 node: CurveNode { x: 0.95, y: 0.4 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -2838,6 +2872,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 0,
                 node: CurveNode { x: 0.9, y: 0.31 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
@@ -3059,6 +3094,57 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_push_through_threshold_tracks_actual_bounds() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget = CurvePreviewWidget::new(curve, Some(1), None, None, None, None, false);
+        let mut thresholds = Vec::new();
+
+        for preview_width in [220.0, 396.0] {
+            let bounds = Rect::from_xy_size(0.0, 0.0, preview_width, CURVE_PREVIEW_HEIGHT);
+            let position = Point::new(bounds.max.x - 20.0, bounds.min.y + 30.0);
+            let curve_pixel_width =
+                (CurvePreviewWidget::curve_bounds(bounds).width().max(1.0) - 1.0).max(1.0);
+
+            let drag = widget
+                .handle_input(bounds, WidgetInput::PointerMove { position })
+                .expect("active node move should emit a drag message");
+            let drag_threshold = match drag.typed_copied() {
+                Some(CurvePreviewMessage::DragNode {
+                    push_through_threshold_x,
+                    ..
+                }) => push_through_threshold_x,
+                other => panic!("unexpected drag output: {other:?}"),
+            };
+            assert!(
+                (drag_threshold * curve_pixel_width - CURVE_NODE_PUSH_THROUGH_MARGIN_PX).abs()
+                    < 1.0e-5
+            );
+
+            let release = widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerRelease {
+                        position,
+                        button: PointerButton::Primary,
+                        modifiers: Default::default(),
+                    },
+                )
+                .expect("active node release should emit a release message");
+            let release_threshold = match release.typed_copied() {
+                Some(CurvePreviewMessage::ReleaseNode {
+                    push_through_threshold_x,
+                    ..
+                }) => push_through_threshold_x,
+                other => panic!("unexpected release output: {other:?}"),
+            };
+            assert!((release_threshold - drag_threshold).abs() < f32::EPSILON);
+            thresholds.push(drag_threshold);
+        }
+
+        assert!(thresholds[0] > thresholds[1]);
+    }
+
+    #[test]
     fn curve_preview_widget_emits_preview_for_segment_hover() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget =
@@ -3223,6 +3309,7 @@ mod tests {
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: inserted,
                 node: CurveNode { x: 0.62, y: 0.42 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
         let curve = params.editable_curve_snapshot();
