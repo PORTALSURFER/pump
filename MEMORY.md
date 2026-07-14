@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-14 19:46:48 UTC
+- Last Updated (UTC): 2026-07-14 19:50:08 UTC
 - Active Mission: Add Command-gated two-point curve-segment movement with dedicated feedback to both Pump curve editors for OPT-1118.
-- Current Workstream: Intended Pump PR on `wsvasek/opt-1118-pump-cmd-drag-curve-segments-as-a-unit-with-distinct-hover`. Scope: repin merged Toybox OPT-1169, opt the declarative editor into Command-gated grouped segment movement, and implement matching Radiant/VST3 behavior with a dedicated blue target color, point/segment/empty-canvas precedence, group clamping, endpoint constraints, and reliable modifier/focus cleanup. Status: validated; preparing the ready-for-review PR and exact-head artifact.
+- Current Workstream: Pump PR #23 on `wsvasek/opt-1118-pump-cmd-drag-curve-segments-as-a-unit-with-distinct-hover`. Scope: repin merged Toybox OPT-1169, opt the declarative editor into Command-gated grouped segment movement, and implement matching Radiant/VST3 behavior with a dedicated blue target color, point/segment/empty-canvas precedence, group clamping, endpoint constraints, and reliable modifier/focus cleanup. Status: ready for user review after the final exact-head artifact audit.
 
 ## Current State
 
@@ -12,6 +12,7 @@
 - Segment movement applies one shared x/y delta to both endpoints. Vertical bounds, neighboring points, minimum spacing, fixed endpoint x anchors, and wrapped endpoint y coupling clamp the pair together without changing its length or slope.
 - Radiant modifier release and focus loss clear grouped-move hover/active state; focused tests cover translation, slope preservation, pair clamping, endpoint-adjacent segments, hit precedence, dedicated paint color, and Command-release cancellation before mutation.
 - Default CI passes 253 tests, VST3 CI passes 281 tests, and release screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 with and without the playhead.
+- Pump PR #23 is open and ready for review at `https://github.com/PORTALSURFER/pump/pull/23`; user review is required before merge.
 
 - `AGENTS.md` is a portal that points to current-state and plan files.
 - Active execution order lives in `docs/plans/active/todo.md`.
@@ -76,4 +77,4 @@
 
 ## Immediate Next Action
 
-- Commit and push OPT-1118, open the PR ready for review, then build and audit the exact-head signed VST3 artifact before requesting user review.
+- Build and audit the exact-head signed VST3 artifact, record its final hash on PR #23, then wait for explicit user review/sign-off.
