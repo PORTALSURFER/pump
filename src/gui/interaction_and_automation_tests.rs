@@ -260,6 +260,101 @@ mod interaction_and_automation_tests {
     }
 
     #[test]
+    fn command_point_drag_snaps_time_and_releases_to_continuous_movement() {
+        let params = Arc::new(PumpParams::new());
+        params.set_sync_division(6.0);
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.25, y: 0.4 },
+                CurveNode { x: 0.75, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+        };
+        params.set_editable_curve(&curve);
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let size = UiLayoutMetrics::design_space().curve_size;
+        let start = local_from_node_for_size(curve.nodes[1], size);
+        let target = local_from_node_for_size(CurveNode { x: 0.34, y: 0.7 }, size);
+
+        state.reduce_action(UiAction::RegionInteracted {
+            key: CURVE_KEY.to_string(),
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: start,
+            raw_local_pointer: start,
+            alt_down: false,
+            command_down: false,
+            shift_down: false,
+        });
+        state.reduce_action(UiAction::RegionInteracted {
+            key: CURVE_KEY.to_string(),
+            kind: RegionInteractionKind::Dragged,
+            local_pointer: target,
+            raw_local_pointer: target,
+            alt_down: false,
+            command_down: true,
+            shift_down: false,
+        });
+        let snapped = params.editable_curve_snapshot().nodes[1];
+        let expected_snap = snap_curve_time_to_beat_grid(6, size.width as f32, 0.34);
+        assert!((snapped.x - expected_snap).abs() < 1.0e-6);
+
+        state.reduce_action(UiAction::RegionInteracted {
+            key: CURVE_KEY.to_string(),
+            kind: RegionInteractionKind::Dragged,
+            local_pointer: target,
+            raw_local_pointer: target,
+            alt_down: false,
+            command_down: false,
+            shift_down: false,
+        });
+        let released = params.editable_curve_snapshot().nodes[1];
+        let raw_target = node_from_local_for_size(target, size);
+        assert!((released.x - raw_target.x).abs() < 1.0e-6);
+        assert!((released.y - snapped.y).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn command_empty_canvas_insert_snaps_time_without_snapping_gain() {
+        let params = Arc::new(PumpParams::new());
+        params.set_sync_division(6.0);
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let size = UiLayoutMetrics::design_space().curve_size;
+        let target_node = CurveNode { x: 0.34, y: 0.08 };
+        let target = local_from_node_for_size(target_node, size);
+        let raw_target = node_from_local_for_size(target, size);
+
+        state.reduce_action(UiAction::RegionInteracted {
+            key: CURVE_KEY.to_string(),
+            kind: RegionInteractionKind::Pressed,
+            local_pointer: target,
+            raw_local_pointer: target,
+            alt_down: false,
+            command_down: true,
+            shift_down: false,
+        });
+
+        let inserted = params
+            .editable_curve_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| (node.y - raw_target.y).abs() < 1.0e-6)
+            .expect("command insertion should preserve the pointer gain");
+        assert!((inserted.x - snap_curve_time_to_beat_grid(6, size.width as f32, raw_target.x)).abs() < 1.0e-6);
+    }
+
+    #[test]
     fn curve_region_segment_move_requires_command_modifier() {
         let curve = EditableCurve {
             nodes: vec![

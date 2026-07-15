@@ -1,12 +1,14 @@
     use super::{
-        build_version_label, constrained_host_size, curve_beat_grid, curve_gain_references,
-        find_deletable_node_hit, find_segment_line_hit_within, local_from_node,
-        local_from_node_for_size, move_node_with_push_through, move_segment_translated,
+        build_version_label, constrained_host_size, curve_beat_grid,
+        curve_beat_grid_snap_positions, curve_gain_references, find_deletable_node_hit,
+        find_segment_line_hit_within, local_from_node, local_from_node_for_size,
+        move_node_with_push_through, move_segment_translated, node_from_local_for_size,
         preferred_window_size, preview_node_on_curve,
         radiant_editor_frame_for_params, recompute_move_node_from_origin_for_size,
         resolve_runtime_controls_slot_widths,
         resolve_vertical_slot_heights, segment_upward_tension_sign,
-        tension_delta_from_drag_for_segment, CurveRenderState, GuiState, PumpTheme,
+        snap_curve_time_to_beat_grid, tension_delta_from_drag_for_segment, CurveRenderState,
+        GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
         GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, INCOMING_WAVEFORM_KEY,
         METER_STROKE, METER_WIDTH, NODE_X_MIN_SPACING,
@@ -964,6 +966,37 @@
     }
 
     #[test]
+    fn beat_grid_snap_positions_match_visible_lines_and_include_anchors() {
+        let width = 396.0;
+        let grid = curve_beat_grid(7, width);
+        let positions = curve_beat_grid_snap_positions(7, width);
+        assert_eq!(positions.first(), Some(&0.0));
+        assert_eq!(positions.last(), Some(&1.0));
+        assert!(grid
+            .minor
+            .iter()
+            .chain(grid.major.iter())
+            .all(|position| positions.contains(position)));
+        assert_eq!(
+            positions.len(),
+            grid.minor.len() + grid.major.len() + 2,
+            "snap targets should be exactly the rendered lines plus both anchors"
+        );
+    }
+
+    #[test]
+    fn beat_grid_snap_ties_choose_the_earlier_target_and_reject_unknown_timing() {
+        assert_eq!(snap_curve_time_to_beat_grid(0, 396.0, 0.5), 0.0);
+        assert_eq!(snap_curve_time_to_beat_grid(4, 396.0, 0.5), 0.5);
+        assert!((snap_curve_time_to_beat_grid(4, 396.0, 0.51) - 0.5).abs() < 1.0e-6);
+        assert!((snap_curve_time_to_beat_grid(4, 396.0, 0.625) - 0.5).abs() < 1.0e-6);
+        assert_eq!(
+            snap_curve_time_to_beat_grid(crate::params::SYNC_DIVISIONS.len(), 396.0, 0.37),
+            0.37
+        );
+    }
+
+    #[test]
     fn beat_grid_commands_span_the_curve_and_distinguish_major_lines() {
         let size = Size {
             width: 200,
@@ -1328,6 +1361,39 @@
         assert!(
             !curve_editor.interaction.snap.enabled,
             "holding s should temporarily invert the global snap state"
+        );
+    }
+
+    #[test]
+    fn build_ui_command_snap_uses_visible_time_grid_without_snapping_gain() {
+        let params = Arc::new(PumpParams::new());
+        params.set_sync_division(7.0);
+        let state = GuiState::new(
+            params,
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let metrics = UiLayoutMetrics::design_space();
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            command_down: true,
+            ..InputState::default()
+        });
+        let curve_editor = find_curve_editor_spec(spec.root.content(), CURVE_KEY)
+            .expect("curve editor should exist");
+
+        assert!(curve_editor.interaction.snap.enabled);
+        assert_eq!(
+            curve_editor.interaction.snap.vertical_positions,
+            curve_beat_grid_snap_positions(7, metrics.curve_size.width as f32)
+        );
+        assert!(
+            curve_editor.interaction.snap.horizontal_positions.is_empty(),
+            "Command snapping must leave vertical gain continuous"
         );
     }
 

@@ -39,7 +39,7 @@ use crate::params::{
 };
 use crate::GuiStatus;
 
-use super::{build_version_label, WINDOW_HEIGHT, WINDOW_WIDTH};
+use super::{build_version_label, snap_curve_time_to_beat_grid, WINDOW_HEIGHT, WINDOW_WIDTH};
 
 const BUILD_LABEL_HEIGHT: f32 = 16.0;
 const CURVE_PREVIEW_HEIGHT: f32 = 68.0;
@@ -722,9 +722,13 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 state.hover_curve_segment = None;
             }
         }
-        CurvePreviewMessage::PressNode { index } => {
+        CurvePreviewMessage::PressNode {
+            index,
+            command_held,
+        } => {
             let curve = state.params.editable_curve_snapshot();
             if let Some(drag) = start_curve_node_drag(&curve, index) {
+                state.command_hover_held = command_held;
                 state.active_curve_node = Some(index);
                 state.active_curve_node_drag = Some(drag);
                 state.active_curve_segment = None;
@@ -733,8 +737,9 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 state.hover_curve_segment = None;
             }
         }
-        CurvePreviewMessage::InsertNode { node } => {
+        CurvePreviewMessage::InsertNode { node, command_held } => {
             let mut curve = state.params.editable_curve_snapshot();
+            state.command_hover_held = command_held;
             state.active_curve_node_drag = None;
             state.active_curve_segment = None;
             state.hover_curve_node = None;
@@ -1738,6 +1743,23 @@ impl CurvePreviewWidget {
         }
     }
 
+    fn node_from_point_with_command_snap(
+        &self,
+        bounds: Rect,
+        position: Point,
+        command_held: bool,
+    ) -> CurveNode {
+        let mut node = Self::node_from_point(bounds, position);
+        if command_held {
+            node.x = snap_curve_time_to_beat_grid(
+                self.sync_division,
+                Self::curve_bounds(bounds).width(),
+                node.x,
+            );
+        }
+        node
+    }
+
     fn hit_node(&self, bounds: Rect, position: Point) -> Option<usize> {
         self.hit_node_within(bounds, position, CURVE_NODE_HIT_RADIUS)
     }
@@ -2242,11 +2264,14 @@ impl Widget for CurvePreviewWidget {
                 button: PointerButton::Primary,
                 modifiers,
             } => {
+                let command_held = self.command_hover_held || modifiers.command;
                 if let Some(index) = self.hit_node(bounds, position) {
-                    Some(CurvePreviewMessage::PressNode { index })
+                    Some(CurvePreviewMessage::PressNode {
+                        index,
+                        command_held,
+                    })
                 } else {
                     let hover = self.hover_at(bounds, position);
-                    let command_held = self.command_hover_held || modifiers.command;
                     let option_held = self.option_hover_held || modifiers.alt;
                     match (command_held, option_held, hover.segment) {
                         (true, _, Some(index)) => {
@@ -2259,7 +2284,21 @@ impl Widget for CurvePreviewWidget {
                         _ => hover
                             .preview_node
                             .or_else(|| self.insert_node_at(bounds, position))
-                            .map(|node| CurvePreviewMessage::InsertNode { node }),
+                            .map(|node| CurvePreviewMessage::InsertNode {
+                                node: if command_held {
+                                    CurveNode {
+                                        x: snap_curve_time_to_beat_grid(
+                                            self.sync_division,
+                                            Self::curve_bounds(bounds).width(),
+                                            node.x,
+                                        ),
+                                        ..node
+                                    }
+                                } else {
+                                    node
+                                },
+                                command_held,
+                            }),
                     }
                 }
             }
@@ -2275,7 +2314,11 @@ impl Widget for CurvePreviewWidget {
                 if let Some(index) = self.active_node {
                     Some(CurvePreviewMessage::DragNode {
                         index,
-                        node: Self::node_from_point(bounds, position),
+                        node: self.node_from_point_with_command_snap(
+                            bounds,
+                            position,
+                            self.command_hover_held,
+                        ),
                         push_through_threshold_x: curve_node_push_through_threshold_x(
                             bounds.width(),
                         ),
@@ -2311,17 +2354,21 @@ impl Widget for CurvePreviewWidget {
             WidgetInput::PointerRelease {
                 position,
                 button: PointerButton::Primary,
-                ..
+                modifiers,
             }
             | WidgetInput::PointerDrop {
                 position,
                 button: PointerButton::Primary,
-                ..
+                modifiers,
             } => {
                 if let Some(index) = self.active_node {
                     Some(CurvePreviewMessage::ReleaseNode {
                         index,
-                        node: Self::node_from_point(bounds, position),
+                        node: self.node_from_point_with_command_snap(
+                            bounds,
+                            position,
+                            modifiers.command,
+                        ),
                         push_through_threshold_x: curve_node_push_through_threshold_x(
                             bounds.width(),
                         ),
@@ -2380,9 +2427,11 @@ enum CurvePreviewMessage {
     },
     PressNode {
         index: usize,
+        command_held: bool,
     },
     InsertNode {
         node: CurveNode,
+        command_held: bool,
     },
     DeleteNode {
         index: usize,
@@ -2734,7 +2783,10 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 1 }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 1,
+                command_held: false,
+            }),
         );
         assert_eq!(state.active_curve_node, Some(1));
 
@@ -2794,7 +2846,10 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 2 }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 2,
+                command_held: false,
+            }),
         );
         reduce_editor_message(
             &mut state,
@@ -2839,7 +2894,10 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 2 }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 2,
+                command_held: false,
+            }),
         );
         reduce_editor_message(
             &mut state,
@@ -2884,7 +2942,10 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 1 }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 1,
+                command_held: false,
+            }),
         );
         reduce_editor_message(
             &mut state,
@@ -2927,7 +2988,10 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 2 }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 2,
+                command_held: false,
+            }),
         );
         reduce_editor_message(
             &mut state,
@@ -2982,7 +3046,10 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 2 }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 2,
+                command_held: false,
+            }),
         );
         reduce_editor_message(
             &mut state,
@@ -3017,7 +3084,10 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode { index: 0 }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 0,
+                command_held: false,
+            }),
         );
         reduce_editor_message(
             &mut state,
@@ -3093,7 +3163,10 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::InsertNode { node }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::InsertNode {
+                node,
+                command_held: false,
+            }),
         );
 
         let after = params.editable_curve_snapshot();
@@ -3299,7 +3372,10 @@ mod tests {
 
         assert_eq!(
             output.typed_copied(),
-            Some(CurvePreviewMessage::PressNode { index: 1 })
+            Some(CurvePreviewMessage::PressNode {
+                index: 1,
+                command_held: false,
+            })
         );
     }
 
@@ -3466,7 +3542,7 @@ mod tests {
             .expect("segment press should emit an insert message");
 
         match output.typed_copied() {
-            Some(CurvePreviewMessage::InsertNode { node }) => {
+            Some(CurvePreviewMessage::InsertNode { node, .. }) => {
                 assert!((node.x - expected.x).abs() < 1.0e-6);
                 assert!((node.y - expected.y).abs() < 1.0e-6);
             }
@@ -3547,7 +3623,7 @@ mod tests {
             .expect("empty canvas press should emit an insert message");
 
         match output.typed_copied() {
-            Some(CurvePreviewMessage::InsertNode { node }) => {
+            Some(CurvePreviewMessage::InsertNode { node, .. }) => {
                 assert!((node.x - expected.x).abs() < 1.0e-6);
                 assert!((node.y - expected.y).abs() < 1.0e-6);
             }
@@ -3564,6 +3640,7 @@ mod tests {
             &mut state,
             RadiantEditorMessage::Curve(CurvePreviewMessage::InsertNode {
                 node: CurveNode { x: 0.72, y: 0.18 },
+                command_held: false,
             }),
         );
         let inserted = state
@@ -3581,6 +3658,127 @@ mod tests {
         let curve = params.editable_curve_snapshot();
         assert!((curve.nodes[inserted].x - 0.62).abs() < 1.0e-6);
         assert!((curve.nodes[inserted].y - 0.42).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn curve_preview_widget_command_insert_snaps_time_and_preserves_gain() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_sync_division(6);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let raw = CurveNode { x: 0.34, y: 0.08 };
+        let position = CurvePreviewWidget::curve_point(bounds, raw);
+
+        let output = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers {
+                        command: true,
+                        ..PointerModifiers::default()
+                    },
+                },
+            )
+            .expect("command empty-canvas press should insert a snapped point");
+
+        let Some(CurvePreviewMessage::InsertNode {
+            node,
+            command_held: true,
+        }) = output.typed_copied()
+        else {
+            panic!(
+                "unexpected command insertion output: {:?}",
+                output.typed_copied::<CurvePreviewMessage>()
+            );
+        };
+        let width = CurvePreviewWidget::curve_bounds(bounds).width();
+        assert!((node.x - snap_curve_time_to_beat_grid(6, width, raw.x)).abs() < 1.0e-6);
+        assert!((node.y - raw.y).abs() < 1.0e-2);
+    }
+
+    #[test]
+    fn radiant_editor_command_press_and_release_update_point_snap_mid_drag() {
+        let params = Arc::new(PumpParams::new());
+        params.set_sync_division(6.0);
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.25, y: 0.4 },
+                CurveNode { x: 0.75, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 1,
+                command_held: false,
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::ModifiersChanged {
+                option_held: false,
+                command_held: true,
+            },
+        );
+
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let raw = CurveNode { x: 0.34, y: 0.7 };
+        let position = CurvePreviewWidget::curve_point(bounds, raw);
+        let mut snapped_widget = CurvePreviewWidget::new(
+            params.editable_curve_snapshot(),
+            state.active_curve_node,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .with_command_hover_held(true)
+        .with_sync_division(6);
+        let snapped_message = snapped_widget
+            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .and_then(|output| output.typed_copied::<CurvePreviewMessage>())
+            .expect("active command drag should emit a snapped node move");
+        reduce_curve_message(&mut state, snapped_message);
+
+        let width = CurvePreviewWidget::curve_bounds(bounds).width();
+        let snapped = params.editable_curve_snapshot().nodes[1];
+        assert!((snapped.x - snap_curve_time_to_beat_grid(6, width, raw.x)).abs() < 1.0e-6);
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::ModifiersChanged {
+                option_held: false,
+                command_held: false,
+            },
+        );
+        let mut plain_widget = CurvePreviewWidget::new(
+            params.editable_curve_snapshot(),
+            state.active_curve_node,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .with_sync_division(6);
+        let plain_message = plain_widget
+            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .and_then(|output| output.typed_copied::<CurvePreviewMessage>())
+            .expect("active plain drag should emit a continuous node move");
+        reduce_curve_message(&mut state, plain_message);
+
+        let continuous = params.editable_curve_snapshot().nodes[1];
+        assert!((continuous.x - raw.x).abs() < 1.0e-2);
+        assert!((continuous.y - snapped.y).abs() < 1.0e-2);
     }
 
     #[test]
@@ -3652,7 +3850,10 @@ mod tests {
             .expect("command point press should remain a point gesture");
         assert_eq!(
             point_output.typed_copied(),
-            Some(CurvePreviewMessage::PressNode { index: 1 })
+            Some(CurvePreviewMessage::PressNode {
+                index: 1,
+                command_held: true,
+            })
         );
 
         let mut segment_widget =

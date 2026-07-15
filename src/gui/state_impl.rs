@@ -293,6 +293,7 @@ impl GuiState {
         metrics: UiLayoutMetrics,
         theme: PumpTheme,
         controls: ControlSnapshot,
+        command_down: bool,
     ) -> Node {
         let editable_curve = self.params.editable_curve_snapshot();
         let effective_grid = effective_grid_division(controls.division, controls.grid_override);
@@ -308,6 +309,7 @@ impl GuiState {
                 metrics.curve_size,
                 effective_grid,
                 controls.effective_snap_enabled(),
+                command_down,
             ))
             .curve_segment_move(CurveSegmentMoveOptions::new(
                 CurveEditorModifier::Command,
@@ -871,7 +873,7 @@ impl GuiState {
         let presets = self.snapshot_presets();
 
         let header_slot = self.build_header_slot(metrics, theme, &presets);
-        let spline_slot = self.build_spline_slot(metrics, theme, controls);
+        let spline_slot = self.build_spline_slot(metrics, theme, controls, input.command_down);
         let quick_shapes_slot = self.build_quick_shapes_slot(metrics, theme, input.command_down);
         let controls_slot = self.build_controls_slot(metrics, theme, controls);
 
@@ -1586,6 +1588,9 @@ impl GuiState {
         let normalized_pointer = node_from_local_for_size(local_pointer, runtime.curve_size);
         let raw_normalized_pointer =
             node_from_local_for_size(raw_local_pointer, runtime.curve_size);
+        let command_snap_division =
+            effective_grid_division(self.params.sync_division(), runtime.grid_override);
+        let command_snap_width = runtime.curve_size.width as f32;
 
         match kind {
             RegionInteractionKind::Pressed => {
@@ -1661,12 +1666,19 @@ impl GuiState {
                     )
                     .is_some()
                 {
-                    let preview_node = preview_node_on_curve_for_size(
+                    let mut preview_node = preview_node_on_curve_for_size(
                         &editable,
                         local_pointer,
                         runtime.curve_size,
                     )
                     .unwrap_or(normalized_pointer);
+                    if command_down {
+                        preview_node.x = snap_curve_time_to_beat_grid(
+                            command_snap_division,
+                            command_snap_width,
+                            preview_node.x,
+                        );
+                    }
                     let before_insert = editable.clone();
                     let inserted_index =
                         insert_node_for_size(&mut editable, preview_node, runtime.curve_size);
@@ -1729,9 +1741,17 @@ impl GuiState {
                     return;
                 }
 
+                let mut insert_pointer = normalized_pointer;
+                if command_down {
+                    insert_pointer.x = snap_curve_time_to_beat_grid(
+                        command_snap_division,
+                        command_snap_width,
+                        insert_pointer.x,
+                    );
+                }
                 let before_insert = editable.clone();
                 let inserted_index =
-                    insert_node_for_size(&mut editable, normalized_pointer, runtime.curve_size);
+                    insert_node_for_size(&mut editable, insert_pointer, runtime.curve_size);
                 runtime.selected_node = Some(inserted_index);
                 runtime.selected_nodes = vec![inserted_index];
                 runtime.drag_mode = Some(CurveDragMode::MoveNode {
@@ -1774,11 +1794,19 @@ impl GuiState {
                                 return;
                             }
                             dragging = true;
+                            let mut target = raw_normalized_pointer;
+                            if command_down {
+                                target.x = snap_curve_time_to_beat_grid(
+                                    command_snap_division,
+                                    command_snap_width,
+                                    target.x,
+                                );
+                            }
                             let (recomputed_curve, moved_index) =
                                 recompute_move_node_from_origin_for_size(
                                     &origin_curve,
                                     origin_index,
-                                    raw_normalized_pointer,
+                                    target,
                                     node_push_through_threshold_px(runtime.curve_size),
                                     runtime.curve_size,
                                 );
