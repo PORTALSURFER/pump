@@ -153,7 +153,13 @@ pub(super) fn curve_editor_interaction_options(
     curve_size: Size,
     grid_division: usize,
     snap_enabled: bool,
+    command_snap_enabled: bool,
 ) -> CurveInteractionOptions {
+    let command_snap_positions = if command_snap_enabled {
+        curve_beat_grid_snap_positions(grid_division, curve_size.width as f32)
+    } else {
+        Vec::new()
+    };
     CurveInteractionOptions {
         max_points: MAX_EDITABLE_NODES,
         min_point_spacing_x: NODE_X_MIN_SPACING,
@@ -162,11 +168,60 @@ pub(super) fn curve_editor_interaction_options(
         endpoint_mode: EndpointMode::CoupledY,
         double_click_delete_interior: true,
         snap: CurveSnapConfig {
-            enabled: snap_enabled,
-            vertical_positions: snap_vertical_positions_for_division(grid_division),
-            horizontal_positions: vec![0.0, 0.25, 0.5, 0.75, 1.0],
+            enabled: snap_enabled || !command_snap_positions.is_empty(),
+            vertical_positions: if command_snap_enabled {
+                command_snap_positions
+            } else {
+                snap_vertical_positions_for_division(grid_division)
+            },
+            horizontal_positions: if snap_enabled {
+                vec![0.0, 0.25, 0.5, 0.75, 1.0]
+            } else {
+                Vec::new()
+            },
         },
     }
+}
+
+/// Return the exact normalized time targets represented by the visible beat grid.
+///
+/// Start and end anchors participate in snapping even when the current cycle has
+/// no internal division. Unknown timing states deliberately return no targets.
+pub(super) fn curve_beat_grid_snap_positions(sync_division: usize, width: f32) -> Vec<f32> {
+    const POSITION_EPSILON: f32 = 1.0e-5;
+
+    if crate::params::SYNC_DIVISIONS.get(sync_division).is_none()
+        || !width.is_finite()
+        || width <= 0.0
+    {
+        return Vec::new();
+    }
+
+    let grid = curve_beat_grid(sync_division, width);
+    let mut positions = Vec::with_capacity(grid.minor.len() + grid.major.len() + 2);
+    positions.push(0.0);
+    positions.extend(grid.minor);
+    positions.extend(grid.major);
+    positions.push(1.0);
+    positions.sort_by(f32::total_cmp);
+    positions.dedup_by(|left, right| (*left - *right).abs() <= POSITION_EPSILON);
+    positions
+}
+
+/// Snap one normalized time position to the nearest visible beat-grid target.
+///
+/// Exact ties resolve toward the earlier target for deterministic behavior.
+pub(super) fn snap_curve_time_to_beat_grid(sync_division: usize, width: f32, time: f32) -> f32 {
+    let time = time.clamp(0.0, 1.0);
+    curve_beat_grid_snap_positions(sync_division, width)
+        .into_iter()
+        .min_by(|left, right| {
+            (time - *left)
+                .abs()
+                .total_cmp(&(time - *right).abs())
+                .then_with(|| left.total_cmp(right))
+        })
+        .unwrap_or(time)
 }
 
 pub(super) fn effective_grid_division(sync_division: usize, grid_override: Option<usize>) -> usize {

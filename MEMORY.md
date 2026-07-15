@@ -1,11 +1,17 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-14 20:49:36 UTC
-- Active Mission: Add Command-gated two-point curve-segment movement with dedicated feedback to both Pump curve editors for OPT-1118.
-- Current Workstream: Pump PR #23 on `wsvasek/opt-1118-pump-cmd-drag-curve-segments-as-a-unit-with-distinct-hover`. Scope: repin merged Toybox OPT-1169, opt the declarative editor into Command-gated grouped segment movement, and implement matching Radiant/VST3 behavior with a dedicated blue target color, point/segment/empty-canvas precedence, group clamping, endpoint constraints, and reliable modifier/focus cleanup. Status: waiting for explicit user review/sign-off.
+- Last Updated (UTC): 2026-07-15 09:51:02 UTC
+- Active Mission: Add Command-held beat-grid snapping to Pump curve insertion and point dragging for OPT-1115.
+- Current Workstream: Dedicated Pump PR on `wsvasek/opt-1115-pump-hold-cmd-to-snap-curve-edits-to-the-beat-grid`. Scope: snap time only to the exact sync-aware grid shown by OPT-1111, keep gain continuous, react to Command press/release during a drag, preserve ordering/endpoints and existing segment gestures, validate both declarative and Radiant/VST3 editors, publish a ready PR, and merge under explicit user authorization. Status: implementing and validating.
 
 ## Current State
 
+- OPT-1116 was explicitly superseded before OPT-1115 began. Its completed Shift work remains preserved on the remote branch `wsvasek/opt-1116-pump-hold-shift-to-constrain-curve-point-movement` at `562b2ba` and `7cb4c98`; Linear OPT-1116 is Backlog with the dependency-first handoff recorded.
+- OPT-1115 has no upstream blocker and is In Progress in Linear on its dedicated branch from merged Pump `main` at `c8cb2d8`.
+- One shared Pump timing helper derives snap targets from the exact minor/major grid returned by `curve_beat_grid`, adds deterministic start/end anchors, resolves exact ties toward the earlier time, and leaves unknown timing states unsnapped.
+- The declarative editor enables Command snapping per frame, uses only time-axis targets while Command alone is held, preserves the legacy Snap/S-key gain behavior, and applies the same rule through Pump's region-interaction fallback for insertion and mid-drag modifier changes.
+- The Radiant/VST3 editor snaps Command-held insertion and point-move messages before reducer mutation, records Command from the initiating point press, and switches immediately when modifier-change messages arrive during the active drag.
+- Focused Command tests, all 153 default GUI tests, and all 155 VST3 GUI tests pass. Full repository CI passes 262 default tests and 290 VST3 tests with warnings denied; multi-size release screenshot validation also passes.
 - Toybox OPT-1169 merged through PR #6 at `9d46db3af42dc0e22afe668870ba707f10c53f8c`; Pump now pins that revision and enables `.curve_segment_move(CurveSegmentMoveOptions::new(CurveEditorModifier::Command, color))`.
 - Both Pump editors reserve blue (`rgb(96, 176, 255)`) for grouped segment movement, distinct from curve/tension, node, transport, meter, and muted-history colors.
 - Command interaction precedence is point drag first, line-between-points grouped movement second, and existing empty-canvas behavior otherwise. Option segment-tension adjustment remains unchanged.
@@ -81,4 +87,4 @@
 
 ## Immediate Next Action
 
-- Wait for explicit user review/sign-off on PR #23 before merge.
+- Commit and push the clean OPT-1115 branch, open the ready PR with the required validation/limitations/user-review sections, build and audit the exact-head signed VST3 artifact, verify GitHub CI, merge, clean up, and mark Linear Done.
