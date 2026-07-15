@@ -300,6 +300,10 @@ All notable changes to this project are documented in this file.
 
 - Record OPT-1115 review handoff (1dc1f96)
 
+- (changelog) Update changelog [skip ci] (cc53981)
+
+- Sync OPT-1117 review state (PR-002) (af48959)
+
 
 ### Features
 
@@ -1041,6 +1045,12 @@ OPT-1118 Pump: Cmd-drag curve segments as a unit (fedfa70)
 - Merge pull request #24 from PORTALSURFER/wsvasek/opt-1115-pump-hold-cmd-to-snap-curve-edits-to-the-beat-grid
 
 OPT-1115 Pump: snap curve edits to the beat grid with Cmd (37dab27)
+
+- Implement vertical curve point constraint (910fa01)
+
+- Merge pull request #25 from PORTALSURFER/wsvasek/opt-1117-pump-hold-shiftoption-to-constrain-curve-point-movement
+
+OPT-1117: constrain curve-point movement vertically (68fa1c5)
 
 
 ### Refactoring
