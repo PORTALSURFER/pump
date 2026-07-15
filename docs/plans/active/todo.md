@@ -2,13 +2,15 @@
 
 Ordered queue for immediate execution:
 
-1. [x] Supersede and preserve the incomplete OPT-1116 workstream before starting a separate PR.
-2. [x] Create the dedicated OPT-1115 branch from updated Pump `main` and move Linear to In Progress.
-3. [x] Derive deterministic time snap targets from the exact visible sync-aware beat grid, including boundaries and stable tie-breaking.
-4. [x] Enable Command time-only snapping for declarative insertion and point dragging without changing gain or legacy Snap/S-key behavior.
-5. [x] Add matching Radiant/VST3 insertion, point dragging, and mid-gesture Command transition behavior.
-6. [x] Cover short/long sync lengths, insertion, drag transitions, vertical continuity, boundaries, and existing Command segment precedence.
-7. [x] Pass full default CI, VST3 CI, and multi-size release screenshot validation.
-8. [x] Commit, push, and open OPT-1115 Pump PR #24 ready for review; explicit merge authorization supplies sign-off.
-9. [ ] Build and audit the exact-head signed `dist/pump-v0.2.0-macos.vst3` artifact.
-10. [ ] Verify GitHub CI, merge under explicit user authorization, clean branches, and mark Linear Done.
+1. [x] Verify Toybox PR #11 merged, canonicalize Toybox `main`, validate its ledger/post-merge state, and close OPT-1176.
+2. [x] Revise OPT-1117's Linear contract so its required Shift-only transition explicitly integrates the preserved OPT-1116 Pump work.
+3. [x] Create `wsvasek/opt-1117-pump-hold-shiftoption-to-constrain-curve-point-movement` from current Pump `main`.
+4. [x] Reconcile the preserved Radiant Shift-only implementation with current Command snapping.
+5. [x] Repin Pump to canonical Toybox `428d6a637cddf6906f09832e2426bb428fbdfd8a` and enable both point-constraint decorators.
+6. [x] Add Radiant/VST3 Shift+Option stable time anchoring, no-jump transitions, and Cmd precedence.
+7. [x] Cover start/mid-gesture transitions, pointer drift, Shift-only composition, Cmd composition, boundaries, focus/cancel, release, and consecutive gestures.
+8. [x] Pass focused tests, full default/VST3 CI, warnings-denied clippy, and multi-size rendered visual validation.
+9. [x] Build, sign, audit, and host-smoke the exact-head `dist/pump-v0.2.0-macos.vst3` artifact.
+10. [x] Commit, push, open ready Pump PR #25, verify remote readback, and validate the contract-revision-2 review ledger.
+11. [ ] Address review findings on the same branch, resolve their GitHub threads after exact-head verification, and run a fresh complete-diff review until clean.
+12. [ ] Wait for explicit user review/sign-off before merge.
