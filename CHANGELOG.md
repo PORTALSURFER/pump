@@ -155,6 +155,8 @@ All notable changes to this project are documented in this file.
 
 - (gui) Pin radiant for pump gui surface smoke (709219c)
 
+- Remove local agent state files (9a5e07a)
+
 
 ### Documentation
 
@@ -303,6 +305,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (cc53981)
 
 - Sync OPT-1117 review state (PR-002) (af48959)
+
+- (changelog) Update changelog [skip ci] (ce991cf)
 
 
 ### Features
@@ -1051,6 +1055,10 @@ OPT-1115 Pump: snap curve edits to the beat grid with Cmd (37dab27)
 - Merge pull request #25 from PORTALSURFER/wsvasek/opt-1117-pump-hold-shiftoption-to-constrain-curve-point-movement
 
 OPT-1117: constrain curve-point movement vertically (68fa1c5)
+
+- Merge pull request #26 from PORTALSURFER/codex/remove-local-agent-state-files
+
+Remove local agent state files (3f3ae92)
 
 
 ### Refactoring
