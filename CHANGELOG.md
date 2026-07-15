@@ -296,6 +296,10 @@ All notable changes to this project are documented in this file.
 
 - Docs mark OPT-1118 ready for review (7b91f5c)
 
+- (changelog) Update changelog [skip ci] (c8cb2d8)
+
+- Record OPT-1115 review handoff (1dc1f96)
+
 
 ### Features
 
@@ -1031,6 +1035,12 @@ OPT-1110 Pump: add horizontal dB reference markings to the curve editor (358b88c
 - Merge pull request #23 from PORTALSURFER/wsvasek/opt-1118-pump-cmd-drag-curve-segments-as-a-unit-with-distinct-hover
 
 OPT-1118 Pump: Cmd-drag curve segments as a unit (fedfa70)
+
+- OPT-1115 add Command beat-grid snapping (f0c8e54)
+
+- Merge pull request #24 from PORTALSURFER/wsvasek/opt-1115-pump-hold-cmd-to-snap-curve-edits-to-the-beat-grid
+
+OPT-1115 Pump: snap curve edits to the beat grid with Cmd (37dab27)
 
 
 ### Refactoring
