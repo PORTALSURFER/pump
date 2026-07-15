@@ -10,7 +10,7 @@ Ordered queue for immediate execution:
 6. [x] Add Radiant/VST3 Shift+Option stable time anchoring, no-jump transitions, and Cmd precedence.
 7. [x] Cover start/mid-gesture transitions, pointer drift, Shift-only composition, Cmd composition, boundaries, focus/cancel, release, and consecutive gestures.
 8. [x] Pass focused tests, full default/VST3 CI, warnings-denied clippy, and multi-size rendered visual validation.
-9. [ ] Build, sign, audit, and host-smoke the exact-head `dist/pump-v0.2.0-macos.vst3` artifact.
-10. [ ] Commit, push, open the ready Pump PR, verify remote readback, and validate the contract-revision-2 review ledger.
-11. [ ] Publish GitHub review passes and resolve every finding thread until the exact head is clean.
+9. [x] Build, sign, audit, and host-smoke the exact-head `dist/pump-v0.2.0-macos.vst3` artifact.
+10. [x] Commit, push, open ready Pump PR #25, verify remote readback, and validate the contract-revision-2 review ledger.
+11. [ ] Address review findings on the same branch, resolve their GitHub threads after exact-head verification, and run a fresh complete-diff review until clean.
 12. [ ] Wait for explicit user review/sign-off before merge.

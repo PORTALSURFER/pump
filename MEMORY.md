@@ -1,8 +1,8 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-15 11:29:06 UTC
+- Last Updated (UTC): 2026-07-15 12:13:53 UTC
 - Active Mission: Add Shift+Option vertical curve-point dragging to both Pump curve editors for OPT-1117, including the required Shift-only transition behavior.
-- Current Workstream: Intended Pump PR on `wsvasek/opt-1117-pump-hold-shiftoption-to-constrain-curve-point-movement`. Scope: repin merged Toybox point constraints, integrate the preserved OPT-1116 Shift-only behavior, add matching Radiant/VST3 stable time anchoring for Shift+Option, preserve Cmd snapping precedence rules, and validate under contract revision 2. Status: locally validated; exact-head artifact, publication, ledger, and automated review remain.
+- Current Workstream: Pump PR #25 on `wsvasek/opt-1117-pump-hold-shiftoption-to-constrain-curve-point-movement`. Scope: repin merged Toybox point constraints, integrate the preserved OPT-1116 Shift-only behavior, add matching Radiant/VST3 stable time anchoring for Shift+Option, preserve Cmd snapping precedence rules, and validate under contract revision 2. Status: open and ready; the automated review lifecycle is active, and explicit user sign-off remains required before merge.
 
 ## Current State
 
@@ -14,7 +14,7 @@
 - Focused Radiant coverage passes 67 tests and includes start/mid-drag constraints, Cmd composition, Option-to-Shift handoff, boundaries, cancellation, release, and consecutive gestures. Pump's declarative tree has regression coverage for both constraint decorators.
 - Full local validation passes 274 default tests and 302 VST3 tests with warnings-denied clippy. Release screenshots pass at 315x211, 420x282, 525x352, and 630x423 with and without the playhead; visual inspection is clean at both size extremes.
 - Risk profiles are `ordinary`, `ui`, and `realtime_audio`: focused and full CI, multi-size visual evidence, real host/runtime evidence, realtime-safety evidence, and an exact-head signed VST3 artifact are required before user review.
-- The canonical review ledger will be created and validated once the actual ready, non-draft Pump PR exists; contract revision is `2`.
+- Pump PR #25 is open, ready, and non-draft at `https://github.com/PORTALSURFER/pump/pull/25`; its canonical contract-revision-2 review ledger is the source of truth for review passes, exact head hashes, validation evidence, and finding dispositions.
 
 - `AGENTS.md` is a portal that points to current-state and plan files.
 - Active execution order lives in `docs/plans/active/todo.md`.
@@ -79,4 +79,4 @@
 
 ## Immediate Next Action
 
-- Commit the validated implementation, build/sign/audit and host-smoke the exact-head VST3 bundle, then publish the ready PR, canonical ledger, and automated GitHub review pass.
+- Complete the active PR #25 review/fix/re-review loop, then wait for explicit user review and sign-off before merge.
