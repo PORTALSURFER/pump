@@ -1,28 +1,20 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-15 09:53:59 UTC
-- Active Mission: Add Command-held beat-grid snapping to Pump curve insertion and point dragging for OPT-1115.
-- Current Workstream: Pump PR #24 on `wsvasek/opt-1115-pump-hold-cmd-to-snap-curve-edits-to-the-beat-grid`. Scope: snap time only to the exact sync-aware grid shown by OPT-1111, keep gain continuous, react to Command press/release during a drag, preserve ordering/endpoints and existing segment gestures, validate both declarative and Radiant/VST3 editors, and merge under explicit user authorization. Status: signed off; exact-head artifact, CI, merge, and cleanup pending.
+- Last Updated (UTC): 2026-07-15 11:29:06 UTC
+- Active Mission: Add Shift+Option vertical curve-point dragging to both Pump curve editors for OPT-1117, including the required Shift-only transition behavior.
+- Current Workstream: Intended Pump PR on `wsvasek/opt-1117-pump-hold-shiftoption-to-constrain-curve-point-movement`. Scope: repin merged Toybox point constraints, integrate the preserved OPT-1116 Shift-only behavior, add matching Radiant/VST3 stable time anchoring for Shift+Option, preserve Cmd snapping precedence rules, and validate under contract revision 2. Status: locally validated; exact-head artifact, publication, ledger, and automated review remain.
 
 ## Current State
 
-- OPT-1116 was explicitly superseded before OPT-1115 began. Its completed Shift work remains preserved on the remote branch `wsvasek/opt-1116-pump-hold-shift-to-constrain-curve-point-movement` at `562b2ba` and `7cb4c98`; Linear OPT-1116 is Backlog with the dependency-first handoff recorded.
-- OPT-1115 has no upstream blocker and is In Progress in Linear on its dedicated branch from merged Pump `main` at `c8cb2d8`. Pump PR #24 is open and ready at `https://github.com/PORTALSURFER/pump/pull/24`; the user's explicit implementation-and-merge instruction supplies sign-off.
-- One shared Pump timing helper derives snap targets from the exact minor/major grid returned by `curve_beat_grid`, adds deterministic start/end anchors, resolves exact ties toward the earlier time, and leaves unknown timing states unsnapped.
-- The declarative editor enables Command snapping per frame, uses only time-axis targets while Command alone is held, preserves the legacy Snap/S-key gain behavior, and applies the same rule through Pump's region-interaction fallback for insertion and mid-drag modifier changes.
-- The Radiant/VST3 editor snaps Command-held insertion and point-move messages before reducer mutation, records Command from the initiating point press, and switches immediately when modifier-change messages arrive during the active drag.
-- Focused Command tests, all 153 default GUI tests, and all 155 VST3 GUI tests pass. Full repository CI passes 262 default tests and 290 VST3 tests with warnings denied; multi-size release screenshot validation also passes.
-- Toybox OPT-1169 merged through PR #6 at `9d46db3af42dc0e22afe668870ba707f10c53f8c`; Pump now pins that revision and enables `.curve_segment_move(CurveSegmentMoveOptions::new(CurveEditorModifier::Command, color))`.
-- Both Pump editors reserve blue (`rgb(96, 176, 255)`) for grouped segment movement, distinct from curve/tension, node, transport, meter, and muted-history colors.
-- Command interaction precedence is point drag first, line-between-points grouped movement second, and existing empty-canvas behavior otherwise. Option segment-tension adjustment remains unchanged.
-- Segment movement applies one shared x/y delta to both endpoints. Vertical bounds, neighboring points, minimum spacing, fixed endpoint x anchors, and wrapped endpoint y coupling clamp the pair together without changing its length or slope.
-- Radiant modifier release and focus loss clear grouped-move hover/active state; focused tests cover translation, slope preservation, pair clamping, endpoint-adjacent segments, hit precedence, dedicated paint color, and Command-release cancellation before mutation.
-- The PR #23 P1 review fix forwards `command_down` through Pump's declarative `CURVE_KEY` reducer, starts grouped movement only for a Command-gated near-segment hit, and cancels the reducer drag before mutation if Command is released. A reducer-level regression proves plain near-segment presses cannot start `MoveSegment`, while Command presses translate the pair without changing its slope.
-- The PR #23 Command-latch review fix records `command_hover_held` when `PressSegmentMove` starts a Radiant `MovePair`, so the first Command-up event cancels the active segment before any unmodified drag can mutate it. The cancellation regression now begins through the real press message instead of pre-seeding reducer state.
-- The PR #23 Option-click review fix restores an Option-only empty-canvas press to a no-op while preserving Option segment-tension targeting and Command empty-canvas insertion. A widget-level regression covers the restored no-op precedence.
-- Default CI passes 255 tests, VST3 CI passes 283 tests, and release screenshot validation passes at 315x211, 420x282, 525x352, and 630x423 with and without the playhead.
-- Pump PR #23 is open and ready for review at `https://github.com/PORTALSURFER/pump/pull/23`; user review is required before merge.
-- The OPT-1118 signed review artifact is `dist/pump-v0.2.0-macos.vst3`; codesign, plist, arm64 Mach-O, and VST3 entry-symbol audits pass. Its final exact-head SHA-256 is recorded on PR #23.
+- Toybox OPT-1176 merged through PR #11: candidate `e78e144a85e0bba7664a17b1c3074b00303551cc`, canonical `main` `428d6a637cddf6906f09832e2426bb428fbdfd8a`; post-merge CI and branch cleanup passed and Linear is Done.
+- Pump `main` is clean/current at `cc53981419cd084b42c7befa4e281fcd03f863f8`; PR #24 already merged OPT-1115 Command beat-grid snapping.
+- Linear OPT-1117 is In Progress. Contract revision 2 explicitly combines the preserved OPT-1116 Shift-only implementation with Shift+Option behavior because transition to Shift-only is part of OPT-1117's Definition of Done.
+- Pump pins canonical Toybox `428d6a637cddf6906f09832e2426bb428fbdfd8a` and opts the declarative curve editor into Shift horizontal and Shift+Option vertical point constraints.
+- Radiant now keeps separate stable gain/time anchors and pointer rebases. Shift+Option takes precedence over Shift and Cmd, mid-drag engagement captures the visible time, modifier release resumes without a jump, and Option release hands off smoothly to Shift-only movement.
+- Focused Radiant coverage passes 67 tests and includes start/mid-drag constraints, Cmd composition, Option-to-Shift handoff, boundaries, cancellation, release, and consecutive gestures. Pump's declarative tree has regression coverage for both constraint decorators.
+- Full local validation passes 274 default tests and 302 VST3 tests with warnings-denied clippy. Release screenshots pass at 315x211, 420x282, 525x352, and 630x423 with and without the playhead; visual inspection is clean at both size extremes.
+- Risk profiles are `ordinary`, `ui`, and `realtime_audio`: focused and full CI, multi-size visual evidence, real host/runtime evidence, realtime-safety evidence, and an exact-head signed VST3 artifact are required before user review.
+- The canonical review ledger will be created and validated once the actual ready, non-draft Pump PR exists; contract revision is `2`.
 
 - `AGENTS.md` is a portal that points to current-state and plan files.
 - Active execution order lives in `docs/plans/active/todo.md`.
@@ -87,4 +79,4 @@
 
 ## Immediate Next Action
 
-- Commit and push this signed-off handoff, build and audit the exact-head signed VST3 artifact, verify GitHub CI, merge PR #24, clean up, and mark Linear Done.
+- Commit the validated implementation, build/sign/audit and host-smoke the exact-head VST3 bundle, then publish the ready PR, canonical ledger, and automated GitHub review pass.

@@ -1333,6 +1333,34 @@
     }
 
     #[test]
+    fn build_ui_opts_curve_editor_into_shift_and_shift_option_constraints() {
+        let state = GuiState::new(
+            Arc::new(PumpParams::new()),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let spec = state.build_ui(&InputState {
+            window_size: Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            },
+            ..InputState::default()
+        });
+        let decorator_debug = find_curve_editor_slot_debug(spec.root.content(), CURVE_KEY)
+            .expect("curve editor should have a direct declarative slot");
+
+        assert!(
+            decorator_debug.contains("curve_point_horizontal_constraint: Some("),
+            "Pump must opt into Shift horizontal point movement: {decorator_debug}"
+        );
+        assert!(
+            decorator_debug.contains("curve_point_vertical_constraint: Some("),
+            "Pump must opt into Shift+Option vertical point movement: {decorator_debug}"
+        );
+    }
+
+    #[test]
     fn build_ui_temporary_snap_invert_uses_held_s_key() {
         let params = Arc::new(PumpParams::new());
         let mut state = GuiState::new(
@@ -2739,6 +2767,64 @@
             | Node::EqAttractorSurface(_)
             | Node::Region(_)
             | Node::Indicator(_)
+            | Node::Absolute(_) => None,
+        }
+    }
+
+    fn find_curve_editor_slot_debug(node: &Node, key: &str) -> Option<String> {
+        match node {
+            Node::Slot(slot) => {
+                if matches!(slot.child(), Node::CurveEditor(curve_editor) if curve_editor.key == key)
+                {
+                    Some(format!("{slot:#?}"))
+                } else {
+                    find_curve_editor_slot_debug(slot.child(), key)
+                }
+            }
+            Node::Panel(panel) => find_curve_editor_slot_debug(panel.content(), key),
+            Node::PaddingBox(padding_box) => {
+                find_curve_editor_slot_debug(padding_box.content(), key)
+            }
+            Node::AlignBox(align_box) => find_curve_editor_slot_debug(align_box.content(), key),
+            Node::AspectBox(aspect_box) => {
+                find_curve_editor_slot_debug(aspect_box.content(), key)
+            }
+            Node::Row(flex) | Node::Column(flex) => flex
+                .children()
+                .iter()
+                .find_map(|child| find_curve_editor_slot_debug(child, key)),
+            Node::Grid(grid) => grid
+                .children()
+                .iter()
+                .find_map(|child| find_curve_editor_slot_debug(child, key)),
+            Node::Stack(stack) => stack
+                .children()
+                .iter()
+                .find_map(|child| find_curve_editor_slot_debug(child, key)),
+            Node::ScrollView(scroll_view) => {
+                find_curve_editor_slot_debug(scroll_view.content(), key)
+            }
+            Node::Wrap(wrap) => wrap
+                .children()
+                .iter()
+                .find_map(|child| find_curve_editor_slot_debug(child, key)),
+            Node::SwitchLayout(switch_layout) => switch_layout
+                .cases()
+                .iter()
+                .find_map(|case_entry| find_curve_editor_slot_debug(case_entry.child(), key))
+                .or_else(|| find_curve_editor_slot_debug(switch_layout.fallback(), key)),
+            Node::TextBox(_)
+            | Node::Spacer(_)
+            | Node::Knob(_)
+            | Node::Slider(_)
+            | Node::CurveEditor(_)
+            | Node::Toggle(_)
+            | Node::Button(_)
+            | Node::Dropdown(_)
+            | Node::TabBar(_)
+            | Node::EqAttractorSurface(_)
+            | Node::Indicator(_)
+            | Node::Region(_)
             | Node::Absolute(_) => None,
         }
     }
