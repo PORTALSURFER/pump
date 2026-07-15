@@ -1,13 +1,13 @@
 # Memory
 
-- Last Updated (UTC): 2026-07-15 09:51:02 UTC
+- Last Updated (UTC): 2026-07-15 09:53:59 UTC
 - Active Mission: Add Command-held beat-grid snapping to Pump curve insertion and point dragging for OPT-1115.
-- Current Workstream: Dedicated Pump PR on `wsvasek/opt-1115-pump-hold-cmd-to-snap-curve-edits-to-the-beat-grid`. Scope: snap time only to the exact sync-aware grid shown by OPT-1111, keep gain continuous, react to Command press/release during a drag, preserve ordering/endpoints and existing segment gestures, validate both declarative and Radiant/VST3 editors, publish a ready PR, and merge under explicit user authorization. Status: implementing and validating.
+- Current Workstream: Pump PR #24 on `wsvasek/opt-1115-pump-hold-cmd-to-snap-curve-edits-to-the-beat-grid`. Scope: snap time only to the exact sync-aware grid shown by OPT-1111, keep gain continuous, react to Command press/release during a drag, preserve ordering/endpoints and existing segment gestures, validate both declarative and Radiant/VST3 editors, and merge under explicit user authorization. Status: signed off; exact-head artifact, CI, merge, and cleanup pending.
 
 ## Current State
 
 - OPT-1116 was explicitly superseded before OPT-1115 began. Its completed Shift work remains preserved on the remote branch `wsvasek/opt-1116-pump-hold-shift-to-constrain-curve-point-movement` at `562b2ba` and `7cb4c98`; Linear OPT-1116 is Backlog with the dependency-first handoff recorded.
-- OPT-1115 has no upstream blocker and is In Progress in Linear on its dedicated branch from merged Pump `main` at `c8cb2d8`.
+- OPT-1115 has no upstream blocker and is In Progress in Linear on its dedicated branch from merged Pump `main` at `c8cb2d8`. Pump PR #24 is open and ready at `https://github.com/PORTALSURFER/pump/pull/24`; the user's explicit implementation-and-merge instruction supplies sign-off.
 - One shared Pump timing helper derives snap targets from the exact minor/major grid returned by `curve_beat_grid`, adds deterministic start/end anchors, resolves exact ties toward the earlier time, and leaves unknown timing states unsnapped.
 - The declarative editor enables Command snapping per frame, uses only time-axis targets while Command alone is held, preserves the legacy Snap/S-key gain behavior, and applies the same rule through Pump's region-interaction fallback for insertion and mid-drag modifier changes.
 - The Radiant/VST3 editor snaps Command-held insertion and point-move messages before reducer mutation, records Command from the initiating point press, and switches immediately when modifier-change messages arrive during the active drag.
@@ -87,4 +87,4 @@
 
 ## Immediate Next Action
 
-- Commit and push the clean OPT-1115 branch, open the ready PR with the required validation/limitations/user-review sections, build and audit the exact-head signed VST3 artifact, verify GitHub CI, merge, clean up, and mark Linear Done.
+- Commit and push this signed-off handoff, build and audit the exact-head signed VST3 artifact, verify GitHub CI, merge PR #24, clean up, and mark Linear Done.

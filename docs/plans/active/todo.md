@@ -9,6 +9,6 @@ Ordered queue for immediate execution:
 5. [x] Add matching Radiant/VST3 insertion, point dragging, and mid-gesture Command transition behavior.
 6. [x] Cover short/long sync lengths, insertion, drag transitions, vertical continuity, boundaries, and existing Command segment precedence.
 7. [x] Pass full default CI, VST3 CI, and multi-size release screenshot validation.
-8. [ ] Commit, push, and open the OPT-1115 Pump PR ready for review.
+8. [x] Commit, push, and open OPT-1115 Pump PR #24 ready for review; explicit merge authorization supplies sign-off.
 9. [ ] Build and audit the exact-head signed `dist/pump-v0.2.0-macos.vst3` artifact.
 10. [ ] Verify GitHub CI, merge under explicit user authorization, clean branches, and mark Linear Done.
