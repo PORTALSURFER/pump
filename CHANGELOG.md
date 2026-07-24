@@ -310,6 +310,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (80e9ab8)
 
+- (changelog) Update changelog [skip ci] (0a9a7fe)
+
 
 ### Features
 
@@ -1083,6 +1085,16 @@ Remove local agent state files (3f3ae92)
 * Update toybox dependency revision
 
 * Update toybox dependency revision (3923d03)
+
+- OPT-1133 add Depth and Floor attenuation parameters (#28)
+
+* feat: add depth and floor attenuation parameters
+
+* fix: honor zero depth at silence points
+
+* fix: preserve floor text and test migration
+
+* test: fix vst3 parameter test imports (19922a6)
 
 
 ### Refactoring
