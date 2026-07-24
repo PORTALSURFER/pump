@@ -85,6 +85,18 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
         Some(-60.0)
     );
     assert_eq!(
+        super::format_plain_value_text(PARAM_FLOOR_ID, -59.6),
+        Some("-59.6 dB".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_FLOOR_ID, "-59.6 dB"),
+        Some(-59.6)
+    );
+    assert_ne!(
+        super::format_plain_value_text(PARAM_FLOOR_ID, -59.96),
+        Some("−∞".into())
+    );
+    assert_eq!(
         super::parse_plain_value_text(PARAM_DEPTH_ID, "36 dB"),
         Some(36.0)
     );

@@ -530,6 +530,15 @@ mod tests {
         })
     }
 
+    fn encoded_v3_preset_bank() -> Vec<u8> {
+        let mut payload = encoded_single_preset_bank();
+        let name_len = payload_u32(&payload, FIRST_PRESET_OFFSET) as usize;
+        let floor_offset = FIRST_PRESET_OFFSET + 4 + name_len + 8;
+        payload.drain(floor_offset..floor_offset + 4);
+        write_payload_u32(&mut payload, 4, 3);
+        payload
+    }
+
     fn temp_path(label: &str) -> PathBuf {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -595,6 +604,18 @@ mod tests {
         assert_eq!(loaded, bank);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preset_store_v3_migrates_depth_and_floor_defaults() {
+        let payload = encoded_v3_preset_bank();
+        let bank = decode_preset_bank_payload(&payload).expect("v3 preset store should decode");
+
+        assert!(!bank.presets.is_empty());
+        for preset in bank.presets {
+            assert_eq!(preset.depth_db, DEFAULT_DEPTH_DB);
+            assert_eq!(preset.floor_db, DEFAULT_FLOOR_DB);
+        }
     }
 
     #[test]

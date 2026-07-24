@@ -322,9 +322,15 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
             "{:.0} dB",
             value.clamp(MIN_DEPTH_DB as f64, MAX_DEPTH_DB as f64)
         )),
-        PARAM_FLOOR_ID => (value <= MIN_FLOOR_DB as f64)
-            .then(|| "−∞".to_string())
-            .or_else(|| Some(format!("{value:.0} dB"))),
+        PARAM_FLOOR_ID => {
+            if value <= MIN_FLOOR_DB as f64 {
+                Some("−∞".to_string())
+            } else {
+                let display_value = (value * 10.0).round() / 10.0;
+                let display_value = display_value.max(MIN_FLOOR_DB as f64 + 0.1);
+                Some(format!("{display_value:.1} dB"))
+            }
+        }
         PARAM_PHASE_OFFSET_ID => Some(format!("{:.0}%", (value * 100.0).rem_euclid(100.0))),
         PARAM_OUTPUT_GAIN_ID => Some(format!("{value:+.1} dB")),
         PARAM_SYNC_DIVISION_ID => {
