@@ -464,6 +464,32 @@ fn processor_accepts_an_omitted_deactivated_output_bus() {
 }
 
 #[test]
+fn processing_lifecycle_reset_restarts_smoothing_from_unity() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared.params.set_mix(1.0);
+    shared.params.set_smooth(1.0);
+    shared
+        .params
+        .set_curve(&[0.0; crate::curve::CURVE_TABLE_LEN]);
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+
+    let mut driven = stereo_process_fixture(48_000, 1.0);
+    assert_eq!(
+        unsafe { processor.process(&mut driven.process_data) },
+        process_ok()
+    );
+    assert!(driven.output_left[47_999] < 0.1);
+
+    assert_eq!(unsafe { processor.setProcessing(1) }, kResultOk);
+    let mut after_reset = stereo_process_fixture(1, 1.0);
+    assert_eq!(
+        unsafe { processor.process(&mut after_reset.process_data) },
+        process_ok()
+    );
+    assert!(after_reset.output_left[0] > 0.9);
+}
+
+#[test]
 fn processor_silences_instead_of_waiting_for_reentrant_runtime_access() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let _runtime_guard = processor

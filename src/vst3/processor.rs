@@ -199,6 +199,7 @@ impl IComponentTrait for PumpVst3Processor {
     }
 
     unsafe fn setActive(&self, _state: TBool) -> tresult {
+        self.runtime_handoff.publish_processing_reset();
         kResultOk
     }
 
@@ -298,6 +299,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
     }
 
     unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+        self.runtime_handoff.publish_processing_reset();
         kResultOk
     }
 
@@ -397,6 +399,9 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         let pending = self.runtime_handoff.take_pending();
         if let Some(sample_rate) = pending.sample_rate {
             runtime.set_sample_rate(sample_rate.into(), self.shared.params.as_ref());
+        }
+        if pending.processing_reset {
+            runtime.engine.reset();
         }
         if pending.state_restored {
             runtime

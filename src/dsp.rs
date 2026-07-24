@@ -373,8 +373,12 @@ impl GainSmoother {
             return target;
         }
 
-        let tau = (amount * MAX_SMOOTH_TIME_SECONDS).max(1.0 / sample_rate.max(1.0));
-        let coefficient = (-1.0 / (tau * sample_rate.max(1.0))).exp();
+        let tau = amount * MAX_SMOOTH_TIME_SECONDS;
+        let coefficient = if tau > 0.0 {
+            (-1.0 / (tau * sample_rate.max(1.0))).exp()
+        } else {
+            0.0
+        };
         let next = target + coefficient * (self.value - target);
         self.value = if next.is_finite() {
             // Flush the vanishing tail so the audio thread never carries
@@ -613,6 +617,56 @@ mod tests {
         assert!(values
             .iter()
             .all(|value| value.is_finite() && (0.0..=1.0).contains(value)));
+
+        for _ in 0..48_000 {
+            let mut left = 1.0;
+            let mut right = 1.0;
+            engine.process_sample(&mut left, &mut right, settings, transport, None);
+            values.push(left);
+        }
+        assert!(values.last().copied().unwrap_or(1.0) < 0.001);
+    }
+
+    #[test]
+    fn smooth_remains_continuous_below_one_sample_and_across_seek() {
+        let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let previous = engine.process_sample(
+            &mut 1.0,
+            &mut 1.0,
+            smoothing_settings(0.0001),
+            smoothing_transport(120.0),
+            None,
+        );
+        let near_zero = engine.process_sample(
+            &mut 1.0,
+            &mut 1.0,
+            smoothing_settings(0.00001),
+            smoothing_transport(120.0),
+            None,
+        );
+        assert!(near_zero.gain < previous.gain);
+        assert!(near_zero.gain.is_finite());
+
+        let before_seek = engine.process_sample(
+            &mut 1.0,
+            &mut 1.0,
+            smoothing_settings(1.0),
+            smoothing_transport(60.0),
+            None,
+        );
+        let after_seek = engine.process_sample(
+            &mut 1.0,
+            &mut 1.0,
+            smoothing_settings(1.0),
+            TransportState {
+                tempo_bpm: 240.0,
+                is_playing: true,
+                song_pos_beats: Some(32.0),
+            },
+            None,
+        );
+        assert!(after_seek.gain <= before_seek.gain);
+        assert!(after_seek.gain.is_finite());
     }
 
     #[test]
