@@ -100,6 +100,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
             presets: vec![PumpPreset {
                 name: DEFAULT_PRESET_NAME.to_string(),
                 is_read_only: false,
+                is_favorite: false,
                 mix,
                 depth: DEFAULT_DEPTH,
                 depth_db,
@@ -156,6 +157,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
         encode_curve(payload, &slot.curve);
     }
     payload.extend_from_slice(&(preset.trigger_mode as u32).to_le_bytes());
+    payload.push(u8::from(preset.is_favorite));
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -324,9 +326,15 @@ fn decode_preset_bank(
         } else {
             DEFAULT_TRIGGER_MODE
         };
+        let is_favorite = if version >= 9 {
+            read_u8(cursor).ok_or("invalid preset favorite flag")? != 0
+        } else {
+            false
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
+            is_favorite,
             mix,
             depth: (depth / MAX_DEPTH_DB).clamp(0.0, 1.0),
             depth_db: depth,
@@ -416,6 +424,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
         presets: vec![PumpPreset {
             name: DEFAULT_PRESET_NAME.to_string(),
             is_read_only: false,
+            is_favorite: false,
             mix: params.mix(),
             depth: params.depth(),
             depth_db: params.depth_db(),

@@ -73,6 +73,12 @@ fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
 
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 9 {
+        // Favorite metadata was added in v9, once per preset. This helper
+        // starts from the current one-preset payload and removes that byte so
+        // older-version fixtures retain their original layout.
+        payload.remove(payload.len().saturating_sub(5));
+    }
     if version < 8 {
         // Trigger mode was added in v8, once per preset and once for the active
         // top-level state. Remove those fields before emulating an old payload.

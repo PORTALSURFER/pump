@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 8;
+pub(crate) const STATE_VERSION: u32 = 9;
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
@@ -202,6 +202,8 @@ pub struct PumpPreset {
     ///
     /// Pump now treats all presets, including `Init`, as writable.
     pub is_read_only: bool,
+    /// Whether the preset is marked as a favorite in the preset browser.
+    pub is_favorite: bool,
     /// Dry/wet mix amount.
     pub mix: f32,
     /// Legacy depth field preserved for backward-compatible state payloads.
@@ -274,6 +276,7 @@ impl PumpPresetBank {
             presets: vec![PumpPreset {
                 name: DEFAULT_PRESET_NAME.to_string(),
                 is_read_only: false,
+                is_favorite: false,
                 mix: DEFAULT_MIX,
                 depth: DEFAULT_DEPTH,
                 depth_db: DEFAULT_DEPTH_DB,

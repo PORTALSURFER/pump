@@ -56,6 +56,16 @@ impl PumpGui {
                 SHORTCUT_KEY_QUICK_SLOT_NEXT,
                 ShortcutModifiers::default(),
             ),
+            ShortcutBinding::new(
+                PRESET_PREVIOUS_KEY,
+                SHORTCUT_KEY_PRESET_PREVIOUS,
+                ShortcutModifiers::default(),
+            ),
+            ShortcutBinding::new(
+                PRESET_NEXT_KEY,
+                SHORTCUT_KEY_PRESET_NEXT,
+                ShortcutModifiers::default(),
+            ),
         ]
     }
 
