@@ -181,11 +181,7 @@ impl GuiState {
         let action_button_width = (left_width / 12).max(metrics.transport_indicator_size.max(1));
         let nav_button_width = action_button_width.max(24);
         let favorite_width = action_button_width.max(28);
-        let preset_title_width = left_width
-            .saturating_sub(nav_button_width.saturating_mul(2))
-            .saturating_sub(favorite_width)
-            .saturating_sub(action_button_width.saturating_mul(3))
-            .max(1);
+        let preset_title_width = left_width.saturating_mul(44).saturating_div(100).max(1);
         let preset_selected_row_highlight = (presets.dirty || presets.warning_blink_visible)
             .then_some(theme.preset_dirty_highlight);
         let indicator_node = Node::align_box(
@@ -348,8 +344,8 @@ impl GuiState {
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let left_controls = row_slots(vec![
-            weighted_slot(preset_title, 55),
-            weighted_slot(action_buttons, 45),
+            weighted_slot(preset_title, 44),
+            weighted_slot(action_buttons, 56),
         ])
         .container_overflow(OverflowPolicy::Compress)
         .fill();

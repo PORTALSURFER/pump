@@ -2142,6 +2142,10 @@
                 },
                 ..InputState::default()
             });
+            let measured = measure_checked(&spec)
+                .expect("persistence-warning header should retain a measurable action strip");
+            assert_eq!(measured.width, WINDOW_WIDTH);
+            assert_eq!(measured.height, WINDOW_HEIGHT);
             let mut texts = Vec::new();
             collect_textbox_texts(spec.root.content(), &mut texts);
             assert!(texts.iter().any(|text| text == PRESET_WARNING_STORAGE));
