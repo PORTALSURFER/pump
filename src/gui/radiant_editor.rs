@@ -2535,7 +2535,7 @@ impl Widget for CurvePreviewWidget {
                     })
                 } else {
                     let hover = self.hover_at(bounds, position);
-                    if command_held
+                    if modifiers.command
                         && modifiers.shift
                         && !option_held
                         && hover.segment.is_none()
@@ -4584,6 +4584,31 @@ mod tests {
                 button: PointerButton::Primary,
                 modifiers: PointerModifiers {
                     command: true,
+                    ..PointerModifiers::default()
+                },
+            },
+        );
+        assert!(!matches!(
+            output.and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::PressCurveOffset { .. })
+        ));
+    }
+
+    #[test]
+    fn curve_preview_widget_shift_only_press_does_not_reuse_stale_command_hover() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_command_hover_held(true);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.72, y: 0.18 });
+
+        let output = widget.handle_input(
+            bounds,
+            WidgetInput::PointerPress {
+                position,
+                button: PointerButton::Primary,
+                modifiers: PointerModifiers {
+                    shift: true,
                     ..PointerModifiers::default()
                 },
             },
