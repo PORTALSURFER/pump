@@ -256,7 +256,7 @@ fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlo
     }
     let version =
         read_u32(&mut cursor).ok_or_else(|| "invalid curve slot store version".to_string())?;
-    if version != CURVE_SLOT_STORE_VERSION {
+    if !(1..=CURVE_SLOT_STORE_VERSION).contains(&version) {
         return Err(format!("unsupported curve slot store version `{version}`"));
     }
     let count = read_u32(&mut cursor)
@@ -427,5 +427,18 @@ mod tests {
         let error = decode_global_curve_slot_payload(&payload)
             .expect_err("missing slot flags should be rejected before iteration");
         assert_eq!(error, "invalid curve slot count byte length");
+    }
+
+    #[test]
+    fn curve_slot_decode_preserves_version_one_compatibility() {
+        let mut payload = encode_global_curve_slot_payload(&[GlobalCurveSlot {
+            curve: Some(default_editable_curve()),
+        }]);
+        payload[4..8].copy_from_slice(&1_u32.to_le_bytes());
+
+        let loaded = decode_global_curve_slot_payload(&payload)
+            .expect("version one curve slot store should decode");
+        assert_eq!(loaded[0].curve, Some(default_editable_curve()));
+        assert!(loaded[1..].iter().all(|slot| slot.curve.is_none()));
     }
 }
