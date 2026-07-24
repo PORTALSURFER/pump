@@ -316,6 +316,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (459ffd8)
 
+- (changelog) Update changelog [skip ci] (116bf0e)
+
 
 ### Features
 
@@ -1105,6 +1107,10 @@ Remove local agent state files (3f3ae92)
 - [OPT-1131] Restyle global curve slots as target carousel
 
 Preserve global curve slot persistence and interaction semantics while presenting slots as the target thumbnail carousel. (e2a7a6d)
+
+- [OPT-1127] Harden external sidechain trigger routing
+
+Approved and validated. Merge OPT-1127 sidechain trigger routing. (4ddff72)
 
 
 ### Refactoring
