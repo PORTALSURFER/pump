@@ -629,7 +629,9 @@ mod tests {
 
     #[test]
     fn smooth_remains_continuous_below_one_sample_and_across_seek() {
-        let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let ramp =
+            std::array::from_fn(|index| index as f32 / (crate::curve::CURVE_TABLE_LEN - 1) as f32);
+        let mut engine = PumpEngine::new(48_000.0, ramp);
         let previous = engine.process_sample(
             &mut 1.0,
             &mut 1.0,
@@ -654,19 +656,44 @@ mod tests {
             smoothing_transport(60.0),
             None,
         );
+        let seek_transport = TransportState {
+            tempo_bpm: 240.0,
+            is_playing: true,
+            song_pos_beats: Some(0.37),
+        };
         let after_seek = engine.process_sample(
             &mut 1.0,
             &mut 1.0,
             smoothing_settings(1.0),
-            TransportState {
-                tempo_bpm: 240.0,
-                is_playing: true,
-                song_pos_beats: Some(32.0),
-            },
+            seek_transport,
             None,
         );
-        assert!(after_seek.gain <= before_seek.gain);
+        let mut unsmoothed_reference = PumpEngine::new(48_000.0, ramp);
+        let unsmoothed_target = unsmoothed_reference
+            .process_sample(
+                &mut 1.0,
+                &mut 1.0,
+                smoothing_settings(0.0),
+                seek_transport,
+                None,
+            )
+            .gain;
+        assert!(after_seek.gain > before_seek.gain);
+        assert!(after_seek.gain < unsmoothed_target);
         assert!(after_seek.gain.is_finite());
+
+        let mut converged = after_seek.gain;
+        for _ in 0..48_000 {
+            let telemetry = engine.process_sample(
+                &mut 1.0,
+                &mut 1.0,
+                smoothing_settings(1.0),
+                seek_transport,
+                None,
+            );
+            converged = telemetry.gain;
+        }
+        assert!((converged - unsmoothed_target).abs() < 0.001);
     }
 
     #[test]
