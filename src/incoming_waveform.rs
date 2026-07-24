@@ -1,7 +1,7 @@
 //! Lock-free, cycle-aligned incoming-audio visualization snapshots.
 
 use std::array;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::time_utils::monotonic_micros;
 
@@ -17,7 +17,6 @@ pub(crate) type IncomingWaveformSnapshot = [f32; INCOMING_WAVEFORM_BIN_COUNT];
 
 /// Shared atomics written by the audio thread and sampled by the GUI thread.
 pub(crate) struct IncomingWaveformBuffer {
-    enabled: AtomicBool,
     generation: AtomicU32,
     values: [AtomicU32; INCOMING_WAVEFORM_BIN_COUNT],
     value_generations: [AtomicU32; INCOMING_WAVEFORM_BIN_COUNT],
@@ -27,7 +26,6 @@ pub(crate) struct IncomingWaveformBuffer {
 impl Default for IncomingWaveformBuffer {
     fn default() -> Self {
         Self {
-            enabled: AtomicBool::new(false),
             generation: AtomicU32::new(1),
             values: array::from_fn(|_| AtomicU32::new(0.0_f32.to_bits())),
             value_generations: array::from_fn(|_| AtomicU32::new(0)),
@@ -37,17 +35,6 @@ impl Default for IncomingWaveformBuffer {
 }
 
 impl IncomingWaveformBuffer {
-    /// Enable or disable capture, invalidating every previously published bin.
-    pub(crate) fn set_enabled(&self, enabled: bool) {
-        if self.enabled.swap(enabled, Ordering::AcqRel) != enabled {
-            self.invalidate();
-        }
-    }
-
-    pub(crate) fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Relaxed)
-    }
-
     fn generation(&self) -> u32 {
         self.generation.load(Ordering::Acquire)
     }
@@ -71,9 +58,7 @@ impl IncomingWaveformBuffer {
 
     /// Mark the source unavailable so stale data disappears immediately.
     pub(crate) fn mark_unavailable(&self) {
-        if self.is_enabled() {
-            self.invalidate();
-        }
+        self.invalidate();
     }
 
     fn publish(&self, generation: u32, bin: usize, value: f32) {
@@ -91,9 +76,6 @@ impl IncomingWaveformBuffer {
 
     /// Return a fresh non-silent snapshot, or the stable empty state.
     pub(crate) fn snapshot(&self) -> Option<IncomingWaveformSnapshot> {
-        if !self.is_enabled() {
-            return None;
-        }
         let last_update = self.last_update_micros.load(Ordering::Acquire);
         let now = monotonic_micros().max(1);
         if last_update == 0 || now.saturating_sub(last_update) > SNAPSHOT_STALE_AFTER_MICROS {
@@ -136,18 +118,13 @@ pub(crate) struct IncomingWaveformWriter {
 }
 
 impl IncomingWaveformWriter {
-    pub(crate) fn begin_block(&mut self, buffer: &IncomingWaveformBuffer) -> bool {
-        if !buffer.is_enabled() {
-            self.reset();
-            return false;
-        }
+    pub(crate) fn begin_block(&mut self, buffer: &IncomingWaveformBuffer) {
         let generation = buffer.generation();
         if self.generation != generation {
             self.reset();
             self.generation = generation;
         }
         self.block_has_signal = false;
-        true
     }
 
     #[cfg(test)]
@@ -238,10 +215,9 @@ impl<'a> IncomingWaveformCapture<'a> {
     pub(crate) fn new(
         buffer: &'a IncomingWaveformBuffer,
         writer: &'a mut IncomingWaveformWriter,
-    ) -> Option<Self> {
-        writer
-            .begin_block(buffer)
-            .then_some(Self { buffer, writer })
+    ) -> Self {
+        writer.begin_block(buffer);
+        Self { buffer, writer }
     }
 
     pub(crate) fn record(
@@ -273,19 +249,18 @@ mod tests {
     use crate::test_alloc::assert_no_alloc;
 
     #[test]
-    fn disabled_capture_has_a_stable_empty_snapshot() {
+    fn fresh_buffer_has_a_stable_empty_snapshot() {
         let buffer = IncomingWaveformBuffer::default();
         let mut writer = IncomingWaveformWriter::default();
-        assert!(!writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         assert!(buffer.snapshot().is_none());
     }
 
     #[test]
-    fn enabled_capture_maps_normalized_phase_to_fixed_bins() {
+    fn default_capture_maps_normalized_phase_to_fixed_bins() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         for step in 25..=75 {
             let phase = step as f32 / 100.0;
             let peak = match step {
@@ -305,9 +280,8 @@ mod tests {
     #[test]
     fn unavailable_and_silent_input_do_not_retain_old_signal() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         writer.record(&buffer, 0.2, 1.0, 0.0);
         writer.finish_block(&buffer);
         assert!(buffer.snapshot().is_some());
@@ -315,7 +289,7 @@ mod tests {
         buffer.mark_unavailable();
         assert!(buffer.snapshot().is_none());
 
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         writer.record(&buffer, 0.3, 0.0, 0.0);
         writer.finish_block(&buffer);
         assert!(buffer.snapshot().is_none());
@@ -324,9 +298,8 @@ mod tests {
     #[test]
     fn cycle_wrap_invalidates_unvisited_bins_from_the_previous_cycle() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         writer.record(&buffer, 0.8, 0.9, 0.0);
         writer.record(&buffer, 0.1, 0.4, 0.0);
         writer.finish_block(&buffer);
@@ -344,9 +317,8 @@ mod tests {
     #[test]
     fn smaller_backward_seek_invalidates_later_phase_bins() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         writer.record(&buffer, 0.45, 0.9, 0.0);
         writer.record(&buffer, 0.2, 0.4, 0.0);
         writer.finish_block(&buffer);
@@ -365,9 +337,8 @@ mod tests {
     #[test]
     fn insignificant_backward_noise_does_not_restart_the_generation() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         writer.record(&buffer, 0.45, 0.9, 0.0);
         writer.record(&buffer, 0.45 - BACKWARD_PHASE_EPSILON * 0.5, 0.4, 0.0);
         writer.finish_block(&buffer);
@@ -379,9 +350,8 @@ mod tests {
     #[test]
     fn large_forward_seek_invalidates_earlier_phase_bins() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         writer.record(&buffer, 0.2, 0.8, 0.0);
         writer.record(&buffer, 0.6, 0.4, 0.0);
         writer.finish_block(&buffer);
@@ -400,9 +370,8 @@ mod tests {
     #[test]
     fn ordinary_forward_progression_keeps_the_current_generation() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         writer.record(&buffer, 0.2, 0.8, 0.0);
         writer.record(&buffer, 0.21, 0.4, 0.0);
         writer.finish_block(&buffer);
@@ -415,9 +384,8 @@ mod tests {
     #[test]
     fn cycle_mapping_changes_invalidate_bins_from_the_previous_mapping() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
 
         writer.record_with_cycle_mapping(&buffer, 0.2, 1.0, 0.0, 0.9, 0.0);
         writer.record_with_cycle_mapping(&buffer, 0.2, 8.0, 0.0, 0.6, 0.0);
@@ -435,30 +403,13 @@ mod tests {
     }
 
     #[test]
-    fn disabling_invalidates_data_and_reenabling_starts_empty() {
+    fn default_audio_capture_is_allocation_free() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
-        let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
-        writer.record(&buffer, 0.5, 1.0, 0.0);
-        writer.finish_block(&buffer);
-        assert!(buffer.snapshot().is_some());
-
-        buffer.set_enabled(false);
-        assert!(buffer.snapshot().is_none());
-        buffer.set_enabled(true);
-        assert!(buffer.snapshot().is_none());
-    }
-
-    #[test]
-    fn enabled_audio_capture_is_allocation_free() {
-        let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
         let _ = monotonic_micros();
 
         assert_no_alloc(|| {
-            assert!(writer.begin_block(&buffer));
+            writer.begin_block(&buffer);
             for index in 0..512 {
                 let phase = index as f32 / 512.0;
                 writer.record(&buffer, phase, 0.5, -0.25);
@@ -470,15 +421,14 @@ mod tests {
     #[test]
     fn silent_block_does_not_refresh_a_previous_signal() {
         let buffer = IncomingWaveformBuffer::default();
-        buffer.set_enabled(true);
         let mut writer = IncomingWaveformWriter::default();
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         writer.record(&buffer, 0.2, 0.8, 0.0);
         writer.finish_block(&buffer);
         assert!(buffer.snapshot().is_some());
 
         buffer.last_update_micros.store(1, Ordering::Release);
-        assert!(writer.begin_block(&buffer));
+        writer.begin_block(&buffer);
         writer.record(&buffer, 0.3, 0.0, 0.0);
         writer.finish_block(&buffer);
 

@@ -10,8 +10,8 @@
         snap_curve_time_to_beat_grid, tension_delta_from_drag_for_segment, CurveRenderState,
         GuiState, PumpTheme,
         UiLayoutMetrics, CURVE_H, CURVE_KEY, CURVE_W, DIVISION_KEY, HEADER_EMPTY_SECTION_PERCENT,
-        GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, INCOMING_WAVEFORM_KEY,
-        METER_STROKE, METER_WIDTH, NODE_X_MIN_SPACING,
+        GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, METER_STROKE, METER_WIDTH,
+        NODE_X_MIN_SPACING,
         PRESET_DROPDOWN_KEY,
         PRESET_FAVORITE_KEY, PRESET_NEXT_KEY, PRESET_PREVIOUS_KEY,
         PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_STORAGE,
@@ -889,33 +889,12 @@
     }
 
     #[test]
-    fn incoming_waveform_toggle_controls_capture_and_empty_underlay_state() {
-        let status = Arc::new(GuiStatus::default());
-        let mut state = GuiState::new(
-            Arc::new(PumpParams::new()),
-            Arc::clone(&status),
-            Arc::new(AutomationQueue::default()),
-            None,
-        );
-        assert!(!status.incoming_waveform_enabled());
-
-        state.reduce_action(UiAction::ToggleChanged {
-            key: INCOMING_WAVEFORM_KEY.to_string(),
-            value: true,
-        });
-        assert!(status.incoming_waveform_enabled());
-
+    fn unavailable_input_keeps_the_stable_waveform_background() {
         let metrics = UiLayoutMetrics::design_space();
         let theme = PumpTheme::main(metrics);
         let commands = incoming_waveform_underlay_commands(metrics.curve_size, theme, None);
         assert_eq!(commands.len(), 1, "unavailable input should draw only the stable background");
         assert!(matches!(commands[0], SurfaceCommand::FillRect { .. }));
-
-        state.reduce_action(UiAction::ToggleChanged {
-            key: INCOMING_WAVEFORM_KEY.to_string(),
-            value: false,
-        });
-        assert!(!status.incoming_waveform_enabled());
     }
 
     #[test]
@@ -1169,6 +1148,9 @@
         }));
         assert!(!frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, radiant::runtime::PaintPrimitive::Text(text) if text.text.eq_ignore_ascii_case("pump"))
+        }));
+        assert!(!frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, radiant::runtime::PaintPrimitive::Text(text) if text.text == "Input waveform")
         }));
     }
 
@@ -1708,6 +1690,11 @@
         assert!(
             !texts.iter().any(|text| text.eq_ignore_ascii_case("pump")),
             "expected no visible pump label in {:?}",
+            texts
+        );
+        assert!(
+            !texts.iter().any(|text| text == "Wave"),
+            "expected no incoming-waveform toggle label in {:?}",
             texts
         );
     }

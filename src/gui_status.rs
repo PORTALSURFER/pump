@@ -89,16 +89,6 @@ impl GuiStatus {
         self.publish_gain_reduction(reduction_gain, true);
     }
 
-    /// Enable or disable the optional incoming-audio background visualization.
-    pub fn set_incoming_waveform_enabled(&self, enabled: bool) {
-        self.incoming_waveform.set_enabled(enabled);
-    }
-
-    /// Read whether incoming-audio visualization capture is enabled.
-    pub fn incoming_waveform_enabled(&self) -> bool {
-        self.incoming_waveform.is_enabled()
-    }
-
     /// Publish whether the host supplied the optional sidechain bus recently.
     pub(crate) fn set_sidechain_available(&self, available: bool) {
         self.sidechain_available.store(available, Ordering::Relaxed);
