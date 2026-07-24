@@ -320,6 +320,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (6e50f38)
 
+- (changelog) Update changelog [skip ci] (383fb19)
+
 
 ### Features
 
@@ -1119,6 +1121,12 @@ Approved and validated. Merge OPT-1127 sidechain trigger routing. (4ddff72)
 * feat: redesign pump preset navigation and favorites
 
 * fix: preserve preset action hit sizes in warning state (6194573)
+
+- Keep input waveform always on (e88ea64)
+
+- Merge pull request #33 from PORTALSURFER/wsvasek/opt-1291-pump-remove-the-input-waveform-toggle-and-keep-the-waveform
+
+OPT-1291: Keep the input waveform always on (ffa3201)
 
 
 ### Refactoring
