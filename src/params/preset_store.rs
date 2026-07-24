@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 6;
+const PRESET_STORE_VERSION: u32 = 7;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
@@ -273,6 +273,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
         encode_curve(payload, &slot.curve);
     }
     payload.extend_from_slice(&(preset.trigger_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&preset.smooth.to_le_bytes());
     payload.push(u8::from(preset.is_favorite));
 }
 
@@ -384,6 +385,11 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         } else {
             DEFAULT_TRIGGER_MODE
         };
+        let smooth = if version >= 7 {
+            read_f32(&mut cursor).ok_or_else(|| "invalid preset smooth".to_string())?
+        } else {
+            DEFAULT_SMOOTH
+        };
         let is_favorite = if version >= 6 {
             read_u8(&mut cursor).ok_or_else(|| "invalid preset favorite flag".to_string())? != 0
         } else {
@@ -401,6 +407,7 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
             trigger_mode: trigger_mode.min(TRIGGER_MODE_SIDECHAIN),
+            smooth,
             editable_curve,
             quick_slots,
         });
@@ -548,6 +555,7 @@ mod tests {
                 output_gain_db: 0.0,
                 sync_division: 4,
                 trigger_mode: DEFAULT_TRIGGER_MODE,
+                smooth: DEFAULT_SMOOTH,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -556,9 +564,10 @@ mod tests {
 
     fn encoded_v3_preset_bank() -> Vec<u8> {
         let mut payload = encoded_single_preset_bank();
-        // Favorite metadata was added in v6 and trigger mode in v5; remove
-        // both before emulating v3.
-        payload.remove(payload.len().saturating_sub(5));
+        // Favorite metadata was added in v6, Smooth in v7, and trigger mode
+        // in v5; remove all three before emulating v3.
+        payload.pop();
+        payload.truncate(payload.len().saturating_sub(4));
         payload.truncate(payload.len().saturating_sub(4));
         let name_len = payload_u32(&payload, FIRST_PRESET_OFFSET) as usize;
         let floor_offset = FIRST_PRESET_OFFSET + 4 + name_len + 8;
@@ -596,6 +605,7 @@ mod tests {
                     output_gain_db: 0.0,
                     sync_division: 4,
                     trigger_mode: DEFAULT_TRIGGER_MODE,
+                    smooth: DEFAULT_SMOOTH,
                     editable_curve: default_editable_curve(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -611,6 +621,7 @@ mod tests {
                     output_gain_db: -1.5,
                     sync_division: 3,
                     trigger_mode: TRIGGER_MODE_SIDECHAIN,
+                    smooth: 0.58,
                     editable_curve: EditableCurve {
                         nodes: vec![
                             CurveNode { x: 0.0, y: 1.0 },

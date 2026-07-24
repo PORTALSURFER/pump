@@ -143,6 +143,7 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         output_gain_db: params.output_gain_db(),
         beats_per_cycle: params.sync_beats_per_cycle(),
         trigger_mode: params.trigger_mode(),
+        smooth: params.smooth(),
     }
 }
 
@@ -337,7 +338,7 @@ mod tests {
     use crate::curve::CURVE_TABLE_LEN;
     use crate::params::{
         PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
-        PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_SIDECHAIN,
+        PARAM_SMOOTH_ID, PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_SIDECHAIN,
     };
 
     fn constant_curve(value: f32) -> [f32; CURVE_TABLE_LEN] {
@@ -549,6 +550,7 @@ mod tests {
         schedule.push(5, PARAM_OUTPUT_GAIN_ID, 6.0);
         schedule.push(6, PARAM_SYNC_DIVISION_ID, 6.0);
         schedule.push(7, PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_SIDECHAIN as f32);
+        schedule.push(7, PARAM_SMOOTH_ID, 0.75);
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
 
@@ -572,5 +574,6 @@ mod tests {
         assert!((settings.beats_per_cycle - 4.0).abs() < f32::EPSILON);
         schedule.apply_through(7, &params, &mut settings);
         assert_eq!(settings.trigger_mode, TRIGGER_MODE_SIDECHAIN);
+        assert!((settings.smooth - 0.75).abs() < f32::EPSILON);
     }
 }

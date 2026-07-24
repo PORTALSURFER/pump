@@ -35,7 +35,8 @@ use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
     GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
     MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
+    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, TRIGGER_MODE_LABELS,
+    TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
@@ -210,6 +211,7 @@ enum NumericEntryTarget {
     Floor,
     Phase,
     OutputGain,
+    Smooth,
 }
 
 impl NumericEntryTarget {
@@ -220,6 +222,7 @@ impl NumericEntryTarget {
             Self::Floor => PARAM_FLOOR_ID,
             Self::Phase => PARAM_PHASE_OFFSET_ID,
             Self::OutputGain => PARAM_OUTPUT_GAIN_ID,
+            Self::Smooth => PARAM_SMOOTH_ID,
         }
     }
 
@@ -230,6 +233,7 @@ impl NumericEntryTarget {
             Self::Floor => "Floor",
             Self::Phase => "Phase",
             Self::OutputGain => "Output",
+            Self::Smooth => "Smooth",
         }
     }
 
@@ -240,6 +244,7 @@ impl NumericEntryTarget {
             Self::Floor => "numeric-entry-floor",
             Self::Phase => "numeric-entry-phase",
             Self::OutputGain => "numeric-entry-output",
+            Self::Smooth => "numeric-entry-smooth",
         }
     }
 
@@ -250,6 +255,7 @@ impl NumericEntryTarget {
             Self::Floor => params.floor_db() as f64,
             Self::Phase => params.phase_offset() as f64,
             Self::OutputGain => params.output_gain_db() as f64,
+            Self::Smooth => params.smooth() as f64,
         }
     }
 }
@@ -309,6 +315,7 @@ enum RadiantEditorMessage {
     Floor(f32),
     Phase(f32),
     OutputGain(f32),
+    Smooth(f32),
     SyncDivision(f32),
     TriggerMode(f32),
     Curve(CurvePreviewMessage),
@@ -497,6 +504,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         .clone()
         .unwrap_or_else(|| params.editable_curve_snapshot());
     let output = params.output_gain_db();
+    let smooth = params.smooth();
     let depth = params.depth_db();
     let floor = params.floor_db();
     let sync = params.sync_division();
@@ -595,6 +603,13 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 normalize_output_gain(output),
                 state.numeric_entry.as_ref(),
                 RadiantEditorMessage::OutputGain,
+            ),
+            control_row(
+                NumericEntryTarget::Smooth,
+                format!("{:.0}%", smooth * 100.0),
+                smooth,
+                state.numeric_entry.as_ref(),
+                RadiantEditorMessage::Smooth,
             ),
             enum_control_row(
                 "Sync",
@@ -700,6 +715,7 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                 .params
                 .set_output_gain_db(denormalize_output_gain(value));
         }
+        RadiantEditorMessage::Smooth(value) => state.params.set_smooth(value),
         RadiantEditorMessage::SyncDivision(value) => {
             state
                 .params
@@ -866,6 +882,7 @@ fn apply_numeric_entry_value(
         NumericEntryTarget::Floor => state.params.set_floor_db(value as f32),
         NumericEntryTarget::Phase => state.params.set_phase_offset(value as f32),
         NumericEntryTarget::OutputGain => state.params.set_output_gain_db(value as f32),
+        NumericEntryTarget::Smooth => state.params.set_smooth(value as f32),
     }
 
     let param_id = target.param_id();

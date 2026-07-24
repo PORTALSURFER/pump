@@ -2,13 +2,13 @@ use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
     sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
     SavePresetOutcome, DEFAULT_FLOOR_DB, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DEPTH_ID,
-    PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, TRIGGER_MODE_SIDECHAIN,
+    PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID, TRIGGER_MODE_SIDECHAIN,
 };
 #[cfg(feature = "vst3")]
 use super::{
     clap_id_from_vst3_param_id, format_plain_value_text, parse_plain_value_text,
     vst3_param_info_for_index, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID,
-    PARAM_PHASE_OFFSET_NUM, PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
+    PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM, PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
 };
 use crate::curve::{
     cyclically_offset_editable_curve, sample_editable_curve, CurveNode, CurveSegment,
@@ -67,7 +67,7 @@ fn sync_division_clamping_is_bounded() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 7);
+    assert_eq!(super::param_count(), 8);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -100,6 +100,17 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
         Some(36.0)
     );
     assert_eq!(super::get_param_value(&params, PARAM_MIX_ID), Some(1.0));
+    assert_eq!(super::get_param_value(&params, PARAM_SMOOTH_ID), Some(0.0));
+    super::apply_param_event(&params, PARAM_SMOOTH_ID, 0.67);
+    assert!((params.smooth() - 0.67).abs() < f32::EPSILON);
+    assert_eq!(
+        super::format_plain_value_text(PARAM_SMOOTH_ID, 0.67),
+        Some("67%".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_SMOOTH_ID, "67%"),
+        Some(0.67)
+    );
     assert_eq!(
         super::get_param_value(&params, PARAM_OUTPUT_GAIN_ID),
         Some(0.0)
@@ -114,8 +125,12 @@ fn state_roundtrip_preserves_values() {
     params.set_floor_db(-18.0);
     params.set_phase_offset(0.42);
     params.set_output_gain_db(-3.0);
+    params.set_smooth(0.67);
     params.set_sync_division(6.0);
     params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
+    params
+        .save_current_state_by_name("Init")
+        .expect("preset snapshot should save");
     params.set_editable_curve(&EditableCurve {
         nodes: vec![
             CurveNode { x: 0.0, y: 1.0 },
@@ -141,8 +156,10 @@ fn state_roundtrip_preserves_values() {
     assert!((restored.depth() - 0.4).abs() < 1.0e-6);
     assert!((restored.phase_offset() - 0.42).abs() < 1.0e-6);
     assert!((restored.output_gain_db() + 3.0).abs() < 1.0e-6);
+    assert!((restored.smooth() - 0.67).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 6);
     assert_eq!(restored.trigger_mode(), TRIGGER_MODE_SIDECHAIN);
+    assert!((restored.preset_bank_snapshot().presets[0].smooth - 0.67).abs() < 1.0e-6);
     let editable = restored.editable_curve_snapshot();
     assert_eq!(editable.nodes.len(), 3);
     assert_eq!(editable.segments.len(), 2);
@@ -645,6 +662,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     output_gain_db: -1.0,
                     sync_division: 2,
                     trigger_mode: 0,
+                    smooth: 0.0,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -660,6 +678,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     output_gain_db: -2.0,
                     sync_division: 4,
                     trigger_mode: 0,
+                    smooth: 0.0,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -785,6 +804,10 @@ fn vst3_mapping_resolves_to_shared_clap_ids() {
         clap_id_from_vst3_param_id(PARAM_SYNC_DIVISION_NUM),
         Some(PARAM_SYNC_DIVISION_ID)
     );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_SMOOTH_NUM),
+        Some(PARAM_SMOOTH_ID)
+    );
     assert_eq!(clap_id_from_vst3_param_id(999), None);
 }
 
@@ -799,6 +822,10 @@ fn vst3_info_and_text_conversions_share_param_rules() {
     let division_info = vst3_param_info_for_index(3).expect("division info should exist");
     assert_eq!(division_info.id, PARAM_SYNC_DIVISION_NUM);
     assert_eq!(division_info.step_count, MAX_SYNC_DIVISION as i32);
+    let smooth_info = vst3_param_info_for_index(7).expect("smooth info should exist");
+    assert_eq!(smooth_info.id, PARAM_SMOOTH_NUM);
+    assert_eq!(smooth_info.title, "Smooth");
+    assert_eq!(smooth_info.units, "%");
 
     let mix_text = format_plain_value_text(PARAM_MIX_ID, 0.5).expect("mix text");
     assert_eq!(mix_text, "50%");

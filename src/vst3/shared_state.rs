@@ -4,11 +4,13 @@ use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 const PENDING_SAMPLE_RATE: u8 = 1 << 0;
 const PENDING_STATE_RESTORE: u8 = 1 << 1;
+const PENDING_PROCESSING_RESET: u8 = 1 << 2;
 
 #[derive(Debug, Copy, Clone)]
 pub(super) struct PendingRuntimeChanges {
     pub(super) sample_rate: Option<f32>,
     pub(super) state_restored: bool,
+    pub(super) processing_reset: bool,
 }
 
 /// Single-producer/multi-producer handoff into the audio-owned DSP runtime.
@@ -46,12 +48,18 @@ impl RuntimeHandoff {
             .fetch_or(PENDING_STATE_RESTORE, Ordering::Release);
     }
 
+    pub(super) fn publish_processing_reset(&self) {
+        self.pending
+            .fetch_or(PENDING_PROCESSING_RESET, Ordering::Release);
+    }
+
     pub(super) fn take_pending(&self) -> PendingRuntimeChanges {
         let pending = self.pending.swap(0, Ordering::AcqRel);
         PendingRuntimeChanges {
             sample_rate: (pending & PENDING_SAMPLE_RATE != 0)
                 .then(|| f32::from_bits(self.sample_rate_bits.load(Ordering::Acquire)).max(1.0)),
             state_restored: pending & PENDING_STATE_RESTORE != 0,
+            processing_reset: pending & PENDING_PROCESSING_RESET != 0,
         }
     }
 }

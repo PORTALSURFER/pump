@@ -73,10 +73,15 @@ fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
 
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 10 {
+        // Evaluated gain smoothing was added in v10, once in the active
+        // record and once per preset.
+        payload.truncate(payload.len().saturating_sub(4));
+        let smooth_start = payload.len().saturating_sub(9);
+        payload.drain(smooth_start..smooth_start + 4);
+    }
     if version < 9 {
-        // Favorite metadata was added in v9, once per preset. This helper
-        // starts from the current one-preset payload and removes that byte so
-        // older-version fixtures retain their original layout.
+        // Favorite metadata was added in v9, once per preset.
         payload.remove(payload.len().saturating_sub(5));
     }
     if version < 8 {

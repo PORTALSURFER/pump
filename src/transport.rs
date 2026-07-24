@@ -70,6 +70,7 @@ mod tests {
             output_gain_db: 0.0,
             beats_per_cycle: 4.0,
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
+            smooth: 0.0,
         };
         let transport = TransportState {
             tempo_bpm: 128.0,
@@ -91,6 +92,7 @@ mod tests {
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
+            smooth: 0.0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
