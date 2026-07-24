@@ -44,6 +44,23 @@ pub struct EditableCurve {
     pub nodes: Vec<CurveNode>,
     /// Segment settings where `segments[i]` connects `nodes[i] -> nodes[i + 1]`.
     pub segments: Vec<CurveSegment>,
+    /// Optional unwrapped source used for exact cyclic phase translation.
+    #[doc(hidden)]
+    pub phase_source: Option<Box<EditableCurve>>,
+    /// Phase offset applied to `phase_source`, in normalized cycles.
+    #[doc(hidden)]
+    pub phase_offset: f32,
+}
+
+impl Default for EditableCurve {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            segments: Vec::new(),
+            phase_source: None,
+            phase_offset: 0.0,
+        }
+    }
 }
 
 impl EditableCurve {
@@ -57,6 +74,14 @@ impl EditableCurve {
     pub fn normalize_in_place(&mut self) {
         self.nodes = normalize_nodes(&self.nodes);
         self.segments = normalize_segments(&self.segments, self.nodes.len().saturating_sub(1));
+        if let Some(source) = self.phase_source.as_mut() {
+            source.normalize_in_place();
+        }
+        self.phase_offset = if self.phase_source.is_some() {
+            self.phase_offset.rem_euclid(1.0)
+        } else {
+            0.0
+        };
     }
 }
 
@@ -130,6 +155,8 @@ pub fn cyclically_offset_editable_curve(curve: &EditableCurve, delta: f32) -> Ed
     let mut offset = EditableCurve {
         nodes,
         segments: Vec::new(),
+        phase_source: Some(Box::new(exact_phase_source(&origin))),
+        phase_offset: exact_phase_offset(&origin, delta),
     };
     for window in offset.nodes.windows(2) {
         let left = window[0].x;
@@ -223,6 +250,27 @@ fn offset_segment_tension(curve: &EditableCurve, delta: f32, left: f32, right: f
     }
 }
 
+fn exact_phase_source(curve: &EditableCurve) -> EditableCurve {
+    curve
+        .phase_source
+        .as_deref()
+        .cloned()
+        .unwrap_or_else(|| EditableCurve {
+            nodes: curve.nodes.clone(),
+            segments: curve.segments.clone(),
+            ..EditableCurve::default()
+        })
+}
+
+fn exact_phase_offset(curve: &EditableCurve, delta: f32) -> f32 {
+    (if curve.phase_source.is_some() {
+        curve.phase_offset + delta
+    } else {
+        delta
+    })
+    .rem_euclid(1.0)
+}
+
 /// Build the default editable curve used by the spline GUI.
 pub fn default_editable_curve() -> EditableCurve {
     EditableCurve {
@@ -237,6 +285,7 @@ pub fn default_editable_curve() -> EditableCurve {
             CurveSegment { tension: 0.45 },
             CurveSegment { tension: -0.1 },
         ],
+        ..EditableCurve::default()
     }
     .normalized()
 }
@@ -253,6 +302,16 @@ pub fn sample_curve(curve: &[f32; CURVE_TABLE_LEN], phase: f32) -> f32 {
 
 /// Sample the editable spline curve at normalized phase.
 pub fn sample_editable_curve(curve: &EditableCurve, phase: f32) -> f32 {
+    if let Some(source) = curve.phase_source.as_deref() {
+        let relative = (phase - curve.phase_offset).rem_euclid(1.0);
+        let relative =
+            if relative <= OFFSET_SAMPLE_EPSILON || 1.0 - relative <= OFFSET_SAMPLE_EPSILON {
+                0.0
+            } else {
+                relative
+            };
+        return sample_editable_curve(source, relative);
+    }
     if curve.nodes.len() < 2 {
         return 1.0;
     }
@@ -298,6 +357,7 @@ pub fn curve_table_to_editable(curve: &[f32; CURVE_TABLE_LEN]) -> EditableCurve 
     EditableCurve {
         segments: vec![CurveSegment { tension: 0.0 }; LEGACY_RESTORE_NODE_COUNT - 1],
         nodes,
+        ..EditableCurve::default()
     }
     .normalized()
 }
@@ -464,7 +524,7 @@ mod tests {
             let expected = sample_editable_curve(&origin, phase - delta);
             let actual = sample_editable_curve(&offset, phase);
             assert!(
-                (actual - expected).abs() < 0.025,
+                (actual - expected).abs() < 1.0e-6,
                 "phase {phase}: {actual} != {expected}"
             );
         }
@@ -490,14 +550,24 @@ mod tests {
         let delta = 0.37;
         let offset = cyclically_offset_editable_curve(&origin, delta);
         let restored = cyclically_offset_editable_curve(&offset, -delta);
+        let mut repeated = origin.clone();
+        for _ in 0..8 {
+            repeated = cyclically_offset_editable_curve(&repeated, delta);
+        }
 
         for index in 0..=400 {
             let phase = index as f32 / 400.0;
             let expected = sample_editable_curve(&origin, phase);
             let actual = sample_editable_curve(&restored, phase);
             assert!(
-                (actual - expected).abs() < 0.0005,
+                (actual - expected).abs() < 1.0e-6,
                 "phase {phase}: restored {actual} != origin {expected}"
+            );
+            let repeated_expected = sample_editable_curve(&origin, phase - delta * 8.0);
+            let repeated_actual = sample_editable_curve(&repeated, phase);
+            assert!(
+                (repeated_actual - repeated_expected).abs() < 5.0e-6,
+                "phase {phase}: repeated {repeated_actual} != expected {repeated_expected}"
             );
         }
     }
@@ -505,24 +575,37 @@ mod tests {
     #[test]
     fn cyclic_offset_preserves_a_curve_with_one_spare_seam_slot() {
         let mut origin = EditableCurve {
-            nodes: Vec::with_capacity(MAX_EDITABLE_NODES - 1),
-            segments: Vec::with_capacity(MAX_EDITABLE_NODES - 2),
+            nodes: Vec::with_capacity(MAX_EDITABLE_NODES),
+            segments: Vec::with_capacity(MAX_EDITABLE_NODES - 1),
+
+            ..EditableCurve::default()
         };
-        for index in 0..(MAX_EDITABLE_NODES - 1) {
+        for index in 0..MAX_EDITABLE_NODES {
             origin.nodes.push(CurveNode {
-                x: index as f32 / (MAX_EDITABLE_NODES - 2) as f32,
+                x: index as f32 / (MAX_EDITABLE_NODES - 1) as f32,
                 y: if index % 2 == 0 { 0.1 } else { 0.9 },
             });
-            if index + 1 < MAX_EDITABLE_NODES - 1 {
+            if index + 1 < MAX_EDITABLE_NODES {
                 origin.segments.push(CurveSegment { tension: 0.0 });
             }
         }
-        let offset = cyclically_offset_editable_curve(&origin.normalized(), 0.013);
-        assert_eq!(offset.nodes.len(), MAX_EDITABLE_NODES);
+        let origin = origin.normalized();
+        let offset = cyclically_offset_editable_curve(&origin, 0.013);
+        assert!(offset.nodes.len() <= MAX_EDITABLE_NODES);
+        assert!(offset.phase_source.is_some());
         assert!(offset
             .nodes
             .windows(2)
             .all(|window| window[1].x - window[0].x >= 1.0e-4));
+        for index in 0..=100 {
+            let phase = index as f32 / 100.0;
+            assert!(
+                (sample_editable_curve(&offset, phase)
+                    - sample_editable_curve(&origin, phase - 0.013))
+                .abs()
+                    < 1.0e-6
+            );
+        }
     }
 
     #[test]
@@ -544,6 +627,8 @@ mod tests {
                 CurveNode { x: 0.2, y: 0.4 },
             ],
             segments: vec![CurveSegment { tension: 99.0 }],
+
+            ..EditableCurve::default()
         }
         .normalized();
 
@@ -602,6 +687,8 @@ mod tests {
         let curve = EditableCurve {
             nodes,
             segments: Vec::new(),
+
+            ..EditableCurve::default()
         }
         .normalized();
         assert!(curve.nodes.len() <= MAX_EDITABLE_NODES);
@@ -616,6 +703,8 @@ mod tests {
                 CurveNode { x: 1.0, y: 0.1 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
+
+            ..EditableCurve::default()
         }
         .normalized();
 

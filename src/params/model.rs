@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 5;
+pub(crate) const STATE_VERSION: u32 = 6;
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
@@ -290,6 +290,11 @@ pub(crate) fn curve_near_eq(left: &EditableCurve, right: &EditableCurve) -> bool
     if left.nodes.len() != right.nodes.len() || left.segments.len() != right.segments.len() {
         return false;
     }
+    let phase_source_equal = match (&left.phase_source, &right.phase_source) {
+        (None, None) => true,
+        (Some(left), Some(right)) => curve_near_eq(left, right),
+        _ => false,
+    };
     left.nodes
         .iter()
         .zip(right.nodes.iter())
@@ -299,6 +304,8 @@ pub(crate) fn curve_near_eq(left: &EditableCurve, right: &EditableCurve) -> bool
             .iter()
             .zip(right.segments.iter())
             .all(|(lhs, rhs)| float_near_eq(lhs.tension, rhs.tension))
+        && phase_source_equal
+        && float_near_eq(left.phase_offset, right.phase_offset)
 }
 
 /// Shared atomic parameter/state storage across threads.

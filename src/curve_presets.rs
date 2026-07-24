@@ -53,6 +53,7 @@ fn curve(nodes: &[(f32, f32)], tensions: &[f32]) -> EditableCurve {
             .copied()
             .map(|tension| CurveSegment { tension })
             .collect(),
+        ..EditableCurve::default()
     }
     .normalized()
 }

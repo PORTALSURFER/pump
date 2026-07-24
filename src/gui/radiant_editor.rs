@@ -974,7 +974,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         CurvePreviewMessage::ReleaseCurveOffset { delta } => {
             if let Some(drag) = state.active_curve_offset.take() {
                 let curve = cyclically_offset_editable_curve(&drag.origin_curve, delta);
-                state.params.set_editable_curve(&curve);
+                state.params.set_editable_curve_preserving_phase(&curve);
             }
             state.preview_curve_offset = None;
             state.active_curve_node = None;
@@ -3140,6 +3140,8 @@ mod tests {
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -3357,6 +3359,8 @@ mod tests {
                 CurveNode { x: 1.0, y: 0.8 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }; 4],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -3490,6 +3494,8 @@ mod tests {
                 CurveNode { x: 1.0, y: 0.8 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }; 4],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -3571,6 +3577,8 @@ mod tests {
                 CurveNode { x: 1.0, y: 0.8 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }; 4],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -3700,6 +3708,8 @@ mod tests {
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -3750,6 +3760,8 @@ mod tests {
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -3795,6 +3807,8 @@ mod tests {
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -3838,6 +3852,8 @@ mod tests {
                 CurveSegment { tension: 0.35 },
                 CurveSegment { tension: -0.05 },
             ],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -3893,6 +3909,8 @@ mod tests {
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -3931,6 +3949,8 @@ mod tests {
                 CurveNode { x: 1.0, y: 1.0 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -4064,6 +4084,8 @@ mod tests {
                 CurveNode { x: 1.0, y: 0.2 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -4127,6 +4149,8 @@ mod tests {
                 CurveNode { x: 1.0, y: 0.2 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }; 4],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);
@@ -4719,6 +4743,8 @@ mod tests {
                 CurveNode { x: 1.0, y: 0.8 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }; 3],
+
+            ..EditableCurve::default()
         }
         .normalized();
         params.set_editable_curve(&curve);

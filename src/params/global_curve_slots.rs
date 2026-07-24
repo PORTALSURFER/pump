@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const CURVE_SLOT_STORE_MAGIC: &[u8; 4] = b"PCSL";
-const CURVE_SLOT_STORE_VERSION: u32 = 1;
+const CURVE_SLOT_STORE_VERSION: u32 = 2;
+const PHASE_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"PHAS");
 const CURVE_SLOT_STORE_PATH_ENV: &str = "PUMP_GLOBAL_CURVE_SLOTS_PATH";
 const CURVE_SLOT_STORE_FILE_NAME: &str = "curve-slots.bin";
 
@@ -225,6 +226,25 @@ fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
     {
         payload.extend_from_slice(&segment.tension.to_le_bytes());
     }
+    encode_phase_metadata(payload, &normalized_curve);
+}
+
+fn encode_phase_metadata(payload: &mut Vec<u8>, curve: &EditableCurve) {
+    let Some(source) = curve.phase_source.as_deref() else {
+        return;
+    };
+    payload.extend_from_slice(&PHASE_METADATA_MAGIC.to_le_bytes());
+    payload.extend_from_slice(&curve.phase_offset.to_le_bytes());
+    let source = source.clone().normalized();
+    let node_count = source.nodes.len().min(MAX_EDITABLE_NODES);
+    payload.extend_from_slice(&(node_count as u32).to_le_bytes());
+    for node in source.nodes.iter().take(node_count) {
+        payload.extend_from_slice(&node.x.to_le_bytes());
+        payload.extend_from_slice(&node.y.to_le_bytes());
+    }
+    for segment in source.segments.iter().take(node_count.saturating_sub(1)) {
+        payload.extend_from_slice(&segment.tension.to_le_bytes());
+    }
 }
 
 fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlot>, String> {
@@ -257,7 +277,7 @@ fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlo
                 let node_count = read_u32(&mut cursor)
                     .map(|value| value as usize)
                     .ok_or_else(|| "invalid curve slot node count".to_string())?;
-                Some(decode_curve(&mut cursor, node_count)?)
+                Some(decode_curve(&mut cursor, node_count, version >= 2)?)
             }
             _ => return Err("invalid curve slot occupancy flag".to_string()),
         };
@@ -269,7 +289,11 @@ fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlo
     Ok(normalize_global_curve_slots(slots))
 }
 
-fn decode_curve(cursor: &mut Cursor<&[u8]>, node_count: usize) -> Result<EditableCurve, String> {
+fn decode_curve(
+    cursor: &mut Cursor<&[u8]>,
+    node_count: usize,
+    with_phase_metadata: bool,
+) -> Result<EditableCurve, String> {
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds".to_string());
     }
@@ -288,7 +312,26 @@ fn decode_curve(cursor: &mut Cursor<&[u8]>, node_count: usize) -> Result<Editabl
         let tension = read_f32(cursor).ok_or_else(|| "invalid curve segment".to_string())?;
         segments.push(CurveSegment { tension });
     }
-    Ok(EditableCurve { nodes, segments }.normalized())
+    let mut curve = EditableCurve {
+        nodes,
+        segments,
+        ..EditableCurve::default()
+    };
+    if with_phase_metadata {
+        let marker_position = cursor.position();
+        let marker = read_u32(cursor).unwrap_or_default();
+        if marker == PHASE_METADATA_MAGIC {
+            curve.phase_offset =
+                read_f32(cursor).ok_or_else(|| "invalid phase offset".to_string())?;
+            let source_count = read_u32(cursor)
+                .map(|value| value as usize)
+                .ok_or_else(|| "invalid phase source node count".to_string())?;
+            curve.phase_source = Some(Box::new(decode_curve(cursor, source_count, false)?));
+        } else {
+            cursor.set_position(marker_position);
+        }
+    }
+    Ok(curve.normalized())
 }
 
 fn read_f32(cursor: &mut Cursor<&[u8]>) -> Option<f32> {
