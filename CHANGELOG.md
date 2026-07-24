@@ -322,6 +322,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (383fb19)
 
+- (changelog) Update changelog [skip ci] (6befe1b)
+
 
 ### Features
 
@@ -334,6 +336,8 @@ All notable changes to this project are documented in this file.
 - (gui) Add curve dB reference guides (4c6b000)
 
 - Add external sidechain triggering to Pump (#30) (fd6c4ce)
+
+- (pump) Add host-automatable Smooth parameter (#34) (64b9cf0)
 
 
 ### Other
