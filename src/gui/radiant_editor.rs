@@ -48,9 +48,14 @@ const GAIN_REDUCTION_METER_WIDTH: f32 = 34.0;
 const GAIN_REDUCTION_METER_BAR_WIDTH: f32 = 8.0;
 const CURVE_SLOT_ROW_HEIGHT: f32 = 22.0;
 const CURVE_SLOT_SPACING: f32 = 4.0;
+const CURVE_SLOT_VISIBLE_COUNT: usize = 6;
+const CURVE_SLOT_NAV_WIDTH: f32 = 20.0;
+const CURVE_SLOT_CORAL: Rgba8 = Rgba8::new(255, 128, 128, 255);
+const CURVE_SLOT_CORAL_SOFT: Rgba8 = Rgba8::new(255, 128, 128, 96);
 const CURVE_SLOT_WIDTH: f32 = ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0)
-    - CURVE_SLOT_SPACING * ((GLOBAL_CURVE_SLOT_COUNT - 1) as f32))
-    / GLOBAL_CURVE_SLOT_COUNT as f32;
+    - CURVE_SLOT_NAV_WIDTH
+    - CURVE_SLOT_SPACING * CURVE_SLOT_VISIBLE_COUNT as f32)
+    / CURVE_SLOT_VISIBLE_COUNT as f32;
 const CONTROL_ROW_HEIGHT: f32 = 22.0;
 const CONTROL_LABEL_WIDTH: f32 = 54.0;
 const CONTROL_VALUE_WIDTH: f32 = 60.0;
@@ -294,6 +299,7 @@ struct RadiantEditorState {
     command_hover_held: bool,
     shift_hover_held: bool,
     loaded_global_curve_slot: Option<usize>,
+    curve_slot_scroll_offset: usize,
     numeric_entry: Option<NumericEntryState>,
 }
 
@@ -480,6 +486,7 @@ impl RadiantEditorState {
             command_hover_held: false,
             shift_hover_held: false,
             loaded_global_curve_slot: None,
+            curve_slot_scroll_offset: 0,
             numeric_entry: None,
         }
     }
@@ -707,8 +714,11 @@ fn curve_slot_row(state: &RadiantEditorState) -> ViewNode<RadiantEditorMessage> 
     let loaded_slot = state.loaded_global_curve_slot;
     let deviated_slot =
         loaded_slot.filter(|index| state.params.current_curve_deviates_from_global_slot(*index));
-    let slot_nodes: [ViewNode<RadiantEditorMessage>; GLOBAL_CURVE_SLOT_COUNT] =
-        std::array::from_fn(|index| {
+    let max_offset = curve_slot_scroll_max();
+    let offset = state.curve_slot_scroll_offset.min(max_offset);
+    let visible_end = (offset + CURVE_SLOT_VISIBLE_COUNT).min(GLOBAL_CURVE_SLOT_COUNT);
+    let mut slot_nodes: Vec<ViewNode<RadiantEditorMessage>> = (offset..visible_end)
+        .map(|index| {
             let curve = slots.get(index).and_then(|slot| slot.curve.clone());
             custom_widget_mapped(
                 CurveSlotWidget::new(
@@ -721,15 +731,44 @@ fn curve_slot_row(state: &RadiantEditorState) -> ViewNode<RadiantEditorMessage> 
             )
             .width(CURVE_SLOT_WIDTH)
             .height(CURVE_SLOT_ROW_HEIGHT)
-        });
+        })
+        .collect();
+    if max_offset > 0 {
+        slot_nodes.push(
+            custom_widget_mapped(
+                CurveSlotNavigationWidget::new(if offset == 0 { 1 } else { -1 }),
+                RadiantEditorMessage::CurveSlot,
+            )
+            .width(CURVE_SLOT_NAV_WIDTH)
+            .height(CURVE_SLOT_ROW_HEIGHT),
+        );
+    }
     row(slot_nodes)
         .spacing(CURVE_SLOT_SPACING)
         .fill_width()
         .height(CURVE_SLOT_ROW_HEIGHT)
 }
 
+fn curve_slot_scroll_max() -> usize {
+    GLOBAL_CURVE_SLOT_COUNT.saturating_sub(CURVE_SLOT_VISIBLE_COUNT)
+}
+
+fn ensure_curve_slot_visible(state: &mut RadiantEditorState, index: usize) {
+    if index < state.curve_slot_scroll_offset {
+        state.curve_slot_scroll_offset = index;
+    } else if index >= state.curve_slot_scroll_offset + CURVE_SLOT_VISIBLE_COUNT {
+        state.curve_slot_scroll_offset = index + 1 - CURVE_SLOT_VISIBLE_COUNT;
+    }
+    state.curve_slot_scroll_offset = state.curve_slot_scroll_offset.min(curve_slot_scroll_max());
+}
+
 fn reduce_curve_slot_message(state: &mut RadiantEditorState, message: CurveSlotMessage) {
     match message {
+        CurveSlotMessage::Navigate { delta } => {
+            let max_offset = curve_slot_scroll_max();
+            state.curve_slot_scroll_offset =
+                (state.curve_slot_scroll_offset as i8 + delta).clamp(0, max_offset as i8) as usize;
+        }
         CurveSlotMessage::Load { index } => {
             let Some(curve) = state.params.global_curve_slot_curve(index) else {
                 return;
@@ -741,11 +780,13 @@ fn reduce_curve_slot_message(state: &mut RadiantEditorState, message: CurveSlotM
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
             state.loaded_global_curve_slot = Some(index);
+            ensure_curve_slot_visible(state, index);
         }
         CurveSlotMessage::Store { index } => {
             let curve = state.params.editable_curve_snapshot();
             if state.params.set_global_curve_slot_curve(index, &curve) {
                 state.loaded_global_curve_slot = Some(index);
+                ensure_curve_slot_visible(state, index);
             }
         }
     }
@@ -1679,18 +1720,20 @@ struct CurveSlotWidget {
     curve: Option<EditableCurve>,
     loaded: bool,
     deviated: bool,
+    command_hovered: bool,
 }
 
 impl CurveSlotWidget {
     fn new(index: usize, curve: Option<EditableCurve>, loaded: bool, deviated: bool) -> Self {
         Self {
             common: WidgetCommon::fixed(0, CURVE_SLOT_WIDTH.max(1.0), CURVE_SLOT_ROW_HEIGHT)
-                .with_pointer_focus()
+                .with_keyboard_focus()
                 .without_default_chrome(),
             index,
             curve: curve.map(|curve| curve.normalized()),
             loaded,
             deviated,
+            command_hovered: false,
         }
     }
 
@@ -1740,6 +1783,10 @@ impl Widget for CurveSlotWidget {
                 self.common.state.hovered = bounds.contains(position);
                 None
             }
+            WidgetInput::PointerModifiersChanged { modifiers } => {
+                self.command_hovered = modifiers.command;
+                None
+            }
             WidgetInput::PointerPress {
                 position,
                 button: PointerButton::Primary,
@@ -1747,19 +1794,51 @@ impl Widget for CurveSlotWidget {
             } if bounds.contains(position) => {
                 self.common.state.focused = true;
                 self.common.state.hovered = true;
+                self.common.state.pressed = true;
+                self.command_hovered = modifiers.command;
                 if modifiers.command {
                     Some(CurveSlotMessage::Store { index: self.index })
                 } else {
                     Some(CurveSlotMessage::Load { index: self.index })
                 }
             }
+            WidgetInput::PointerRelease { .. } | WidgetInput::PointerDrop { .. } => {
+                self.common.state.pressed = false;
+                None
+            }
             WidgetInput::FocusChanged(focused) => {
                 self.common.state.focused = focused;
                 None
             }
+            WidgetInput::Wheel { delta, .. } => Some(CurveSlotMessage::Navigate {
+                delta: if delta.y < 0.0 { 1 } else { -1 },
+            }),
+            WidgetInput::KeyPress(key) if self.common.state.focused => match key {
+                WidgetKey::ArrowLeft | WidgetKey::Home => {
+                    Some(CurveSlotMessage::Navigate { delta: -1 })
+                }
+                WidgetKey::ArrowRight | WidgetKey::End => {
+                    Some(CurveSlotMessage::Navigate { delta: 1 })
+                }
+                _ => None,
+            },
             _ => None,
         }?;
         Some(WidgetOutput::typed(message))
+    }
+
+    fn accepts_wheel_input(&self) -> bool {
+        true
+    }
+
+    fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
+        let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        self.common.state.hovered = previous.common.state.hovered;
+        self.common.state.pressed = previous.common.state.pressed;
+        self.common.state.focused = previous.common.state.focused;
+        self.command_hovered = previous.command_hovered;
     }
 
     fn append_paint(
@@ -1770,8 +1849,11 @@ impl Widget for CurveSlotWidget {
         theme: &ThemeTokens,
     ) {
         let hovered = self.common.state.hovered;
+        let pressed = self.common.state.pressed;
         let fill = if self.deviated {
             theme.accent_danger
+        } else if pressed {
+            CURVE_SLOT_CORAL_SOFT
         } else if self.loaded {
             theme.surface_raised
         } else if hovered {
@@ -1781,15 +1863,13 @@ impl Widget for CurveSlotWidget {
         };
         let outline = if self.deviated {
             theme.accent_danger
-        } else if hovered || self.loaded {
-            theme.accent_warning
+        } else if self.loaded || hovered || pressed {
+            CURVE_SLOT_CORAL
         } else {
             theme.border
         };
-        let curve_color = if self.deviated {
-            theme.text_primary
-        } else if self.curve.is_some() {
-            theme.accent_mint
+        let curve_color = if self.deviated || self.curve.is_some() {
+            CURVE_SLOT_CORAL
         } else {
             theme.text_muted
         };
@@ -1804,16 +1884,45 @@ impl Widget for CurveSlotWidget {
             color: outline,
             width: 1.0,
         }));
+        if self.loaded {
+            primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+                widget_id: self.common.id,
+                rect: bounds.inset(2.0, 2.0, 2.0, 2.0),
+                color: CURVE_SLOT_CORAL,
+                width: 1.0,
+            }));
+        }
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
             points: self.sample_points(bounds),
             color: curve_color,
-            width: if hovered || self.loaded || self.deviated {
+            width: if hovered || pressed || self.loaded || self.deviated {
                 2.0
             } else {
                 1.0
             },
         }));
+        if self.command_hovered {
+            let center = Point::new(bounds.max.x - 5.0, bounds.min.y + 5.0);
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from([
+                    Point::new(center.x - 2.0, center.y),
+                    Point::new(center.x + 2.0, center.y),
+                ]),
+                color: CURVE_SLOT_CORAL,
+                width: 1.0,
+            }));
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from([
+                    Point::new(center.x, center.y - 2.0),
+                    Point::new(center.x, center.y + 2.0),
+                ]),
+                color: CURVE_SLOT_CORAL,
+                width: 1.0,
+            }));
+        }
     }
 
     fn automation_label(&self) -> Option<String> {
@@ -1825,6 +1934,142 @@ impl Widget for CurveSlotWidget {
 enum CurveSlotMessage {
     Load { index: usize },
     Store { index: usize },
+    Navigate { delta: i8 },
+}
+
+#[derive(Clone)]
+struct CurveSlotNavigationWidget {
+    common: WidgetCommon,
+    direction: i8,
+}
+
+impl CurveSlotNavigationWidget {
+    fn new(direction: i8) -> Self {
+        Self {
+            common: WidgetCommon::fixed(0, CURVE_SLOT_NAV_WIDTH, CURVE_SLOT_ROW_HEIGHT)
+                .with_keyboard_focus()
+                .without_default_chrome(),
+            direction,
+        }
+    }
+}
+
+impl Widget for CurveSlotNavigationWidget {
+    fn common(&self) -> &WidgetCommon {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        &mut self.common
+    }
+
+    fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        let message = match input {
+            WidgetInput::PointerMove { position } => {
+                self.common.state.hovered = bounds.contains(position);
+                None
+            }
+            WidgetInput::PointerPress {
+                position,
+                button: PointerButton::Primary,
+                ..
+            } if bounds.contains(position) => {
+                self.common.state.focused = true;
+                self.common.state.hovered = true;
+                self.common.state.pressed = true;
+                Some(CurveSlotMessage::Navigate {
+                    delta: self.direction * CURVE_SLOT_VISIBLE_COUNT as i8,
+                })
+            }
+            WidgetInput::PointerRelease { .. } | WidgetInput::PointerDrop { .. } => {
+                self.common.state.pressed = false;
+                None
+            }
+            WidgetInput::Wheel { delta, .. } => Some(CurveSlotMessage::Navigate {
+                delta: if delta.y < 0.0 { 1 } else { -1 },
+            }),
+            WidgetInput::FocusChanged(focused) => {
+                self.common.state.focused = focused;
+                None
+            }
+            WidgetInput::KeyPress(key) if self.common.state.focused => match key {
+                WidgetKey::ArrowLeft | WidgetKey::Home => {
+                    Some(CurveSlotMessage::Navigate { delta: -1 })
+                }
+                WidgetKey::ArrowRight | WidgetKey::End => {
+                    Some(CurveSlotMessage::Navigate { delta: 1 })
+                }
+                _ => None,
+            },
+            _ => None,
+        }?;
+        Some(WidgetOutput::typed(message))
+    }
+
+    fn accepts_wheel_input(&self) -> bool {
+        true
+    }
+
+    fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
+        let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        self.common.state.hovered = previous.common.state.hovered;
+        self.common.state.pressed = previous.common.state.pressed;
+        self.common.state.focused = previous.common.state.focused;
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        let fill = if self.common.state.pressed {
+            CURVE_SLOT_CORAL_SOFT
+        } else if self.common.state.hovered || self.common.state.focused {
+            theme.bg_secondary
+        } else {
+            theme.bg_primary
+        };
+        let outline = if self.common.state.hovered
+            || self.common.state.focused
+            || self.common.state.pressed
+        {
+            CURVE_SLOT_CORAL
+        } else {
+            theme.border
+        };
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.common.id,
+            rect: bounds,
+            color: fill,
+        }));
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.common.id,
+            rect: bounds,
+            color: outline,
+            width: 1.0,
+        }));
+        let center = Point::new(
+            bounds.min.x + bounds.width() * 0.5,
+            bounds.min.y + bounds.height() * 0.5,
+        );
+        let direction = self.direction as f32;
+        let base_x = center.x - direction * 3.0;
+        let tip_x = center.x + direction * 4.0;
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: Arc::from([
+                Point::new(base_x, center.y - 5.0),
+                Point::new(tip_x, center.y),
+                Point::new(base_x, center.y + 5.0),
+            ]),
+            color: CURVE_SLOT_CORAL,
+            width: 1.5,
+        }));
+    }
 }
 
 #[derive(Clone)]
@@ -2921,6 +3166,46 @@ mod tests {
             store.typed_copied(),
             Some(CurveSlotMessage::Store { index: 3 })
         );
+        widget.handle_input(
+            bounds,
+            WidgetInput::PointerRelease {
+                position: Point::new(10.0, 10.0),
+                button: PointerButton::Primary,
+                modifiers: PointerModifiers::default(),
+            },
+        );
+        assert!(!widget.common.state.pressed);
+    }
+
+    #[test]
+    fn curve_slot_widget_wheel_and_keyboard_navigation_emit_bounded_moves() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, 48.0, CURVE_SLOT_ROW_HEIGHT);
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget = CurveSlotWidget::new(3, Some(curve), false, false);
+
+        let wheel = widget
+            .handle_input(
+                bounds,
+                WidgetInput::Wheel {
+                    position: Point::new(10.0, 10.0),
+                    delta: Vector2::new(0.0, -1.0),
+                    modifiers: PointerModifiers::default(),
+                },
+            )
+            .expect("slot wheel should navigate the carousel");
+        assert_eq!(
+            wheel.typed_copied(),
+            Some(CurveSlotMessage::Navigate { delta: 1 })
+        );
+
+        widget.handle_input(bounds, WidgetInput::FocusChanged(true));
+        let key = widget
+            .handle_input(bounds, WidgetInput::KeyPress(WidgetKey::ArrowLeft))
+            .expect("focused slot should accept horizontal keyboard navigation");
+        assert_eq!(
+            key.typed_copied(),
+            Some(CurveSlotMessage::Navigate { delta: -1 })
+        );
     }
 
     #[test]
@@ -2945,6 +3230,27 @@ mod tests {
                 PaintPrimitive::StrokeRect(stroke) if stroke.color == theme.accent_danger
             )
         }));
+    }
+
+    #[test]
+    fn curve_slot_navigation_pages_and_reverses_the_visible_window() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(params);
+
+        assert_eq!(state.curve_slot_scroll_offset, 0);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::CurveSlot(CurveSlotMessage::Navigate {
+                delta: CURVE_SLOT_VISIBLE_COUNT as i8,
+            }),
+        );
+        assert_eq!(state.curve_slot_scroll_offset, curve_slot_scroll_max());
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::CurveSlot(CurveSlotMessage::Navigate { delta: -1 }),
+        );
+        assert_eq!(state.curve_slot_scroll_offset, curve_slot_scroll_max() - 1);
     }
 
     #[test]
