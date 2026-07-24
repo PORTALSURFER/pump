@@ -136,6 +136,86 @@ fn processor_keeps_main_audio_when_optional_sidechain_bus_is_inactive() {
 }
 
 #[test]
+fn processor_honors_optional_sidechain_bus_activation_state() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared
+        .params
+        .set_trigger_mode(crate::params::TRIGGER_MODE_SIDECHAIN as f32);
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(32, 9.0);
+    let mut sidechain_left = vec![0.0; 32];
+    let mut sidechain_right = vec![0.0; 32];
+    sidechain_right[0] = 0.5;
+    let mut sidechain_channel_buffers =
+        vec![sidechain_left.as_mut_ptr(), sidechain_right.as_mut_ptr()];
+    fixture._input_buses.push(AudioBusBuffers {
+        numChannels: 2,
+        silenceFlags: 0,
+        __field0: AudioBusBuffers__type0 {
+            channelBuffers32: sidechain_channel_buffers.as_mut_ptr(),
+        },
+    });
+    fixture.process_data.numInputs = 2;
+    fixture.process_data.inputs = fixture._input_buses.as_mut_ptr();
+
+    assert_eq!(
+        unsafe {
+            processor.activateBus(
+                MediaTypes_::kAudio as MediaType,
+                BusDirections_::kInput as BusDirection,
+                0,
+                1,
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(
+        unsafe {
+            processor.activateBus(
+                MediaTypes_::kAudio as MediaType,
+                BusDirections_::kOutput as BusDirection,
+                0,
+                1,
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(
+        unsafe {
+            processor.activateBus(
+                MediaTypes_::kAudio as MediaType,
+                BusDirections_::kInput as BusDirection,
+                1,
+                1,
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(shared.status.sidechain_available());
+
+    assert_eq!(
+        unsafe {
+            processor.activateBus(
+                MediaTypes_::kAudio as MediaType,
+                BusDirections_::kInput as BusDirection,
+                1,
+                0,
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(!shared.status.sidechain_available());
+}
+
+#[test]
 fn controller_creates_editor_view_for_host_editor_request() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let view = unsafe { controller.createView(ViewType::kEditor) };

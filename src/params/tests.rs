@@ -240,10 +240,12 @@ fn legacy_payload_still_decodes() {
     }
 
     let restored = PumpParams::new();
+    restored.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
     decode_state_payload(&restored, &legacy).expect("legacy state should decode");
     assert!((restored.mix() - 0.4).abs() < 1.0e-6);
     assert!((restored.depth() - 1.0).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 4);
+    assert_eq!(restored.trigger_mode(), super::DEFAULT_TRIGGER_MODE);
     let editable = restored.editable_curve_snapshot();
     assert!(editable.nodes.len() >= 2);
     assert_eq!(editable.segments.len(), editable.nodes.len() - 1);

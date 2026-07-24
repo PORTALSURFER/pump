@@ -394,7 +394,7 @@ impl PumpAudioProcessor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::PARAM_MIX_ID;
+    use crate::params::{PARAM_MIX_ID, TRIGGER_MODE_SIDECHAIN};
     use crate::test_alloc::assert_no_alloc;
     use toybox::clack_plugin::events::event_types::ParamValueEvent;
     use toybox::clack_plugin::events::io::{OutputEventBuffer, TryPushError};
@@ -501,6 +501,34 @@ mod tests {
         for (left, right) in left_output.iter().zip(right_output) {
             assert!((right + 2.0 * left).abs() < 1.0e-6);
         }
+    }
+
+    #[test]
+    fn sidechain_processing_uses_preallocated_audio_thread_storage() {
+        const FRAMES: usize = 128;
+        let shared = shared();
+        shared
+            .params
+            .set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
+        let mut processor = processor(&shared, FRAMES as u32);
+        processor.param_schedule.begin_block(FRAMES);
+        processor.scratch_sidechain_right[0] = 0.5;
+        let mut settings = dsp_settings_from_params(shared.params.as_ref());
+        let mut left = [1.0; FRAMES];
+        let mut right = [1.0; FRAMES];
+
+        assert_no_alloc(|| {
+            assert!(processor.process_stereo_pair(
+                ChannelPair::InPlace(&mut left),
+                ChannelPair::InPlace(&mut right),
+                &mut settings,
+                TransportState::default(),
+                true,
+            ));
+        });
+
+        assert!(left.iter().all(|sample| sample.is_finite()));
+        assert!(right.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]

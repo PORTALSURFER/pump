@@ -101,7 +101,7 @@ fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
             let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
             payload.truncate(quick_slot_offset);
         }
-        5 => {}
+        5..=7 => {}
         _ => panic!("unsupported test state version"),
     }
     payload
@@ -115,6 +115,21 @@ fn sample_params() -> PumpParams {
     params.set_output_gain_db(-3.5);
     params.set_sync_division(6.0);
     params
+}
+
+#[test]
+fn decode_v7_state_migrates_trigger_mode_to_host() {
+    let params = sample_params();
+    params.set_trigger_mode(super::TRIGGER_MODE_SIDECHAIN as f32);
+    let payload = payload_for_state_version(&params, 7);
+
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("v7 state should decode");
+    assert_eq!(restored.trigger_mode(), super::DEFAULT_TRIGGER_MODE);
+    assert_eq!(
+        restored.preset_bank_snapshot().presets[0].trigger_mode,
+        super::DEFAULT_TRIGGER_MODE
+    );
 }
 
 #[test]

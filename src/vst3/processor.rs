@@ -68,6 +68,7 @@ pub(super) struct PumpVst3Processor {
     shared: Arc<PumpVst3Shared>,
     pub(super) runtime: RealtimeRuntime,
     pub(super) runtime_handoff: RuntimeHandoff,
+    sidechain_bus_active: AtomicBool,
 }
 
 impl PumpVst3Processor {
@@ -75,6 +76,7 @@ impl PumpVst3Processor {
         Self {
             runtime: RealtimeRuntime::new(PumpVst3Runtime::new(shared.params.as_ref())),
             runtime_handoff: RuntimeHandoff::new(),
+            sidechain_bus_active: AtomicBool::new(false),
             shared,
         }
     }
@@ -175,11 +177,24 @@ impl IComponentTrait for PumpVst3Processor {
 
     unsafe fn activateBus(
         &self,
-        _media_type: MediaType,
-        _dir: BusDirection,
-        _index: i32,
-        _state: TBool,
+        media_type: MediaType,
+        dir: BusDirection,
+        index: i32,
+        state: TBool,
     ) -> tresult {
+        if media_type as MediaTypes != MediaTypes_::kAudio {
+            return kInvalidArgument;
+        }
+        match dir as BusDirections {
+            BusDirections_::kInput if (0..2).contains(&index) => {
+                if index == 1 {
+                    self.sidechain_bus_active
+                        .store(state != 0, Ordering::Release);
+                }
+            }
+            BusDirections_::kOutput if index == 0 => {}
+            _ => return kInvalidArgument,
+        }
         kResultOk
     }
 
@@ -293,6 +308,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         let process_data = unsafe { &*data };
+        let sidechain_bus_active = self.sidechain_bus_active.load(Ordering::Acquire);
         let frame_count = process_data.numSamples.max(0) as usize;
         let Some(mut runtime) = self.runtime.try_acquire() else {
             self.shared.status.mark_gain_reduction_inactive();
@@ -310,7 +326,8 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             {
                 return kInvalidArgument;
             }
-            let Some((buffers, _sidechain)) = (unsafe { raw_stereo_f32_buffers(process_data) })
+            let Some((buffers, _sidechain)) =
+                (unsafe { raw_stereo_f32_buffers(process_data, sidechain_bus_active) })
             else {
                 return unsafe { silence_valid_stereo_output(process_data) };
             };
@@ -357,7 +374,9 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             return kInvalidArgument;
         }
 
-        let Some((buffers, sidechain)) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
+        let Some((buffers, sidechain)) =
+            (unsafe { raw_stereo_f32_buffers(process_data, sidechain_bus_active) })
+        else {
             self.shared.status.mark_gain_reduction_inactive();
             self.shared.status.set_sidechain_available(false);
             self.shared
@@ -457,6 +476,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 /// in-place input/output channel aliases never become overlapping Rust slices.
 unsafe fn raw_stereo_f32_buffers(
     data: &ProcessData,
+    sidechain_bus_active: bool,
 ) -> Option<(RawStereoBlock, Option<RawSidechainBlock>)> {
     if !(data.numInputs == 1 || data.numInputs == 2)
         || data.numOutputs != 1
@@ -492,7 +512,7 @@ unsafe fn raw_stereo_f32_buffers(
         output_left: output_channels[0],
         output_right: output_channels[1],
     };
-    let sidechain = if data.numInputs == 2 {
+    let sidechain = if sidechain_bus_active && data.numInputs == 2 {
         let sidechain_bus = unsafe { &*data.inputs.add(1) };
         if sidechain_bus.numChannels == 2 && !sidechain_bus.__field0.channelBuffers32.is_null() {
             let sidechain_channels =
