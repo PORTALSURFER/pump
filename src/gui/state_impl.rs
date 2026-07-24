@@ -302,15 +302,17 @@ impl GuiState {
         curve_style.grid_vertical = Color::rgba(0, 0, 0, 0);
         curve_style.grid_vertical_emphasis = Color::rgba(0, 0, 0, 0);
         curve_style.grid_horizontal = Color::rgba(0, 0, 0, 0);
+        let mut curve_interaction = curve_editor_interaction_options(
+            metrics.curve_size,
+            effective_grid,
+            controls.effective_snap_enabled(),
+            command_down,
+        );
+        curve_interaction.whole_curve_offset = true;
         let curve_editor_view = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
             .curve_style(curve_style)
             .curve_grid(curve_editor_grid_config(effective_grid))
-            .curve_interaction(curve_editor_interaction_options(
-                metrics.curve_size,
-                effective_grid,
-                controls.effective_snap_enabled(),
-                command_down,
-            ))
+            .curve_interaction(curve_interaction)
             .curve_segment_move(CurveSegmentMoveOptions::new(
                 CurveEditorModifier::Command,
                 theme.curve_segment_move,

@@ -167,6 +167,7 @@ pub(super) fn curve_editor_interaction_options(
         push_through_threshold_px: node_push_through_threshold_px(curve_size),
         endpoint_mode: EndpointMode::CoupledY,
         double_click_delete_interior: true,
+        whole_curve_offset: false,
         snap: CurveSnapConfig {
             enabled: snap_enabled || !command_snap_positions.is_empty(),
             vertical_positions: if command_snap_enabled {
