@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "c66659782df30d1ebeeeb16ffca47149969de464", default-features = false }
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "ad7d593", features = ["gui"] }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "ad7d593b1335e1af8d8d36d5b3bd6df62a3638a", features = ["gui"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
