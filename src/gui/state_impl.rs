@@ -77,6 +77,7 @@ impl GuiState {
             smooth: self.params.smooth(),
             division: self.params.sync_division(),
             trigger_mode: self.params.trigger_mode(),
+            mode: self.params.mode(),
             sidechain_available: self.status.sidechain_available(),
             snap_enabled,
             snap_hovered,
@@ -1080,6 +1081,24 @@ impl GuiState {
                 height: metrics.dropdown_control_h,
             })
             .fill(),
+            dropdown(
+                MODE_KEY,
+                PROCESSING_MODE_LABELS.len(),
+                controls
+                    .mode
+                    .min(PROCESSING_MODE_LABELS.len().saturating_sub(1)),
+            )
+            .dropdown_option_labels(
+                PROCESSING_MODE_LABELS
+                    .iter()
+                    .map(|label| (*label).to_string())
+                    .collect(),
+            )
+            .control_size(Size {
+                width: metrics.dropdown_control_w,
+                height: metrics.dropdown_control_h,
+            })
+            .fill(),
             row_slots(vec![
                 weighted_slot(snap_row, 2),
                 weighted_slot(
@@ -1256,7 +1275,7 @@ impl GuiState {
             UiAction::DropdownSelected { key, index } => {
                 if matches!(
                     key.as_str(),
-                    PRESET_DROPDOWN_KEY | DIVISION_KEY | TRIGGER_MODE_KEY
+                    PRESET_DROPDOWN_KEY | DIVISION_KEY | TRIGGER_MODE_KEY | MODE_KEY
                 ) {
                     self.capture_undo_snapshot();
                 }
@@ -1485,6 +1504,7 @@ impl GuiState {
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
             sync_division: self.params.sync_division(),
+            mode: self.params.mode(),
             editable_curve: self.params.editable_curve_snapshot(),
             preset_bank: self.params.preset_bank_snapshot(),
         }
@@ -1507,6 +1527,7 @@ impl GuiState {
         self.params.set_phase_offset(snapshot.phase_offset);
         self.params.set_output_gain_db(snapshot.output_gain_db);
         self.params.set_sync_division(snapshot.sync_division as f32);
+        self.params.set_mode(snapshot.mode as f32);
         self.params
             .set_editable_curve_preserving_phase(&snapshot.editable_curve);
         self.push_all_param_updates();
@@ -1842,6 +1863,11 @@ impl GuiState {
                 }
                 self.params.set_trigger_mode(clamped as f32);
                 self.push_single_value_update(PARAM_TRIGGER_MODE_ID, clamped as f64);
+            }
+            MODE_KEY => {
+                let clamped = index.min(PROCESSING_MODE_LABELS.len().saturating_sub(1));
+                self.params.set_mode(clamped as f32);
+                self.push_single_value_update(PARAM_MODE_ID, clamped as f64);
             }
             GRID_OVERRIDE_KEY => {
                 if let Ok(mut runtime) = self.runtime.lock() {
@@ -2764,6 +2790,7 @@ impl GuiState {
         self.push_single_value_update(PARAM_OUTPUT_GAIN_ID, self.params.output_gain_db() as f64);
         self.push_single_value_update(PARAM_SMOOTH_ID, self.params.smooth() as f64);
         self.push_single_value_update(PARAM_SYNC_DIVISION_ID, self.params.sync_division() as f64);
+        self.push_single_value_update(PARAM_MODE_ID, self.params.mode() as f64);
     }
 
     pub(super) fn push_single_value_update(&self, param_id: ClapId, value: f64) {

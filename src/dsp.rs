@@ -22,6 +22,8 @@ pub struct DspSettings {
     pub trigger_mode: usize,
     /// Evaluated wet-gain smoothing amount in `[0, 1]`.
     pub smooth: f32,
+    /// Processing mode (`Classic` or `Punch`).
+    pub mode: usize,
 }
 
 /// Maximum one-pole time constant at 100% Smooth.
@@ -107,6 +109,7 @@ pub struct PumpEngine {
     floor_db: OnePole,
     phase_offset: OnePole,
     output_gain_db: OnePole,
+    mode_blend: OnePole,
     wet_gain_smoother: GainSmoother,
     curve_current: [f32; CURVE_TABLE_LEN],
     curve_pending: [f32; CURVE_TABLE_LEN],
@@ -130,6 +133,7 @@ impl PumpEngine {
             floor_db: OnePole::new(-60.0, sample_rate, 0.01),
             phase_offset: OnePole::new(0.0, sample_rate, 0.01),
             output_gain_db: OnePole::new(0.0, sample_rate, 0.01),
+            mode_blend: OnePole::new(0.0, sample_rate, 0.01),
             wet_gain_smoother: GainSmoother::new(1.0),
             curve_current: curve,
             curve_pending: curve,
@@ -154,6 +158,7 @@ impl PumpEngine {
     /// Reset stateful DSP history at a processing-session boundary.
     pub fn reset(&mut self) {
         self.wet_gain_smoother.reset(1.0);
+        self.mode_blend.reset(0.0);
         self.sidechain_detector.reset();
         self.sidechain_phase = 0.0;
         self.sidechain_running = false;
@@ -228,7 +233,15 @@ impl PumpEngine {
             frame.phase_for_cycle(settings.beats_per_cycle, phase_offset)
         };
         let shape = self.sample_active_curve(phase);
-        let wet_gain = curve_value_to_gain(shape, depth_db, floor_db);
+        let mode_target = if settings.mode == crate::params::PROCESSING_MODE_PUNCH {
+            1.0
+        } else {
+            0.0
+        };
+        let mode_mix = self.mode_blend.next(mode_target);
+        let classic_wet_gain = curve_value_to_gain(shape, depth_db, floor_db);
+        let punch_wet_gain = curve_value_to_gain(shape, depth_db * 0.5, floor_db);
+        let wet_gain = lerp(classic_wet_gain, punch_wet_gain, mode_mix);
         let smooth = if settings.smooth.is_finite() {
             settings.smooth.clamp(0.0, 1.0)
         } else {
@@ -414,6 +427,10 @@ impl OnePole {
         }
     }
 
+    fn reset(&mut self, value: f32) {
+        self.value = value;
+    }
+
     fn next(&mut self, target: f32) -> f32 {
         self.value = target + self.coeff * (self.value - target);
         self.value
@@ -447,6 +464,7 @@ mod tests {
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
         };
 
         let mut left = 1.0;
@@ -471,6 +489,53 @@ mod tests {
     }
 
     #[test]
+    fn classic_mode_matches_the_existing_curve_gain_and_punch_is_distinct() {
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(0.0),
+        };
+        let classic = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            trigger_mode: crate::params::TRIGGER_MODE_HOST,
+            smooth: 0.0,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
+        };
+        let punch = DspSettings {
+            mode: crate::params::PROCESSING_MODE_PUNCH,
+            ..classic
+        };
+        let mut engine = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
+        let mut left = 1.0;
+        let mut right = 1.0;
+        engine.process_sample(&mut left, &mut right, classic, transport, None);
+        assert!((left - curve_value_to_gain(0.25, 120.0, -60.0)).abs() < 1.0e-6);
+
+        let mut first_punch = 1.0;
+        for sample in 0..4_000 {
+            left = 1.0;
+            right = 1.0;
+            engine.process_sample(&mut left, &mut right, punch, transport, None);
+            if sample == 0 {
+                first_punch = left;
+            }
+        }
+        assert!(
+            first_punch < 0.3,
+            "mode changes must ramp from Classic safely"
+        );
+        assert!(
+            (left - 0.5).abs() < 0.01,
+            "Punch should halve attenuation depth"
+        );
+    }
+
+    #[test]
     fn db_to_linear_matches_reference_points() {
         assert!((db_to_linear(0.0) - 1.0).abs() < 1.0e-6);
         assert!((db_to_linear(6.0) - 1.9952623).abs() < 1.0e-4);
@@ -490,6 +555,7 @@ mod tests {
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -522,6 +588,7 @@ mod tests {
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
         };
 
         let mut min_gain = 1.0_f32;
@@ -568,6 +635,7 @@ mod tests {
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: amount,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
         }
     }
 
@@ -776,6 +844,7 @@ mod tests {
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
             smooth: 0.0,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -809,6 +878,7 @@ mod tests {
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
             smooth: 0.0,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -835,6 +905,7 @@ mod tests {
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
             smooth: 0.0,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,

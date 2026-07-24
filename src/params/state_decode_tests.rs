@@ -73,6 +73,13 @@ fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
 
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 11 {
+        // Processing mode was added in v11, once in the active record and
+        // once per preset.
+        payload.truncate(payload.len().saturating_sub(4));
+        let mode_start = payload.len().saturating_sub(13);
+        payload.drain(mode_start..mode_start + 4);
+    }
     if version < 10 {
         // Evaluated gain smoothing was added in v10, once in the active
         // record and once per preset.

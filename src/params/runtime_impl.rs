@@ -13,6 +13,7 @@ impl PumpParams {
             sync_division: AtomicU32::new(DEFAULT_SYNC_DIVISION_INDEX as u32),
             trigger_mode: AtomicU32::new(DEFAULT_TRIGGER_MODE as u32),
             smooth: AtomicF32::new(DEFAULT_SMOOTH),
+            mode: AtomicU32::new(PROCESSING_MODE_CLASSIC as u32),
             editable_curve: RwLock::new(editable_curve),
             curve: std::array::from_fn(|index| AtomicF32::new(default_curve[index])),
             curve_revision: AtomicU32::new(1),
@@ -77,6 +78,11 @@ impl PumpParams {
     /// Get evaluated wet-gain smoothing amount.
     pub fn smooth(&self) -> f32 {
         self.smooth.load(Ordering::Relaxed)
+    }
+
+    /// Get the selected processing mode, falling back to Classic for unknown values.
+    pub fn mode(&self) -> usize {
+        clamp_processing_mode(self.mode.load(Ordering::Relaxed) as f32)
     }
 
     /// Set dry/wet mix amount.
@@ -153,6 +159,12 @@ impl PumpParams {
         };
         self.smooth
             .store(value.clamp(MIN_SMOOTH, MAX_SMOOTH), Ordering::Relaxed);
+    }
+
+    /// Set the processing mode, falling back to Classic for unknown values.
+    pub fn set_mode(&self, value: f32) {
+        self.mode
+            .store(clamp_processing_mode(value) as u32, Ordering::Relaxed);
     }
 
     /// Read the current curve revision counter.
@@ -236,6 +248,7 @@ impl PumpParams {
             sync_division: self.sync_division(),
             trigger_mode: self.trigger_mode(),
             smooth: self.smooth(),
+            mode: self.mode(),
             editable_curve: self.editable_curve_snapshot(),
             quick_slots: self.selected_quick_slots_snapshot(),
         }
@@ -297,6 +310,7 @@ impl PumpParams {
             };
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
             preset.trigger_mode = preset.trigger_mode.min(TRIGGER_MODE_SIDECHAIN);
+            preset.mode = clamp_processing_mode(preset.mode as f32);
             preset.smooth = if preset.smooth.is_finite() {
                 preset.smooth.clamp(MIN_SMOOTH, MAX_SMOOTH)
             } else {
@@ -331,6 +345,7 @@ impl PumpParams {
         self.set_sync_division(preset.sync_division as f32);
         self.set_trigger_mode(preset.trigger_mode as f32);
         self.set_smooth(preset.smooth);
+        self.set_mode(preset.mode as f32);
         self.set_editable_curve_preserving_phase(&preset.editable_curve);
     }
 
@@ -579,6 +594,7 @@ impl PumpParams {
                 existing.sync_division = snapshot.sync_division;
                 existing.trigger_mode = snapshot.trigger_mode;
                 existing.smooth = snapshot.smooth;
+                existing.mode = snapshot.mode;
                 existing.editable_curve = snapshot.editable_curve;
                 existing.quick_slots = snapshot.quick_slots;
             }
@@ -624,6 +640,7 @@ impl PumpParams {
             || current.sync_division != selected.sync_division
             || current.trigger_mode != selected.trigger_mode
             || !float_near_eq(current.smooth, selected.smooth)
+            || current.mode != selected.mode
             || !curve_near_eq(&current.editable_curve, &selected.editable_curve)
     }
 

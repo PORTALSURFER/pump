@@ -16,7 +16,7 @@
         PRESET_FAVORITE_KEY, PRESET_NEXT_KEY, PRESET_PREVIOUS_KEY,
         PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_STORAGE,
         QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
-        WINDOW_HEIGHT, WINDOW_WIDTH, TRIGGER_MODE_SIDECHAIN,
+        WINDOW_HEIGHT, WINDOW_WIDTH, MODE_KEY, TRIGGER_MODE_SIDECHAIN,
     };
     use super::state_impl::{
         curve_beat_grid_commands, curve_gain_reference_label_commands,
@@ -920,6 +920,26 @@
             index: TRIGGER_MODE_SIDECHAIN,
         });
         assert_eq!(params.trigger_mode(), TRIGGER_MODE_SIDECHAIN);
+    }
+
+    #[test]
+    fn processing_mode_dropdown_is_real_and_updates_the_host_parameter() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+        let spec = state.build_ui(&InputState::default());
+        let dropdown = find_dropdown_spec(spec.root.content(), MODE_KEY)
+            .expect("mode selector should be rendered");
+        assert_eq!(dropdown.option_count, 2);
+        state.reduce_action(UiAction::DropdownSelected {
+            key: MODE_KEY.to_string(),
+            index: 1,
+        });
+        assert_eq!(params.mode(), crate::params::PROCESSING_MODE_PUNCH);
     }
 
     #[test]

@@ -60,7 +60,7 @@ pub struct Vst3ParamInfo {
     pub default_normalized: f64,
 }
 
-const PARAM_DEFS: [ParamDef; 8] = [
+const PARAM_DEFS: [ParamDef; 9] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -181,6 +181,21 @@ const PARAM_DEFS: [ParamDef; 8] = [
         default_value: DEFAULT_SMOOTH as f64,
         flags: AUTO,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_MODE_NUM,
+        id: PARAM_MODE_ID,
+        name: "Mode",
+        #[cfg(feature = "vst3")]
+        short_name: "Mode",
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Pump",
+        min_value: PROCESSING_MODE_CLASSIC as f64,
+        max_value: PROCESSING_MODE_PUNCH as f64,
+        default_value: PROCESSING_MODE_CLASSIC as f64,
+        flags: AUTO_ENUM,
+    },
 ];
 
 #[cfg(feature = "vst3")]
@@ -231,7 +246,10 @@ pub fn normalized_from_plain_value(param_id: ClapId, plain: f64) -> Option<f64> 
 pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<f64> {
     let def = param_def_for_id(param_id)?;
     let plain = normalized_to_plain(normalized, def.min_value, def.max_value);
-    if matches!(param_id, PARAM_SYNC_DIVISION_ID | PARAM_TRIGGER_MODE_ID) {
+    if matches!(
+        param_id,
+        PARAM_SYNC_DIVISION_ID | PARAM_TRIGGER_MODE_ID | PARAM_MODE_ID
+    ) {
         return Some(plain.round());
     }
     Some(plain)
@@ -282,6 +300,7 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_SYNC_DIVISION_ID => Some(params.sync_division() as f64),
         PARAM_TRIGGER_MODE_ID => Some(params.trigger_mode() as f64),
         PARAM_SMOOTH_ID => Some(params.smooth() as f64),
+        PARAM_MODE_ID => Some(params.mode() as f64),
         _ => None,
     }
 }
@@ -299,6 +318,7 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         PARAM_SYNC_DIVISION_ID => params.set_sync_division(value as f32),
         PARAM_TRIGGER_MODE_ID => params.set_trigger_mode(value as f32),
         PARAM_SMOOTH_ID => params.set_smooth(value as f32),
+        PARAM_MODE_ID => params.set_mode(value as f32),
         _ => return false,
     }
     true
@@ -374,6 +394,9 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
             .get(value.round().clamp(0.0, 1.0) as usize)
             .map(|label| (*label).to_string()),
         PARAM_SMOOTH_ID => Some(format!("{:.0}%", (value * 100.0).clamp(0.0, 100.0))),
+        PARAM_MODE_ID => PROCESSING_MODE_LABELS
+            .get(clamp_processing_mode(value as f32))
+            .map(|label| (*label).to_string()),
         _ => None,
     }
 }
@@ -424,6 +447,18 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
             let stripped = raw.trim_end_matches('%').trim();
             let value: f64 = stripped.parse().ok()?;
             Some((value / 100.0).clamp(MIN_SMOOTH as f64, MAX_SMOOTH as f64))
+        }
+        PARAM_MODE_ID => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            PROCESSING_MODE_LABELS
+                .iter()
+                .position(|label| label.to_ascii_lowercase() == normalized)
+                .map(|index| index as f64)
+                .or_else(|| {
+                    raw.parse::<f64>()
+                        .ok()
+                        .map(|value| clamp_processing_mode(value as f32) as f64)
+                })
         }
         _ => None,
     }
