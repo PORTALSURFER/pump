@@ -308,6 +308,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (ce991cf)
 
+- (changelog) Update changelog [skip ci] (80e9ab8)
+
 
 ### Features
 
@@ -1059,6 +1061,28 @@ OPT-1117: constrain curve-point movement vertically (68fa1c5)
 - Merge pull request #26 from PORTALSURFER/codex/remove-local-agent-state-files
 
 Remove local agent state files (3f3ae92)
+
+- OPT-1119 add Cmd+Shift cyclic whole-curve offset (#27)
+
+* OPT-1119 add Cmd+Shift cyclic curve offset
+
+* Implement exact cyclic curve offset gesture
+
+* Pin Toybox dependency by full commit SHA
+
+* Correct full Toybox commit pin
+
+* Record full Toybox revision in lockfile
+
+* Preserve version one global curve slots
+
+* Preserve exact phase data when loading saved curves
+
+* Require current command modifier for curve offset
+
+* Update toybox dependency revision
+
+* Update toybox dependency revision (3923d03)
 
 
 ### Refactoring
