@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 4;
+const PRESET_STORE_VERSION: u32 = 5;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
@@ -272,6 +272,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     for slot in &preset.quick_slots {
         encode_curve(payload, &slot.curve);
     }
+    payload.extend_from_slice(&(preset.trigger_mode as u32).to_le_bytes());
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -375,6 +376,13 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         } else {
             seeded_quick_shape_slots()
         };
+        let trigger_mode = if version >= 5 {
+            read_u32(&mut cursor)
+                .map(|value| value as usize)
+                .ok_or_else(|| "invalid preset trigger mode".to_string())?
+        } else {
+            DEFAULT_TRIGGER_MODE
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -385,6 +393,7 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             phase_offset,
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
+            trigger_mode: trigger_mode.min(TRIGGER_MODE_SIDECHAIN),
             editable_curve,
             quick_slots,
         });
@@ -524,6 +533,7 @@ mod tests {
                 phase_offset: 0.0,
                 output_gain_db: 0.0,
                 sync_division: 4,
+                trigger_mode: DEFAULT_TRIGGER_MODE,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -532,6 +542,8 @@ mod tests {
 
     fn encoded_v3_preset_bank() -> Vec<u8> {
         let mut payload = encoded_single_preset_bank();
+        // Trigger mode was added in v5; remove it before emulating v3.
+        payload.truncate(payload.len().saturating_sub(4));
         let name_len = payload_u32(&payload, FIRST_PRESET_OFFSET) as usize;
         let floor_offset = FIRST_PRESET_OFFSET + 4 + name_len + 8;
         payload.drain(floor_offset..floor_offset + 4);
@@ -566,6 +578,7 @@ mod tests {
                     phase_offset: 0.0,
                     output_gain_db: 0.0,
                     sync_division: 4,
+                    trigger_mode: DEFAULT_TRIGGER_MODE,
                     editable_curve: default_editable_curve(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -579,6 +592,7 @@ mod tests {
                     phase_offset: 0.13,
                     output_gain_db: -1.5,
                     sync_division: 3,
+                    trigger_mode: TRIGGER_MODE_SIDECHAIN,
                     editable_curve: EditableCurve {
                         nodes: vec![
                             CurveNode { x: 0.0, y: 1.0 },

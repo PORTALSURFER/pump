@@ -73,6 +73,11 @@ fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
 
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 8 {
+        // Trigger mode was added in v8, once per preset and once for the active
+        // top-level state. Remove those fields before emulating an old payload.
+        payload.truncate(payload.len().saturating_sub(8));
+    }
     if version < 7 {
         // Remove the v7 Floor field from the top-level record and first preset
         // so the migration test represents a real pre-v7 payload.

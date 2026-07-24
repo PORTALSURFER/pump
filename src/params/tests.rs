@@ -2,7 +2,7 @@ use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
     sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
     SavePresetOutcome, DEFAULT_FLOOR_DB, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DEPTH_ID,
-    PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
+    PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, TRIGGER_MODE_SIDECHAIN,
 };
 #[cfg(feature = "vst3")]
 use super::{
@@ -67,7 +67,7 @@ fn sync_division_clamping_is_bounded() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 6);
+    assert_eq!(super::param_count(), 7);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -115,6 +115,7 @@ fn state_roundtrip_preserves_values() {
     params.set_phase_offset(0.42);
     params.set_output_gain_db(-3.0);
     params.set_sync_division(6.0);
+    params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
     params.set_editable_curve(&EditableCurve {
         nodes: vec![
             CurveNode { x: 0.0, y: 1.0 },
@@ -141,6 +142,7 @@ fn state_roundtrip_preserves_values() {
     assert!((restored.phase_offset() - 0.42).abs() < 1.0e-6);
     assert!((restored.output_gain_db() + 3.0).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 6);
+    assert_eq!(restored.trigger_mode(), TRIGGER_MODE_SIDECHAIN);
     let editable = restored.editable_curve_snapshot();
     assert_eq!(editable.nodes.len(), 3);
     assert_eq!(editable.segments.len(), 2);
@@ -610,6 +612,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     phase_offset: 0.33,
                     output_gain_db: -1.0,
                     sync_division: 2,
+                    trigger_mode: 0,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -623,6 +626,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     phase_offset: 0.55,
                     output_gain_db: -2.0,
                     sync_division: 4,
+                    trigger_mode: 0,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },

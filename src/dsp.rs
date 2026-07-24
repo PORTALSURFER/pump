@@ -18,6 +18,59 @@ pub struct DspSettings {
     pub output_gain_db: f32,
     /// Length of one modulation cycle in beats.
     pub beats_per_cycle: f32,
+    /// Curve trigger source (`0` host transport, `1` external sidechain).
+    pub trigger_mode: usize,
+}
+
+/// Sidechain trigger detector policy.
+///
+/// The detector uses the larger absolute sample of the two sidechain channels.
+/// A trigger is a rising crossing of `TRIGGER_ATTACK_THRESHOLD`; the signal
+/// must subsequently fall below `TRIGGER_RELEASE_THRESHOLD` before another
+/// trigger can be accepted. A 10 ms refractory period rejects chatter while
+/// retaining the low-to-high crossing requirement. Missing or silent sidechain
+/// input produces no trigger and lets the engine fall back to host timing.
+pub const TRIGGER_ATTACK_THRESHOLD: f32 = 0.25;
+pub const TRIGGER_RELEASE_THRESHOLD: f32 = 0.125;
+pub const TRIGGER_REFRACTORY_MS: f32 = 10.0;
+
+/// Allocation-free, sample-stable sidechain transient detector.
+#[derive(Debug, Clone)]
+pub struct SidechainTriggerDetector {
+    armed: bool,
+    refractory_samples: usize,
+    refractory_remaining: usize,
+}
+
+impl SidechainTriggerDetector {
+    /// Create a detector for a sample rate.
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
+            armed: true,
+            refractory_samples: ((TRIGGER_REFRACTORY_MS / 1000.0) * sample_rate.max(1.0))
+                .round()
+                .max(1.0) as usize,
+            refractory_remaining: 0,
+        }
+    }
+
+    /// Process one stereo sidechain sample and report a newly accepted trigger.
+    pub fn process(&mut self, left: f32, right: f32) -> bool {
+        let level = left.abs().max(right.abs());
+        let level = if level.is_finite() { level } else { 0.0 };
+        if self.refractory_remaining > 0 {
+            self.refractory_remaining -= 1;
+        }
+        if level <= TRIGGER_RELEASE_THRESHOLD {
+            self.armed = true;
+        }
+        if self.armed && self.refractory_remaining == 0 && level >= TRIGGER_ATTACK_THRESHOLD {
+            self.armed = false;
+            self.refractory_remaining = self.refractory_samples;
+            return true;
+        }
+        false
+    }
 }
 
 /// Information exposed to GUI for metering/visualization.
@@ -37,6 +90,7 @@ pub struct DspTelemetry {
 /// Stateful real-time gain engine.
 pub struct PumpEngine {
     clock: TransportClock,
+    sample_rate: f32,
     mix: OnePole,
     depth_db: OnePole,
     floor_db: OnePole,
@@ -46,6 +100,9 @@ pub struct PumpEngine {
     curve_pending: [f32; CURVE_TABLE_LEN],
     morph_remaining: usize,
     morph_total: usize,
+    sidechain_detector: SidechainTriggerDetector,
+    sidechain_phase: f32,
+    sidechain_running: bool,
 }
 
 impl PumpEngine {
@@ -53,6 +110,7 @@ impl PumpEngine {
     pub fn new(sample_rate: f32, curve: [f32; CURVE_TABLE_LEN]) -> Self {
         Self {
             clock: TransportClock::new(sample_rate),
+            sample_rate: sample_rate.max(1.0),
             mix: OnePole::new(1.0, sample_rate, 0.01),
             depth_db: OnePole::new(120.0, sample_rate, 0.01),
             floor_db: OnePole::new(-60.0, sample_rate, 0.01),
@@ -62,6 +120,9 @@ impl PumpEngine {
             curve_pending: curve,
             morph_remaining: 0,
             morph_total: 64,
+            sidechain_detector: SidechainTriggerDetector::new(sample_rate),
+            sidechain_phase: 0.0,
+            sidechain_running: false,
         }
     }
 
@@ -78,8 +139,14 @@ impl PumpEngine {
         right: &mut f32,
         settings: DspSettings,
         transport: TransportState,
+        sidechain: Option<(f32, f32)>,
     ) -> DspTelemetry {
         let frame = self.clock.tick(resolve_effective_transport(transport));
+
+        let sidechain_active =
+            settings.trigger_mode == crate::params::TRIGGER_MODE_SIDECHAIN && sidechain.is_some();
+        let sidechain_trigger = sidechain_active
+            && sidechain.is_some_and(|(left, right)| self.sidechain_detector.process(left, right));
 
         let mix = self.mix.next(settings.mix.clamp(0.0, 1.0));
         let depth_target = if settings.depth_db.is_finite() {
@@ -101,7 +168,21 @@ impl PumpEngine {
             .output_gain_db
             .next(settings.output_gain_db.clamp(-60.0, 24.0));
 
-        let phase = frame.phase_for_cycle(settings.beats_per_cycle, phase_offset);
+        let phase = if sidechain_active {
+            if sidechain_trigger {
+                self.sidechain_phase = 0.0;
+                self.sidechain_running = true;
+            }
+            let phase = (self.sidechain_phase + phase_offset).rem_euclid(1.0);
+            if self.sidechain_running {
+                let beat_increment = transport.tempo_bpm.clamp(20.0, 320.0)
+                    / (self.clock_sample_rate() * 60.0 * settings.beats_per_cycle.max(1.0e-4));
+                self.sidechain_phase = (self.sidechain_phase + beat_increment).rem_euclid(1.0);
+            }
+            phase
+        } else {
+            frame.phase_for_cycle(settings.beats_per_cycle, phase_offset)
+        };
         let shape = self.sample_active_curve(phase);
         let wet_gain = curve_value_to_gain(shape, depth_db, floor_db);
         let blend_gain = (mix * wet_gain) + (1.0 - mix);
@@ -117,6 +198,13 @@ impl PumpEngine {
             reduction_gain: blend_gain.clamp(0.0, 1.0),
             input_active: false,
         }
+    }
+
+    fn clock_sample_rate(&self) -> f32 {
+        // The clock intentionally keeps its sample-rate field private. The
+        // sidechain phase increment is derived from the same sample-rate
+        // contract and is stored by the engine for sample-stable operation.
+        self.sample_rate
     }
 
     fn sample_active_curve(&mut self, phase: f32) -> f32 {
@@ -230,7 +318,10 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{curve_value_to_gain, db_to_linear, DspSettings, PumpEngine};
+    use super::{
+        curve_value_to_gain, db_to_linear, DspSettings, PumpEngine, SidechainTriggerDetector,
+        TRIGGER_ATTACK_THRESHOLD, TRIGGER_RELEASE_THRESHOLD,
+    };
     use crate::curve::{default_editable_curve, editable_curve_to_table};
     use toybox::dsp::TransportState;
 
@@ -246,6 +337,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
+            trigger_mode: crate::params::TRIGGER_MODE_HOST,
         };
 
         let mut left = 1.0;
@@ -260,6 +352,7 @@ mod tests {
                     is_playing: true,
                     song_pos_beats: None,
                 },
+                None,
             );
             assert!(telemetry.gain.is_finite());
             assert!(telemetry.phase.is_finite());
@@ -286,17 +379,18 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
+            trigger_mode: crate::params::TRIGGER_MODE_HOST,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
             is_playing: true,
             song_pos_beats: Some(0.0),
         };
-        let mut telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+        let mut telemetry = engine.process_sample(&mut left, &mut right, settings, transport, None);
         for _ in 0..8_000 {
             left = 1.0;
             right = 1.0;
-            telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+            telemetry = engine.process_sample(&mut left, &mut right, settings, transport, None);
         }
         assert!((telemetry.reduction_gain - 0.5).abs() < 1.0e-6);
         assert!(
@@ -316,6 +410,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            trigger_mode: crate::params::TRIGGER_MODE_HOST,
         };
 
         let mut min_gain = 1.0_f32;
@@ -331,6 +426,7 @@ mod tests {
                     is_playing: false,
                     song_pos_beats: None,
                 },
+                None,
             );
             min_gain = min_gain.min(telemetry.gain);
             left = 1.0;
@@ -349,5 +445,79 @@ mod tests {
         assert_eq!(curve_value_to_gain(0.4, 0.0, -60.0), 1.0);
         assert_eq!(curve_value_to_gain(0.0, 0.0, -60.0), 1.0);
         assert!(curve_value_to_gain(f32::NAN, f32::NAN, f32::NAN).is_finite());
+    }
+
+    #[test]
+    fn sidechain_detector_uses_stereo_hysteresis_and_refractory() {
+        let mut detector = SidechainTriggerDetector::new(1_000.0);
+
+        assert!(!detector.process(TRIGGER_ATTACK_THRESHOLD - 0.01, 0.0));
+        assert!(detector.process(0.0, TRIGGER_ATTACK_THRESHOLD));
+
+        // A sustained high signal cannot retrigger after the refractory window:
+        // it must first cross the release threshold.
+        for _ in 0..32 {
+            assert!(!detector.process(0.8, 0.1));
+        }
+        assert!(!detector.process(TRIGGER_RELEASE_THRESHOLD, 0.0));
+        assert!(detector.process(0.0, TRIGGER_ATTACK_THRESHOLD + 0.01));
+        assert!(!detector.process(f32::NAN, f32::INFINITY));
+    }
+
+    #[test]
+    fn sidechain_trigger_restarts_at_a_sample_stable_phase() {
+        let mut engine = PumpEngine::new(100.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(0.5),
+        };
+        let mut left = 1.0;
+        let mut right = 1.0;
+
+        let before_trigger =
+            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.0, 0.0)));
+        let trigger =
+            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.0, 0.5)));
+        let following =
+            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.0, 0.5)));
+
+        assert_eq!(before_trigger.phase, 0.0);
+        assert_eq!(trigger.phase, 0.0);
+        assert!((following.phase - 0.02).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn sidechain_mode_falls_back_to_host_phase_when_bus_is_missing() {
+        let mut engine = PumpEngine::new(48_000.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(0.5),
+        };
+        let mut left = 1.0;
+        let mut right = 1.0;
+
+        let telemetry = engine.process_sample(&mut left, &mut right, settings, transport, None);
+
+        assert!((telemetry.phase - 0.5).abs() < 1.0e-6);
     }
 }

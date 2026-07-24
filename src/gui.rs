@@ -34,6 +34,7 @@ use crate::params::{
     MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_DEPTH_DB,
     MIN_FLOOR_DB, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_FLOOR_ID,
     PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
+    PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
@@ -71,6 +72,7 @@ const MIX_KEY: &str = "mix";
 const PHASE_KEY: &str = "phase";
 const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
+const TRIGGER_MODE_KEY: &str = "trigger-mode";
 const SNAP_KEY: &str = "snap";
 const INCOMING_WAVEFORM_KEY: &str = "incoming-waveform";
 const GRID_OVERRIDE_KEY: &str = "grid-override";
@@ -323,6 +325,8 @@ struct ControlSnapshot {
     phase_offset: f32,
     output_gain_db: f32,
     division: usize,
+    trigger_mode: usize,
+    sidechain_available: bool,
     incoming_waveform_enabled: bool,
     snap_enabled: bool,
     snap_hovered: bool,

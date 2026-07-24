@@ -36,7 +36,7 @@ use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
     GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
     MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
+    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
@@ -311,6 +311,7 @@ enum RadiantEditorMessage {
     Phase(f32),
     OutputGain(f32),
     SyncDivision(f32),
+    TriggerMode(f32),
     IncomingWaveform(bool),
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
@@ -609,6 +610,18 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 normalize_sync_division(sync),
                 RadiantEditorMessage::SyncDivision,
             ),
+            enum_control_row(
+                "Trigger",
+                if state.status.sidechain_available() {
+                    TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
+                } else if params.trigger_mode() == TRIGGER_MODE_SIDECHAIN {
+                    "Sidechain (unavailable)".to_string()
+                } else {
+                    TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
+                },
+                params.trigger_mode() as f32,
+                RadiantEditorMessage::TriggerMode,
+            ),
         ])
         .padding(SURFACE_PADDING)
         .spacing(SURFACE_SPACING)
@@ -699,6 +712,13 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             state
                 .params
                 .set_sync_division((value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round());
+        }
+        RadiantEditorMessage::TriggerMode(value) => {
+            let mode = value.round().clamp(0.0, TRIGGER_MODE_SIDECHAIN as f32) as usize;
+            if mode == TRIGGER_MODE_SIDECHAIN && !state.status.sidechain_available() {
+                return;
+            }
+            state.params.set_trigger_mode(mode as f32);
         }
         RadiantEditorMessage::IncomingWaveform(enabled) => {
             state.status.set_incoming_waveform_enabled(enabled);

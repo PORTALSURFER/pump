@@ -34,6 +34,7 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     for (index, preset) in bank.presets.iter().enumerate() {
         encode_preset(&mut payload, preset, index);
     }
+    payload.extend_from_slice(&(params.trigger_mode() as f32).to_le_bytes());
 
     payload
 }
@@ -106,12 +107,21 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 phase_offset,
                 output_gain_db,
                 sync_division: clamp_sync_division(sync_division),
+                trigger_mode: DEFAULT_TRIGGER_MODE,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
         }
     };
 
+    let trigger_mode = if version >= 8 {
+        let Some(trigger_mode) = read_f32(&mut cursor) else {
+            return Err("invalid trigger mode field");
+        };
+        trigger_mode
+    } else {
+        DEFAULT_TRIGGER_MODE as f32
+    };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -122,6 +132,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_phase_offset(phase_offset);
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
+    params.set_trigger_mode(trigger_mode);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
 
@@ -144,6 +155,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     for slot in &preset.quick_slots {
         encode_curve(payload, &slot.curve);
     }
+    payload.extend_from_slice(&(preset.trigger_mode as u32).to_le_bytes());
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -304,6 +316,14 @@ fn decode_preset_bank(
         } else {
             seeded_quick_shape_slots()
         };
+        let trigger_mode = if version >= 8 {
+            let Some(trigger_mode) = read_u32(cursor).map(|value| value as usize) else {
+                return Err("invalid preset trigger mode");
+            };
+            trigger_mode
+        } else {
+            DEFAULT_TRIGGER_MODE
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -314,6 +334,7 @@ fn decode_preset_bank(
             phase_offset,
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
+            trigger_mode: trigger_mode.min(TRIGGER_MODE_SIDECHAIN),
             editable_curve: editable_curve.normalized(),
             quick_slots,
         });
@@ -401,6 +422,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             phase_offset: params.phase_offset(),
             output_gain_db: params.output_gain_db(),
             sync_division: params.sync_division(),
+            trigger_mode: DEFAULT_TRIGGER_MODE,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],

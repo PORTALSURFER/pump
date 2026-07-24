@@ -48,6 +48,7 @@ pub struct GuiStatus {
     beat_phase: AtomicF32,
     tempo_bpm: AtomicF32,
     cycle_hz: AtomicF32,
+    sidechain_available: AtomicBool,
     last_update_micros: AtomicU64,
     incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer,
 }
@@ -73,6 +74,7 @@ impl Default for GuiStatus {
             beat_phase: AtomicF32::new(0.0),
             tempo_bpm: AtomicF32::new(120.0),
             cycle_hz: AtomicF32::new(0.0),
+            sidechain_available: AtomicBool::new(false),
             last_update_micros: AtomicU64::new(0),
             incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer::default(),
         }
@@ -95,6 +97,16 @@ impl GuiStatus {
     /// Read whether incoming-audio visualization capture is enabled.
     pub fn incoming_waveform_enabled(&self) -> bool {
         self.incoming_waveform.is_enabled()
+    }
+
+    /// Publish whether the host supplied the optional sidechain bus recently.
+    pub(crate) fn set_sidechain_available(&self, available: bool) {
+        self.sidechain_available.store(available, Ordering::Relaxed);
+    }
+
+    /// Return whether sidechain-trigger mode currently has an input bus.
+    pub(crate) fn sidechain_available(&self) -> bool {
+        self.sidechain_available.load(Ordering::Relaxed)
     }
 
     pub(crate) fn incoming_waveform_buffer(
