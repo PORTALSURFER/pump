@@ -318,6 +318,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (116bf0e)
 
+- (changelog) Update changelog [skip ci] (6e50f38)
+
 
 ### Features
 
@@ -1111,6 +1113,12 @@ Preserve global curve slot persistence and interaction semantics while presentin
 - [OPT-1127] Harden external sidechain trigger routing
 
 Approved and validated. Merge OPT-1127 sidechain trigger routing. (4ddff72)
+
+- [OPT-1125] Redesign Pump preset navigation and add favorites (#32)
+
+* feat: redesign pump preset navigation and favorites
+
+* fix: preserve preset action hit sizes in warning state (6194573)
 
 
 ### Refactoring
