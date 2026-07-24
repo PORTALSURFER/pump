@@ -54,6 +54,12 @@ impl SidechainTriggerDetector {
         }
     }
 
+    /// Re-arm the detector after the trigger source becomes discontinuous.
+    pub fn reset(&mut self) {
+        self.armed = true;
+        self.refractory_remaining = 0;
+    }
+
     /// Process one stereo sidechain sample and report a newly accepted trigger.
     pub fn process(&mut self, left: f32, right: f32) -> bool {
         let level = left.abs().max(right.abs());
@@ -103,6 +109,8 @@ pub struct PumpEngine {
     sidechain_detector: SidechainTriggerDetector,
     sidechain_phase: f32,
     sidechain_running: bool,
+    sidechain_mode: bool,
+    sidechain_bus_present: bool,
 }
 
 impl PumpEngine {
@@ -123,6 +131,8 @@ impl PumpEngine {
             sidechain_detector: SidechainTriggerDetector::new(sample_rate),
             sidechain_phase: 0.0,
             sidechain_running: false,
+            sidechain_mode: false,
+            sidechain_bus_present: false,
         }
     }
 
@@ -143,8 +153,23 @@ impl PumpEngine {
     ) -> DspTelemetry {
         let frame = self.clock.tick(resolve_effective_transport(transport));
 
-        let sidechain_active =
-            settings.trigger_mode == crate::params::TRIGGER_MODE_SIDECHAIN && sidechain.is_some();
+        let sidechain_mode = settings.trigger_mode == crate::params::TRIGGER_MODE_SIDECHAIN;
+        let sidechain_bus_present = sidechain.is_some();
+        if sidechain_mode != self.sidechain_mode
+            || (sidechain_mode && sidechain_bus_present != self.sidechain_bus_present)
+        {
+            // A mode or bus transition is a discontinuity in the trigger
+            // source. Do not resume an old event after a host reroute or an
+            // automation change; wait for the next deterministic trigger.
+            self.sidechain_detector.reset();
+            self.sidechain_phase = 0.0;
+            self.sidechain_running = false;
+        }
+        self.sidechain_mode = sidechain_mode;
+        if sidechain_mode {
+            self.sidechain_bus_present = sidechain_bus_present;
+        }
+        let sidechain_active = sidechain_mode && sidechain_bus_present;
         let sidechain_trigger = sidechain_active
             && sidechain.is_some_and(|(left, right)| self.sidechain_detector.process(left, right));
 
@@ -519,5 +544,50 @@ mod tests {
         let telemetry = engine.process_sample(&mut left, &mut right, settings, transport, None);
 
         assert!((telemetry.phase - 0.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn sidechain_mode_restarts_after_bus_reconnect_instead_of_resuming_old_phase() {
+        let mut engine = PumpEngine::new(100.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: false,
+            song_pos_beats: Some(0.75),
+        };
+        let mut left = 1.0;
+        let mut right = 1.0;
+
+        let trigger =
+            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.5, 0.0)));
+        assert_eq!(trigger.phase, 0.0);
+
+        let running =
+            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.5, 0.0)));
+        assert!((running.phase - 0.02).abs() < 1.0e-6);
+
+        let fallback = engine.process_sample(&mut left, &mut right, settings, transport, None);
+        assert!((fallback.phase - 0.75).abs() < 1.0e-6);
+
+        let reconnected =
+            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.5, 0.0)));
+        assert_eq!(reconnected.phase, 0.0);
+    }
+
+    #[test]
+    fn silent_sidechain_does_not_trigger() {
+        let mut detector = SidechainTriggerDetector::new(48_000.0);
+        for _ in 0..128 {
+            assert!(!detector.process(0.0, 0.0));
+        }
+        assert!(!detector.process(f32::NAN, f32::NAN));
     }
 }

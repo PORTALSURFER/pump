@@ -69,11 +69,17 @@ retrigger until it crosses the release threshold. Non-finite samples are
 treated as silence.
 
 In `Sidechain` mode the trigger sample is processed at phase `0`, and the curve
-advances one sample at a time using the current tempo and Division. Silence
-produces no trigger. If the optional bus is omitted or unavailable, Pump falls
-back to host beat/transport timing, so a sidechain-enabled preset remains
-audible in hosts that cannot route a sidechain. In `Host` mode sidechain audio
-is ignored and the host timeline is authoritative.
+advances one sample at a time using the current host tempo and Division. Tempo
+and Division changes take effect on the next sample; the most recent accepted
+sidechain trigger takes precedence over the host song position. The event-driven
+curve continues while the host is stopped, because the sidechain source—not
+transport playback—is authoritative in this mode. Silence produces no trigger.
+If the optional bus is omitted or unavailable, Pump falls back to host
+beat/transport timing and waits for a fresh trigger after the bus returns, so a
+sidechain-enabled preset remains audible in hosts that cannot route a
+sidechain. Switching between Host and Sidechain also discards the previous
+sidechain phase and detector arm state. In `Host` mode sidechain audio is ignored
+and the host timeline is authoritative.
 
 The incoming waveform display records the same per-sample phase used by the
 gain curve, including sidechain restarts. Sidechain detection and processing

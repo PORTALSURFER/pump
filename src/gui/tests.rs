@@ -15,7 +15,7 @@
         PRESET_DROPDOWN_KEY,
         PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_STORAGE,
         QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
-        WINDOW_HEIGHT, WINDOW_WIDTH,
+        WINDOW_HEIGHT, WINDOW_WIDTH, TRIGGER_MODE_SIDECHAIN,
     };
     use super::state_impl::{
         curve_beat_grid_commands, curve_gain_reference_label_commands,
@@ -915,6 +915,31 @@
             value: false,
         });
         assert!(!status.incoming_waveform_enabled());
+    }
+
+    #[test]
+    fn trigger_dropdown_rejects_sidechain_until_host_bus_is_available() {
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::clone(&status),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+
+        state.reduce_action(UiAction::DropdownSelected {
+            key: "trigger-mode".to_string(),
+            index: TRIGGER_MODE_SIDECHAIN,
+        });
+        assert_ne!(params.trigger_mode(), TRIGGER_MODE_SIDECHAIN);
+
+        status.set_sidechain_available(true);
+        state.reduce_action(UiAction::DropdownSelected {
+            key: "trigger-mode".to_string(),
+            index: TRIGGER_MODE_SIDECHAIN,
+        });
+        assert_eq!(params.trigger_mode(), TRIGGER_MODE_SIDECHAIN);
     }
 
     #[test]

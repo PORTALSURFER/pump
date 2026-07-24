@@ -409,6 +409,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     params.set_phase_offset(phase_offset);
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
+    params.set_trigger_mode(DEFAULT_TRIGGER_MODE as f32);
     params.set_curve(&curve);
     params.set_preset_bank_without_persistence(PumpPresetBank {
         selected: 0,
