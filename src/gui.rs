@@ -16,8 +16,9 @@ use toybox::gui::declarative::{
     weighted_slot_lengths, CurveEditorModifier, CurveEditorStyle, CurveGridConfig,
     CurveHighlightMode, CurveInteractionOptions, CurveModel, CurvePoint,
     CurveSegment as CurveEditorSegment, CurveSegmentMoveOptions, CurveSnapConfig, EndpointMode,
-    GridTemplate, LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode, Slot,
-    SlotAlign, SlotCrossSize, SlotParams, SurfaceCommand, ThemeTokens, TrackSize, UiAction, UiSpec,
+    GridTemplate, LayoutBox, Node, OverflowPolicy, RegionInteractionKind, RootScaleMode,
+    ScrollViewSpec, Slot, SlotAlign, SlotCrossSize, SlotParams, SurfaceCommand, ThemeTokens,
+    TrackSize, UiAction, UiSpec,
 };
 use toybox::gui::{Color, MainPalette, Point, Rect, Size};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
@@ -81,6 +82,12 @@ const PRESET_RENAME_KEY: &str = "preset-rename";
 const UNDO_KEY: &str = "undo";
 const REDO_KEY: &str = "redo";
 const QUICK_SLOT_KEY_PREFIX: &str = "quick-slot-";
+const QUICK_SLOT_NAV_KEY: &str = "quick-slot-nav";
+const QUICK_SLOT_PREVIOUS_KEY: &str = "quick-slot-previous";
+const QUICK_SLOT_NEXT_KEY: &str = "quick-slot-next";
+const QUICK_SLOT_NAV_WIDTH: u32 = 20;
+const QUICK_SLOT_GAP: u32 = 4;
+const QUICK_SLOT_VISIBLE_COUNT: usize = 6;
 const SHORTCUT_KEY_RENAME: char = 'r';
 const SHORTCUT_KEY_SAVE: char = 's';
 pub(crate) const SHORTCUT_KEY_SNAP_INVERT: char = 's';
@@ -88,6 +95,8 @@ const SHORTCUT_KEY_ADD: char = '+';
 const SHORTCUT_KEY_ADD_ALT: char = '=';
 const SHORTCUT_KEY_UNDO: char = 'z';
 const SHORTCUT_KEY_REDO: char = 'y';
+const SHORTCUT_KEY_QUICK_SLOT_PREVIOUS: char = '[';
+const SHORTCUT_KEY_QUICK_SLOT_NEXT: char = ']';
 
 const HEADER_SECTION_WEIGHT: u16 = 7;
 const CURVE_SECTION_WEIGHT: u16 = 58;
@@ -99,7 +108,6 @@ const ROOT_SECTION_WEIGHT_SUM: u32 = HEADER_SECTION_WEIGHT as u32
     + CONTROLS_SECTION_WEIGHT as u32;
 const KNOBS_SECTION_WEIGHT: u16 = 70;
 const DROPDOWN_SECTION_WEIGHT: u16 = 30;
-const QUICK_SHAPE_BUTTONS_PER_ROW: usize = 8;
 const HEADER_EMPTY_SECTION_PERCENT: u8 = 80;
 const HEADER_INDICATOR_SECTION_PERCENT: u8 = 20;
 const HEADER_STORAGE_WARNING_SECTION_PERCENT: u8 = 40;
@@ -253,6 +261,11 @@ struct GuiRuntime {
     preset_warning_text: Option<&'static str>,
     quick_slot_hovered: Option<usize>,
     quick_slot_pressed: Option<usize>,
+    quick_slot_nav_hovered: bool,
+    quick_slot_nav_pressed: bool,
+    quick_slot_carousel_focused: bool,
+    quick_slot_scroll_offset: i32,
+    quick_slot_wheel_consumed: bool,
     loaded_global_curve_slot: Option<usize>,
     pointer_primary_down: bool,
     pointer_secondary_down: bool,
@@ -361,6 +374,7 @@ struct CurveRenderState {
 #[derive(Clone, Copy, Debug, Default)]
 struct QuickSlotVisualState {
     hovered: bool,
+    pressed: bool,
     active: bool,
     store_hovered: bool,
     deviated: bool,

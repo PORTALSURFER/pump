@@ -102,11 +102,13 @@ pub(super) struct PumpTheme {
     pub(super) snap_checkbox_outline_hover: Color,
     pub(super) quick_slot_bg: Color,
     pub(super) quick_slot_hover_bg: Color,
+    pub(super) quick_slot_pressed_bg: Color,
     pub(super) quick_slot_store_hover_bg: Color,
     pub(super) quick_slot_active_bg: Color,
     pub(super) quick_slot_deviation_bg: Color,
     pub(super) quick_slot_outline: Color,
     pub(super) quick_slot_outline_hover: Color,
+    pub(super) quick_slot_outline_active: Color,
     pub(super) quick_slot_outline_store_hover: Color,
     pub(super) quick_slot_outline_deviation: Color,
     pub(super) quick_slot_curve: Color,
@@ -178,6 +180,12 @@ impl PumpTheme {
             snap_checkbox_outline_hover: palette.accent_focus,
             quick_slot_bg: palette.background_primary,
             quick_slot_hover_bg: palette.background_secondary,
+            quick_slot_pressed_bg: Color::rgba(
+                palette.literals.r,
+                palette.literals.g,
+                palette.literals.b,
+                96,
+            ),
             quick_slot_store_hover_bg: Color::rgba(
                 palette.literals.r,
                 palette.literals.g,
@@ -188,9 +196,10 @@ impl PumpTheme {
             quick_slot_deviation_bg: Color::rgba(150, 30, 38, 96),
             quick_slot_outline: palette.ui_secondary,
             quick_slot_outline_hover: palette.accent_focus,
+            quick_slot_outline_active: palette.literals,
             quick_slot_outline_store_hover: palette.literals,
             quick_slot_outline_deviation: Color::rgba(255, 74, 88, 255),
-            quick_slot_curve: palette.identifiers,
+            quick_slot_curve: palette.literals,
             quick_slot_empty_curve: palette.text_muted,
             quick_slot_deviation_curve: Color::rgba(255, 110, 116, 255),
         }
@@ -242,9 +251,13 @@ impl UiLayoutMetrics {
         let dropdown_control_h = expanded_control_h;
         let button_control_h = expanded_control_h;
         let dropdown_control_w = dropdown_slot_w.max(1);
-        let quick_shape_button_w = content_w
-            .saturating_div(QUICK_SHAPE_BUTTONS_PER_ROW as u32)
-            .max(1);
+        let quick_shape_button_w =
+            content_w
+                .saturating_sub(QUICK_SLOT_NAV_WIDTH.saturating_add(
+                    QUICK_SLOT_GAP.saturating_mul(QUICK_SLOT_VISIBLE_COUNT as u32 + 1),
+                ))
+                .saturating_div(QUICK_SLOT_VISIBLE_COUNT as u32)
+                .max(1);
         let quick_shape_button_h = quick_shapes_h.max(1);
         let transport_indicator_size = TRANSPORT_INDICATOR_SIZE.max(1);
         let curve_editor_h = resolve_curve_editor_height(curve_h).max(1);

@@ -46,6 +46,16 @@ impl PumpGui {
                 SHORTCUT_KEY_ADD_ALT,
                 ShortcutModifiers::default(),
             ),
+            ShortcutBinding::new(
+                QUICK_SLOT_PREVIOUS_KEY,
+                SHORTCUT_KEY_QUICK_SLOT_PREVIOUS,
+                ShortcutModifiers::default(),
+            ),
+            ShortcutBinding::new(
+                QUICK_SLOT_NEXT_KEY,
+                SHORTCUT_KEY_QUICK_SLOT_NEXT,
+                ShortcutModifiers::default(),
+            ),
         ]
     }
 
@@ -183,6 +193,14 @@ mod tests {
     #[test]
     fn default_shortcuts_include_undo_and_redo_bindings() {
         let shortcuts = PumpGui::default_shortcuts();
+        assert!(shortcuts.iter().any(|binding| {
+            binding.action_key == QUICK_SLOT_PREVIOUS_KEY
+                && binding.matches('[', ShortcutModifiers::default())
+        }));
+        assert!(shortcuts.iter().any(|binding| {
+            binding.action_key == QUICK_SLOT_NEXT_KEY
+                && binding.matches(']', ShortcutModifiers::default())
+        }));
         assert!(shortcuts.iter().any(|binding| {
             binding.action_key == UNDO_KEY
                 && binding.matches('z', ShortcutModifiers::new(false, false, true))

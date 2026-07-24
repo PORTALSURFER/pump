@@ -20,6 +20,11 @@ impl GuiRuntime {
             preset_warning_text: None,
             quick_slot_hovered: None,
             quick_slot_pressed: None,
+            quick_slot_nav_hovered: false,
+            quick_slot_nav_pressed: false,
+            quick_slot_carousel_focused: false,
+            quick_slot_scroll_offset: 0,
+            quick_slot_wheel_consumed: false,
             loaded_global_curve_slot: None,
             pointer_primary_down: false,
             pointer_secondary_down: false,
@@ -441,6 +446,7 @@ impl GuiState {
             .filter(|index| *index < GLOBAL_CURVE_SLOT_COUNT)
     }
 
+    #[cfg(test)]
     pub(super) fn build_quick_slot_draw_commands(
         curve: Option<&EditableCurve>,
         size: Size,
@@ -450,12 +456,41 @@ impl GuiState {
         store_hovered: bool,
         deviated: bool,
     ) -> Vec<SurfaceCommand> {
+        Self::build_quick_slot_draw_commands_with_state(
+            curve,
+            size,
+            theme,
+            QuickSlotVisualState {
+                hovered,
+                pressed: false,
+                active,
+                store_hovered,
+                deviated,
+            },
+        )
+    }
+
+    fn build_quick_slot_draw_commands_with_state(
+        curve: Option<&EditableCurve>,
+        size: Size,
+        theme: PumpTheme,
+        visual: QuickSlotVisualState,
+    ) -> Vec<SurfaceCommand> {
+        let QuickSlotVisualState {
+            hovered,
+            pressed,
+            active,
+            store_hovered,
+            deviated,
+        } = visual;
         let rect = Rect {
             origin: Point { x: 0, y: 0 },
             size,
         };
         let fill = if deviated {
             theme.quick_slot_deviation_bg
+        } else if pressed {
+            theme.quick_slot_pressed_bg
         } else if active {
             theme.quick_slot_active_bg
         } else if store_hovered {
@@ -469,7 +504,9 @@ impl GuiState {
             theme.quick_slot_outline_deviation
         } else if store_hovered {
             theme.quick_slot_outline_store_hover
-        } else if hovered || active {
+        } else if active {
+            theme.quick_slot_outline_active
+        } else if pressed || hovered {
             theme.quick_slot_outline_hover
         } else {
             theme.quick_slot_outline
@@ -506,7 +543,7 @@ impl GuiState {
                 },
             ]
         };
-        vec![
+        let mut commands = vec![
             SurfaceCommand::FillRect { rect, color: fill },
             SurfaceCommand::StrokeRect {
                 rect,
@@ -515,7 +552,7 @@ impl GuiState {
             },
             SurfaceCommand::Polyline {
                 points,
-                thickness: if hovered || active || deviated {
+                thickness: if hovered || pressed || active || deviated {
                     2.0
                 } else {
                     1.0
@@ -528,7 +565,52 @@ impl GuiState {
                     theme.quick_slot_empty_curve
                 },
             },
-        ]
+        ];
+        if active {
+            let indicator_inset = margin.saturating_add(2);
+            let indicator_size = Size {
+                width: (size.width as i32 - indicator_inset * 2).max(1) as u32,
+                height: (size.height as i32 - indicator_inset * 2).max(1) as u32,
+            };
+            commands.push(SurfaceCommand::StrokeRect {
+                rect: Rect {
+                    origin: Point {
+                        x: indicator_inset,
+                        y: indicator_inset,
+                    },
+                    size: indicator_size,
+                },
+                thickness: 1,
+                color: theme.quick_slot_outline_active,
+            });
+        }
+        if store_hovered {
+            let marker_x = size.width.saturating_sub(margin as u32 + 4) as i32;
+            let marker_y = margin + 2;
+            commands.push(SurfaceCommand::Line {
+                start: Point {
+                    x: marker_x - 2,
+                    y: marker_y,
+                },
+                end: Point {
+                    x: marker_x + 2,
+                    y: marker_y,
+                },
+                color: theme.quick_slot_outline_store_hover,
+            });
+            commands.push(SurfaceCommand::Line {
+                start: Point {
+                    x: marker_x,
+                    y: marker_y - 2,
+                },
+                end: Point {
+                    x: marker_x,
+                    y: marker_y + 2,
+                },
+                color: theme.quick_slot_outline_store_hover,
+            });
+        }
+        commands
     }
 
     fn quick_slot_surface(
@@ -541,18 +623,69 @@ impl GuiState {
         Node::align_box(surface(
             Self::quick_slot_key(index),
             size,
-            Self::build_quick_slot_draw_commands(
-                curve,
-                size,
-                theme,
-                visual.hovered,
-                visual.active,
-                visual.store_hovered,
-                visual.deviated,
-            ),
+            Self::build_quick_slot_draw_commands_with_state(curve, size, theme, visual),
         ))
         .slot_align(SlotAlign::Start, SlotAlign::Center)
         .fill()
+    }
+
+    fn quick_slot_nav_draw_commands(
+        size: Size,
+        theme: PumpTheme,
+        hovered: bool,
+        pressed: bool,
+        direction: i32,
+    ) -> Vec<SurfaceCommand> {
+        let rect = Rect {
+            origin: Point { x: 0, y: 0 },
+            size,
+        };
+        let fill = if pressed {
+            theme.quick_slot_pressed_bg
+        } else if hovered {
+            theme.quick_slot_hover_bg
+        } else {
+            theme.quick_slot_bg
+        };
+        let outline = if pressed || hovered {
+            theme.quick_slot_outline_active
+        } else {
+            theme.quick_slot_outline
+        };
+        let center_x = size.width as i32 / 2;
+        let center_y = size.height as i32 / 2;
+        let tip_x = center_x + direction.signum() * 4;
+        let base_x = center_x - direction.signum() * 3;
+        vec![
+            SurfaceCommand::FillRect { rect, color: fill },
+            SurfaceCommand::StrokeRect {
+                rect,
+                thickness: 1,
+                color: outline,
+            },
+            SurfaceCommand::Line {
+                start: Point {
+                    x: base_x,
+                    y: center_y - 5,
+                },
+                end: Point {
+                    x: tip_x,
+                    y: center_y,
+                },
+                color: theme.quick_slot_outline_active,
+            },
+            SurfaceCommand::Line {
+                start: Point {
+                    x: tip_x,
+                    y: center_y,
+                },
+                end: Point {
+                    x: base_x,
+                    y: center_y + 5,
+                },
+                color: theme.quick_slot_outline_active,
+            },
+        ]
     }
 
     pub(super) fn build_snap_checkbox_draw_commands(
@@ -605,18 +738,21 @@ impl GuiState {
         command_down: bool,
     ) -> Node {
         let quick_slots = self.params.global_curve_slots_snapshot();
-        let (hovered_slot, pressed_slot, loaded_slot) = self
-            .runtime
-            .lock()
-            .ok()
-            .map(|runtime| {
-                (
-                    runtime.quick_slot_hovered,
-                    runtime.quick_slot_pressed,
-                    runtime.loaded_global_curve_slot,
-                )
-            })
-            .unwrap_or((None, None, None));
+        let (hovered_slot, pressed_slot, nav_hovered, nav_pressed, scroll_offset, loaded_slot) =
+            self.runtime
+                .lock()
+                .ok()
+                .map(|runtime| {
+                    (
+                        runtime.quick_slot_hovered,
+                        runtime.quick_slot_pressed,
+                        runtime.quick_slot_nav_hovered,
+                        runtime.quick_slot_nav_pressed,
+                        runtime.quick_slot_scroll_offset,
+                        runtime.loaded_global_curve_slot,
+                    )
+                })
+                .unwrap_or((None, None, false, false, 0, None));
         let deviated_slot =
             loaded_slot.filter(|index| self.params.current_curve_deviates_from_global_slot(*index));
         let buttons = quick_slots
@@ -635,7 +771,8 @@ impl GuiState {
                         theme,
                         QuickSlotVisualState {
                             hovered: hovered_slot == Some(index),
-                            active: pressed_slot == Some(index) || loaded_slot == Some(index),
+                            pressed: pressed_slot == Some(index),
+                            active: loaded_slot == Some(index),
                             store_hovered: hovered_slot == Some(index) && command_down,
                             deviated: deviated_slot == Some(index),
                         },
@@ -643,11 +780,54 @@ impl GuiState {
                     1,
                 )
             })
-            .collect();
-        let quick_shapes_row = row_slots(buttons)
-            .container_overflow(OverflowPolicy::Compress)
-            .fill();
-        panel("quick-shapes", quick_shapes_row).pad_all(0)
+            .collect::<Vec<_>>();
+        let mut content_slots = Vec::with_capacity(buttons.len() * 2 - 1);
+        for (index, button) in buttons.into_iter().enumerate() {
+            if index > 0 {
+                content_slots.push(Slot::with_params(
+                    spacer(Size {
+                        width: QUICK_SLOT_GAP,
+                        height: 1,
+                    }),
+                    SlotParams::intrinsic(),
+                ));
+            }
+            content_slots.push(Slot::with_params(
+                button.node,
+                SlotParams::intrinsic().cross_size(SlotCrossSize::Fill),
+            ));
+        }
+        let carousel_content = Node::ScrollView(
+            ScrollViewSpec::new(
+                row_slots(content_slots)
+                    .container_overflow(OverflowPolicy::Clip)
+                    .fill_height(),
+            )
+            .overflow(OverflowPolicy::Clip)
+            .offset_x(scroll_offset),
+        )
+        .fill();
+        let nav_direction = if scroll_offset == 0 { 1 } else { -1 };
+        let nav = Node::align_box(surface(
+            QUICK_SLOT_NAV_KEY,
+            Size {
+                width: QUICK_SLOT_NAV_WIDTH,
+                height: metrics.quick_shape_button_h.max(1),
+            },
+            Self::quick_slot_nav_draw_commands(
+                Size {
+                    width: QUICK_SLOT_NAV_WIDTH,
+                    height: metrics.quick_shape_button_h.max(1),
+                },
+                theme,
+                nav_hovered,
+                nav_pressed,
+                nav_direction,
+            ),
+        ))
+        .slot_align(SlotAlign::End, SlotAlign::Center)
+        .fill();
+        panel("quick-shapes", stack(vec![carousel_content, nav]).fill()).pad_all(0)
     }
 
     /// Build the controls slot node.
@@ -897,6 +1077,7 @@ impl GuiState {
     pub(super) fn build_ui(&self, input: &InputState) -> UiSpec {
         let metrics = UiLayoutMetrics::design_space();
         self.sync_knob_gesture_state(input.mouse_down, input.mouse_secondary_down);
+        self.handle_quick_slot_input(input, metrics);
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.shortcut_snap_invert_held = input.shortcut_key_down(SHORTCUT_KEY_SNAP_INVERT);
             runtime.curve_size = metrics.curve_size;
@@ -918,6 +1099,80 @@ impl GuiState {
         ])
         .container_overflow(OverflowPolicy::Compress);
         self.build_root_spec(metrics, theme, content)
+    }
+
+    fn quick_slot_scroll_max(content_w: u32, card_w: u32) -> i32 {
+        let content_width = (GLOBAL_CURVE_SLOT_COUNT as u32)
+            .saturating_mul(card_w)
+            .saturating_add(
+                QUICK_SLOT_GAP.saturating_mul(GLOBAL_CURVE_SLOT_COUNT.saturating_sub(1) as u32),
+            );
+        let viewport_width = content_w.saturating_sub(QUICK_SLOT_NAV_WIDTH + QUICK_SLOT_GAP);
+        content_width.saturating_sub(viewport_width) as i32
+    }
+
+    fn handle_quick_slot_input(&self, input: &InputState, metrics: UiLayoutMetrics) {
+        let (_, _, quick_shapes_h, _) = resolve_vertical_slot_heights(metrics.content_h);
+        let quick_shapes_y = resolve_vertical_slot_heights(metrics.content_h)
+            .0
+            .saturating_add(resolve_vertical_slot_heights(metrics.content_h).1);
+        let over_strip = input.pointer_pos.x >= 0
+            && input.pointer_pos.x < metrics.content_w as i32
+            && input.pointer_pos.y >= quick_shapes_y as i32
+            && input.pointer_pos.y < quick_shapes_y.saturating_add(quick_shapes_h) as i32;
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if input.wheel_delta == 0.0 {
+                runtime.quick_slot_wheel_consumed = false;
+            } else if over_strip && !runtime.quick_slot_wheel_consumed {
+                let card_step = metrics.quick_shape_button_w.saturating_add(QUICK_SLOT_GAP) as i32;
+                let delta = if input.wheel_delta > 0.0 {
+                    -card_step
+                } else {
+                    card_step
+                };
+                let max_offset = Self::quick_slot_scroll_max(
+                    metrics.content_w,
+                    metrics.quick_shape_button_w.max(1),
+                );
+                runtime.quick_slot_scroll_offset = runtime
+                    .quick_slot_scroll_offset
+                    .saturating_add(delta)
+                    .clamp(0, max_offset);
+                runtime.quick_slot_wheel_consumed = true;
+            }
+        }
+    }
+
+    fn ensure_quick_slot_visible(&self, index: usize, metrics: UiLayoutMetrics) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            let card_w = metrics.quick_shape_button_w.max(1);
+            let viewport_w = metrics
+                .content_w
+                .saturating_sub(QUICK_SLOT_NAV_WIDTH + QUICK_SLOT_GAP);
+            let start = index as u32 * card_w.saturating_add(QUICK_SLOT_GAP);
+            let end = start.saturating_add(card_w);
+            if start < runtime.quick_slot_scroll_offset.max(0) as u32 {
+                runtime.quick_slot_scroll_offset = start as i32;
+            } else if end > runtime.quick_slot_scroll_offset.max(0) as u32 + viewport_w {
+                runtime.quick_slot_scroll_offset = end.saturating_sub(viewport_w) as i32;
+            }
+            let max_offset = Self::quick_slot_scroll_max(metrics.content_w, card_w);
+            runtime.quick_slot_scroll_offset =
+                runtime.quick_slot_scroll_offset.clamp(0, max_offset);
+        }
+    }
+
+    fn reduce_quick_slot_navigation(&self, direction: i32) {
+        let metrics = UiLayoutMetrics::design_space();
+        let Ok(mut runtime) = self.runtime.lock() else {
+            return;
+        };
+        if !runtime.quick_slot_carousel_focused {
+            return;
+        }
+        let max_offset =
+            Self::quick_slot_scroll_max(metrics.content_w, metrics.quick_shape_button_w);
+        runtime.quick_slot_scroll_offset = if direction < 0 { 0 } else { max_offset };
     }
 
     pub(super) fn measured_open_size(&self) -> (u32, u32) {
@@ -1040,6 +1295,14 @@ impl GuiState {
                     }
                 }
             }
+            UiAction::RegionHover { key, hovered, .. } if key == QUICK_SLOT_NAV_KEY => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.quick_slot_nav_hovered = hovered;
+                    if hovered {
+                        runtime.quick_slot_carousel_focused = true;
+                    }
+                }
+            }
             UiAction::RegionHover { .. } => {}
             UiAction::RegionInteracted {
                 key,
@@ -1072,8 +1335,49 @@ impl GuiState {
                 ..
             } if Self::quick_slot_index_from_key(key.as_str()).is_some() => {
                 if let Some(index) = Self::quick_slot_index_from_key(key.as_str()) {
+                    if let Ok(mut runtime) = self.runtime.lock() {
+                        runtime.quick_slot_carousel_focused = true;
+                    }
                     self.reduce_quick_slot_interaction(index, kind, command_down);
                 }
+            }
+            UiAction::RegionInteracted {
+                key,
+                kind: RegionInteractionKind::Pressed,
+                ..
+            } if key == QUICK_SLOT_NAV_KEY => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.quick_slot_nav_pressed = true;
+                    runtime.quick_slot_carousel_focused = true;
+                }
+                let direction = self
+                    .runtime
+                    .lock()
+                    .ok()
+                    .map(|runtime| {
+                        if runtime.quick_slot_scroll_offset == 0 {
+                            1
+                        } else {
+                            -1
+                        }
+                    })
+                    .unwrap_or(1);
+                self.reduce_quick_slot_navigation(direction);
+            }
+            UiAction::RegionInteracted {
+                key,
+                kind: RegionInteractionKind::Released,
+                ..
+            } if key == QUICK_SLOT_NAV_KEY => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.quick_slot_nav_pressed = false;
+                }
+            }
+            UiAction::ButtonPressed { key } if key == QUICK_SLOT_PREVIOUS_KEY => {
+                self.reduce_quick_slot_navigation(-1)
+            }
+            UiAction::ButtonPressed { key } if key == QUICK_SLOT_NEXT_KEY => {
+                self.reduce_quick_slot_navigation(1)
             }
             UiAction::RegionInteracted { .. } => {}
             _ => {}
@@ -1551,6 +1855,7 @@ impl GuiState {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.loaded_global_curve_slot = Some(index);
         }
+        self.ensure_quick_slot_visible(index, UiLayoutMetrics::design_space());
     }
 
     /// Store the current editable curve into one globally persisted quick slot.
@@ -1563,6 +1868,7 @@ impl GuiState {
             if let Ok(mut runtime) = self.runtime.lock() {
                 runtime.loaded_global_curve_slot = Some(index);
             }
+            self.ensure_quick_slot_visible(index, UiLayoutMetrics::design_space());
         }
     }
 
