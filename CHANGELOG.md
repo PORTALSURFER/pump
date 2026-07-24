@@ -312,6 +312,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (0a9a7fe)
 
+- (changelog) Update changelog [skip ci] (c7063e5)
+
 
 ### Features
 
@@ -1095,6 +1097,10 @@ Remove local agent state files (3f3ae92)
 * fix: preserve floor text and test migration
 
 * test: fix vst3 parameter test imports (19922a6)
+
+- [OPT-1131] Restyle global curve slots as target carousel
+
+Preserve global curve slot persistence and interaction semantics while presenting slots as the target thumbnail carousel. (e2a7a6d)
 
 
 ### Refactoring
