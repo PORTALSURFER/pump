@@ -35,8 +35,8 @@ use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
     GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
     MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, TRIGGER_MODE_LABELS,
-    TRIGGER_MODE_SIDECHAIN,
+    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PROCESSING_MODE_LABELS,
+    TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
@@ -318,6 +318,7 @@ enum RadiantEditorMessage {
     Smooth(f32),
     SyncDivision(f32),
     TriggerMode(f32),
+    ProcessingMode(f32),
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
     NumericEntry(NumericEntryMessage),
@@ -629,6 +630,12 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 params.trigger_mode() as f32,
                 RadiantEditorMessage::TriggerMode,
             ),
+            enum_control_row(
+                "Mode",
+                PROCESSING_MODE_LABELS[params.mode()].to_string(),
+                params.mode() as f32,
+                RadiantEditorMessage::ProcessingMode,
+            ),
         ])
         .padding(SURFACE_PADDING)
         .spacing(SURFACE_SPACING)
@@ -727,6 +734,9 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                 return;
             }
             state.params.set_trigger_mode(mode as f32);
+        }
+        RadiantEditorMessage::ProcessingMode(value) => {
+            state.params.set_mode(value);
         }
         RadiantEditorMessage::Curve(message) => reduce_curve_message(state, message),
         RadiantEditorMessage::CurveSlot(message) => reduce_curve_slot_message(state, message),

@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 10;
+pub(crate) const STATE_VERSION: u32 = 11;
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
@@ -25,6 +25,8 @@ pub const PARAM_FLOOR_NUM: u32 = 6;
 pub const PARAM_TRIGGER_MODE_NUM: u32 = 7;
 /// Host-visible numeric parameter id for evaluated gain smoothing.
 pub const PARAM_SMOOTH_NUM: u32 = 8;
+/// Host-visible numeric parameter id for the processing mode.
+pub const PARAM_MODE_NUM: u32 = 9;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
@@ -42,6 +44,8 @@ pub const PARAM_FLOOR_ID: ClapId = ClapId::new(PARAM_FLOOR_NUM);
 pub const PARAM_TRIGGER_MODE_ID: ClapId = ClapId::new(PARAM_TRIGGER_MODE_NUM);
 /// Parameter id for evaluated gain smoothing.
 pub const PARAM_SMOOTH_ID: ClapId = ClapId::new(PARAM_SMOOTH_NUM);
+/// Parameter id for the processing mode.
+pub const PARAM_MODE_ID: ClapId = ClapId::new(PARAM_MODE_NUM);
 
 /// Host-synchronised curve triggering.
 pub const TRIGGER_MODE_HOST: usize = 0;
@@ -49,6 +53,27 @@ pub const TRIGGER_MODE_HOST: usize = 0;
 pub const TRIGGER_MODE_SIDECHAIN: usize = 1;
 /// Human-readable trigger-source labels.
 pub const TRIGGER_MODE_LABELS: [&str; 2] = ["Host", "Sidechain"];
+
+/// The current Pump processing mode.
+///
+/// Classic is the unchanged Pump algorithm. Punch keeps the same curve and
+/// timing but applies half of the selected attenuation depth, preserving more
+/// transient energy while retaining the user's curve shape.
+pub const PROCESSING_MODE_CLASSIC: usize = 0;
+pub const PROCESSING_MODE_PUNCH: usize = 1;
+pub const PROCESSING_MODE_LABELS: [&str; 2] = ["Classic", "Punch"];
+
+/// Clamp an untrusted processing-mode value to a supported mode.
+pub fn clamp_processing_mode(value: f32) -> usize {
+    if !value.is_finite() {
+        return PROCESSING_MODE_CLASSIC;
+    }
+    if value.round() == PROCESSING_MODE_PUNCH as f32 {
+        PROCESSING_MODE_PUNCH
+    } else {
+        PROCESSING_MODE_CLASSIC
+    }
+}
 
 /// Default dry/wet blend.
 pub const DEFAULT_MIX: f32 = 1.0;
@@ -232,6 +257,8 @@ pub struct PumpPreset {
     pub trigger_mode: usize,
     /// Evaluated wet-gain smoothing amount.
     pub smooth: f32,
+    /// Processing mode.
+    pub mode: usize,
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
     /// Overwriteable quick-slot curves shown below the editor for this preset.
@@ -298,6 +325,7 @@ impl PumpPresetBank {
                 sync_division: DEFAULT_SYNC_DIVISION_INDEX,
                 trigger_mode: DEFAULT_TRIGGER_MODE,
                 smooth: DEFAULT_SMOOTH,
+                mode: PROCESSING_MODE_CLASSIC,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -363,6 +391,7 @@ pub struct PumpParams {
     pub(super) sync_division: AtomicU32,
     pub(super) trigger_mode: AtomicU32,
     pub(super) smooth: AtomicF32,
+    pub(super) mode: AtomicU32,
     pub(super) editable_curve: RwLock<EditableCurve>,
     pub(super) curve: [AtomicF32; CURVE_TABLE_LEN],
     pub(super) curve_revision: AtomicU32,

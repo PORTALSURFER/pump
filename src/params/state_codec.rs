@@ -36,6 +36,7 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     }
     payload.extend_from_slice(&(params.trigger_mode() as f32).to_le_bytes());
     payload.extend_from_slice(&params.smooth().to_le_bytes());
+    payload.extend_from_slice(&(params.mode() as f32).to_le_bytes());
 
     payload
 }
@@ -111,6 +112,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 sync_division: clamp_sync_division(sync_division),
                 trigger_mode: DEFAULT_TRIGGER_MODE,
                 smooth: DEFAULT_SMOOTH,
+                mode: PROCESSING_MODE_CLASSIC,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -133,6 +135,14 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     } else {
         DEFAULT_SMOOTH
     };
+    let mode = if version >= 11 {
+        let Some(mode) = read_f32(&mut cursor) else {
+            return Err("invalid processing mode field");
+        };
+        clamp_processing_mode(mode)
+    } else {
+        PROCESSING_MODE_CLASSIC
+    };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -145,6 +155,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_sync_division(sync_division);
     params.set_trigger_mode(trigger_mode);
     params.set_smooth(smooth);
+    params.set_mode(mode as f32);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
 
@@ -169,6 +180,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     }
     payload.extend_from_slice(&(preset.trigger_mode as u32).to_le_bytes());
     payload.extend_from_slice(&preset.smooth.to_le_bytes());
+    payload.extend_from_slice(&(clamp_processing_mode(preset.mode as f32) as u32).to_le_bytes());
     payload.push(u8::from(preset.is_favorite));
 }
 
@@ -343,6 +355,14 @@ fn decode_preset_bank(
         } else {
             DEFAULT_SMOOTH
         };
+        let mode = if version >= 11 {
+            let Some(mode) = read_u32(cursor).map(|value| value as f32) else {
+                return Err("invalid preset processing mode");
+            };
+            clamp_processing_mode(mode)
+        } else {
+            PROCESSING_MODE_CLASSIC
+        };
         let is_favorite = if version >= 9 {
             read_u8(cursor).ok_or("invalid preset favorite flag")? != 0
         } else {
@@ -361,6 +381,7 @@ fn decode_preset_bank(
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
             trigger_mode: trigger_mode.min(TRIGGER_MODE_SIDECHAIN),
             smooth,
+            mode,
             editable_curve: editable_curve.normalized(),
             quick_slots,
         });
@@ -437,6 +458,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     params.set_sync_division(sync_division);
     params.set_trigger_mode(DEFAULT_TRIGGER_MODE as f32);
     params.set_smooth(DEFAULT_SMOOTH);
+    params.set_mode(PROCESSING_MODE_CLASSIC as f32);
     params.set_curve(&curve);
     params.set_preset_bank_without_persistence(PumpPresetBank {
         selected: 0,
@@ -453,6 +475,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             sync_division: params.sync_division(),
             trigger_mode: DEFAULT_TRIGGER_MODE,
             smooth: DEFAULT_SMOOTH,
+            mode: PROCESSING_MODE_CLASSIC,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],

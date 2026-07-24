@@ -33,9 +33,9 @@ use crate::params::{
     DEFAULT_PRESET_NAME, DEFAULT_SMOOTH, GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB,
     MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SMOOTH,
     MAX_SYNC_DIVISION, MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET,
-    MIN_SMOOTH, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
+    MIN_SMOOTH, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID,
     PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID,
-    TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
+    PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
@@ -75,6 +75,7 @@ const PHASE_KEY: &str = "phase";
 const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
 const TRIGGER_MODE_KEY: &str = "trigger-mode";
+const MODE_KEY: &str = "processing-mode";
 const SNAP_KEY: &str = "snap";
 const GRID_OVERRIDE_KEY: &str = "grid-override";
 const PRESET_DROPDOWN_KEY: &str = "preset-dropdown";
@@ -333,6 +334,7 @@ struct ControlSnapshot {
     output_gain_db: f32,
     division: usize,
     trigger_mode: usize,
+    mode: usize,
     sidechain_available: bool,
     snap_enabled: bool,
     snap_hovered: bool,
@@ -356,6 +358,7 @@ struct UiHistorySnapshot {
     phase_offset: f32,
     output_gain_db: f32,
     sync_division: usize,
+    mode: usize,
     editable_curve: EditableCurve,
     preset_bank: PumpPresetBank,
 }
