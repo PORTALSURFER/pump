@@ -186,15 +186,17 @@ fn state_roundtrip_preserves_values() {
 
 #[test]
 fn unsupported_processing_mode_falls_back_to_classic() {
-    let params = PumpParams::new();
-    params.set_mode(PROCESSING_MODE_PUNCH as f32);
-    let mut payload = encode_state_payload(&params);
-    let mode_offset = payload.len() - 4;
-    payload[mode_offset..].copy_from_slice(&99.0_f32.to_le_bytes());
+    for unsupported in [99.0_f32, 0.6_f32] {
+        let params = PumpParams::new();
+        params.set_mode(PROCESSING_MODE_PUNCH as f32);
+        let mut payload = encode_state_payload(&params);
+        let mode_offset = payload.len() - 4;
+        payload[mode_offset..].copy_from_slice(&unsupported.to_le_bytes());
 
-    let restored = PumpParams::new();
-    decode_state_payload(&restored, &payload).expect("unknown mode should be recoverable");
-    assert_eq!(restored.mode(), super::PROCESSING_MODE_CLASSIC);
+        let restored = PumpParams::new();
+        decode_state_payload(&restored, &payload).expect("unknown mode should be recoverable");
+        assert_eq!(restored.mode(), super::PROCESSING_MODE_CLASSIC);
+    }
 }
 
 #[test]

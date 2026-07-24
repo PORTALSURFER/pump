@@ -35,8 +35,8 @@ use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
     GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
     MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PROCESSING_MODE_LABELS,
-    TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
+    PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID,
+    PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
@@ -737,6 +737,7 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
         }
         RadiantEditorMessage::ProcessingMode(value) => {
             state.params.set_mode(value);
+            push_radiant_param_update(state, PARAM_MODE_ID, state.params.mode() as f64);
         }
         RadiantEditorMessage::Curve(message) => reduce_curve_message(state, message),
         RadiantEditorMessage::CurveSlot(message) => reduce_curve_slot_message(state, message),
@@ -895,7 +896,10 @@ fn apply_numeric_entry_value(
         NumericEntryTarget::Smooth => state.params.set_smooth(value as f32),
     }
 
-    let param_id = target.param_id();
+    push_radiant_param_update(state, target.param_id(), value);
+}
+
+fn push_radiant_param_update(state: &RadiantEditorState, param_id: ClapId, value: f64) {
     let _ = state
         .automation_queue
         .push_gesture_begin(&state.automation_config, param_id);
@@ -3137,10 +3141,13 @@ fn point_to_segment_distance_squared(point: Point, a: Point, b: Point) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::PROCESSING_MODE_PUNCH;
     #[cfg(feature = "vst3")]
     use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
     use radiant::widgets::PointerModifiers;
+    use toybox::clack_plugin::events::io::EventBuffer;
+    use toybox::clack_plugin::events::spaces::CoreEventSpace;
 
     fn editor_state(params: Arc<PumpParams>) -> RadiantEditorState {
         RadiantEditorState::new(
@@ -3292,17 +3299,40 @@ mod tests {
     #[test]
     fn radiant_editor_reduces_slider_messages_to_params() {
         let params = Arc::new(PumpParams::new());
-        let mut state = editor_state(Arc::clone(&params));
+        let queue = Arc::new(AutomationQueue::default());
+        let mut state = RadiantEditorState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::clone(&queue),
+        );
 
         reduce_editor_message(&mut state, RadiantEditorMessage::Mix(0.25));
         reduce_editor_message(&mut state, RadiantEditorMessage::Phase(0.5));
         reduce_editor_message(&mut state, RadiantEditorMessage::OutputGain(0.5));
         reduce_editor_message(&mut state, RadiantEditorMessage::SyncDivision(1.0));
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::ProcessingMode(PROCESSING_MODE_PUNCH as f32),
+        );
 
         assert!((params.mix() - 0.25).abs() < f32::EPSILON);
         assert!((params.phase_offset() - 0.5).abs() < f32::EPSILON);
         assert!((params.output_gain_db() + 6.0).abs() < f32::EPSILON);
         assert_eq!(params.sync_division(), MAX_SYNC_DIVISION as usize);
+        assert_eq!(params.mode(), PROCESSING_MODE_PUNCH);
+
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        let stats = queue.drain_to_output(&mut output, &mut scratch);
+        assert_eq!(stats.attempted, 3);
+        let value_ids: Vec<_> = (0..buffer.len())
+            .filter_map(|index| match buffer.get(index as u32)?.as_core_event()? {
+                CoreEventSpace::ParamValue(value) => value.param_id(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(value_ids, vec![PARAM_MODE_ID]);
     }
 
     #[test]

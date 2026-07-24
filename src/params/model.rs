@@ -68,7 +68,7 @@ pub fn clamp_processing_mode(value: f32) -> usize {
     if !value.is_finite() {
         return PROCESSING_MODE_CLASSIC;
     }
-    if value.round() == PROCESSING_MODE_PUNCH as f32 {
+    if value == PROCESSING_MODE_PUNCH as f32 {
         PROCESSING_MODE_PUNCH
     } else {
         PROCESSING_MODE_CLASSIC
