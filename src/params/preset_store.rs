@@ -7,11 +7,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 2;
+const PRESET_STORE_VERSION: u32 = 3;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
 const MIN_ENCODED_CURVE_BYTES: usize = 4 + MIN_CURVE_BYTES;
+const PHASE_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"PHAS");
 
 #[cfg(test)]
 thread_local! {
@@ -287,6 +288,25 @@ fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
     {
         payload.extend_from_slice(&segment.tension.to_le_bytes());
     }
+    encode_phase_metadata(payload, &normalized_curve);
+}
+
+fn encode_phase_metadata(payload: &mut Vec<u8>, curve: &EditableCurve) {
+    let Some(source) = curve.phase_source.as_deref() else {
+        return;
+    };
+    payload.extend_from_slice(&PHASE_METADATA_MAGIC.to_le_bytes());
+    payload.extend_from_slice(&curve.phase_offset.to_le_bytes());
+    let source = source.clone().normalized();
+    let node_count = source.nodes.len().min(MAX_EDITABLE_NODES);
+    payload.extend_from_slice(&(node_count as u32).to_le_bytes());
+    for node in source.nodes.iter().take(node_count) {
+        payload.extend_from_slice(&node.x.to_le_bytes());
+        payload.extend_from_slice(&node.y.to_le_bytes());
+    }
+    for segment in source.segments.iter().take(node_count.saturating_sub(1)) {
+        payload.extend_from_slice(&segment.tension.to_le_bytes());
+    }
 }
 
 fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> {
@@ -340,9 +360,9 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         let node_count = read_u32(&mut cursor)
             .map(|value| value as usize)
             .ok_or_else(|| "invalid preset node count".to_string())?;
-        let editable_curve = decode_curve(&mut cursor, node_count)?;
+        let editable_curve = decode_curve(&mut cursor, node_count, version >= 3)?;
         let quick_slots = if version >= 2 {
-            decode_quick_slots(&mut cursor)?
+            decode_quick_slots(&mut cursor, version >= 3)?
         } else {
             seeded_quick_shape_slots()
         };
@@ -367,7 +387,11 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
     })
 }
 
-fn decode_curve(cursor: &mut Cursor<&[u8]>, node_count: usize) -> Result<EditableCurve, String> {
+fn decode_curve(
+    cursor: &mut Cursor<&[u8]>,
+    node_count: usize,
+    with_phase_metadata: bool,
+) -> Result<EditableCurve, String> {
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds".to_string());
     }
@@ -386,10 +410,32 @@ fn decode_curve(cursor: &mut Cursor<&[u8]>, node_count: usize) -> Result<Editabl
         let tension = read_f32(cursor).ok_or_else(|| "invalid curve segment".to_string())?;
         segments.push(CurveSegment { tension });
     }
-    Ok(EditableCurve { nodes, segments }.normalized())
+    let mut curve = EditableCurve {
+        nodes,
+        segments,
+        ..EditableCurve::default()
+    };
+    if with_phase_metadata {
+        let marker_position = cursor.position();
+        let marker = read_u32(cursor).unwrap_or_default();
+        if marker == PHASE_METADATA_MAGIC {
+            curve.phase_offset =
+                read_f32(cursor).ok_or_else(|| "invalid phase offset".to_string())?;
+            let source_count = read_u32(cursor)
+                .map(|value| value as usize)
+                .ok_or_else(|| "invalid phase source node count".to_string())?;
+            curve.phase_source = Some(Box::new(decode_curve(cursor, source_count, false)?));
+        } else {
+            cursor.set_position(marker_position);
+        }
+    }
+    Ok(curve.normalized())
 }
 
-fn decode_quick_slots(cursor: &mut Cursor<&[u8]>) -> Result<Vec<QuickShapeSlot>, String> {
+fn decode_quick_slots(
+    cursor: &mut Cursor<&[u8]>,
+    with_phase_metadata: bool,
+) -> Result<Vec<QuickShapeSlot>, String> {
     let count = read_u32(cursor)
         .map(|value| value as usize)
         .ok_or_else(|| "invalid preset quick slot count".to_string())?;
@@ -404,7 +450,7 @@ fn decode_quick_slots(cursor: &mut Cursor<&[u8]>) -> Result<Vec<QuickShapeSlot>,
         let node_count = read_u32(cursor)
             .map(|value| value as usize)
             .ok_or_else(|| "invalid preset quick slot node count".to_string())?;
-        let curve = decode_curve(cursor, node_count)?;
+        let curve = decode_curve(cursor, node_count, with_phase_metadata)?;
         slots.push(QuickShapeSlot { curve });
     }
     Ok(slots)
@@ -517,6 +563,8 @@ mod tests {
                             CurveSegment { tension: -0.4 },
                             CurveSegment { tension: 0.2 },
                         ],
+
+                        ..EditableCurve::default()
                     }
                     .normalized(),
                     quick_slots: seeded_quick_shape_slots(),

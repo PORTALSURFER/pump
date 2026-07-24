@@ -211,7 +211,8 @@
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
-        };
+
+        ..EditableCurve::default()};
 
         let near_start = local_from_node(curve.nodes[0]);
         assert_eq!(find_deletable_node_hit(&curve, near_start), None);
@@ -229,7 +230,8 @@
                 CurveNode { x: 1.0, y: 1.0 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
-        };
+
+        ..EditableCurve::default()};
 
         let far_away = Point { x: 0, y: 0 };
         assert_eq!(find_deletable_node_hit(&curve, far_away), None);
@@ -244,7 +246,8 @@
                 CurveNode { x: 1.0, y: 1.0 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
-        };
+
+        ..EditableCurve::default()};
 
         let near_segment = local_from_node(CurveNode { x: 0.2, y: 0.45 });
         assert_eq!(
@@ -269,7 +272,8 @@
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
-        };
+
+        ..EditableCurve::default()};
 
         let moved_index =
             move_node_with_push_through(&mut curve, 2, CurveNode { x: 0.95, y: 0.4 }, 0);
@@ -296,7 +300,8 @@
                 CurveSegment { tension: 0.35 },
                 CurveSegment { tension: -0.05 },
             ],
-        };
+
+        ..EditableCurve::default()};
 
         let size = Size {
             width: CURVE_W,
@@ -345,7 +350,8 @@
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
-        };
+
+        ..EditableCurve::default()};
 
         let size = Size {
             width: CURVE_W,
@@ -389,7 +395,8 @@
                 CurveNode { x: 1.0, y: 1.0 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
-        };
+
+        ..EditableCurve::default()};
 
         move_node_with_push_through(&mut curve, 0, CurveNode { x: 0.0, y: 0.31 }, 10);
         let last_index = curve.nodes.len() - 1;
@@ -405,7 +412,8 @@
                 CurveNode { x: 1.0, y: 1.0 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }, CurveSegment { tension: 0.0 }],
-        };
+
+        ..EditableCurve::default()};
         let pointer = local_from_node(CurveNode { x: 0.5, y: 0.9 });
         let preview = preview_node_on_curve(&curve, pointer).expect("preview exists");
         let expected = sample_editable_curve(&curve, preview.x);
@@ -426,7 +434,8 @@
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
-        };
+
+        ..EditableCurve::default()};
         move_segment_translated(&mut curve, 1, (0.3, 0.5), (0.6, 0.5), (0.1, 0.1));
         assert!((curve.nodes[1].x - 0.4).abs() < 1.0e-6);
         assert!((curve.nodes[2].x - 0.7).abs() < 1.0e-6);
@@ -448,7 +457,8 @@
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
-        };
+
+        ..EditableCurve::default()};
 
         move_segment_translated(&mut curve, 1, (0.3, 0.2), (0.6, 0.7), (0.0, 1.0));
 
@@ -468,7 +478,8 @@
                 CurveNode { x: 1.0, y: 0.2 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }; 4],
-        };
+
+        ..EditableCurve::default()};
 
         move_segment_translated(&mut curve, 1, (0.25, 0.3), (0.5, 0.6), (1.0, 0.0));
 
@@ -492,7 +503,8 @@
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
-        };
+
+        ..EditableCurve::default()};
 
         move_segment_translated(&mut curve, 0, (0.0, 0.2), (0.3, 0.5), (0.4, 0.25));
 
@@ -509,11 +521,13 @@
         let rising = EditableCurve {
             nodes: vec![CurveNode { x: 0.0, y: 0.2 }, CurveNode { x: 1.0, y: 0.8 }],
             segments: vec![CurveSegment { tension: 0.0 }],
-        };
+
+        ..EditableCurve::default()};
         let falling = EditableCurve {
             nodes: vec![CurveNode { x: 0.0, y: 0.8 }, CurveNode { x: 1.0, y: 0.2 }],
             segments: vec![CurveSegment { tension: 0.0 }],
-        };
+
+        ..EditableCurve::default()};
 
         assert_eq!(segment_upward_tension_sign(&rising, 0), -1.0);
         assert_eq!(segment_upward_tension_sign(&falling, 0), 1.0);
@@ -524,7 +538,8 @@
         let mut curve = EditableCurve {
             nodes: vec![CurveNode { x: 0.0, y: 0.2 }, CurveNode { x: 1.0, y: 0.8 }],
             segments: vec![CurveSegment { tension: 0.0 }],
-        };
+
+        ..EditableCurve::default()};
         let baseline_mid = sample_editable_curve(&curve, 0.5);
         let delta = tension_delta_from_drag_for_segment(
             &curve,
@@ -552,7 +567,8 @@
         let mut curve = EditableCurve {
             nodes: vec![CurveNode { x: 0.0, y: 0.8 }, CurveNode { x: 1.0, y: 0.2 }],
             segments: vec![CurveSegment { tension: 0.0 }],
-        };
+
+        ..EditableCurve::default()};
         let baseline_mid = sample_editable_curve(&curve, 0.5);
         let delta = tension_delta_from_drag_for_segment(
             &curve,
@@ -1811,7 +1827,8 @@
                 CurveSegment { tension: -0.4 },
                 CurveSegment { tension: 0.25 },
             ],
-        }
+
+        ..EditableCurve::default()}
         .normalized();
         params.set_editable_curve(&custom_curve);
 

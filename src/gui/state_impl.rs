@@ -302,15 +302,17 @@ impl GuiState {
         curve_style.grid_vertical = Color::rgba(0, 0, 0, 0);
         curve_style.grid_vertical_emphasis = Color::rgba(0, 0, 0, 0);
         curve_style.grid_horizontal = Color::rgba(0, 0, 0, 0);
+        let mut curve_interaction = curve_editor_interaction_options(
+            metrics.curve_size,
+            effective_grid,
+            controls.effective_snap_enabled(),
+            command_down,
+        );
+        curve_interaction.whole_curve_offset = true;
         let curve_editor_view = curve_editor(CURVE_KEY, curve_model_from_editable(&editable_curve))
             .curve_style(curve_style)
             .curve_grid(curve_editor_grid_config(effective_grid))
-            .curve_interaction(curve_editor_interaction_options(
-                metrics.curve_size,
-                effective_grid,
-                controls.effective_snap_enabled(),
-                command_down,
-            ))
+            .curve_interaction(curve_interaction)
             .curve_segment_move(CurveSegmentMoveOptions::new(
                 CurveEditorModifier::Command,
                 theme.curve_segment_move,
@@ -1074,7 +1076,8 @@ impl GuiState {
         self.params.set_phase_offset(snapshot.phase_offset);
         self.params.set_output_gain_db(snapshot.output_gain_db);
         self.params.set_sync_division(snapshot.sync_division as f32);
-        self.params.set_editable_curve(&snapshot.editable_curve);
+        self.params
+            .set_editable_curve_preserving_phase(&snapshot.editable_curve);
         self.push_all_param_updates();
         true
     }
@@ -1504,7 +1507,7 @@ impl GuiState {
         let Some(curve) = self.params.global_curve_slot_curve(index) else {
             return;
         };
-        self.params.set_editable_curve(&curve);
+        self.params.set_editable_curve_preserving_phase(&curve);
         self.clear_curve_transient_state();
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.loaded_global_curve_slot = Some(index);

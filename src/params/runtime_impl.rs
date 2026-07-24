@@ -123,6 +123,18 @@ impl PumpParams {
 
     /// Replace the editable spline curve, regenerate the table, and advance revision.
     pub fn set_editable_curve(&self, editable_curve: &EditableCurve) {
+        let mut plain_curve = editable_curve.clone();
+        plain_curve.phase_source = None;
+        plain_curve.phase_offset = 0.0;
+        self.set_editable_curve_internal(&plain_curve);
+    }
+
+    /// Replace the editable curve while retaining an exact cyclic phase source.
+    pub fn set_editable_curve_preserving_phase(&self, editable_curve: &EditableCurve) {
+        self.set_editable_curve_internal(editable_curve);
+    }
+
+    fn set_editable_curve_internal(&self, editable_curve: &EditableCurve) {
         let normalized = editable_curve.clone().normalized();
         let curve_table = editable_curve_to_table(&normalized);
         if let Ok(mut guard) = self.editable_curve.write() {
@@ -228,7 +240,7 @@ impl PumpParams {
         self.set_phase_offset(preset.phase_offset);
         self.set_output_gain_db(preset.output_gain_db);
         self.set_sync_division(preset.sync_division as f32);
-        self.set_editable_curve(&preset.editable_curve);
+        self.set_editable_curve_preserving_phase(&preset.editable_curve);
     }
 
     /// Snapshot the stored preset bank.

@@ -196,7 +196,8 @@ mod interaction_and_automation_tests {
         let dense_curve = EditableCurve {
             nodes,
             segments: vec![CurveSegment { tension: 0.0 }; MAX_EDITABLE_NODES - 1],
-        };
+
+        ..EditableCurve::default()};
         let params = Arc::new(PumpParams::new());
         params.set_editable_curve(&dense_curve);
         let before_curve = params.editable_curve_snapshot();
@@ -271,7 +272,8 @@ mod interaction_and_automation_tests {
                 CurveNode { x: 1.0, y: 0.8 },
             ],
             segments: vec![CurveSegment { tension: 0.0 }; 3],
-        };
+
+        ..EditableCurve::default()};
         params.set_editable_curve(&curve);
         let mut state = GuiState::new(
             Arc::clone(&params),
@@ -368,7 +370,8 @@ mod interaction_and_automation_tests {
                 CurveSegment { tension: 0.0 },
                 CurveSegment { tension: 0.0 },
             ],
-        };
+
+        ..EditableCurve::default()};
         let curve_size = UiLayoutMetrics::design_space().curve_size;
         let mut pointer = local_from_node_for_size(CurveNode { x: 0.5, y: 0.4 }, curve_size);
         pointer.y += 6;
@@ -981,7 +984,8 @@ mod interaction_and_automation_tests {
                     CurveSegment { tension: 0.42 },
                     CurveSegment { tension: -0.04 },
                 ],
-            }
+
+        ..EditableCurve::default()}
             .normalized();
             params.set_editable_curve(&stored_curve);
 

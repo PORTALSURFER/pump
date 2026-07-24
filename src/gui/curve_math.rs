@@ -167,6 +167,7 @@ pub(super) fn curve_editor_interaction_options(
         push_through_threshold_px: node_push_through_threshold_px(curve_size),
         endpoint_mode: EndpointMode::CoupledY,
         double_click_delete_interior: true,
+        whole_curve_offset: false,
         snap: CurveSnapConfig {
             enabled: snap_enabled || !command_snap_positions.is_empty(),
             vertical_positions: if command_snap_enabled {
@@ -258,7 +259,7 @@ fn beat_grid_subdivision_count(grid_division: usize) -> usize {
 }
 
 pub(super) fn curve_model_from_editable(editable_curve: &EditableCurve) -> CurveModel {
-    CurveModel::new(
+    let mut model = CurveModel::new(
         editable_curve
             .nodes
             .iter()
@@ -271,11 +272,16 @@ pub(super) fn curve_model_from_editable(editable_curve: &EditableCurve) -> Curve
             .copied()
             .map(|segment| CurveEditorSegment::new(segment.tension))
             .collect(),
-    )
+    );
+    if let Some(source) = editable_curve.phase_source.as_deref() {
+        model.phase_source = Some(Box::new(curve_model_from_editable(source)));
+        model.phase_offset = editable_curve.phase_offset;
+    }
+    model
 }
 
 pub(super) fn editable_curve_from_model(model: &CurveModel) -> EditableCurve {
-    EditableCurve {
+    let mut editable = EditableCurve {
         nodes: model
             .points
             .iter()
@@ -293,8 +299,13 @@ pub(super) fn editable_curve_from_model(model: &CurveModel) -> EditableCurve {
                 tension: segment.tension,
             })
             .collect(),
+        ..EditableCurve::default()
+    };
+    if let Some(source) = model.phase_source.as_deref() {
+        editable.phase_source = Some(Box::new(editable_curve_from_model(source)));
+        editable.phase_offset = model.phase_offset;
     }
-    .normalized()
+    editable.normalized()
 }
 
 /// Return the internal tension-sign multiplier that produces visual upward bend.

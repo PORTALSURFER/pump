@@ -10,7 +10,10 @@ use super::{
     PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SYNC_DIVISION_ID,
     PARAM_SYNC_DIVISION_NUM,
 };
-use crate::curve::{CurveNode, CurveSegment, EditableCurve, CURVE_TABLE_LEN};
+use crate::curve::{
+    cyclically_offset_editable_curve, sample_editable_curve, CurveNode, CurveSegment,
+    EditableCurve, CURVE_TABLE_LEN,
+};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 fn temp_preset_store_path(label: &str) -> PathBuf {
@@ -43,6 +46,7 @@ fn test_quick_slot_curve(offset: f32) -> EditableCurve {
             CurveSegment { tension: 0.31 },
             CurveSegment { tension: -0.04 },
         ],
+        ..EditableCurve::default()
     }
     .normalized()
 }
@@ -77,6 +81,8 @@ fn state_roundtrip_preserves_values() {
             CurveSegment { tension: -0.5 },
             CurveSegment { tension: 0.4 },
         ],
+
+        ..EditableCurve::default()
     });
 
     let payload = encode_state_payload(&params);
@@ -92,6 +98,84 @@ fn state_roundtrip_preserves_values() {
     let editable = restored.editable_curve_snapshot();
     assert_eq!(editable.nodes.len(), 3);
     assert_eq!(editable.segments.len(), 2);
+}
+
+#[test]
+fn state_roundtrip_preserves_exact_cyclic_curve_translation() {
+    let params = PumpParams::new();
+    let origin = params.editable_curve_snapshot();
+    let offset = cyclically_offset_editable_curve(&origin, 0.237);
+    params.set_editable_curve_preserving_phase(&offset);
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("state should decode");
+
+    let restored_curve = restored.editable_curve_snapshot();
+    assert!(restored_curve.phase_source.is_some());
+    for index in 0..=400 {
+        let phase = index as f32 / 400.0;
+        let expected = sample_editable_curve(&origin, phase - 0.237);
+        let actual = sample_editable_curve(&restored_curve, phase);
+        assert!((actual - expected).abs() < 1.0e-6, "phase {phase}");
+    }
+}
+
+#[test]
+fn loading_persisted_preset_preserves_exact_cyclic_curve_translation() {
+    let path = temp_preset_store_path("exact-offset-preset");
+    super::preset_store::with_test_persistence_path(path.clone(), || {
+        let params = PumpParams::new();
+        let origin = params.editable_curve_snapshot();
+        let offset = cyclically_offset_editable_curve(&origin, 0.237);
+        params.set_editable_curve_preserving_phase(&offset);
+        let index = params
+            .add_preset_from_current_state()
+            .expect("preset insertion should succeed");
+
+        params.set_editable_curve(&origin);
+        params
+            .load_preset(index)
+            .expect("preset load should succeed");
+        let restored = params.editable_curve_snapshot();
+        assert!(restored.phase_source.is_some());
+        for index in 0..=200 {
+            let phase = index as f32 / 200.0;
+            assert!(
+                (sample_editable_curve(&restored, phase)
+                    - sample_editable_curve(&origin, phase - 0.237))
+                .abs()
+                    < 1.0e-6
+            );
+        }
+    });
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn loading_persisted_global_slot_preserves_exact_cyclic_curve_translation() {
+    let path = temp_preset_store_path("exact-offset-global-slot");
+    super::global_curve_slots::with_test_curve_slot_path(path.clone(), || {
+        let params = PumpParams::new();
+        let origin = params.editable_curve_snapshot();
+        let offset = cyclically_offset_editable_curve(&origin, 0.237);
+        assert!(params.set_global_curve_slot_curve(2, &offset));
+
+        let loaded = params
+            .global_curve_slot_curve(2)
+            .expect("global slot should load");
+        assert!(loaded.phase_source.is_some());
+        for index in 0..=200 {
+            let phase = index as f32 / 200.0;
+            assert!(
+                (sample_editable_curve(&loaded, phase)
+                    - sample_editable_curve(&origin, phase - 0.237))
+                .abs()
+                    < 1.0e-6
+            );
+        }
+    });
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -129,6 +213,8 @@ fn default_curve_is_simple_after_reset() {
     params.set_editable_curve(&EditableCurve {
         nodes: vec![CurveNode { x: 0.0, y: 1.0 }, CurveNode { x: 1.0, y: 0.0 }],
         segments: vec![CurveSegment { tension: 0.0 }],
+
+        ..EditableCurve::default()
     });
     params.reset_curve_to_default();
     let reset_curve = params.editable_curve_snapshot();
@@ -149,6 +235,8 @@ fn sync_division_change_does_not_mutate_curve_or_revision() {
             CurveSegment { tension: -0.3 },
             CurveSegment { tension: 0.2 },
         ],
+
+        ..EditableCurve::default()
     }
     .normalized();
     params.set_editable_curve(&custom_curve);
@@ -187,6 +275,8 @@ fn preset_add_rename_and_load_roundtrip_current_state() {
             CurveSegment { tension: -0.2 },
             CurveSegment { tension: 0.3 },
         ],
+
+        ..EditableCurve::default()
     });
 
     let inserted = params
