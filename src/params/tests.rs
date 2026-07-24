@@ -7,9 +7,8 @@ use super::{
 #[cfg(feature = "vst3")]
 use super::{
     clap_id_from_vst3_param_id, format_plain_value_text, parse_plain_value_text,
-    vst3_param_info_for_index, PARAM_MIX_ID, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_ID,
-    PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SYNC_DIVISION_ID,
-    PARAM_SYNC_DIVISION_NUM,
+    vst3_param_info_for_index, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID,
+    PARAM_PHASE_OFFSET_NUM, PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
 };
 use crate::curve::{
     cyclically_offset_editable_curve, sample_editable_curve, CurveNode, CurveSegment,
