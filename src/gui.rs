@@ -77,6 +77,9 @@ const SNAP_KEY: &str = "snap";
 const INCOMING_WAVEFORM_KEY: &str = "incoming-waveform";
 const GRID_OVERRIDE_KEY: &str = "grid-override";
 const PRESET_DROPDOWN_KEY: &str = "preset-dropdown";
+const PRESET_PREVIOUS_KEY: &str = "preset-previous";
+const PRESET_NEXT_KEY: &str = "preset-next";
+const PRESET_FAVORITE_KEY: &str = "preset-favorite";
 const PRESET_ADD_KEY: &str = "preset-add";
 const PRESET_SAVE_KEY: &str = "preset-save";
 const PRESET_RENAME_BUTTON_KEY: &str = "preset-rename-button";
@@ -99,8 +102,10 @@ const SHORTCUT_KEY_UNDO: char = 'z';
 const SHORTCUT_KEY_REDO: char = 'y';
 const SHORTCUT_KEY_QUICK_SLOT_PREVIOUS: char = '[';
 const SHORTCUT_KEY_QUICK_SLOT_NEXT: char = ']';
+const SHORTCUT_KEY_PRESET_PREVIOUS: char = ',';
+const SHORTCUT_KEY_PRESET_NEXT: char = '.';
 
-const HEADER_SECTION_WEIGHT: u16 = 7;
+const HEADER_SECTION_WEIGHT: u16 = 14;
 const CURVE_SECTION_WEIGHT: u16 = 58;
 const QUICK_SHAPES_SECTION_WEIGHT: u16 = 9;
 const CONTROLS_SECTION_WEIGHT: u16 = 26;
@@ -357,6 +362,7 @@ struct UiHistorySnapshot {
 #[derive(Clone, Debug)]
 struct PresetSnapshot {
     names: Vec<String>,
+    favorites: Vec<bool>,
     selected: usize,
     dirty: bool,
     rename_active: bool,

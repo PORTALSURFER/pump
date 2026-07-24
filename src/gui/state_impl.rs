@@ -96,6 +96,14 @@ impl GuiState {
                 .map(|preset| preset.name.clone())
                 .collect()
         };
+        let favorites = if bank.presets.is_empty() {
+            vec![false]
+        } else {
+            bank.presets
+                .iter()
+                .map(|preset| preset.is_favorite)
+                .collect()
+        };
         let selected = bank.selected.min(names.len().saturating_sub(1));
         let persistence_warning = self.params.preset_persistence_warning().is_some();
         if persistence_warning {
@@ -125,6 +133,7 @@ impl GuiState {
 
         PresetSnapshot {
             names,
+            favorites,
             selected,
             dirty,
             rename_active,
@@ -165,8 +174,18 @@ impl GuiState {
         );
         let left_width = header_slot_widths.first().copied().unwrap_or(1).max(1);
         let right_width = header_slot_widths.get(1).copied().unwrap_or(1).max(1);
-        let action_button_width = (left_width / 8).max(metrics.transport_indicator_size.max(1));
-        let preset_title_width = left_width.saturating_sub(action_button_width).max(1);
+        // Keep navigation and metadata controls in the primary row. The full
+        // dropdown remains the source of truth for ordering; favorites only
+        // annotate entries, so selecting a favorite can never hide the
+        // current preset.
+        let action_button_width = (left_width / 12).max(metrics.transport_indicator_size.max(1));
+        let nav_button_width = action_button_width.max(24);
+        let favorite_width = action_button_width.max(28);
+        let preset_title_width = left_width
+            .saturating_sub(nav_button_width.saturating_mul(2))
+            .saturating_sub(favorite_width)
+            .saturating_sub(action_button_width.saturating_mul(3))
+            .max(1);
         let preset_selected_row_highlight = (presets.dirty || presets.warning_blink_visible)
             .then_some(theme.preset_dirty_highlight);
         let indicator_node = Node::align_box(
@@ -217,12 +236,27 @@ impl GuiState {
                 .widget_layout(LayoutBox::fill())
                 .fill()
         } else {
+            let display_names = presets
+                .names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    let favorite = presets.favorites.get(index).copied().unwrap_or(false);
+                    let dirty_marker = index == presets.selected && presets.dirty;
+                    format!(
+                        "{}{}{}",
+                        if favorite { "★ " } else { "" },
+                        name,
+                        if dirty_marker { " *" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>();
             let mut preset_dropdown = dropdown(
                 PRESET_DROPDOWN_KEY,
-                presets.names.len().max(1),
-                presets.selected.min(presets.names.len().saturating_sub(1)),
+                display_names.len().max(1),
+                presets.selected.min(display_names.len().saturating_sub(1)),
             )
-            .dropdown_option_labels(presets.names.clone())
+            .dropdown_option_labels(display_names)
             .control_size(Size {
                 width: preset_title_width,
                 height: header_h,
@@ -247,6 +281,34 @@ impl GuiState {
             )
         };
 
+        let previous_button = button(PRESET_PREVIOUS_KEY)
+            .button_label("<")
+            .control_size(Size {
+                width: nav_button_width,
+                height: header_h,
+            })
+            .disabled(presets.selected == 0)
+            .fill();
+        let next_button = button(PRESET_NEXT_KEY)
+            .button_label(">")
+            .control_size(Size {
+                width: nav_button_width,
+                height: header_h,
+            })
+            .disabled(presets.selected.saturating_add(1) >= presets.names.len())
+            .fill();
+        let favorite = presets
+            .favorites
+            .get(presets.selected)
+            .copied()
+            .unwrap_or(false);
+        let favorite_toggle = button(PRESET_FAVORITE_KEY)
+            .button_label(if favorite { "F*" } else { "F" })
+            .control_size(Size {
+                width: favorite_width,
+                height: header_h,
+            })
+            .fill();
         let rename_button = button(PRESET_RENAME_BUTTON_KEY)
             .button_label("R")
             .control_size(Size {
@@ -269,6 +331,9 @@ impl GuiState {
             })
             .fill();
         let action_buttons = row_slots(vec![
+            action_button_slot(previous_button),
+            action_button_slot(next_button),
+            action_button_slot(favorite_toggle),
             action_button_slot(rename_button),
             action_button_slot(save_button),
             action_button_slot(add_button),
@@ -283,8 +348,8 @@ impl GuiState {
         .container_overflow(OverflowPolicy::Compress)
         .fill();
         let left_controls = row_slots(vec![
-            weighted_slot(preset_title, 82),
-            weighted_slot(action_buttons, 18),
+            weighted_slot(preset_title, 55),
+            weighted_slot(action_buttons, 45),
         ])
         .container_overflow(OverflowPolicy::Compress)
         .fill();
@@ -1232,6 +1297,27 @@ impl GuiState {
             UiAction::ToggleChanged { key, value } if key == INCOMING_WAVEFORM_KEY => {
                 self.status.set_incoming_waveform_enabled(value);
             }
+            UiAction::ToggleChanged { key, value } if key == PRESET_FAVORITE_KEY => {
+                self.capture_undo_snapshot();
+                let selected = self.params.preset_bank_snapshot().selected;
+                match self.params.set_preset_favorite(selected, Some(value)) {
+                    Ok(_) => {}
+                    Err(PresetMutationError::PersistenceFailed { .. }) => {
+                        self.set_preset_warning(PRESET_WARNING_STORAGE)
+                    }
+                    Err(_) => self.set_preset_warning(PRESET_WARNING_NAME),
+                }
+            }
+            UiAction::ButtonPressed { key } if key == PRESET_FAVORITE_KEY => {
+                self.capture_undo_snapshot();
+                match self.params.toggle_selected_preset_favorite() {
+                    Ok(_) => {}
+                    Err(PresetMutationError::PersistenceFailed { .. }) => {
+                        self.set_preset_warning(PRESET_WARNING_STORAGE)
+                    }
+                    Err(_) => self.set_preset_warning(PRESET_WARNING_NAME),
+                }
+            }
             UiAction::RegionHover { key, hovered, .. } if key == SNAP_KEY => {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.snap_hovered = hovered;
@@ -1269,6 +1355,12 @@ impl GuiState {
             UiAction::ButtonPressed { key } if key == PRESET_SAVE_KEY => {
                 self.capture_undo_snapshot();
                 self.save_current_preset_by_name();
+            }
+            UiAction::ButtonPressed { key } if key == PRESET_PREVIOUS_KEY => {
+                self.load_relative_preset(-1);
+            }
+            UiAction::ButtonPressed { key } if key == PRESET_NEXT_KEY => {
+                self.load_relative_preset(1);
             }
             UiAction::TextBoxEdited { key, text } if key == PRESET_RENAME_KEY => {
                 if let Ok(mut runtime) = self.runtime.lock() {
@@ -1785,6 +1877,25 @@ impl GuiState {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn load_relative_preset(&self, direction: i32) {
+        match self.params.load_preset_relative(direction) {
+            Ok(selected) => {
+                self.push_all_param_updates();
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.preset_rename_active = false;
+                    runtime.preset_name_draft.clear();
+                    runtime.preset_rename_target = selected;
+                    runtime.preset_warning_frames = 0;
+                    runtime.preset_warning_text = None;
+                }
+            }
+            Err(PresetMutationError::PersistenceFailed { .. }) => {
+                self.set_preset_warning(PRESET_WARNING_STORAGE)
+            }
+            Err(_) => {}
         }
     }
 

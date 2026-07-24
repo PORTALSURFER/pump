@@ -408,6 +408,35 @@ fn load_preset_persists_selected_index_for_new_instances() {
 }
 
 #[test]
+fn preset_navigation_clamps_at_first_and_last_entry() {
+    let params = PumpParams::new();
+    params
+        .add_preset_from_current_state()
+        .expect("second preset should be created");
+    params.load_preset(0).expect("first preset should load");
+
+    assert_eq!(params.load_preset_relative(-1), Ok(0));
+    assert_eq!(params.preset_bank_snapshot().selected, 0);
+    assert_eq!(params.load_preset_relative(1), Ok(1));
+    assert_eq!(params.load_preset_relative(1), Ok(1));
+    assert_eq!(params.preset_bank_snapshot().selected, 1);
+}
+
+#[test]
+fn favorite_toggle_persists_across_param_relaunches() {
+    let path = temp_preset_store_path("favorite-persistence");
+    super::preset_store::with_test_persistence_path(path.clone(), || {
+        let params = PumpParams::new();
+        assert_eq!(params.toggle_selected_preset_favorite(), Ok(true));
+        assert!(params.preset_bank_snapshot().presets[0].is_favorite);
+
+        let relaunched = PumpParams::new();
+        assert!(relaunched.preset_bank_snapshot().presets[0].is_favorite);
+    });
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn preset_create_rolls_back_for_create_write_and_rename_failures() {
     use super::preset_store::{with_test_persistence_failure, TestPersistenceFailure};
 
@@ -607,6 +636,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                 PumpPreset {
                     name: "Live A".to_string(),
                     is_read_only: false,
+                    is_favorite: false,
                     mix: 0.11,
                     depth: 0.22,
                     depth_db: 26.4,
@@ -621,6 +651,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                 PumpPreset {
                     name: "Live B".to_string(),
                     is_read_only: false,
+                    is_favorite: false,
                     mix: 0.77,
                     depth: 0.66,
                     depth_db: 79.2,

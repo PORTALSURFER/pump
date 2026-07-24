@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 5;
+const PRESET_STORE_VERSION: u32 = 6;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
@@ -273,6 +273,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
         encode_curve(payload, &slot.curve);
     }
     payload.extend_from_slice(&(preset.trigger_mode as u32).to_le_bytes());
+    payload.push(u8::from(preset.is_favorite));
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -383,9 +384,15 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         } else {
             DEFAULT_TRIGGER_MODE
         };
+        let is_favorite = if version >= 6 {
+            read_u8(&mut cursor).ok_or_else(|| "invalid preset favorite flag".to_string())? != 0
+        } else {
+            false
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
+            is_favorite,
             mix,
             depth: (depth_db / MAX_DEPTH_DB).clamp(0.0, 1.0),
             depth_db,
@@ -488,6 +495,12 @@ fn read_u32(cursor: &mut Cursor<&[u8]>) -> Option<u32> {
     Some(u32::from_le_bytes(bytes))
 }
 
+fn read_u8(cursor: &mut Cursor<&[u8]>) -> Option<u8> {
+    let mut bytes = [0_u8; 1];
+    std::io::Read::read_exact(cursor, &mut bytes).ok()?;
+    Some(bytes[0])
+}
+
 fn remaining_bytes(cursor: &Cursor<&[u8]>) -> usize {
     cursor
         .get_ref()
@@ -526,6 +539,7 @@ mod tests {
             presets: vec![PumpPreset {
                 name: "Init".to_string(),
                 is_read_only: false,
+                is_favorite: false,
                 mix: 1.0,
                 depth: 1.0,
                 depth_db: DEFAULT_DEPTH_DB,
@@ -542,7 +556,9 @@ mod tests {
 
     fn encoded_v3_preset_bank() -> Vec<u8> {
         let mut payload = encoded_single_preset_bank();
-        // Trigger mode was added in v5; remove it before emulating v3.
+        // Favorite metadata was added in v6 and trigger mode in v5; remove
+        // both before emulating v3.
+        payload.remove(payload.len().saturating_sub(5));
         payload.truncate(payload.len().saturating_sub(4));
         let name_len = payload_u32(&payload, FIRST_PRESET_OFFSET) as usize;
         let floor_offset = FIRST_PRESET_OFFSET + 4 + name_len + 8;
@@ -571,6 +587,7 @@ mod tests {
                 PumpPreset {
                     name: "Init".to_string(),
                     is_read_only: false,
+                    is_favorite: false,
                     mix: 1.0,
                     depth: 0.7,
                     depth_db: 84.0,
@@ -585,6 +602,7 @@ mod tests {
                 PumpPreset {
                     name: "Verse".to_string(),
                     is_read_only: false,
+                    is_favorite: false,
                     mix: 0.25,
                     depth: 0.55,
                     depth_db: 66.0,

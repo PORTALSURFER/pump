@@ -13,6 +13,7 @@
         GRID_OVERRIDE_KEY, HEADER_INDICATOR_SECTION_PERCENT, INCOMING_WAVEFORM_KEY,
         METER_STROKE, METER_WIDTH, NODE_X_MIN_SPACING,
         PRESET_DROPDOWN_KEY,
+        PRESET_FAVORITE_KEY, PRESET_NEXT_KEY, PRESET_PREVIOUS_KEY,
         PRESET_RENAME_BUTTON_KEY, PRESET_RENAME_KEY, PRESET_SAVE_KEY, PRESET_WARNING_STORAGE,
         QUICK_SLOT_KEY_PREFIX, REDO_KEY, SNAP_KEY, UNDO_KEY, TRANSPORT_INDICATOR_SIZE,
         WINDOW_HEIGHT, WINDOW_WIDTH, TRIGGER_MODE_SIDECHAIN,
@@ -1209,10 +1210,10 @@
     fn slot_height_split_matches_expected_ratios() {
         let (header_h, curve_h, quick_shapes_h, controls_h) =
             resolve_vertical_slot_heights(WINDOW_HEIGHT);
-        assert_eq!(header_h, 19);
-        assert_eq!(curve_h, 165);
-        assert_eq!(quick_shapes_h, 25);
-        assert_eq!(controls_h, 73);
+        assert_eq!(header_h, 36);
+        assert_eq!(curve_h, 155);
+        assert_eq!(quick_shapes_h, 23);
+        assert_eq!(controls_h, 68);
         assert_eq!(header_h + curve_h + quick_shapes_h + controls_h, WINDOW_HEIGHT);
     }
 
@@ -2338,6 +2339,59 @@
             Some(MainPalette::main().literals)
         );
         assert!(state.snapshot_presets().dirty);
+    }
+
+    #[test]
+    fn preset_header_navigation_actions_clamp_and_load_parameters() {
+        let params = Arc::new(PumpParams::new());
+        params.set_mix(0.23);
+        params
+            .add_preset_from_current_state()
+            .expect("second preset should be created");
+        params.set_mix(0.81);
+        params
+            .save_current_state_by_name("Preset 2")
+            .expect("second preset should be saved");
+        params.load_preset(0).expect("first preset should load");
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_PREVIOUS_KEY.to_string(),
+        });
+        assert_eq!(params.preset_bank_snapshot().selected, 0);
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_NEXT_KEY.to_string(),
+        });
+        assert_eq!(params.preset_bank_snapshot().selected, 1);
+        assert!((params.mix() - 0.81).abs() < 1.0e-6);
+        state.reduce_action(UiAction::ButtonPressed {
+            key: PRESET_NEXT_KEY.to_string(),
+        });
+        assert_eq!(params.preset_bank_snapshot().selected, 1);
+    }
+
+    #[test]
+    fn preset_favorite_action_persists_and_does_not_mark_sound_state_dirty() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = GuiState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(AutomationQueue::default()),
+            None,
+        );
+
+        state.reduce_action(UiAction::ToggleChanged {
+            key: PRESET_FAVORITE_KEY.to_string(),
+            value: true,
+        });
+
+        assert!(params.preset_bank_snapshot().presets[0].is_favorite);
+        assert!(!state.snapshot_presets().dirty);
     }
 
     #[test]

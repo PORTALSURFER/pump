@@ -209,6 +209,7 @@ impl PumpParams {
         PumpPreset {
             name,
             is_read_only: false,
+            is_favorite: false,
             mix: self.mix(),
             depth: self.depth(),
             depth_db: self.depth_db(),
@@ -433,6 +434,53 @@ impl PumpParams {
         Ok(index)
     }
 
+    /// Load a preset relative to the current selection, clamping at the bank
+    /// boundaries instead of wrapping around.
+    pub fn load_preset_relative(&self, direction: i32) -> Result<usize, PresetMutationError> {
+        let bank = self.preset_bank_snapshot();
+        let Some(last) = bank.presets.len().checked_sub(1) else {
+            return Err(PresetMutationError::InvalidIndex);
+        };
+        let selected = bank.selected.min(last);
+        let target = if direction < 0 {
+            selected.saturating_sub(1)
+        } else if direction > 0 {
+            selected.saturating_add(1).min(last)
+        } else {
+            selected
+        };
+        if target == selected {
+            return Ok(selected);
+        }
+        self.load_preset(target)
+    }
+
+    /// Toggle the selected preset's favorite marker and persist the bank.
+    pub fn toggle_selected_preset_favorite(&self) -> Result<bool, PresetMutationError> {
+        let selected = self.preset_bank_snapshot().selected;
+        self.set_preset_favorite(selected, None)
+    }
+
+    /// Set or toggle a preset's favorite marker and persist the bank.
+    pub fn set_preset_favorite(
+        &self,
+        index: usize,
+        value: Option<bool>,
+    ) -> Result<bool, PresetMutationError> {
+        let Ok(mut guard) = self.preset_bank.write() else {
+            return Err(PresetMutationError::StateUnavailable);
+        };
+        let mut candidate = guard.clone();
+        let Some(preset) = candidate.presets.get_mut(index) else {
+            return Err(PresetMutationError::InvalidIndex);
+        };
+        preset.is_favorite = value.unwrap_or(!preset.is_favorite);
+        let favorite = preset.is_favorite;
+        self.persist_preset_bank_snapshot(&candidate)?;
+        *guard = candidate;
+        Ok(favorite)
+    }
+
     /// Insert a new preset cloned from current state and select it.
     pub fn add_preset_from_current_state(&self) -> Result<usize, PresetMutationError> {
         let snapshot = self.current_preset_snapshot_with_name(String::new());
@@ -505,6 +553,7 @@ impl PumpParams {
                 existing.phase_offset = snapshot.phase_offset;
                 existing.output_gain_db = snapshot.output_gain_db;
                 existing.sync_division = snapshot.sync_division;
+                existing.trigger_mode = snapshot.trigger_mode;
                 existing.editable_curve = snapshot.editable_curve;
                 existing.quick_slots = snapshot.quick_slots;
             }
@@ -548,6 +597,7 @@ impl PumpParams {
             || !float_near_eq(current.phase_offset, selected.phase_offset)
             || !float_near_eq(current.output_gain_db, selected.output_gain_db)
             || current.sync_division != selected.sync_division
+            || current.trigger_mode != selected.trigger_mode
             || !curve_near_eq(&current.editable_curve, &selected.editable_curve)
     }
 
