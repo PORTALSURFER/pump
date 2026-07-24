@@ -20,7 +20,12 @@ pub struct DspSettings {
     pub beats_per_cycle: f32,
     /// Curve trigger source (`0` host transport, `1` external sidechain).
     pub trigger_mode: usize,
+    /// Evaluated wet-gain smoothing amount in `[0, 1]`.
+    pub smooth: f32,
 }
+
+/// Maximum one-pole time constant at 100% Smooth.
+pub const MAX_SMOOTH_TIME_SECONDS: f32 = 0.1;
 
 /// Sidechain trigger detector policy.
 ///
@@ -102,6 +107,7 @@ pub struct PumpEngine {
     floor_db: OnePole,
     phase_offset: OnePole,
     output_gain_db: OnePole,
+    wet_gain_smoother: GainSmoother,
     curve_current: [f32; CURVE_TABLE_LEN],
     curve_pending: [f32; CURVE_TABLE_LEN],
     morph_remaining: usize,
@@ -116,7 +122,7 @@ pub struct PumpEngine {
 impl PumpEngine {
     /// Create a new engine for the current sample rate and initial curve.
     pub fn new(sample_rate: f32, curve: [f32; CURVE_TABLE_LEN]) -> Self {
-        Self {
+        let mut engine = Self {
             clock: TransportClock::new(sample_rate),
             sample_rate: sample_rate.max(1.0),
             mix: OnePole::new(1.0, sample_rate, 0.01),
@@ -124,6 +130,7 @@ impl PumpEngine {
             floor_db: OnePole::new(-60.0, sample_rate, 0.01),
             phase_offset: OnePole::new(0.0, sample_rate, 0.01),
             output_gain_db: OnePole::new(0.0, sample_rate, 0.01),
+            wet_gain_smoother: GainSmoother::new(1.0),
             curve_current: curve,
             curve_pending: curve,
             morph_remaining: 0,
@@ -133,13 +140,25 @@ impl PumpEngine {
             sidechain_running: false,
             sidechain_mode: false,
             sidechain_bus_present: false,
-        }
+        };
+        engine.reset();
+        engine
     }
 
     /// Request a smooth morph to a new target curve.
     pub fn set_target_curve(&mut self, curve: [f32; CURVE_TABLE_LEN]) {
         self.curve_pending = curve;
         self.morph_remaining = self.morph_total;
+    }
+
+    /// Reset stateful DSP history at a processing-session boundary.
+    pub fn reset(&mut self) {
+        self.wet_gain_smoother.reset(1.0);
+        self.sidechain_detector.reset();
+        self.sidechain_phase = 0.0;
+        self.sidechain_running = false;
+        self.sidechain_mode = false;
+        self.sidechain_bus_present = false;
     }
 
     /// Process one sample pair in-place and return telemetry for the last sample.
@@ -210,6 +229,14 @@ impl PumpEngine {
         };
         let shape = self.sample_active_curve(phase);
         let wet_gain = curve_value_to_gain(shape, depth_db, floor_db);
+        let smooth = if settings.smooth.is_finite() {
+            settings.smooth.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let wet_gain = self
+            .wet_gain_smoother
+            .next(wet_gain, smooth, self.sample_rate);
         let blend_gain = (mix * wet_gain) + (1.0 - mix);
         let output_gain = db_to_linear(output_gain_db);
         let gain = (blend_gain * output_gain).clamp(0.0, 4.0);
@@ -320,6 +347,58 @@ struct OnePole {
     coeff: f32,
 }
 
+/// Zero-latency sample-rate-stable smoother for the evaluated wet gain.
+struct GainSmoother {
+    value: f32,
+}
+
+impl GainSmoother {
+    fn new(initial: f32) -> Self {
+        Self { value: initial }
+    }
+
+    fn reset(&mut self, value: f32) {
+        self.value = finite_gain(value);
+    }
+
+    fn next(&mut self, target: f32, amount: f32, sample_rate: f32) -> f32 {
+        let target = finite_gain(target);
+        let amount = if amount.is_finite() {
+            amount.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if amount <= 0.0 {
+            self.value = target;
+            return target;
+        }
+
+        let tau = (amount * MAX_SMOOTH_TIME_SECONDS).max(1.0 / sample_rate.max(1.0));
+        let coefficient = (-1.0 / (tau * sample_rate.max(1.0))).exp();
+        let next = target + coefficient * (self.value - target);
+        self.value = if next.is_finite() {
+            // Flush the vanishing tail so the audio thread never carries
+            // denormal-sized state between samples.
+            if (next - target).abs() < 1.0e-20 {
+                target
+            } else {
+                next.clamp(0.0, 1.0)
+            }
+        } else {
+            target
+        };
+        self.value
+    }
+}
+
+fn finite_gain(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
 impl OnePole {
     fn new(initial: f32, sample_rate: f32, time_seconds: f32) -> Self {
         let sr = sample_rate.max(1.0);
@@ -363,6 +442,7 @@ mod tests {
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
+            smooth: 0.0,
         };
 
         let mut left = 1.0;
@@ -405,6 +485,7 @@ mod tests {
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
+            smooth: 0.0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -436,6 +517,7 @@ mod tests {
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
+            smooth: 0.0,
         };
 
         let mut min_gain = 1.0_f32;
@@ -472,6 +554,118 @@ mod tests {
         assert!(curve_value_to_gain(f32::NAN, f32::NAN, f32::NAN).is_finite());
     }
 
+    fn smoothing_settings(amount: f32) -> DspSettings {
+        DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            trigger_mode: crate::params::TRIGGER_MODE_HOST,
+            smooth: amount,
+        }
+    }
+
+    fn smoothing_transport(tempo_bpm: f32) -> TransportState {
+        TransportState {
+            tempo_bpm,
+            is_playing: true,
+            song_pos_beats: Some(0.0),
+        }
+    }
+
+    #[test]
+    fn zero_smooth_is_an_exact_identity_for_evaluated_gain() {
+        let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let settings = smoothing_settings(0.0);
+        let mut left = 1.0;
+        let mut right = 1.0;
+        let telemetry = engine.process_sample(
+            &mut left,
+            &mut right,
+            settings,
+            smoothing_transport(120.0),
+            None,
+        );
+
+        assert_eq!(left, 0.0);
+        assert_eq!(right, 0.0);
+        assert_eq!(telemetry.gain, 0.0);
+    }
+
+    #[test]
+    fn maximum_smooth_softens_an_impulse_without_overshoot_or_nonfinite_state() {
+        let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let settings = smoothing_settings(1.0);
+        let transport = smoothing_transport(120.0);
+        let mut values = Vec::new();
+        for _ in 0..8 {
+            let mut left = 1.0;
+            let mut right = 1.0;
+            engine.process_sample(&mut left, &mut right, settings, transport, None);
+            values.push(left);
+        }
+
+        assert!(values[0] < 1.0);
+        assert!(values[0] > values[1]);
+        assert!(values.windows(2).all(|pair| pair[0] >= pair[1]));
+        assert!(values
+            .iter()
+            .all(|value| value.is_finite() && (0.0..=1.0).contains(value)));
+    }
+
+    #[test]
+    fn smooth_time_constant_is_sample_rate_and_tempo_independent() {
+        let mut at_44k = PumpEngine::new(44_100.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut at_48k = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let settings = smoothing_settings(1.0);
+        let mut output_44k = 1.0;
+        let mut output_48k = 1.0;
+        for _ in 0..4_410 {
+            let mut input = 1.0;
+            let mut right = 1.0;
+            let telemetry = at_44k.process_sample(
+                &mut input,
+                &mut right,
+                settings,
+                smoothing_transport(60.0),
+                None,
+            );
+            output_44k = telemetry.gain;
+        }
+        for _ in 0..4_800 {
+            let mut input = 1.0;
+            let mut right = 1.0;
+            let telemetry = at_48k.process_sample(
+                &mut input,
+                &mut right,
+                settings,
+                smoothing_transport(240.0),
+                None,
+            );
+            output_48k = telemetry.gain;
+        }
+        assert!((output_44k - output_48k).abs() < 0.01);
+    }
+
+    #[test]
+    fn reset_restarts_smoothing_from_unity() {
+        let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let settings = smoothing_settings(1.0);
+        let transport = smoothing_transport(120.0);
+        for _ in 0..2_000 {
+            let mut left = 1.0;
+            let mut right = 1.0;
+            engine.process_sample(&mut left, &mut right, settings, transport, None);
+        }
+        engine.reset();
+        let mut left = 1.0;
+        let mut right = 1.0;
+        engine.process_sample(&mut left, &mut right, settings, transport, None);
+        assert!(left > 0.9, "reset must clear the previous smoothed gain");
+    }
+
     #[test]
     fn sidechain_detector_uses_stereo_hysteresis_and_refractory() {
         let mut detector = SidechainTriggerDetector::new(1_000.0);
@@ -500,6 +694,7 @@ mod tests {
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
+            smooth: 0.0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -532,6 +727,7 @@ mod tests {
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
+            smooth: 0.0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -557,6 +753,7 @@ mod tests {
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
+            smooth: 0.0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,

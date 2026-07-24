@@ -35,6 +35,7 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
         encode_preset(&mut payload, preset, index);
     }
     payload.extend_from_slice(&(params.trigger_mode() as f32).to_le_bytes());
+    payload.extend_from_slice(&params.smooth().to_le_bytes());
 
     payload
 }
@@ -109,6 +110,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 output_gain_db,
                 sync_division: clamp_sync_division(sync_division),
                 trigger_mode: DEFAULT_TRIGGER_MODE,
+                smooth: DEFAULT_SMOOTH,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -123,6 +125,14 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     } else {
         DEFAULT_TRIGGER_MODE as f32
     };
+    let smooth = if version >= 10 {
+        let Some(smooth) = read_f32(&mut cursor) else {
+            return Err("invalid smooth field");
+        };
+        smooth
+    } else {
+        DEFAULT_SMOOTH
+    };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -134,6 +144,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
     params.set_trigger_mode(trigger_mode);
+    params.set_smooth(smooth);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
 
@@ -157,6 +168,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
         encode_curve(payload, &slot.curve);
     }
     payload.extend_from_slice(&(preset.trigger_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&preset.smooth.to_le_bytes());
     payload.push(u8::from(preset.is_favorite));
 }
 
@@ -326,6 +338,11 @@ fn decode_preset_bank(
         } else {
             DEFAULT_TRIGGER_MODE
         };
+        let smooth = if version >= 10 {
+            read_f32(cursor).ok_or("invalid preset smooth")?
+        } else {
+            DEFAULT_SMOOTH
+        };
         let is_favorite = if version >= 9 {
             read_u8(cursor).ok_or("invalid preset favorite flag")? != 0
         } else {
@@ -343,6 +360,7 @@ fn decode_preset_bank(
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
             trigger_mode: trigger_mode.min(TRIGGER_MODE_SIDECHAIN),
+            smooth,
             editable_curve: editable_curve.normalized(),
             quick_slots,
         });
@@ -418,6 +436,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
     params.set_trigger_mode(DEFAULT_TRIGGER_MODE as f32);
+    params.set_smooth(DEFAULT_SMOOTH);
     params.set_curve(&curve);
     params.set_preset_bank_without_persistence(PumpPresetBank {
         selected: 0,
@@ -433,6 +452,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             output_gain_db: params.output_gain_db(),
             sync_division: params.sync_division(),
             trigger_mode: DEFAULT_TRIGGER_MODE,
+            smooth: DEFAULT_SMOOTH,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],

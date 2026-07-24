@@ -30,11 +30,12 @@ use crate::curve::{
 use crate::params::{
     sync_division_label, PresetMutationError, PumpParams, PumpPresetBank, SavePresetOutcome,
     DEFAULT_DEPTH_DB, DEFAULT_FLOOR_DB, DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET,
-    DEFAULT_PRESET_NAME, GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_MIX,
-    MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_DEPTH_DB,
-    MIN_FLOOR_DB, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_FLOOR_ID,
-    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
-    PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
+    DEFAULT_PRESET_NAME, DEFAULT_SMOOTH, GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB,
+    MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SMOOTH,
+    MAX_SYNC_DIVISION, MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET,
+    MIN_SMOOTH, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
+    PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID,
+    TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
@@ -69,6 +70,7 @@ const DESIGN_ASPECT_RATIO: f32 = WINDOW_WIDTH as f32 / WINDOW_HEIGHT as f32;
 const ROOT_KEY: &str = "pump-root";
 const CURVE_KEY: &str = "curve";
 const MIX_KEY: &str = "mix";
+const SMOOTH_KEY: &str = "smooth";
 const PHASE_KEY: &str = "phase";
 const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
@@ -130,7 +132,7 @@ const METER_WIDTH: i32 = 8;
 const METER_STROKE: i32 = 1;
 const BASE_KNOB_DIAMETER: u32 = 92;
 const BASE_TEXT_SCALE: u32 = 2;
-const KNOBS_PER_ROW: usize = 5;
+const KNOBS_PER_ROW: usize = 6;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const TRANSPORT_INDICATOR_SIZE: u32 = 10;
@@ -324,6 +326,7 @@ struct CurveMarqueeSelection {
 #[derive(Clone, Copy, Debug)]
 struct ControlSnapshot {
     mix: f32,
+    smooth: f32,
     depth_db: f32,
     floor_db: f32,
     phase_offset: f32,
@@ -347,6 +350,7 @@ impl ControlSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 struct UiHistorySnapshot {
     mix: f32,
+    smooth: f32,
     depth_db: f32,
     floor_db: f32,
     phase_offset: f32,

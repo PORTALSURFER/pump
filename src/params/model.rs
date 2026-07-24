@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 9;
+pub(crate) const STATE_VERSION: u32 = 10;
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
@@ -23,6 +23,8 @@ pub const PARAM_SYNC_DIVISION_NUM: u32 = 5;
 pub const PARAM_FLOOR_NUM: u32 = 6;
 /// Host-visible numeric parameter id for the curve trigger source.
 pub const PARAM_TRIGGER_MODE_NUM: u32 = 7;
+/// Host-visible numeric parameter id for evaluated gain smoothing.
+pub const PARAM_SMOOTH_NUM: u32 = 8;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
@@ -38,6 +40,8 @@ pub const PARAM_SYNC_DIVISION_ID: ClapId = ClapId::new(PARAM_SYNC_DIVISION_NUM);
 pub const PARAM_FLOOR_ID: ClapId = ClapId::new(PARAM_FLOOR_NUM);
 /// Parameter id for the curve trigger source.
 pub const PARAM_TRIGGER_MODE_ID: ClapId = ClapId::new(PARAM_TRIGGER_MODE_NUM);
+/// Parameter id for evaluated gain smoothing.
+pub const PARAM_SMOOTH_ID: ClapId = ClapId::new(PARAM_SMOOTH_NUM);
 
 /// Host-synchronised curve triggering.
 pub const TRIGGER_MODE_HOST: usize = 0;
@@ -62,6 +66,8 @@ pub const DEFAULT_PHASE_OFFSET: f32 = 0.0;
 pub const DEFAULT_OUTPUT_GAIN_DB: f32 = 0.0;
 /// Default curve trigger source.
 pub const DEFAULT_TRIGGER_MODE: usize = TRIGGER_MODE_HOST;
+/// Default evaluated gain smoothing amount.
+pub const DEFAULT_SMOOTH: f32 = 0.0;
 /// Default sync division index (`1/4`).
 pub const DEFAULT_SYNC_DIVISION_INDEX: usize = 4;
 /// Maximum number of stored user presets.
@@ -95,6 +101,10 @@ pub const MAX_PHASE_OFFSET: f32 = 1.0;
 pub const MIN_OUTPUT_GAIN_DB: f32 = -24.0;
 /// Maximum output gain in decibels.
 pub const MAX_OUTPUT_GAIN_DB: f32 = 12.0;
+/// Maximum evaluated gain smoothing amount.
+pub const MAX_SMOOTH: f32 = 1.0;
+/// Minimum evaluated gain smoothing amount.
+pub const MIN_SMOOTH: f32 = 0.0;
 
 /// One named beat division option.
 #[derive(Debug, Copy, Clone)]
@@ -220,6 +230,8 @@ pub struct PumpPreset {
     pub sync_division: usize,
     /// Curve trigger source.
     pub trigger_mode: usize,
+    /// Evaluated wet-gain smoothing amount.
+    pub smooth: f32,
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
     /// Overwriteable quick-slot curves shown below the editor for this preset.
@@ -285,6 +297,7 @@ impl PumpPresetBank {
                 output_gain_db: DEFAULT_OUTPUT_GAIN_DB,
                 sync_division: DEFAULT_SYNC_DIVISION_INDEX,
                 trigger_mode: DEFAULT_TRIGGER_MODE,
+                smooth: DEFAULT_SMOOTH,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -349,6 +362,7 @@ pub struct PumpParams {
     pub(super) output_gain_db: AtomicF32,
     pub(super) sync_division: AtomicU32,
     pub(super) trigger_mode: AtomicU32,
+    pub(super) smooth: AtomicF32,
     pub(super) editable_curve: RwLock<EditableCurve>,
     pub(super) curve: [AtomicF32; CURVE_TABLE_LEN],
     pub(super) curve_revision: AtomicU32,

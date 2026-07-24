@@ -74,6 +74,7 @@ impl GuiState {
             floor_db: self.params.floor_db(),
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
+            smooth: self.params.smooth(),
             division: self.params.sync_division(),
             trigger_mode: self.params.trigger_mode(),
             sidechain_available: self.status.sidechain_available(),
@@ -959,6 +960,14 @@ impl GuiState {
                     format!("{:.0}%", controls.mix * 100.0),
                 ),
                 knob_cell(
+                    SMOOTH_KEY,
+                    "Smooth",
+                    controls.smooth,
+                    DEFAULT_SMOOTH,
+                    (MIN_SMOOTH, MAX_SMOOTH),
+                    format!("{:.0}%", controls.smooth * 100.0),
+                ),
+                knob_cell(
                     "depth",
                     "Depth",
                     controls.depth_db,
@@ -1239,7 +1248,7 @@ impl GuiState {
     pub(super) fn reduce_action(&mut self, action: UiAction) {
         match action {
             UiAction::KnobChanged { key, value } => {
-                if matches!(key.as_str(), MIX_KEY | PHASE_KEY | OUTPUT_KEY) {
+                if matches!(key.as_str(), MIX_KEY | SMOOTH_KEY | PHASE_KEY | OUTPUT_KEY) {
                     self.capture_knob_undo_anchor();
                 }
                 self.reduce_knob(key.as_str(), value);
@@ -1470,6 +1479,7 @@ impl GuiState {
     fn snapshot_history_state(&self) -> UiHistorySnapshot {
         UiHistorySnapshot {
             mix: self.params.mix(),
+            smooth: self.params.smooth(),
             depth_db: self.params.depth_db(),
             floor_db: self.params.floor_db(),
             phase_offset: self.params.phase_offset(),
@@ -1491,6 +1501,7 @@ impl GuiState {
             return false;
         }
         self.params.set_mix(snapshot.mix);
+        self.params.set_smooth(snapshot.smooth);
         self.params.set_depth_db(snapshot.depth_db);
         self.params.set_floor_db(snapshot.floor_db);
         self.params.set_phase_offset(snapshot.phase_offset);
@@ -1776,6 +1787,9 @@ impl GuiState {
         match key {
             MIX_KEY => {
                 self.params.set_mix(value);
+            }
+            SMOOTH_KEY => {
+                self.params.set_smooth(value);
             }
             "depth" => {
                 self.params.set_depth_db(value);
@@ -2748,6 +2762,7 @@ impl GuiState {
         self.push_single_value_update(PARAM_FLOOR_ID, self.params.floor_db() as f64);
         self.push_single_value_update(PARAM_PHASE_OFFSET_ID, self.params.phase_offset() as f64);
         self.push_single_value_update(PARAM_OUTPUT_GAIN_ID, self.params.output_gain_db() as f64);
+        self.push_single_value_update(PARAM_SMOOTH_ID, self.params.smooth() as f64);
         self.push_single_value_update(PARAM_SYNC_DIVISION_ID, self.params.sync_division() as f64);
     }
 
