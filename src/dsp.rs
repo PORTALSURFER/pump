@@ -8,6 +8,10 @@ use toybox::dsp::{TransportClock, TransportState};
 pub struct DspSettings {
     /// Dry/wet blend of gain modulation.
     pub mix: f32,
+    /// Maximum attenuation applied at a zero curve value, in decibels.
+    pub depth_db: f32,
+    /// Minimum wet gain in decibels; the minimum value means −∞.
+    pub floor_db: f32,
     /// Cycle phase offset.
     pub phase_offset: f32,
     /// Post-gain trim in decibels.
@@ -34,6 +38,8 @@ pub struct DspTelemetry {
 pub struct PumpEngine {
     clock: TransportClock,
     mix: OnePole,
+    depth_db: OnePole,
+    floor_db: OnePole,
     phase_offset: OnePole,
     output_gain_db: OnePole,
     curve_current: [f32; CURVE_TABLE_LEN],
@@ -48,6 +54,8 @@ impl PumpEngine {
         Self {
             clock: TransportClock::new(sample_rate),
             mix: OnePole::new(1.0, sample_rate, 0.01),
+            depth_db: OnePole::new(120.0, sample_rate, 0.01),
+            floor_db: OnePole::new(-60.0, sample_rate, 0.01),
             phase_offset: OnePole::new(0.0, sample_rate, 0.01),
             output_gain_db: OnePole::new(0.0, sample_rate, 0.01),
             curve_current: curve,
@@ -74,6 +82,18 @@ impl PumpEngine {
         let frame = self.clock.tick(resolve_effective_transport(transport));
 
         let mix = self.mix.next(settings.mix.clamp(0.0, 1.0));
+        let depth_target = if settings.depth_db.is_finite() {
+            settings.depth_db.clamp(0.0, 120.0)
+        } else {
+            120.0
+        };
+        let floor_target = if settings.floor_db.is_finite() {
+            settings.floor_db.clamp(-60.0, 0.0)
+        } else {
+            -60.0
+        };
+        let depth_db = self.depth_db.next(depth_target);
+        let floor_db = self.floor_db.next(floor_target);
         let phase_offset = self
             .phase_offset
             .next(settings.phase_offset.rem_euclid(1.0).clamp(0.0, 1.0));
@@ -83,7 +103,7 @@ impl PumpEngine {
 
         let phase = frame.phase_for_cycle(settings.beats_per_cycle, phase_offset);
         let shape = self.sample_active_curve(phase);
-        let wet_gain = shape;
+        let wet_gain = curve_value_to_gain(shape, depth_db, floor_db);
         let blend_gain = (mix * wet_gain) + (1.0 - mix);
         let output_gain = db_to_linear(output_gain_db);
         let gain = (blend_gain * output_gain).clamp(0.0, 4.0);
@@ -134,6 +154,54 @@ pub fn db_to_linear(db: f32) -> f32 {
     (10.0_f32).powf(db / 20.0)
 }
 
+/// Map a normalized curve value to wet gain using Depth and Floor.
+///
+/// A curve value of `1` is unity. The existing normalized curve is interpreted
+/// as its legacy linear gain at maximum Depth; lower Depth values scale its
+/// attenuation in dB toward unity. Floor clamps only the wet curve gain; Mix
+/// and Output are applied afterwards.
+pub fn curve_value_to_gain(curve_value: f32, depth_db: f32, floor_db: f32) -> f32 {
+    let curve_value = if curve_value.is_finite() {
+        curve_value.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let depth_db = if depth_db.is_finite() {
+        depth_db.clamp(0.0, 120.0)
+    } else {
+        120.0
+    };
+    let floor_db = if floor_db.is_finite() {
+        floor_db.clamp(-60.0, 0.0)
+    } else {
+        -60.0
+    };
+    let floor_is_neg_infinity = floor_db <= -60.0;
+    let requested_gain = if depth_db <= 0.0 {
+        1.0
+    } else if curve_value <= 0.0 {
+        0.0
+    } else if depth_db >= 120.0 {
+        curve_value
+    } else {
+        curve_value.powf(depth_db / 120.0)
+    };
+    if floor_is_neg_infinity {
+        requested_gain.clamp(0.0, 1.0)
+    } else {
+        requested_gain.max(db_to_linear(floor_db)).clamp(0.0, 1.0)
+    }
+}
+
+/// Return the finite dB value represented by a wet gain, or −∞ for silence.
+pub fn gain_to_db(gain: f32) -> Option<f32> {
+    if gain <= 0.0 {
+        None
+    } else {
+        Some(20.0 * gain.clamp(f32::MIN_POSITIVE, 1.0).log10())
+    }
+}
+
 struct OnePole {
     value: f32,
     coeff: f32,
@@ -162,7 +230,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{db_to_linear, DspSettings, PumpEngine};
+    use super::{curve_value_to_gain, db_to_linear, DspSettings, PumpEngine};
     use crate::curve::{default_editable_curve, editable_curve_to_table};
     use toybox::dsp::TransportState;
 
@@ -173,6 +241,8 @@ mod tests {
 
         let settings = DspSettings {
             mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
             phase_offset: 0.0,
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
@@ -211,6 +281,8 @@ mod tests {
         let mut right = 1.0;
         let settings = DspSettings {
             mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
             phase_offset: 0.0,
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
@@ -239,6 +311,8 @@ mod tests {
         let mut engine = PumpEngine::new(48_000.0, curve);
         let settings = DspSettings {
             mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
@@ -264,5 +338,16 @@ mod tests {
         }
 
         assert!(min_gain < 0.95);
+    }
+
+    #[test]
+    fn depth_and_floor_mapping_covers_shallow_deep_and_finite_floor() {
+        assert_eq!(curve_value_to_gain(0.25, 120.0, -60.0), 0.25);
+        assert!((curve_value_to_gain(0.25, 60.0, -60.0) - 0.5).abs() < 1.0e-6);
+        assert_eq!(curve_value_to_gain(0.0, 120.0, -60.0), 0.0);
+        assert!((curve_value_to_gain(0.0, 120.0, -18.0) - db_to_linear(-18.0)).abs() < 1.0e-6);
+        assert_eq!(curve_value_to_gain(0.4, 0.0, -60.0), 1.0);
+        assert_eq!(curve_value_to_gain(0.0, 0.0, -60.0), 1.0);
+        assert!(curve_value_to_gain(f32::NAN, f32::NAN, f32::NAN).is_finite());
     }
 }

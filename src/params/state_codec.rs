@@ -14,7 +14,8 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     payload.extend_from_slice(STATE_MAGIC);
     payload.extend_from_slice(&STATE_VERSION.to_le_bytes());
     payload.extend_from_slice(&params.mix().to_le_bytes());
-    payload.extend_from_slice(&params.depth().to_le_bytes());
+    payload.extend_from_slice(&params.depth_db().to_le_bytes());
+    payload.extend_from_slice(&params.floor_db().to_le_bytes());
     payload.extend_from_slice(&params.phase_offset().to_le_bytes());
     payload.extend_from_slice(&params.output_gain_db().to_le_bytes());
     payload.extend_from_slice(&(params.sync_division() as f32).to_le_bytes());
@@ -60,8 +61,21 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     let Some(mix) = read_f32(&mut cursor) else {
         return Err("invalid mix field");
     };
-    let Some(depth) = read_f32(&mut cursor) else {
+    let Some(depth_field) = read_f32(&mut cursor) else {
         return Err("invalid depth field");
+    };
+    let floor_db = if version >= 7 {
+        let Some(floor_db) = read_f32(&mut cursor) else {
+            return Err("invalid floor field");
+        };
+        floor_db
+    } else {
+        DEFAULT_FLOOR_DB
+    };
+    let depth_db = if version >= 7 {
+        depth_field
+    } else {
+        DEFAULT_DEPTH_DB
     };
     let Some(phase_offset) = read_f32(&mut cursor) else {
         return Err("invalid phase offset field");
@@ -86,7 +100,9 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 name: DEFAULT_PRESET_NAME.to_string(),
                 is_read_only: false,
                 mix,
-                depth,
+                depth: DEFAULT_DEPTH,
+                depth_db,
+                floor_db,
                 phase_offset,
                 output_gain_db,
                 sync_division: clamp_sync_division(sync_division),
@@ -101,7 +117,8 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     }
 
     params.set_mix(mix);
-    params.set_depth(depth);
+    params.set_depth_db(depth_db);
+    params.set_floor_db(floor_db);
     params.set_phase_offset(phase_offset);
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
@@ -116,7 +133,8 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&(name.len() as u32).to_le_bytes());
     payload.extend_from_slice(name.as_bytes());
     payload.extend_from_slice(&preset.mix.to_le_bytes());
-    payload.extend_from_slice(&preset.depth.to_le_bytes());
+    payload.extend_from_slice(&preset.depth_db.to_le_bytes());
+    payload.extend_from_slice(&preset.floor_db.to_le_bytes());
     payload.extend_from_slice(&preset.phase_offset.to_le_bytes());
     payload.extend_from_slice(&preset.output_gain_db.to_le_bytes());
     payload.extend_from_slice(&(preset.sync_division as u32).to_le_bytes());
@@ -251,8 +269,16 @@ fn decode_preset_bank(
         let Some(mix) = read_f32(cursor) else {
             return Err("invalid preset mix");
         };
-        let Some(depth) = read_f32(cursor) else {
+        let Some(depth_field) = read_f32(cursor) else {
             return Err("invalid preset depth");
+        };
+        let (depth, floor_db) = if version >= 7 {
+            let Some(floor_db) = read_f32(cursor) else {
+                return Err("invalid preset floor");
+            };
+            (depth_field, floor_db)
+        } else {
+            (DEFAULT_DEPTH_DB, DEFAULT_FLOOR_DB)
         };
         let Some(phase_offset) = read_f32(cursor) else {
             return Err("invalid preset phase offset");
@@ -282,7 +308,9 @@ fn decode_preset_bank(
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
             mix,
-            depth,
+            depth: (depth / MAX_DEPTH_DB).clamp(0.0, 1.0),
+            depth_db: depth,
+            floor_db,
             phase_offset,
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
@@ -333,7 +361,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     let Some(mix) = read_f32(&mut cursor) else {
         return Err("invalid mix field");
     };
-    let Some(depth) = read_f32(&mut cursor) else {
+    let Some(_legacy_depth) = read_f32(&mut cursor) else {
         return Err("invalid depth field");
     };
     let Some(phase_offset) = read_f32(&mut cursor) else {
@@ -355,7 +383,8 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     }
 
     params.set_mix(mix);
-    params.set_depth(depth);
+    params.set_depth_db(DEFAULT_DEPTH_DB);
+    params.set_floor_db(DEFAULT_FLOOR_DB);
     params.set_phase_offset(phase_offset);
     params.set_output_gain_db(output_gain_db);
     params.set_sync_division(sync_division);
@@ -367,6 +396,8 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             is_read_only: false,
             mix: params.mix(),
             depth: params.depth(),
+            depth_db: params.depth_db(),
+            floor_db: params.floor_db(),
             phase_offset: params.phase_offset(),
             output_gain_db: params.output_gain_db(),
             sync_division: params.sync_division(),

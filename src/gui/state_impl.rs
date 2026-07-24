@@ -65,6 +65,8 @@ impl GuiState {
             .unwrap_or((false, false, None, false));
         ControlSnapshot {
             mix: self.params.mix(),
+            depth_db: self.params.depth_db(),
+            floor_db: self.params.floor_db(),
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
             division: self.params.sync_division(),
@@ -344,7 +346,12 @@ impl GuiState {
             surface(
                 "curve-gain-references",
                 metrics.curve_size,
-                curve_gain_reference_line_commands(metrics.curve_size, theme),
+                curve_gain_reference_line_commands_for_mapping(
+                    metrics.curve_size,
+                    theme,
+                    controls.depth_db,
+                    controls.floor_db,
+                ),
             )
             .fill(),
             curve_editor_view,
@@ -359,10 +366,12 @@ impl GuiState {
                 surface(
                     "curve-gain-reference-labels",
                     reference_gutter_size,
-                    curve_gain_reference_label_commands(
+                    curve_gain_reference_label_commands_for_mapping(
                         reference_gutter_size,
                         theme,
                         metrics.text_scale,
+                        controls.depth_db,
+                        controls.floor_db,
                     ),
                 )
                 .fill(),
@@ -711,6 +720,26 @@ impl GuiState {
                     format!("{:.0}%", controls.mix * 100.0),
                 ),
                 knob_cell(
+                    "depth",
+                    "Depth",
+                    controls.depth_db,
+                    DEFAULT_DEPTH_DB,
+                    (MIN_DEPTH_DB, MAX_DEPTH_DB),
+                    format!("{:.0}dB", controls.depth_db),
+                ),
+                knob_cell(
+                    "floor",
+                    "Floor",
+                    controls.floor_db,
+                    DEFAULT_FLOOR_DB,
+                    (MIN_FLOOR_DB, MAX_FLOOR_DB),
+                    if controls.floor_db <= MIN_FLOOR_DB {
+                        "−∞".to_string()
+                    } else {
+                        format!("{:.0}dB", controls.floor_db)
+                    },
+                ),
+                knob_cell(
                     PHASE_KEY,
                     "Phase",
                     controls.phase_offset,
@@ -1054,6 +1083,8 @@ impl GuiState {
     fn snapshot_history_state(&self) -> UiHistorySnapshot {
         UiHistorySnapshot {
             mix: self.params.mix(),
+            depth_db: self.params.depth_db(),
+            floor_db: self.params.floor_db(),
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
             sync_division: self.params.sync_division(),
@@ -1073,6 +1104,8 @@ impl GuiState {
             return false;
         }
         self.params.set_mix(snapshot.mix);
+        self.params.set_depth_db(snapshot.depth_db);
+        self.params.set_floor_db(snapshot.floor_db);
         self.params.set_phase_offset(snapshot.phase_offset);
         self.params.set_output_gain_db(snapshot.output_gain_db);
         self.params.set_sync_division(snapshot.sync_division as f32);
@@ -1356,6 +1389,12 @@ impl GuiState {
         match key {
             MIX_KEY => {
                 self.params.set_mix(value);
+            }
+            "depth" => {
+                self.params.set_depth_db(value);
+            }
+            "floor" => {
+                self.params.set_floor_db(value);
             }
             PHASE_KEY => {
                 self.params.set_phase_offset(value);
@@ -2099,7 +2138,12 @@ impl GuiState {
             });
         }
 
-        commands.extend(curve_gain_reference_line_commands(curve_size, *theme));
+        commands.extend(curve_gain_reference_line_commands_for_mapping(
+            curve_size,
+            *theme,
+            self.params.depth_db(),
+            self.params.floor_db(),
+        ));
 
         for segment_index in 0..editable_curve.segments.len() {
             let left = editable_curve.nodes[segment_index];
@@ -2284,6 +2328,8 @@ impl GuiState {
 
     pub(super) fn push_all_param_updates(&self) {
         self.push_single_value_update(PARAM_MIX_ID, self.params.mix() as f64);
+        self.push_single_value_update(PARAM_DEPTH_ID, self.params.depth_db() as f64);
+        self.push_single_value_update(PARAM_FLOOR_ID, self.params.floor_db() as f64);
         self.push_single_value_update(PARAM_PHASE_OFFSET_ID, self.params.phase_offset() as f64);
         self.push_single_value_update(PARAM_OUTPUT_GAIN_ID, self.params.output_gain_db() as f64);
         self.push_single_value_update(PARAM_SYNC_DIVISION_ID, self.params.sync_division() as f64);
@@ -2494,6 +2540,7 @@ pub(super) fn curve_beat_grid_commands(
     commands
 }
 
+#[cfg(test)]
 pub(super) fn curve_gain_reference_line_commands(
     size: Size,
     theme: PumpTheme,
@@ -2519,6 +2566,34 @@ pub(super) fn curve_gain_reference_line_commands(
         .collect()
 }
 
+pub(super) fn curve_gain_reference_line_commands_for_mapping(
+    size: Size,
+    theme: PumpTheme,
+    depth_db: f32,
+    floor_db: f32,
+) -> Vec<SurfaceCommand> {
+    let max_x = size.width.saturating_sub(1) as i32;
+    curve_gain_references_for_mapping(depth_db, floor_db)
+        .into_iter()
+        .map(|reference| {
+            let y = local_from_node_for_size(
+                CurveNode {
+                    x: 0.0,
+                    y: reference.gain,
+                },
+                size,
+            )
+            .y;
+            SurfaceCommand::Line {
+                start: Point { x: 0, y },
+                end: Point { x: max_x, y },
+                color: theme.curve_reference_line,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
 pub(super) fn curve_gain_reference_label_commands(
     size: Size,
     theme: PumpTheme,
@@ -2569,5 +2644,70 @@ pub(super) fn curve_gain_reference_label_commands(
         });
     }
 
+    commands
+}
+
+pub(super) fn curve_gain_reference_label_commands_for_mapping(
+    size: Size,
+    theme: PumpTheme,
+    text_scale: u32,
+    depth_db: f32,
+    floor_db: f32,
+) -> Vec<SurfaceCommand> {
+    let text_scale = text_scale.max(1);
+    let glyph_advance = 6_u32.saturating_mul(text_scale);
+    let glyph_height = 7_u32.saturating_mul(text_scale);
+    let label_right_padding = 4_u32;
+    let label_vertical_padding = 2_u32;
+    let mut commands = vec![SurfaceCommand::FillRect {
+        rect: Rect {
+            origin: Point { x: 0, y: 0 },
+            size,
+        },
+        color: theme.curve_bg,
+    }];
+    for reference in curve_gain_references_for_mapping(depth_db, floor_db) {
+        let y = local_from_node_for_size(
+            CurveNode {
+                x: 0.0,
+                y: reference.gain,
+            },
+            size,
+        )
+        .y;
+        let text = curve_gain_reference_text(reference, true);
+        let text_width = (text.chars().count() as u32).saturating_mul(glyph_advance);
+        let plate_height = glyph_height
+            .saturating_add(label_vertical_padding.saturating_mul(2))
+            .min(size.height);
+        let plate_top =
+            (y - plate_height as i32 / 2).clamp(0, size.height.saturating_sub(plate_height) as i32);
+        let text_x = size
+            .width
+            .saturating_sub(text_width)
+            .saturating_sub(label_right_padding) as i32;
+        commands.push(SurfaceCommand::FillRect {
+            rect: Rect {
+                origin: Point {
+                    x: text_x.saturating_sub(2),
+                    y: plate_top,
+                },
+                size: Size {
+                    width: text_width.saturating_add(4),
+                    height: plate_height,
+                },
+            },
+            color: theme.curve_bg,
+        });
+        commands.push(SurfaceCommand::Text {
+            origin: Point {
+                x: text_x,
+                y: plate_top + label_vertical_padding as i32,
+            },
+            text,
+            color: theme.curve_reference_label,
+            scale: text_scale,
+        });
+    }
     commands
 }

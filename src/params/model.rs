@@ -7,14 +7,11 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 6;
+pub(crate) const STATE_VERSION: u32 = 7;
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
-/// Reserved numeric parameter id kept for backward compatibility.
-///
-/// Depth is no longer exposed as a runtime control.
-#[allow(dead_code)]
+/// Host-visible numeric parameter id for curve attenuation depth.
 pub const PARAM_DEPTH_NUM: u32 = 2;
 /// Host-visible numeric parameter id for cycle phase offset.
 pub const PARAM_PHASE_OFFSET_NUM: u32 = 3;
@@ -22,13 +19,12 @@ pub const PARAM_PHASE_OFFSET_NUM: u32 = 3;
 pub const PARAM_OUTPUT_GAIN_NUM: u32 = 4;
 /// Host-visible numeric parameter id for beat-sync cycle division.
 pub const PARAM_SYNC_DIVISION_NUM: u32 = 5;
+/// Host-visible numeric parameter id for the minimum wet gain floor.
+pub const PARAM_FLOOR_NUM: u32 = 6;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
-/// Reserved parameter id kept for backward compatibility.
-///
-/// Depth is no longer exposed as a runtime control.
-#[allow(dead_code)]
+/// Parameter id for curve attenuation depth.
 pub const PARAM_DEPTH_ID: ClapId = ClapId::new(PARAM_DEPTH_NUM);
 /// Parameter id for cycle phase offset.
 pub const PARAM_PHASE_OFFSET_ID: ClapId = ClapId::new(PARAM_PHASE_OFFSET_NUM);
@@ -36,11 +32,19 @@ pub const PARAM_PHASE_OFFSET_ID: ClapId = ClapId::new(PARAM_PHASE_OFFSET_NUM);
 pub const PARAM_OUTPUT_GAIN_ID: ClapId = ClapId::new(PARAM_OUTPUT_GAIN_NUM);
 /// Parameter id for beat-sync cycle division.
 pub const PARAM_SYNC_DIVISION_ID: ClapId = ClapId::new(PARAM_SYNC_DIVISION_NUM);
+/// Parameter id for the minimum wet gain floor.
+pub const PARAM_FLOOR_ID: ClapId = ClapId::new(PARAM_FLOOR_NUM);
 
 /// Default dry/wet blend.
 pub const DEFAULT_MIX: f32 = 1.0;
-/// Fixed depth value used for compatibility payloads/presets.
+/// Default curve attenuation depth in decibels.
+pub const DEFAULT_DEPTH_DB: f32 = 120.0;
+/// Default depth retained as a normalized legacy compatibility value.
 pub const DEFAULT_DEPTH: f32 = 1.0;
+/// Sentinel plain value used by hosts to represent an unbounded (−∞) floor.
+pub const FLOOR_NEG_INFINITY_DB: f32 = -60.0;
+/// Default minimum wet gain floor (−∞).
+pub const DEFAULT_FLOOR_DB: f32 = FLOOR_NEG_INFINITY_DB;
 /// Default cycle phase offset.
 pub const DEFAULT_PHASE_OFFSET: f32 = 0.0;
 /// Default output gain.
@@ -62,11 +66,14 @@ pub const DEFAULT_PRESET_NAME: &str = "Init";
 pub const MIN_MIX: f32 = 0.0;
 /// Maximum mix value.
 pub const MAX_MIX: f32 = 1.0;
-/// Minimum depth value kept for compatibility helpers.
-#[allow(dead_code)]
-pub const MIN_DEPTH: f32 = 0.0;
-/// Maximum depth value kept for compatibility helpers.
-pub const MAX_DEPTH: f32 = 1.0;
+/// Minimum curve attenuation depth in decibels.
+pub const MIN_DEPTH_DB: f32 = 0.0;
+/// Maximum curve attenuation depth in decibels.
+pub const MAX_DEPTH_DB: f32 = 120.0;
+/// Minimum finite floor in decibels. This host value is also the −∞ sentinel.
+pub const MIN_FLOOR_DB: f32 = FLOOR_NEG_INFINITY_DB;
+/// Maximum floor in decibels (unity wet gain).
+pub const MAX_FLOOR_DB: f32 = 0.0;
 /// Minimum phase offset value.
 pub const MIN_PHASE_OFFSET: f32 = 0.0;
 /// Maximum phase offset value.
@@ -186,6 +193,10 @@ pub struct PumpPreset {
     pub mix: f32,
     /// Legacy depth field preserved for backward-compatible state payloads.
     pub depth: f32,
+    /// Curve attenuation depth in decibels.
+    pub depth_db: f32,
+    /// Minimum permitted wet gain in decibels, or [`FLOOR_NEG_INFINITY_DB`].
+    pub floor_db: f32,
     /// Cycle phase offset.
     pub phase_offset: f32,
     /// Output trim in decibels.
@@ -250,6 +261,8 @@ impl PumpPresetBank {
                 is_read_only: false,
                 mix: DEFAULT_MIX,
                 depth: DEFAULT_DEPTH,
+                depth_db: DEFAULT_DEPTH_DB,
+                floor_db: DEFAULT_FLOOR_DB,
                 phase_offset: DEFAULT_PHASE_OFFSET,
                 output_gain_db: DEFAULT_OUTPUT_GAIN_DB,
                 sync_division: DEFAULT_SYNC_DIVISION_INDEX,
@@ -311,6 +324,8 @@ pub(crate) fn curve_near_eq(left: &EditableCurve, right: &EditableCurve) -> bool
 /// Shared atomic parameter/state storage across threads.
 pub struct PumpParams {
     pub(super) mix: AtomicF32,
+    pub(super) depth_db: AtomicF32,
+    pub(super) floor_db: AtomicF32,
     pub(super) phase_offset: AtomicF32,
     pub(super) output_gain_db: AtomicF32,
     pub(super) sync_division: AtomicU32,

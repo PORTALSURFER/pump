@@ -28,10 +28,11 @@ use crate::curve::{
 };
 use crate::params::{
     sync_division_label, PresetMutationError, PumpParams, PumpPresetBank, SavePresetOutcome,
-    DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET, DEFAULT_PRESET_NAME,
-    GLOBAL_CURVE_SLOT_COUNT, MAX_MIX, MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS,
-    MAX_SYNC_DIVISION, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
+    DEFAULT_DEPTH_DB, DEFAULT_FLOOR_DB, DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET,
+    DEFAULT_PRESET_NAME, GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_MIX,
+    MAX_OUTPUT_GAIN_DB, MAX_PHASE_OFFSET, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, MIN_DEPTH_DB,
+    MIN_FLOOR_DB, MIN_MIX, MIN_OUTPUT_GAIN_DB, MIN_PHASE_OFFSET, PARAM_DEPTH_ID, PARAM_FLOOR_ID,
+    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
 };
 use crate::GuiStatus;
 
@@ -115,7 +116,7 @@ const METER_WIDTH: i32 = 8;
 const METER_STROKE: i32 = 1;
 const BASE_KNOB_DIAMETER: u32 = 92;
 const BASE_TEXT_SCALE: u32 = 2;
-const KNOBS_PER_ROW: usize = 3;
+const KNOBS_PER_ROW: usize = 5;
 const BASE_CONTROL_LINE_UNIT: u32 = 8;
 const BASE_DROPDOWN_CONTROL_H: u32 = 24;
 const TRANSPORT_INDICATOR_SIZE: u32 = 10;
@@ -144,35 +145,70 @@ struct CurveGainReference {
     gain: f32,
     label: &'static str,
     bitmap_label: &'static str,
+    gain_db: Option<f32>,
 }
 
 /// Gain references shared by both Pump curve-editor renderers.
 ///
 /// Curve Y values are linear amplitude gains, so finite dB references must be
 /// converted into that same domain before either renderer projects them.
+#[cfg(test)]
 fn curve_gain_references() -> [CurveGainReference; 4] {
     [
         CurveGainReference {
             gain: crate::dsp::db_to_linear(0.0),
             label: "0 dB",
             bitmap_label: "0 dB",
+            gain_db: Some(0.0),
         },
         CurveGainReference {
             gain: crate::dsp::db_to_linear(-6.0),
             label: "−6 dB",
             bitmap_label: "-6 dB",
+            gain_db: Some(-6.0),
         },
         CurveGainReference {
             gain: crate::dsp::db_to_linear(-12.0),
             label: "−12 dB",
             bitmap_label: "-12 dB",
+            gain_db: Some(-12.0),
         },
         CurveGainReference {
             gain: 0.0,
             label: "−∞",
             bitmap_label: "-INF",
+            gain_db: None,
         },
     ]
+}
+
+/// Return dB guides at stable normalized curve positions using the live DSP
+/// mapping. The default wrapper above remains for legacy renderer tests.
+fn curve_gain_references_for_mapping(depth_db: f32, floor_db: f32) -> [CurveGainReference; 4] {
+    [
+        1.0_f32,
+        crate::dsp::db_to_linear(-6.0),
+        crate::dsp::db_to_linear(-12.0),
+        0.0,
+    ]
+    .map(|curve_value| {
+        let gain = crate::dsp::curve_value_to_gain(curve_value, depth_db, floor_db);
+        CurveGainReference {
+            gain,
+            label: "",
+            bitmap_label: "",
+            gain_db: crate::dsp::gain_to_db(gain),
+        }
+    })
+}
+
+fn curve_gain_reference_text(reference: CurveGainReference, bitmap: bool) -> String {
+    match reference.gain_db {
+        Some(db) if bitmap => format!("{db:.0} dB"),
+        Some(db) => format!("{db:.0} dB").replace('-', "−"),
+        None if bitmap => "-INF".to_string(),
+        None => "−∞".to_string(),
+    }
 }
 
 pub(crate) fn build_version_label() -> String {
@@ -269,6 +305,8 @@ struct CurveMarqueeSelection {
 #[derive(Clone, Copy, Debug)]
 struct ControlSnapshot {
     mix: f32,
+    depth_db: f32,
+    floor_db: f32,
     phase_offset: f32,
     output_gain_db: f32,
     division: usize,
@@ -289,6 +327,8 @@ impl ControlSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 struct UiHistorySnapshot {
     mix: f32,
+    depth_db: f32,
+    floor_db: f32,
     phase_offset: f32,
     output_gain_db: f32,
     sync_division: usize,

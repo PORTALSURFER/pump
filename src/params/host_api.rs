@@ -60,7 +60,7 @@ pub struct Vst3ParamInfo {
     pub default_normalized: f64,
 }
 
-const PARAM_DEFS: [ParamDef; 4] = [
+const PARAM_DEFS: [ParamDef; 6] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -120,6 +120,36 @@ const PARAM_DEFS: [ParamDef; 4] = [
         max_value: MAX_SYNC_DIVISION as f64,
         default_value: DEFAULT_SYNC_DIVISION_INDEX as f64,
         flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_DEPTH_NUM,
+        id: PARAM_DEPTH_ID,
+        name: "Depth",
+        #[cfg(feature = "vst3")]
+        short_name: "Depth",
+        #[cfg(feature = "vst3")]
+        units: "dB",
+        module: "Pump",
+        min_value: MIN_DEPTH_DB as f64,
+        max_value: MAX_DEPTH_DB as f64,
+        default_value: DEFAULT_DEPTH_DB as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FLOOR_NUM,
+        id: PARAM_FLOOR_ID,
+        name: "Floor",
+        #[cfg(feature = "vst3")]
+        short_name: "Floor",
+        #[cfg(feature = "vst3")]
+        units: "dB",
+        module: "Pump",
+        min_value: MIN_FLOOR_DB as f64,
+        max_value: MAX_FLOOR_DB as f64,
+        default_value: DEFAULT_FLOOR_DB as f64,
+        flags: AUTO,
     },
 ];
 
@@ -215,6 +245,8 @@ pub fn write_param_info(index: u32, info: &mut ParamInfoWriter) {
 pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
     match param_id {
         PARAM_MIX_ID => Some(params.mix() as f64),
+        PARAM_DEPTH_ID => Some(params.depth_db() as f64),
+        PARAM_FLOOR_ID => Some(params.floor_db() as f64),
         PARAM_PHASE_OFFSET_ID => Some(params.phase_offset() as f64),
         PARAM_OUTPUT_GAIN_ID => Some(params.output_gain_db() as f64),
         PARAM_SYNC_DIVISION_ID => Some(params.sync_division() as f64),
@@ -228,6 +260,8 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
 fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) -> bool {
     match param_id {
         PARAM_MIX_ID => params.set_mix(value as f32),
+        PARAM_DEPTH_ID => params.set_depth_db(value as f32),
+        PARAM_FLOOR_ID => params.set_floor_db(value as f32),
         PARAM_PHASE_OFFSET_ID => params.set_phase_offset(value as f32),
         PARAM_OUTPUT_GAIN_ID => params.set_output_gain_db(value as f32),
         PARAM_SYNC_DIVISION_ID => params.set_sync_division(value as f32),
@@ -284,6 +318,19 @@ pub fn parse_plain_value_text(param_id: ClapId, raw: &str) -> Option<f64> {
 fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> {
     match param_id {
         PARAM_MIX_ID => Some(format!("{:.0}%", (value * 100.0).clamp(0.0, 100.0))),
+        PARAM_DEPTH_ID => Some(format!(
+            "{:.0} dB",
+            value.clamp(MIN_DEPTH_DB as f64, MAX_DEPTH_DB as f64)
+        )),
+        PARAM_FLOOR_ID => {
+            if value <= MIN_FLOOR_DB as f64 {
+                Some("−∞".to_string())
+            } else {
+                let display_value = (value * 10.0).round() / 10.0;
+                let display_value = display_value.max(MIN_FLOOR_DB as f64 + 0.1);
+                Some(format!("{display_value:.1} dB"))
+            }
+        }
         PARAM_PHASE_OFFSET_ID => Some(format!("{:.0}%", (value * 100.0).rem_euclid(100.0))),
         PARAM_OUTPUT_GAIN_ID => Some(format!("{value:+.1} dB")),
         PARAM_SYNC_DIVISION_ID => {
@@ -299,6 +346,23 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
             let stripped = raw.trim_end_matches('%').trim();
             let value: f64 = stripped.parse().ok()?;
             Some((value / 100.0).clamp(0.0, 1.0))
+        }
+        PARAM_DEPTH_ID => {
+            let stripped = raw.trim_end_matches("dB").trim();
+            let value: f64 = stripped.parse().ok()?;
+            Some(value.clamp(MIN_DEPTH_DB as f64, MAX_DEPTH_DB as f64))
+        }
+        PARAM_FLOOR_ID => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            if matches!(
+                normalized.as_str(),
+                "−∞" | "-∞" | "∞" | "-inf" | "-infinity"
+            ) {
+                return Some(MIN_FLOOR_DB as f64);
+            }
+            let stripped = raw.trim_end_matches("dB").trim();
+            let value: f64 = stripped.parse().ok()?;
+            Some(value.clamp(MIN_FLOOR_DB as f64, MAX_FLOOR_DB as f64))
         }
         PARAM_PHASE_OFFSET_ID => {
             let stripped = raw.trim_end_matches('%').trim();

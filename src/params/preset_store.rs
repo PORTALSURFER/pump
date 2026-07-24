@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 3;
+const PRESET_STORE_VERSION: u32 = 4;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
@@ -262,7 +262,8 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&(name.len() as u32).to_le_bytes());
     payload.extend_from_slice(name.as_bytes());
     payload.extend_from_slice(&preset.mix.to_le_bytes());
-    payload.extend_from_slice(&preset.depth.to_le_bytes());
+    payload.extend_from_slice(&preset.depth_db.to_le_bytes());
+    payload.extend_from_slice(&preset.floor_db.to_le_bytes());
     payload.extend_from_slice(&preset.phase_offset.to_le_bytes());
     payload.extend_from_slice(&preset.output_gain_db.to_le_bytes());
     payload.extend_from_slice(&(preset.sync_division as u32).to_le_bytes());
@@ -349,7 +350,15 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         let raw_name =
             std::str::from_utf8(&name_bytes).map_err(|_| "invalid preset name utf8".to_string())?;
         let mix = read_f32(&mut cursor).ok_or_else(|| "invalid preset mix".to_string())?;
-        let depth = read_f32(&mut cursor).ok_or_else(|| "invalid preset depth".to_string())?;
+        let depth_field =
+            read_f32(&mut cursor).ok_or_else(|| "invalid preset depth".to_string())?;
+        let (depth_db, floor_db) = if version >= 4 {
+            let floor_db =
+                read_f32(&mut cursor).ok_or_else(|| "invalid preset floor".to_string())?;
+            (depth_field, floor_db)
+        } else {
+            (DEFAULT_DEPTH_DB, DEFAULT_FLOOR_DB)
+        };
         let phase_offset =
             read_f32(&mut cursor).ok_or_else(|| "invalid preset phase offset".to_string())?;
         let output_gain_db =
@@ -370,7 +379,9 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
             mix,
-            depth,
+            depth: (depth_db / MAX_DEPTH_DB).clamp(0.0, 1.0),
+            depth_db,
+            floor_db,
             phase_offset,
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
@@ -494,7 +505,7 @@ mod tests {
 
     fn quick_slot_count_offset(payload: &[u8]) -> usize {
         let name_len = payload_u32(payload, FIRST_PRESET_OFFSET) as usize;
-        let node_count_offset = FIRST_PRESET_OFFSET + 4 + name_len + 5 * 4;
+        let node_count_offset = FIRST_PRESET_OFFSET + 4 + name_len + 6 * 4;
         let node_count = payload_u32(payload, node_count_offset) as usize;
         let curve_bytes = node_count * 8 + node_count.saturating_sub(1) * 4;
         node_count_offset + 4 + curve_bytes
@@ -508,6 +519,8 @@ mod tests {
                 is_read_only: false,
                 mix: 1.0,
                 depth: 1.0,
+                depth_db: DEFAULT_DEPTH_DB,
+                floor_db: DEFAULT_FLOOR_DB,
                 phase_offset: 0.0,
                 output_gain_db: 0.0,
                 sync_division: 4,
@@ -515,6 +528,15 @@ mod tests {
                 quick_slots: seeded_quick_shape_slots(),
             }],
         })
+    }
+
+    fn encoded_v3_preset_bank() -> Vec<u8> {
+        let mut payload = encoded_single_preset_bank();
+        let name_len = payload_u32(&payload, FIRST_PRESET_OFFSET) as usize;
+        let floor_offset = FIRST_PRESET_OFFSET + 4 + name_len + 8;
+        payload.drain(floor_offset..floor_offset + 4);
+        write_payload_u32(&mut payload, 4, 3);
+        payload
     }
 
     fn temp_path(label: &str) -> PathBuf {
@@ -539,6 +561,8 @@ mod tests {
                     is_read_only: false,
                     mix: 1.0,
                     depth: 0.7,
+                    depth_db: 84.0,
+                    floor_db: DEFAULT_FLOOR_DB,
                     phase_offset: 0.0,
                     output_gain_db: 0.0,
                     sync_division: 4,
@@ -550,6 +574,8 @@ mod tests {
                     is_read_only: false,
                     mix: 0.25,
                     depth: 0.55,
+                    depth_db: 66.0,
+                    floor_db: DEFAULT_FLOOR_DB,
                     phase_offset: 0.13,
                     output_gain_db: -1.5,
                     sync_division: 3,
@@ -578,6 +604,18 @@ mod tests {
         assert_eq!(loaded, bank);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preset_store_v3_migrates_depth_and_floor_defaults() {
+        let payload = encoded_v3_preset_bank();
+        let bank = decode_preset_bank_payload(&payload).expect("v3 preset store should decode");
+
+        assert!(!bank.presets.is_empty());
+        for preset in bank.presets {
+            assert_eq!(preset.depth_db, DEFAULT_DEPTH_DB);
+            assert_eq!(preset.floor_db, DEFAULT_FLOOR_DB);
+        }
     }
 
     #[test]

@@ -1,8 +1,7 @@
 use super::{decode_state_payload, encode_state_payload, PumpParams};
 
 const OFFSET_VERSION: usize = 4;
-const OFFSET_NODE_COUNT: usize = 28;
-const CURVE_HEADER_BYTES: usize = 32;
+const OFFSET_NODE_COUNT: usize = 32;
 
 #[derive(Debug, PartialEq, Eq)]
 struct StateFingerprint {
@@ -44,20 +43,25 @@ fn write_u32(payload: &mut [u8], offset: usize, value: u32) {
 }
 
 fn first_preset_start(payload: &[u8]) -> usize {
-    let node_count = read_u32(payload, OFFSET_NODE_COUNT) as usize;
+    let (node_offset, curve_header_bytes) = if (2..=65).contains(&read_u32(payload, 32)) {
+        (32, 36)
+    } else {
+        (28, 32)
+    };
+    let node_count = read_u32(payload, node_offset) as usize;
     let curve_bytes = node_count * 8 + node_count.saturating_sub(1) * 4;
-    CURVE_HEADER_BYTES + curve_bytes + 8
+    curve_header_bytes + curve_bytes + 8
 }
 
 fn first_preset_node_count_offset(payload: &[u8]) -> usize {
-    let version = read_u32(payload, OFFSET_VERSION);
-    assert!(
-        version >= 4,
-        "test assumes payload format includes preset read-only flag"
-    );
     let preset_start = first_preset_start(payload);
     let name_len = read_u32(payload, preset_start) as usize;
-    preset_start + 4 + name_len + (5 * 4) + 1
+    let fields = if read_u32(payload, OFFSET_VERSION) >= 7 {
+        6
+    } else {
+        5
+    };
+    preset_start + 4 + name_len + (fields * 4) + 1
 }
 
 fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
@@ -69,17 +73,29 @@ fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
 
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
-    let preset_bank_offset = first_preset_start(&payload) - 8;
-    let flag_offset = first_preset_node_count_offset(&payload) - 1;
-    let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
+    if version < 7 {
+        // Remove the v7 Floor field from the top-level record and first preset
+        // so the migration test represents a real pre-v7 payload.
+        payload.drain(16..20);
+        let preset_start = first_preset_start(&payload);
+        let name_len = read_u32(&payload, preset_start) as usize;
+        let floor_offset = preset_start + 4 + name_len + 8;
+        payload.drain(floor_offset..floor_offset + 4);
+    }
     write_u32(&mut payload, OFFSET_VERSION, version);
+    let preset_bank_offset = first_preset_start(&payload) - 8;
     match version {
         2 => payload.truncate(preset_bank_offset),
         3 => {
+            let flag_offset = first_preset_node_count_offset(&payload) - 1;
+            let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
             payload.remove(flag_offset);
             payload.truncate(quick_slot_offset - 1);
         }
-        4 => payload.truncate(quick_slot_offset),
+        4 => {
+            let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
+            payload.truncate(quick_slot_offset);
+        }
         5 => {}
         _ => panic!("unsupported test state version"),
     }
@@ -191,6 +207,8 @@ fn decode_preserves_v2_through_v5_state_compatibility() {
 
         decode_state_payload(&params, &payload)
             .unwrap_or_else(|error| panic!("state v{version} should decode: {error}"));
+        assert_eq!(params.depth_db(), 120.0);
+        assert_eq!(params.floor_db(), -60.0);
     }
 }
 

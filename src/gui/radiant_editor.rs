@@ -34,8 +34,9 @@ use crate::curve::{
 use crate::incoming_waveform::IncomingWaveformSnapshot;
 use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
-    GLOBAL_CURVE_SLOT_COUNT, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB,
-    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
+    GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
+    MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
+    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
 };
 use crate::GuiStatus;
 
@@ -201,6 +202,8 @@ enum CurveSegmentDragMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NumericEntryTarget {
     Mix,
+    Depth,
+    Floor,
     Phase,
     OutputGain,
 }
@@ -209,6 +212,8 @@ impl NumericEntryTarget {
     fn param_id(self) -> ClapId {
         match self {
             Self::Mix => PARAM_MIX_ID,
+            Self::Depth => PARAM_DEPTH_ID,
+            Self::Floor => PARAM_FLOOR_ID,
             Self::Phase => PARAM_PHASE_OFFSET_ID,
             Self::OutputGain => PARAM_OUTPUT_GAIN_ID,
         }
@@ -217,6 +222,8 @@ impl NumericEntryTarget {
     fn label(self) -> &'static str {
         match self {
             Self::Mix => "Mix",
+            Self::Depth => "Depth",
+            Self::Floor => "Floor",
             Self::Phase => "Phase",
             Self::OutputGain => "Output",
         }
@@ -225,6 +232,8 @@ impl NumericEntryTarget {
     fn widget_key(self) -> &'static str {
         match self {
             Self::Mix => "numeric-entry-mix",
+            Self::Depth => "numeric-entry-depth",
+            Self::Floor => "numeric-entry-floor",
             Self::Phase => "numeric-entry-phase",
             Self::OutputGain => "numeric-entry-output",
         }
@@ -233,6 +242,8 @@ impl NumericEntryTarget {
     fn current_plain_value(self, params: &PumpParams) -> f64 {
         match self {
             Self::Mix => params.mix() as f64,
+            Self::Depth => params.depth_db() as f64,
+            Self::Floor => params.floor_db() as f64,
             Self::Phase => params.phase_offset() as f64,
             Self::OutputGain => params.output_gain_db() as f64,
         }
@@ -289,6 +300,8 @@ struct RadiantEditorState {
 #[derive(Clone, Debug, PartialEq)]
 enum RadiantEditorMessage {
     Mix(f32),
+    Depth(f32),
+    Floor(f32),
     Phase(f32),
     OutputGain(f32),
     SyncDivision(f32),
@@ -479,6 +492,8 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         .clone()
         .unwrap_or_else(|| params.editable_curve_snapshot());
     let output = params.output_gain_db();
+    let depth = params.depth_db();
+    let floor = params.floor_db();
     let sync = params.sync_division();
     let playhead_phase = (state.status.has_host_beats_timeline() || state.status.is_playing())
         .then_some(state.status.phase());
@@ -520,6 +535,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                     )
                     .with_incoming_waveform(state.status.incoming_waveform_snapshot())
                     .with_sync_division(sync)
+                    .with_gain_mapping(depth, floor)
                     .with_playhead_phase(playhead_phase),
                     RadiantEditorMessage::Curve,
                 )
@@ -547,6 +563,24 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 params.mix(),
                 state.numeric_entry.as_ref(),
                 RadiantEditorMessage::Mix,
+            ),
+            control_row(
+                NumericEntryTarget::Depth,
+                format!("{depth:.0} dB"),
+                normalize_depth(depth),
+                state.numeric_entry.as_ref(),
+                RadiantEditorMessage::Depth,
+            ),
+            control_row(
+                NumericEntryTarget::Floor,
+                if floor <= MIN_FLOOR_DB {
+                    "−∞".to_string()
+                } else {
+                    format!("{floor:.0} dB")
+                },
+                normalize_floor(floor),
+                state.numeric_entry.as_ref(),
+                RadiantEditorMessage::Floor,
             ),
             control_row(
                 NumericEntryTarget::Phase,
@@ -646,6 +680,8 @@ fn value_label_node(
 fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorMessage) {
     match message {
         RadiantEditorMessage::Mix(value) => state.params.set_mix(value),
+        RadiantEditorMessage::Depth(value) => state.params.set_depth_db(denormalize_depth(value)),
+        RadiantEditorMessage::Floor(value) => state.params.set_floor_db(denormalize_floor(value)),
         RadiantEditorMessage::Phase(value) => state.params.set_phase_offset(value),
         RadiantEditorMessage::OutputGain(value) => {
             state
@@ -776,6 +812,8 @@ fn apply_numeric_entry_value(
 ) {
     match target {
         NumericEntryTarget::Mix => state.params.set_mix(value as f32),
+        NumericEntryTarget::Depth => state.params.set_depth_db(value as f32),
+        NumericEntryTarget::Floor => state.params.set_floor_db(value as f32),
         NumericEntryTarget::Phase => state.params.set_phase_offset(value as f32),
         NumericEntryTarget::OutputGain => state.params.set_output_gain_db(value as f32),
     }
@@ -1428,6 +1466,22 @@ fn denormalize_output_gain(value: f32) -> f32 {
     MIN_OUTPUT_GAIN_DB + value.clamp(0.0, 1.0) * (MAX_OUTPUT_GAIN_DB - MIN_OUTPUT_GAIN_DB)
 }
 
+fn normalize_depth(value: f32) -> f32 {
+    ((value - MIN_DEPTH_DB) / (MAX_DEPTH_DB - MIN_DEPTH_DB)).clamp(0.0, 1.0)
+}
+
+fn denormalize_depth(value: f32) -> f32 {
+    MIN_DEPTH_DB + value.clamp(0.0, 1.0) * (MAX_DEPTH_DB - MIN_DEPTH_DB)
+}
+
+fn normalize_floor(value: f32) -> f32 {
+    ((value - MIN_FLOOR_DB) / (MAX_FLOOR_DB - MIN_FLOOR_DB)).clamp(0.0, 1.0)
+}
+
+fn denormalize_floor(value: f32) -> f32 {
+    MIN_FLOOR_DB + value.clamp(0.0, 1.0) * (MAX_FLOOR_DB - MIN_FLOOR_DB)
+}
+
 fn normalize_sync_division(value: usize) -> f32 {
     (value as f32 / MAX_SYNC_DIVISION).clamp(0.0, 1.0)
 }
@@ -1898,6 +1952,8 @@ struct CurvePreviewWidget {
     playhead_phase: Option<f32>,
     incoming_waveform: Option<IncomingWaveformSnapshot>,
     sync_division: usize,
+    depth_db: f32,
+    floor_db: f32,
 }
 
 impl CurvePreviewWidget {
@@ -1932,6 +1988,8 @@ impl CurvePreviewWidget {
             playhead_phase: None,
             incoming_waveform: None,
             sync_division: crate::params::DEFAULT_SYNC_DIVISION_INDEX,
+            depth_db: crate::params::DEFAULT_DEPTH_DB,
+            floor_db: crate::params::DEFAULT_FLOOR_DB,
         }
     }
 
@@ -1970,6 +2028,12 @@ impl CurvePreviewWidget {
 
     fn with_sync_division(mut self, sync_division: usize) -> Self {
         self.sync_division = sync_division;
+        self
+    }
+
+    fn with_gain_mapping(mut self, depth_db: f32, floor_db: f32) -> Self {
+        self.depth_db = depth_db;
+        self.floor_db = floor_db;
         self
     }
 
@@ -2216,7 +2280,7 @@ impl CurvePreviewWidget {
         let min_top = bounds.min.y;
         let max_top = (bounds.max.y - label_height).max(min_top);
 
-        for reference in super::curve_gain_references() {
+        for reference in super::curve_gain_references_for_mapping(self.depth_db, self.floor_db) {
             let y = Self::curve_point(
                 bounds,
                 CurveNode {
@@ -2238,7 +2302,7 @@ impl CurvePreviewWidget {
             }));
             primitives.push(PaintPrimitive::Text(PaintTextRun {
                 widget_id: self.common.id,
-                text: PaintText::from(reference.label),
+                text: PaintText::from(super::curve_gain_reference_text(reference, false)),
                 rect: label_rect,
                 font_size: CURVE_REFERENCE_FONT_SIZE,
                 baseline: None,
