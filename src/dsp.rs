@@ -177,7 +177,9 @@ pub fn curve_value_to_gain(curve_value: f32, depth_db: f32, floor_db: f32) -> f3
         -60.0
     };
     let floor_is_neg_infinity = floor_db <= -60.0;
-    let requested_gain = if curve_value <= 0.0 {
+    let requested_gain = if depth_db <= 0.0 {
+        1.0
+    } else if curve_value <= 0.0 {
         0.0
     } else if depth_db >= 120.0 {
         curve_value
@@ -345,6 +347,7 @@ mod tests {
         assert_eq!(curve_value_to_gain(0.0, 120.0, -60.0), 0.0);
         assert!((curve_value_to_gain(0.0, 120.0, -18.0) - db_to_linear(-18.0)).abs() < 1.0e-6);
         assert_eq!(curve_value_to_gain(0.4, 0.0, -60.0), 1.0);
+        assert_eq!(curve_value_to_gain(0.0, 0.0, -60.0), 1.0);
         assert!(curve_value_to_gain(f32::NAN, f32::NAN, f32::NAN).is_finite());
     }
 }
