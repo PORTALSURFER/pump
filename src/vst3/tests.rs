@@ -63,7 +63,76 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 6);
+    assert_eq!(count, 7);
+}
+
+#[test]
+fn processor_declares_optional_stereo_sidechain_bus() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+
+    assert_eq!(
+        unsafe {
+            processor.getBusCount(
+                MediaTypes_::kAudio as MediaType,
+                BusDirections_::kInput as BusDirection,
+            )
+        },
+        2
+    );
+    assert_eq!(
+        unsafe {
+            processor.getBusCount(
+                MediaTypes_::kAudio as MediaType,
+                BusDirections_::kOutput as BusDirection,
+            )
+        },
+        1
+    );
+
+    let mut sidechain_info: BusInfo = unsafe { mem::zeroed() };
+    assert_eq!(
+        unsafe {
+            processor.getBusInfo(
+                MediaTypes_::kAudio as MediaType,
+                BusDirections_::kInput as BusDirection,
+                1,
+                &mut sidechain_info,
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(sidechain_info.channelCount, 2);
+    assert_eq!(sidechain_info.busType, BusTypes_::kAux as BusType);
+    assert_eq!(sidechain_info.flags, 0);
+
+    let mut arrangement = SpeakerArrangement::default();
+    assert_eq!(
+        unsafe {
+            processor.getBusArrangement(BusDirections_::kInput as BusDirection, 1, &mut arrangement)
+        },
+        kResultOk
+    );
+    assert_eq!(arrangement, SpeakerArr::kStereo);
+}
+
+#[test]
+fn processor_keeps_main_audio_when_optional_sidechain_bus_is_inactive() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(32, 9.0);
+    fixture
+        ._input_buses
+        .push(unsafe { mem::zeroed::<AudioBusBuffers>() });
+    fixture.process_data.numInputs = 2;
+    fixture.process_data.inputs = fixture._input_buses.as_mut_ptr();
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(!shared.status.sidechain_available());
+    assert!(fixture.output_left.iter().any(|sample| *sample != 9.0));
+    assert!(fixture.output_right.iter().any(|sample| *sample != 9.0));
 }
 
 #[test]

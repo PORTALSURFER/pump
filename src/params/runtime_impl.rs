@@ -11,6 +11,7 @@ impl PumpParams {
             phase_offset: AtomicF32::new(DEFAULT_PHASE_OFFSET),
             output_gain_db: AtomicF32::new(DEFAULT_OUTPUT_GAIN_DB),
             sync_division: AtomicU32::new(DEFAULT_SYNC_DIVISION_INDEX as u32),
+            trigger_mode: AtomicU32::new(DEFAULT_TRIGGER_MODE as u32),
             editable_curve: RwLock::new(editable_curve),
             curve: std::array::from_fn(|index| AtomicF32::new(default_curve[index])),
             curve_revision: AtomicU32::new(1),
@@ -67,6 +68,11 @@ impl PumpParams {
         sync_division_beats(self.sync_division())
     }
 
+    /// Get the selected curve trigger source.
+    pub fn trigger_mode(&self) -> usize {
+        (self.trigger_mode.load(Ordering::Relaxed) as usize).min(TRIGGER_MODE_SIDECHAIN)
+    }
+
     /// Set dry/wet mix amount.
     pub fn set_mix(&self, value: f32) {
         self.mix
@@ -120,6 +126,16 @@ impl PumpParams {
     pub fn set_sync_division(&self, value: f32) {
         let index = clamp_sync_division(value);
         self.sync_division.store(index as u32, Ordering::Relaxed);
+    }
+
+    /// Set the curve trigger source from a scalar host value.
+    pub fn set_trigger_mode(&self, value: f32) {
+        self.trigger_mode.store(
+            value
+                .round()
+                .clamp(TRIGGER_MODE_HOST as f32, TRIGGER_MODE_SIDECHAIN as f32) as u32,
+            Ordering::Relaxed,
+        );
     }
 
     /// Read the current curve revision counter.
@@ -200,6 +216,7 @@ impl PumpParams {
             phase_offset: self.phase_offset(),
             output_gain_db: self.output_gain_db(),
             sync_division: self.sync_division(),
+            trigger_mode: self.trigger_mode(),
             editable_curve: self.editable_curve_snapshot(),
             quick_slots: self.selected_quick_slots_snapshot(),
         }
@@ -260,6 +277,7 @@ impl PumpParams {
                 DEFAULT_FLOOR_DB
             };
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
+            preset.trigger_mode = preset.trigger_mode.min(TRIGGER_MODE_SIDECHAIN);
             preset.editable_curve = preset.editable_curve.clone().normalized();
             let mut normalized_slots = preset.quick_slots.clone();
             if normalized_slots.len() > QUICK_SLOT_COUNT {
@@ -287,6 +305,7 @@ impl PumpParams {
         self.set_phase_offset(preset.phase_offset);
         self.set_output_gain_db(preset.output_gain_db);
         self.set_sync_division(preset.sync_division as f32);
+        self.set_trigger_mode(preset.trigger_mode as f32);
         self.set_editable_curve_preserving_phase(&preset.editable_curve);
     }
 

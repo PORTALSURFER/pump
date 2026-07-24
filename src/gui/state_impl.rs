@@ -75,6 +75,8 @@ impl GuiState {
             phase_offset: self.params.phase_offset(),
             output_gain_db: self.params.output_gain_db(),
             division: self.params.sync_division(),
+            trigger_mode: self.params.trigger_mode(),
+            sidechain_available: self.status.sidechain_available(),
             incoming_waveform_enabled: self.status.incoming_waveform_enabled(),
             snap_enabled,
             snap_hovered,
@@ -1014,6 +1016,31 @@ impl GuiState {
                 height: metrics.dropdown_control_h,
             })
             .fill(),
+            dropdown(
+                TRIGGER_MODE_KEY,
+                TRIGGER_MODE_LABELS.len(),
+                controls
+                    .trigger_mode
+                    .min(TRIGGER_MODE_LABELS.len().saturating_sub(1)),
+            )
+            .dropdown_option_labels(
+                TRIGGER_MODE_LABELS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, label)| {
+                        if index == TRIGGER_MODE_SIDECHAIN && !controls.sidechain_available {
+                            format!("{label} (unavailable)")
+                        } else {
+                            (*label).to_string()
+                        }
+                    })
+                    .collect(),
+            )
+            .control_size(Size {
+                width: metrics.dropdown_control_w,
+                height: metrics.dropdown_control_h,
+            })
+            .fill(),
             row_slots(vec![
                 weighted_slot(snap_row, 2),
                 weighted_slot(
@@ -1189,7 +1216,10 @@ impl GuiState {
                 self.reduce_knob(key.as_str(), value);
             }
             UiAction::DropdownSelected { key, index } => {
-                if matches!(key.as_str(), PRESET_DROPDOWN_KEY | DIVISION_KEY) {
+                if matches!(
+                    key.as_str(),
+                    PRESET_DROPDOWN_KEY | DIVISION_KEY | TRIGGER_MODE_KEY
+                ) {
                     self.capture_undo_snapshot();
                 }
                 self.reduce_dropdown(key.as_str(), index);
@@ -1737,6 +1767,14 @@ impl GuiState {
                 let clamped = index.min(MAX_SYNC_DIVISION as usize);
                 self.params.set_sync_division(clamped as f32);
                 self.push_single_value_update(PARAM_SYNC_DIVISION_ID, clamped as f64);
+            }
+            TRIGGER_MODE_KEY => {
+                let clamped = index.min(TRIGGER_MODE_LABELS.len().saturating_sub(1));
+                if clamped == TRIGGER_MODE_SIDECHAIN && !self.status.sidechain_available() {
+                    return;
+                }
+                self.params.set_trigger_mode(clamped as f32);
+                self.push_single_value_update(PARAM_TRIGGER_MODE_ID, clamped as f64);
             }
             GRID_OVERRIDE_KEY => {
                 if let Ok(mut runtime) = self.runtime.lock() {

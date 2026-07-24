@@ -142,6 +142,7 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         phase_offset: params.phase_offset(),
         output_gain_db: params.output_gain_db(),
         beats_per_cycle: params.sync_beats_per_cycle(),
+        trigger_mode: params.trigger_mode(),
     }
 }
 
@@ -151,6 +152,13 @@ pub(crate) struct StereoBlockSlices<'a> {
     pub(crate) right: &'a mut [f32],
 }
 
+/// Read-only sidechain stereo input aligned to the processed main block.
+pub(crate) struct SidechainBlockSlices<'a> {
+    pub(crate) left: &'a [f32],
+    pub(crate) right: &'a [f32],
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn process_stereo_block(
     engine: &mut PumpEngine,
     block: StereoBlockSlices<'_>,
@@ -158,6 +166,7 @@ pub(crate) fn process_stereo_block(
     schedule: &mut ParamEventSchedule,
     settings: &mut DspSettings,
     transport: TransportState,
+    sidechain: Option<SidechainBlockSlices<'_>>,
     mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
     let StereoBlockSlices { left, right } = block;
@@ -176,6 +185,13 @@ pub(crate) fn process_stereo_block(
             &mut right[sample_offset],
             *settings,
             transport_for_sample,
+            sidechain.as_ref().and_then(|sidechain| {
+                sidechain
+                    .left
+                    .get(sample_offset)
+                    .zip(sidechain.right.get(sample_offset))
+                    .map(|(&left, &right)| (left, right))
+            }),
         );
         if input_left.abs().max(input_right.abs()) > 1.0e-5 {
             input_active = true;
@@ -223,6 +239,14 @@ pub(crate) struct RawStereoBlock {
     pub(crate) output_right: *mut f32,
 }
 
+/// Raw optional VST3 sidechain input pointers owned by the current process call.
+#[cfg(feature = "vst3")]
+#[derive(Clone, Copy)]
+pub(crate) struct RawSidechainBlock {
+    pub(crate) input_left: *const f32,
+    pub(crate) input_right: *const f32,
+}
+
 #[cfg(feature = "vst3")]
 impl RawStereoBlock {
     /// Write silence without creating host-buffer slices that could alias.
@@ -237,6 +261,7 @@ impl RawStereoBlock {
 }
 
 #[cfg(feature = "vst3")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn process_stereo_block_raw(
     engine: &mut PumpEngine,
     block: RawStereoBlock,
@@ -244,6 +269,7 @@ pub(crate) unsafe fn process_stereo_block_raw(
     schedule: &mut ParamEventSchedule,
     settings: &mut DspSettings,
     transport: TransportState,
+    sidechain: Option<RawSidechainBlock>,
     mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
     let mut transport_for_sample = transport;
@@ -259,8 +285,18 @@ pub(crate) unsafe fn process_stereo_block_raw(
         let mut right = unsafe { block.input_right.add(sample_offset).read() };
         let input_left = left;
         let input_right = right;
-        let telemetry =
-            engine.process_sample(&mut left, &mut right, *settings, transport_for_sample);
+        let telemetry = engine.process_sample(
+            &mut left,
+            &mut right,
+            *settings,
+            transport_for_sample,
+            sidechain.map(|sidechain| unsafe {
+                (
+                    sidechain.input_left.add(sample_offset).read(),
+                    sidechain.input_right.add(sample_offset).read(),
+                )
+            }),
+        );
         if input_left.abs().max(input_right.abs()) > 1.0e-5 {
             input_active = true;
             minimum_reduction_gain = minimum_reduction_gain.min(telemetry.reduction_gain);
@@ -301,7 +337,7 @@ mod tests {
     use crate::curve::CURVE_TABLE_LEN;
     use crate::params::{
         PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
-        PARAM_SYNC_DIVISION_ID,
+        PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_SIDECHAIN,
     };
 
     fn constant_curve(value: f32) -> [f32; CURVE_TABLE_LEN] {
@@ -345,6 +381,7 @@ mod tests {
             &mut settings,
             playing_transport(0.0),
             None,
+            None,
         );
 
         assert_eq!(&left[..2], &[0.0, 0.0]);
@@ -357,6 +394,41 @@ mod tests {
         );
         assert_eq!(left, right);
         assert!((params.mix() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sidechain_block_trigger_timing_is_shared_by_sample_processing() {
+        let params = PumpParams::new();
+        params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
+        let mut engine = PumpEngine::new(100.0, constant_curve(1.0));
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(4);
+        let mut settings = dsp_settings_from_params(&params);
+        let mut left = [1.0; 4];
+        let mut right = [1.0; 4];
+        let sidechain_left = [0.0; 4];
+        let sidechain_right = [0.0, 0.0, 0.5, 0.5];
+
+        let telemetry = process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            playing_transport(0.0),
+            Some(SidechainBlockSlices {
+                left: &sidechain_left,
+                right: &sidechain_right,
+            }),
+            None,
+        )
+        .expect("non-empty block should return telemetry");
+
+        assert!((telemetry.phase - 0.01).abs() < 1.0e-6);
+        assert_eq!(left, right);
     }
 
     #[test]
@@ -380,6 +452,7 @@ mod tests {
             &mut settings,
             playing_transport(0.0),
             None,
+            None,
         )
         .expect("non-empty block should return telemetry");
         assert!(telemetry.input_active);
@@ -398,6 +471,7 @@ mod tests {
             &mut schedule,
             &mut settings,
             playing_transport(0.0),
+            None,
             None,
         )
         .expect("silent non-empty block should return telemetry");
@@ -429,6 +503,7 @@ mod tests {
             &mut schedule,
             &mut settings,
             playing_transport(0.4),
+            None,
             None,
         );
 
@@ -473,6 +548,7 @@ mod tests {
         schedule.push(4, PARAM_PHASE_OFFSET_ID, 0.5);
         schedule.push(5, PARAM_OUTPUT_GAIN_ID, 6.0);
         schedule.push(6, PARAM_SYNC_DIVISION_ID, 6.0);
+        schedule.push(7, PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_SIDECHAIN as f32);
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
 
@@ -494,5 +570,7 @@ mod tests {
         assert!((settings.beats_per_cycle - 1.0).abs() < f32::EPSILON);
         schedule.apply_through(6, &params, &mut settings);
         assert!((settings.beats_per_cycle - 4.0).abs() < f32::EPSILON);
+        schedule.apply_through(7, &params, &mut settings);
+        assert_eq!(settings.trigger_mode, TRIGGER_MODE_SIDECHAIN);
     }
 }
