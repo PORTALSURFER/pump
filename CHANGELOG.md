@@ -314,6 +314,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (c7063e5)
 
+- (changelog) Update changelog [skip ci] (459ffd8)
+
 
 ### Features
 
@@ -324,6 +326,8 @@ All notable changes to this project are documented in this file.
 - Add attenuation fill beneath curve (8584e02)
 
 - (gui) Add curve dB reference guides (4c6b000)
+
+- Add external sidechain triggering to Pump (#30) (fd6c4ce)
 
 
 ### Other
