@@ -240,7 +240,7 @@ impl PumpParams {
         self.set_phase_offset(preset.phase_offset);
         self.set_output_gain_db(preset.output_gain_db);
         self.set_sync_division(preset.sync_division as f32);
-        self.set_editable_curve(&preset.editable_curve);
+        self.set_editable_curve_preserving_phase(&preset.editable_curve);
     }
 
     /// Snapshot the stored preset bank.

@@ -1076,7 +1076,8 @@ impl GuiState {
         self.params.set_phase_offset(snapshot.phase_offset);
         self.params.set_output_gain_db(snapshot.output_gain_db);
         self.params.set_sync_division(snapshot.sync_division as f32);
-        self.params.set_editable_curve(&snapshot.editable_curve);
+        self.params
+            .set_editable_curve_preserving_phase(&snapshot.editable_curve);
         self.push_all_param_updates();
         true
     }
@@ -1506,7 +1507,7 @@ impl GuiState {
         let Some(curve) = self.params.global_curve_slot_curve(index) else {
             return;
         };
-        self.params.set_editable_curve(&curve);
+        self.params.set_editable_curve_preserving_phase(&curve);
         self.clear_curve_transient_state();
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.loaded_global_curve_slot = Some(index);

@@ -122,6 +122,63 @@ fn state_roundtrip_preserves_exact_cyclic_curve_translation() {
 }
 
 #[test]
+fn loading_persisted_preset_preserves_exact_cyclic_curve_translation() {
+    let path = temp_preset_store_path("exact-offset-preset");
+    super::preset_store::with_test_persistence_path(path.clone(), || {
+        let params = PumpParams::new();
+        let origin = params.editable_curve_snapshot();
+        let offset = cyclically_offset_editable_curve(&origin, 0.237);
+        params.set_editable_curve_preserving_phase(&offset);
+        let index = params
+            .add_preset_from_current_state()
+            .expect("preset insertion should succeed");
+
+        params.set_editable_curve(&origin);
+        params
+            .load_preset(index)
+            .expect("preset load should succeed");
+        let restored = params.editable_curve_snapshot();
+        assert!(restored.phase_source.is_some());
+        for index in 0..=200 {
+            let phase = index as f32 / 200.0;
+            assert!(
+                (sample_editable_curve(&restored, phase)
+                    - sample_editable_curve(&origin, phase - 0.237))
+                .abs()
+                    < 1.0e-6
+            );
+        }
+    });
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn loading_persisted_global_slot_preserves_exact_cyclic_curve_translation() {
+    let path = temp_preset_store_path("exact-offset-global-slot");
+    super::global_curve_slots::with_test_curve_slot_path(path.clone(), || {
+        let params = PumpParams::new();
+        let origin = params.editable_curve_snapshot();
+        let offset = cyclically_offset_editable_curve(&origin, 0.237);
+        assert!(params.set_global_curve_slot_curve(2, &offset));
+
+        let loaded = params
+            .global_curve_slot_curve(2)
+            .expect("global slot should load");
+        assert!(loaded.phase_source.is_some());
+        for index in 0..=200 {
+            let phase = index as f32 / 200.0;
+            assert!(
+                (sample_editable_curve(&loaded, phase)
+                    - sample_editable_curve(&origin, phase - 0.237))
+                .abs()
+                    < 1.0e-6
+            );
+        }
+    });
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn legacy_payload_still_decodes() {
     let mut legacy = Vec::with_capacity(4 * (5 + CURVE_TABLE_LEN));
     legacy.extend_from_slice(&0.4_f32.to_le_bytes());

@@ -698,7 +698,7 @@ fn reduce_curve_slot_message(state: &mut RadiantEditorState, message: CurveSlotM
             let Some(curve) = state.params.global_curve_slot_curve(index) else {
                 return;
             };
-            state.params.set_editable_curve(&curve);
+            state.params.set_editable_curve_preserving_phase(&curve);
             state.active_curve_node = None;
             state.active_curve_segment = None;
             state.hover_curve_node = None;
