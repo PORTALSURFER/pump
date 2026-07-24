@@ -6,6 +6,8 @@ impl PumpParams {
         let default_curve = editable_curve_to_table(&editable_curve);
         let params = Self {
             mix: AtomicF32::new(DEFAULT_MIX),
+            depth_db: AtomicF32::new(DEFAULT_DEPTH_DB),
+            floor_db: AtomicF32::new(DEFAULT_FLOOR_DB),
             phase_offset: AtomicF32::new(DEFAULT_PHASE_OFFSET),
             output_gain_db: AtomicF32::new(DEFAULT_OUTPUT_GAIN_DB),
             sync_division: AtomicU32::new(DEFAULT_SYNC_DIVISION_INDEX as u32),
@@ -30,11 +32,19 @@ impl PumpParams {
         self.mix.load(Ordering::Relaxed)
     }
 
-    /// Get legacy depth amount.
-    ///
-    /// Depth is no longer user-controllable; Pump now runs at full depth.
+    /// Get curve attenuation depth in decibels.
+    pub fn depth_db(&self) -> f32 {
+        self.depth_db.load(Ordering::Relaxed)
+    }
+
+    /// Get the minimum wet gain floor in decibels.
+    pub fn floor_db(&self) -> f32 {
+        self.floor_db.load(Ordering::Relaxed)
+    }
+
+    /// Get legacy normalized depth amount for old payloads and presets.
     pub fn depth(&self) -> f32 {
-        MAX_DEPTH
+        (self.depth_db() / MAX_DEPTH_DB).clamp(0.0, 1.0)
     }
 
     /// Get cycle phase offset.
@@ -63,11 +73,32 @@ impl PumpParams {
             .store(value.clamp(MIN_MIX, MAX_MIX), Ordering::Relaxed);
     }
 
-    /// Set legacy depth amount.
-    ///
-    /// Depth is retained only for backward-compatible state decoding and is
-    /// intentionally ignored at runtime.
-    pub fn set_depth(&self, _value: f32) {}
+    /// Set curve attenuation depth in decibels.
+    pub fn set_depth_db(&self, value: f32) {
+        let value = if value.is_finite() {
+            value
+        } else {
+            DEFAULT_DEPTH_DB
+        };
+        self.depth_db
+            .store(value.clamp(MIN_DEPTH_DB, MAX_DEPTH_DB), Ordering::Relaxed);
+    }
+
+    /// Set legacy normalized depth, migrating it to the documented dB range.
+    pub fn set_depth(&self, value: f32) {
+        self.set_depth_db(value.clamp(0.0, 1.0) * MAX_DEPTH_DB);
+    }
+
+    /// Set the minimum wet gain floor in decibels. The minimum value is −∞.
+    pub fn set_floor_db(&self, value: f32) {
+        let value = if value.is_finite() {
+            value
+        } else {
+            DEFAULT_FLOOR_DB
+        };
+        self.floor_db
+            .store(value.clamp(MIN_FLOOR_DB, MAX_FLOOR_DB), Ordering::Relaxed);
+    }
 
     /// Set cycle phase offset.
     pub fn set_phase_offset(&self, value: f32) {
@@ -164,6 +195,8 @@ impl PumpParams {
             is_read_only: false,
             mix: self.mix(),
             depth: self.depth(),
+            depth_db: self.depth_db(),
+            floor_db: self.floor_db(),
             phase_offset: self.phase_offset(),
             output_gain_db: self.output_gain_db(),
             sync_division: self.sync_division(),
@@ -213,7 +246,19 @@ impl PumpParams {
             // Persist the field for backward-compatible serialization, but keep
             // runtime behavior fully writable across all presets.
             preset.is_read_only = false;
-            preset.depth = MAX_DEPTH;
+            // Keep the legacy compatibility field at its historical full-depth
+            // value; new state uses depth_db as the authoritative field.
+            preset.depth = DEFAULT_DEPTH;
+            preset.depth_db = if preset.depth_db.is_finite() {
+                preset.depth_db.clamp(MIN_DEPTH_DB, MAX_DEPTH_DB)
+            } else {
+                DEFAULT_DEPTH_DB
+            };
+            preset.floor_db = if preset.floor_db.is_finite() {
+                preset.floor_db.clamp(MIN_FLOOR_DB, MAX_FLOOR_DB)
+            } else {
+                DEFAULT_FLOOR_DB
+            };
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
             preset.editable_curve = preset.editable_curve.clone().normalized();
             let mut normalized_slots = preset.quick_slots.clone();
@@ -237,6 +282,8 @@ impl PumpParams {
 
     fn apply_preset_snapshot(&self, preset: &PumpPreset) {
         self.set_mix(preset.mix);
+        self.set_depth_db(preset.depth_db);
+        self.set_floor_db(preset.floor_db);
         self.set_phase_offset(preset.phase_offset);
         self.set_output_gain_db(preset.output_gain_db);
         self.set_sync_division(preset.sync_division as f32);
@@ -434,6 +481,8 @@ impl PumpParams {
             if let Some(existing) = candidate_bank.presets.get_mut(index) {
                 existing.mix = snapshot.mix;
                 existing.depth = snapshot.depth;
+                existing.depth_db = snapshot.depth_db;
+                existing.floor_db = snapshot.floor_db;
                 existing.phase_offset = snapshot.phase_offset;
                 existing.output_gain_db = snapshot.output_gain_db;
                 existing.sync_division = snapshot.sync_division;
@@ -475,6 +524,8 @@ impl PumpParams {
         };
         let current = self.current_preset_snapshot_with_name(String::new());
         !float_near_eq(current.mix, selected.mix)
+            || !float_near_eq(current.depth_db, selected.depth_db)
+            || !float_near_eq(current.floor_db, selected.floor_db)
             || !float_near_eq(current.phase_offset, selected.phase_offset)
             || !float_near_eq(current.output_gain_db, selected.output_gain_db)
             || current.sync_division != selected.sync_division

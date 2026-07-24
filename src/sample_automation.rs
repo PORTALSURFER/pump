@@ -133,10 +133,12 @@ impl ParamEventSchedule {
     }
 }
 
-/// Snapshot the four host-automatable controls into DSP settings.
+/// Snapshot the host-automatable controls into DSP settings.
 pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
     DspSettings {
         mix: params.mix(),
+        depth_db: params.depth_db(),
+        floor_db: params.floor_db(),
         phase_offset: params.phase_offset(),
         output_gain_db: params.output_gain_db(),
         beats_per_cycle: params.sync_beats_per_cycle(),
@@ -298,7 +300,8 @@ mod tests {
     use super::*;
     use crate::curve::CURVE_TABLE_LEN;
     use crate::params::{
-        PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SYNC_DIVISION_ID,
+        PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
+        PARAM_SYNC_DIVISION_ID,
     };
 
     fn constant_curve(value: f32) -> [f32; CURVE_TABLE_LEN] {
@@ -463,11 +466,13 @@ mod tests {
     fn all_advertised_parameters_update_settings_at_their_boundaries() {
         let params = PumpParams::new();
         let mut schedule = ParamEventSchedule::default();
-        schedule.begin_block(5);
+        schedule.begin_block(8);
         schedule.push(1, PARAM_MIX_ID, 0.25);
-        schedule.push(2, PARAM_PHASE_OFFSET_ID, 0.5);
-        schedule.push(3, PARAM_OUTPUT_GAIN_ID, 6.0);
-        schedule.push(4, PARAM_SYNC_DIVISION_ID, 6.0);
+        schedule.push(2, PARAM_DEPTH_ID, 60.0);
+        schedule.push(3, PARAM_FLOOR_ID, -12.0);
+        schedule.push(4, PARAM_PHASE_OFFSET_ID, 0.5);
+        schedule.push(5, PARAM_OUTPUT_GAIN_ID, 6.0);
+        schedule.push(6, PARAM_SYNC_DIVISION_ID, 6.0);
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
 
@@ -477,12 +482,17 @@ mod tests {
         assert!((settings.mix - 0.25).abs() < f32::EPSILON);
         assert!((settings.phase_offset - 0.0).abs() < f32::EPSILON);
         schedule.apply_through(2, &params, &mut settings);
+        assert!((settings.depth_db - 60.0).abs() < f32::EPSILON);
+        assert!((settings.floor_db + 60.0).abs() < f32::EPSILON);
+        schedule.apply_through(3, &params, &mut settings);
+        assert!((settings.floor_db + 12.0).abs() < f32::EPSILON);
+        schedule.apply_through(4, &params, &mut settings);
         assert!((settings.phase_offset - 0.5).abs() < f32::EPSILON);
         assert!((settings.output_gain_db - 0.0).abs() < f32::EPSILON);
-        schedule.apply_through(3, &params, &mut settings);
+        schedule.apply_through(5, &params, &mut settings);
         assert!((settings.output_gain_db - 6.0).abs() < f32::EPSILON);
         assert!((settings.beats_per_cycle - 1.0).abs() < f32::EPSILON);
-        schedule.apply_through(4, &params, &mut settings);
+        schedule.apply_through(6, &params, &mut settings);
         assert!((settings.beats_per_cycle - 4.0).abs() < f32::EPSILON);
     }
 }

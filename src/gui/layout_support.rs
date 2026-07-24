@@ -54,6 +54,8 @@ pub(super) fn scaled_line_height(text_scale: u32) -> u32 {
 pub(super) fn knob_param_id(key: &str) -> Option<ClapId> {
     match key {
         MIX_KEY => Some(PARAM_MIX_ID),
+        "depth" => Some(PARAM_DEPTH_ID),
+        "floor" => Some(PARAM_FLOOR_ID),
         PHASE_KEY => Some(PARAM_PHASE_OFFSET_ID),
         OUTPUT_KEY => Some(PARAM_OUTPUT_GAIN_ID),
         _ => None,

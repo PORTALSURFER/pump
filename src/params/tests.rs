@@ -1,7 +1,8 @@
 use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
     sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
-    SavePresetOutcome, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION,
+    SavePresetOutcome, DEFAULT_FLOOR_DB, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DEPTH_ID,
+    PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
 };
 #[cfg(feature = "vst3")]
 use super::{
@@ -65,9 +66,41 @@ fn sync_division_clamping_is_bounded() {
 }
 
 #[test]
+fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
+    let params = PumpParams::new();
+    assert_eq!(super::param_count(), 6);
+    assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
+    assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
+
+    super::apply_param_event(&params, PARAM_DEPTH_ID, 36.0);
+    super::apply_param_event(&params, PARAM_FLOOR_ID, -12.0);
+    assert!((params.depth_db() - 36.0).abs() < f32::EPSILON);
+    assert!((params.floor_db() + 12.0).abs() < f32::EPSILON);
+    assert_eq!(
+        super::format_plain_value_text(PARAM_FLOOR_ID, -60.0),
+        Some("−∞".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_FLOOR_ID, "-inf"),
+        Some(-60.0)
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_DEPTH_ID, "36 dB"),
+        Some(36.0)
+    );
+    assert_eq!(super::get_param_value(&params, PARAM_MIX_ID), Some(1.0));
+    assert_eq!(
+        super::get_param_value(&params, PARAM_OUTPUT_GAIN_ID),
+        Some(0.0)
+    );
+}
+
+#[test]
 fn state_roundtrip_preserves_values() {
     let params = PumpParams::new();
     params.set_mix(0.23);
+    params.set_depth_db(48.0);
+    params.set_floor_db(-18.0);
     params.set_phase_offset(0.42);
     params.set_output_gain_db(-3.0);
     params.set_sync_division(6.0);
@@ -91,7 +124,9 @@ fn state_roundtrip_preserves_values() {
     decode_state_payload(&restored, &payload).expect("state should decode");
 
     assert!((restored.mix() - 0.23).abs() < 1.0e-6);
-    assert!((restored.depth() - 1.0).abs() < 1.0e-6);
+    assert!((restored.depth_db() - 48.0).abs() < 1.0e-6);
+    assert!((restored.floor_db() + 18.0).abs() < 1.0e-6);
+    assert!((restored.depth() - 0.4).abs() < 1.0e-6);
     assert!((restored.phase_offset() - 0.42).abs() < 1.0e-6);
     assert!((restored.output_gain_db() + 3.0).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 6);
@@ -559,6 +594,8 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     is_read_only: false,
                     mix: 0.11,
                     depth: 0.22,
+                    depth_db: 26.4,
+                    floor_db: DEFAULT_FLOOR_DB,
                     phase_offset: 0.33,
                     output_gain_db: -1.0,
                     sync_division: 2,
@@ -570,6 +607,8 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     is_read_only: false,
                     mix: 0.77,
                     depth: 0.66,
+                    depth_db: 79.2,
+                    floor_db: DEFAULT_FLOOR_DB,
                     phase_offset: 0.55,
                     output_gain_db: -2.0,
                     sync_division: 4,
