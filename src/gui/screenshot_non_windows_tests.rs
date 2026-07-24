@@ -79,9 +79,8 @@ fn screenshot_renders_initial_ui_with_playhead() {
 fn screenshot_renders_incoming_waveform_behind_curve() {
     let params = Arc::new(PumpParams::new());
     let status = Arc::new(GuiStatus::default());
-    status.set_incoming_waveform_enabled(true);
     let mut writer = IncomingWaveformWriter::default();
-    assert!(writer.begin_block(status.incoming_waveform_buffer()));
+    writer.begin_block(status.incoming_waveform_buffer());
     for index in 0..crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT {
         let phase = index as f32 / crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT as f32;
         let kick = (-phase * 8.0).exp() * (phase * 48.0).sin().abs();

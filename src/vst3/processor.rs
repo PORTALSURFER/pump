@@ -438,10 +438,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 &mut settings,
                 transport,
                 sidechain,
-                IncomingWaveformCapture::new(
+                Some(IncomingWaveformCapture::new(
                     self.shared.status.incoming_waveform_buffer(),
                     &mut runtime.waveform_writer,
-                ),
+                )),
             )
         };
         let last_phase = telemetry.map(|telemetry| telemetry.phase).unwrap_or(0.0);

@@ -12,7 +12,7 @@ use toybox::clap::gui::{
 };
 use toybox::gui::declarative::{
     button, column, column_slots, curve_editor, dropdown, grid, indicator, knob, panel,
-    root_frame_sized, row_slots, spacer, stack, surface, textbox, toggle, weighted_slot,
+    root_frame_sized, row_slots, spacer, stack, surface, textbox, weighted_slot,
     weighted_slot_lengths, CurveEditorModifier, CurveEditorStyle, CurveGridConfig,
     CurveHighlightMode, CurveInteractionOptions, CurveModel, CurvePoint,
     CurveSegment as CurveEditorSegment, CurveSegmentMoveOptions, CurveSnapConfig, EndpointMode,
@@ -74,7 +74,6 @@ const OUTPUT_KEY: &str = "output";
 const DIVISION_KEY: &str = "division";
 const TRIGGER_MODE_KEY: &str = "trigger-mode";
 const SNAP_KEY: &str = "snap";
-const INCOMING_WAVEFORM_KEY: &str = "incoming-waveform";
 const GRID_OVERRIDE_KEY: &str = "grid-override";
 const PRESET_DROPDOWN_KEY: &str = "preset-dropdown";
 const PRESET_PREVIOUS_KEY: &str = "preset-previous";
@@ -332,7 +331,6 @@ struct ControlSnapshot {
     division: usize,
     trigger_mode: usize,
     sidechain_available: bool,
-    incoming_waveform_enabled: bool,
     snap_enabled: bool,
     snap_hovered: bool,
     grid_override: Option<usize>,

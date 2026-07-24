@@ -267,9 +267,8 @@ fn processor_writes_the_full_normal_output_range() {
 }
 
 #[test]
-fn processor_publishes_enabled_input_waveform_and_clears_it_when_input_disappears() {
+fn processor_publishes_input_waveform_by_default_and_clears_it_when_input_disappears() {
     let shared = Arc::new(PumpVst3Shared::new());
-    shared.status.set_incoming_waveform_enabled(true);
     let processor = PumpVst3Processor::new(Arc::clone(&shared));
     let mut fixture = stereo_process_fixture(64, 9.0);
 
@@ -294,7 +293,6 @@ fn processor_publishes_enabled_input_waveform_and_clears_it_when_input_disappear
 #[test]
 fn empty_vst3_blocks_do_not_refresh_a_stale_waveform() {
     let shared = Arc::new(PumpVst3Shared::new());
-    shared.status.set_incoming_waveform_enabled(true);
     let processor = PumpVst3Processor::new(Arc::clone(&shared));
     let mut fixture = stereo_process_fixture(64, 9.0);
 
@@ -323,7 +321,6 @@ fn empty_vst3_blocks_do_not_refresh_a_stale_waveform() {
 #[test]
 fn silent_vst3_blocks_do_not_refresh_a_stale_waveform() {
     let shared = Arc::new(PumpVst3Shared::new());
-    shared.status.set_incoming_waveform_enabled(true);
     let processor = PumpVst3Processor::new(Arc::clone(&shared));
     let mut fixture = stereo_process_fixture(64, 9.0);
 

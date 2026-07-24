@@ -77,7 +77,6 @@ impl GuiState {
             division: self.params.sync_division(),
             trigger_mode: self.params.trigger_mode(),
             sidechain_available: self.status.sidechain_available(),
-            incoming_waveform_enabled: self.status.incoming_waveform_enabled(),
             snap_enabled,
             snap_hovered,
             grid_override,
@@ -394,10 +393,7 @@ impl GuiState {
                     .then_some(self.status.phase()),
             )
             .fill();
-        let waveform = controls
-            .incoming_waveform_enabled
-            .then(|| self.status.incoming_waveform_snapshot())
-            .flatten();
+        let waveform = self.status.incoming_waveform_snapshot();
         let curve_viewport = stack(vec![
             surface(
                 "incoming-waveform-underlay",
@@ -1034,33 +1030,6 @@ impl GuiState {
         ])
         .container_overflow(OverflowPolicy::Compress)
         .fill();
-        let waveform_row = row_slots(vec![
-            weighted_slot(
-                Node::align_box(
-                    textbox("Wave").widget_layout(fixed_box(
-                        metrics
-                            .dropdown_control_w
-                            .saturating_sub(snap_checkbox_size.saturating_add(8))
-                            .max(1),
-                        metrics.button_control_h,
-                    )),
-                )
-                .slot_align(SlotAlign::Start, SlotAlign::Center)
-                .fill(),
-                2,
-            ),
-            weighted_slot(
-                toggle(INCOMING_WAVEFORM_KEY, controls.incoming_waveform_enabled)
-                    .control_size(Size {
-                        width: snap_checkbox_size,
-                        height: snap_checkbox_size,
-                    })
-                    .widget_layout(fixed_box(snap_checkbox_size, snap_checkbox_size)),
-                1,
-            ),
-        ])
-        .container_overflow(OverflowPolicy::Compress)
-        .fill();
         let dropdown_slot_content = column(vec![
             dropdown(
                 DIVISION_KEY,
@@ -1127,7 +1096,6 @@ impl GuiState {
             ])
             .container_overflow(OverflowPolicy::Compress)
             .fill(),
-            waveform_row,
         ])
         .pad_all(0)
         .fill()
@@ -1289,9 +1257,6 @@ impl GuiState {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.snap_enabled = value;
                 }
-            }
-            UiAction::ToggleChanged { key, value } if key == INCOMING_WAVEFORM_KEY => {
-                self.status.set_incoming_waveform_enabled(value);
             }
             UiAction::ToggleChanged { key, value } if key == PRESET_FAVORITE_KEY => {
                 self.capture_undo_snapshot();

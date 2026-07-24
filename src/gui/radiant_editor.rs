@@ -8,8 +8,7 @@ use radiant::gui::visualization::{
 };
 use radiant::layout::LayoutOutput;
 use radiant::prelude::{
-    column, custom_widget, custom_widget_mapped, row, slider, text, toggle, IntoView, TextAlign,
-    ViewNode,
+    column, custom_widget, custom_widget_mapped, row, slider, text, IntoView, TextAlign, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
@@ -312,7 +311,6 @@ enum RadiantEditorMessage {
     OutputGain(f32),
     SyncDivision(f32),
     TriggerMode(f32),
-    IncomingWaveform(bool),
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
     NumericEntry(NumericEntryMessage),
@@ -401,7 +399,6 @@ impl RadiantPumpEditor {
     pub(crate) fn needs_realtime_redraw(&self) -> bool {
         self.status.has_host_beats_timeline()
             || self.status.is_playing()
-            || self.status.incoming_waveform_enabled()
             || self.status.gain_reduction_needs_redraw()
     }
 
@@ -560,11 +557,6 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             .fill_width()
             .height(CURVE_PREVIEW_HEIGHT),
             curve_slot_row(state),
-            toggle("Input waveform", state.status.incoming_waveform_enabled())
-                .subtle()
-                .message(RadiantEditorMessage::IncomingWaveform)
-                .fill_width()
-                .height(CONTROL_ROW_HEIGHT),
             control_row(
                 NumericEntryTarget::Mix,
                 format!("{:.0}%", params.mix() * 100.0),
@@ -719,9 +711,6 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                 return;
             }
             state.params.set_trigger_mode(mode as f32);
-        }
-        RadiantEditorMessage::IncomingWaveform(enabled) => {
-            state.status.set_incoming_waveform_enabled(enabled);
         }
         RadiantEditorMessage::Curve(message) => reduce_curve_message(state, message),
         RadiantEditorMessage::CurveSlot(message) => reduce_curve_slot_message(state, message),

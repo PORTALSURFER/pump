@@ -325,10 +325,10 @@ impl PumpAudioProcessor<'_> {
             settings,
             transport,
             sidechain,
-            IncomingWaveformCapture::new(
+            Some(IncomingWaveformCapture::new(
                 self.shared.status.incoming_waveform_buffer(),
                 &mut self.waveform_writer,
-            ),
+            )),
         );
         let last_phase = telemetry.map(|telemetry| telemetry.phase).unwrap_or(0.0);
 
@@ -573,10 +573,9 @@ mod tests {
     }
 
     #[test]
-    fn enabled_waveform_capture_stays_allocation_free_in_clap_processing() {
+    fn default_waveform_capture_stays_allocation_free_in_clap_processing() {
         const FRAMES: usize = 128;
         let shared = shared();
-        shared.status.set_incoming_waveform_enabled(true);
         let mut processor = processor(&shared, FRAMES as u32);
         processor.param_schedule.begin_block(FRAMES);
         let mut settings = dsp_settings_from_params(shared.params.as_ref());
@@ -597,7 +596,7 @@ mod tests {
         let snapshot = shared
             .status
             .incoming_waveform_snapshot()
-            .expect("enabled processing should publish the input envelope");
+            .expect("default processing should publish the input envelope");
         assert!(snapshot.iter().copied().fold(0.0_f32, f32::max) >= 0.75);
     }
 
