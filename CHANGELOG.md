@@ -324,6 +324,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (6befe1b)
 
+- (changelog) Update changelog [skip ci] (eb9043c)
+
 
 ### Features
 
@@ -338,6 +340,8 @@ All notable changes to this project are documented in this file.
 - Add external sidechain triggering to Pump (#30) (fd6c4ce)
 
 - (pump) Add host-automatable Smooth parameter (#34) (64b9cf0)
+
+- Define Pump processing modes and add Mode selector (#35) (d3fc439)
 
 
 ### Other
