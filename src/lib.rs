@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use toybox::clack_extensions::audio_ports::*;
-use toybox::clack_extensions::gui::{PluginGui, PluginGuiImpl};
+#[cfg(all(target_os = "macos", feature = "radiant-gui"))]
+use toybox::clack_extensions::gui::PluginGui;
 use toybox::clack_extensions::params::*;
 use toybox::clack_extensions::state::{PluginState, PluginStateImpl};
 use toybox::clack_plugin;
@@ -14,7 +15,6 @@ use toybox::clack_plugin::events::spaces::CoreEventSpace;
 use toybox::clack_plugin::prelude::*;
 use toybox::clack_plugin::stream::{InputStream, OutputStream};
 use toybox::clap::automation::{AutomationEvent, AutomationQueue};
-use toybox::clap::gui::host_param_requester;
 use toybox::clap::prelude::apply_param_events;
 use toybox::clap::process::{min_len, split_channel};
 use toybox::clap::state::{read_versioned_payload, write_versioned_payload};
@@ -22,7 +22,14 @@ use toybox::clap::transport::transport_state_from_transport;
 use toybox::dsp::{AtomicF32, TransportState};
 
 use crate::dsp::{DspSettings, PumpEngine};
-use crate::gui::PumpGui;
+#[cfg(all(target_os = "macos", feature = "radiant-gui"))]
+use crate::gui::HostParamFlushRequester;
+#[cfg(all(target_os = "macos", feature = "radiant-gui"))]
+use crate::gui::RadiantPumpEditor;
+use crate::gui::{
+    MAX_WINDOW_HEIGHT, MAX_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, WINDOW_HEIGHT,
+    WINDOW_WIDTH,
+};
 use crate::params::{
     apply_param_event, decode_state_payload, encode_state_payload, get_param_value, param_count,
     text_to_value, value_to_text, write_param_info, PumpParams,
@@ -135,8 +142,9 @@ impl Plugin for PumpPlugin {
         builder
             .register::<PluginAudioPorts>()
             .register::<PluginParams>()
-            .register::<PluginState>()
-            .register::<PluginGui>();
+            .register::<PluginState>();
+        #[cfg(all(target_os = "macos", feature = "radiant-gui"))]
+        builder.register::<PluginGui>();
     }
 }
 
@@ -162,10 +170,28 @@ impl DefaultPluginFactory for PumpPlugin {
         host: HostMainThreadHandle<'a>,
         shared: &'a Self::Shared<'a>,
     ) -> Result<Self::MainThread<'a>, PluginError> {
+        let host_shared = host.shared();
         Ok(PumpMainThread {
             shared,
-            gui: PumpGui::default(),
-            host: host.shared(),
+            #[cfg(all(target_os = "macos", feature = "radiant-gui"))]
+            gui: toybox::radiant_gui::RadiantHostedGui::new(
+                "PumpRadiantClapEditorView",
+                RadiantPumpEditor::new(
+                    Arc::clone(&shared.params),
+                    Arc::clone(&shared.status),
+                    Arc::clone(&shared.automation_queue),
+                    HostParamFlushRequester::new(host_shared),
+                    WINDOW_WIDTH,
+                    WINDOW_HEIGHT,
+                ),
+                WINDOW_WIDTH,
+                WINDOW_HEIGHT,
+            )
+            .with_size_contract(
+                (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
+                (WINDOW_WIDTH, WINDOW_HEIGHT),
+                (MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT),
+            ),
             automation_drain: Vec::new(),
         })
     }
@@ -188,9 +214,8 @@ pub struct PumpMainThread<'a> {
     /// Shared plugin resources.
     shared: &'a PumpShared,
     /// Host-parented editor wrapper.
-    gui: PumpGui,
-    /// Host shared handle used for flush requests.
-    host: HostSharedHandle<'a>,
+    #[cfg(all(target_os = "macos", feature = "radiant-gui"))]
+    gui: toybox::radiant_gui::RadiantHostedGui,
     /// Scratch vector for draining queued automation events.
     automation_drain: Vec<AutomationEvent>,
 }

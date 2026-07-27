@@ -10,8 +10,9 @@ build = "build.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "c66659782df30d1ebeeeb16ffca47149969de464", default-features = false }
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "2362d956e3f68df211030a8bedae087b50324478", features = ["gui"] }
+radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "4b0d9d5b2962d12e72ad9df162ce72a2a92ef83a", default-features = false }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "c7abd678b9af68b6767982c02c17069d06bb9c01", features = ["radiant-gui"] }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
@@ -19,14 +20,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 [features]
 # Default to CLAP-only builds so CI does not require the VST3 SDK. Enable VST3
 # explicitly when producing a VST3 binary.
-default = []
-screenshot-test = ["toybox/screenshot-test"]
-vst3 = ["toybox/radiant-vst3"]
-
-[target.'cfg(windows)'.dev-dependencies]
-windows = { version = "0.62", default-features = false, features = [
-  "Win32_Foundation",
-  "Win32_Graphics_Gdi",
-  "Win32_Storage_Xps",
-  "Win32_UI_WindowsAndMessaging",
-] }
+default = ["radiant-gui"]
+radiant-gui = ["toybox/radiant-gui"]
+vst3 = ["toybox/radiant-vst3", "radiant-gui"]
+screenshot-test = ["dep:image", "radiant-gui"]

@@ -216,6 +216,7 @@ fn processor_honors_optional_sidechain_bus_activation_state() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn controller_creates_editor_view_for_host_editor_request() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let view = unsafe { controller.createView(ViewType::kEditor) };
@@ -227,18 +228,99 @@ fn controller_creates_editor_view_for_host_editor_request() {
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
+fn controller_does_not_advertise_editor_view_off_macos() {
+    let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
+    let view = unsafe { controller.createView(ViewType::kEditor) };
+    assert!(view.is_null(), "editor view is macOS-only");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn view_enforces_minimum_size() {
     let (preferred_width, preferred_height) = preferred_window_size();
     let view = HostedVst3View::new(
         PumpVst3GuiAdapter::new(Arc::new(PumpVst3Shared::new())),
         preferred_width,
         preferred_height,
+    )
+    .with_size_bounds(
+        MIN_WINDOW_WIDTH,
+        MIN_WINDOW_HEIGHT,
+        MAX_WINDOW_WIDTH,
+        MAX_WINDOW_HEIGHT,
     );
     let mut rect = view_rect(10, 10);
     let result = unsafe { view.checkSizeConstraint(&mut rect) };
     assert_eq!(result, kResultOk);
-    assert!(rect.right - rect.left >= preferred_width as i32);
-    assert!(rect.bottom - rect.top >= preferred_height as i32);
+    assert_eq!(rect.right - rect.left, MIN_WINDOW_WIDTH as i32);
+    assert_eq!(rect.bottom - rect.top, MIN_WINDOW_HEIGHT as i32);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn view_reports_default_size_and_clamps_supported_maximum() {
+    let (preferred_width, preferred_height) = preferred_window_size();
+    let view = HostedVst3View::new(
+        PumpVst3GuiAdapter::new(Arc::new(PumpVst3Shared::new())),
+        preferred_width,
+        preferred_height,
+    )
+    .with_size_bounds(
+        MIN_WINDOW_WIDTH,
+        MIN_WINDOW_HEIGHT,
+        MAX_WINDOW_WIDTH,
+        MAX_WINDOW_HEIGHT,
+    );
+
+    let mut size = view_rect(0, 0);
+    assert_eq!(unsafe { view.getSize(&mut size) }, kResultOk);
+    assert_eq!(size.right - size.left, crate::gui::WINDOW_WIDTH as i32);
+    assert_eq!(size.bottom - size.top, crate::gui::WINDOW_HEIGHT as i32);
+
+    let mut max_size = view_rect(4_000, 4_000);
+    assert_eq!(unsafe { view.onSize(&mut max_size) }, kResultOk);
+    assert_eq!(max_size.right - max_size.left, MAX_WINDOW_WIDTH as i32);
+    assert_eq!(max_size.bottom - max_size.top, MAX_WINDOW_HEIGHT as i32);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn view_normalizes_off_aspect_host_resize_and_preserves_origin() {
+    let (preferred_width, preferred_height) = preferred_window_size();
+    let view = HostedVst3View::new(
+        PumpVst3GuiAdapter::new(Arc::new(PumpVst3Shared::new())),
+        preferred_width,
+        preferred_height,
+    )
+    .with_size_bounds(
+        MIN_WINDOW_WIDTH,
+        MIN_WINDOW_HEIGHT,
+        MAX_WINDOW_WIDTH,
+        MAX_WINDOW_HEIGHT,
+    );
+
+    let mut rect = ViewRect {
+        left: 12,
+        top: 18,
+        right: 1_212,
+        bottom: 618,
+    };
+    assert_eq!(unsafe { view.checkSizeConstraint(&mut rect) }, kResultOk);
+    assert_eq!((rect.left, rect.top), (12, 18));
+    assert_eq!(rect.right - rect.left, 1_200);
+    assert_eq!(rect.bottom - rect.top, 900);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn vst3_gui_adapter_forwards_normalized_resize_to_host_window() {
+    let adapter = PumpVst3GuiAdapter::new(Arc::new(PumpVst3Shared::new()));
+    adapter.request_resize(MAX_WINDOW_WIDTH * 2, MIN_WINDOW_HEIGHT);
+    assert_eq!(
+        adapter.last_size(),
+        Some((MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT))
+    );
 }
 
 #[test]
@@ -589,6 +671,7 @@ fn transport_state_defaults_without_process_context() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn key_char_prefers_char16_and_falls_back_to_key_code() {
     use toybox::vst3::prelude::Steinberg::VirtualKeyCodes_::{
         KEY_BACK, KEY_END, KEY_ESCAPE, KEY_LEFT, KEY_RETURN,
@@ -620,6 +703,7 @@ fn key_char_prefers_char16_and_falls_back_to_key_code() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn shortcut_modifiers_decode_vst3_bits() {
     let modifiers = PumpVst3GuiAdapter::shortcut_modifiers(0b1001);
     assert!(modifiers.shift);

@@ -2078,22 +2078,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "patchbay-gui"
-version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=2362d956e3f68df211030a8bedae087b50324478#2362d956e3f68df211030a8bedae087b50324478"
-dependencies = [
- "pollster 0.3.0",
- "raw-window-handle 0.5.2",
- "raw-window-handle 0.6.2",
- "skrifa",
- "thiserror 1.0.69",
- "toybox-process-log",
- "vello",
- "wgpu",
- "windows 0.62.2",
-]
-
-[[package]]
 name = "pathdiff"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2214,12 +2198,6 @@ dependencies = [
 
 [[package]]
 name = "pollster"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
-
-[[package]]
-name = "pollster"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
@@ -2291,9 +2269,9 @@ checksum = "3eb8486b569e12e2c32ad3e204dbaba5e4b5b216e9367044f25f1dba42341773"
 name = "pump"
 version = "0.2.0"
 dependencies = [
+ "image",
  "radiant",
  "toybox",
- "windows 0.62.2",
 ]
 
 [[package]]
@@ -2344,13 +2322,16 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "radiant"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/radiant.git?rev=c66659782df30d1ebeeeb16ffca47149969de464#c66659782df30d1ebeeeb16ffca47149969de464"
+source = "git+https://github.com/PORTALSURFER/radiant.git?rev=4b0d9d5b2962d12e72ad9df162ce72a2a92ef83a#4b0d9d5b2962d12e72ad9df162ce72a2a92ef83a"
 dependencies = [
  "arboard",
  "kurbo",
  "lyon_tessellation",
+ "objc2 0.5.2",
+ "objc2-app-kit 0.2.2",
+ "objc2-foundation 0.2.2",
  "open",
- "pollster 0.4.0",
+ "pollster",
  "raw-window-handle 0.6.2",
  "rfd",
  "roxmltree 0.21.1",
@@ -2471,7 +2452,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
- "pollster 0.4.0",
+ "pollster",
  "raw-window-handle 0.6.2",
  "urlencoding",
  "wasm-bindgen",
@@ -2999,15 +2980,13 @@ dependencies = [
 [[package]]
 name = "toybox"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=2362d956e3f68df211030a8bedae087b50324478#2362d956e3f68df211030a8bedae087b50324478"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=c7abd678b9af68b6767982c02c17069d06bb9c01#c7abd678b9af68b6767982c02c17069d06bb9c01"
 dependencies = [
  "clack-common",
  "clack-extensions",
  "clack-plugin",
- "image",
  "mts-esp-rs",
  "objc",
- "patchbay-gui",
  "radiant",
  "raw-window-handle 0.5.2",
  "raw-window-handle 0.6.2",
@@ -3018,12 +2997,12 @@ dependencies = [
 [[package]]
 name = "toybox-process-log"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=2362d956e3f68df211030a8bedae087b50324478#2362d956e3f68df211030a8bedae087b50324478"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=c7abd678b9af68b6767982c02c17069d06bb9c01#c7abd678b9af68b6767982c02c17069d06bb9c01"
 
 [[package]]
 name = "toybox-vst3-ffi"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=2362d956e3f68df211030a8bedae087b50324478#2362d956e3f68df211030a8bedae087b50324478"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=c7abd678b9af68b6767982c02c17069d06bb9c01#c7abd678b9af68b6767982c02c17069d06bb9c01"
 dependencies = [
  "vst3",
 ]

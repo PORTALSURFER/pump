@@ -19,8 +19,8 @@ Runs the same checks locally that CI enforces:
 Options:
   --vst3  Run checks with --features vst3 if the plugin defines a vst3 feature.
           Requires VST3_SDK_DIR to be set when the feature exists.
-  --screenshots  Run `screenshot_renders_initial_ui` when the plugin supports the
-                 screenshot harness (via a `screenshot-test` cargo feature).
+  --screenshots  Run the Radiant supported-size screenshot contract when the
+                 plugin defines the `screenshot-test` cargo feature.
 EOF
 }
 
@@ -73,12 +73,12 @@ if [[ "${want_screenshots}" == "1" ]]; then
   rm -rf target/ui-screenshots
   mkdir -p target/ui-screenshots
 
-  TOYBOX_UI_SCREENSHOT=1 \
-    TOYBOX_UI_SCREENSHOT_DIR=target/ui-screenshots \
-    cargo test -r --features screenshot-test screenshot_renders_initial_ui -- --nocapture
+  cargo test -r --features screenshot-test \
+    gui::screenshot_tests::pump_editor_screenshots_cover_supported_sizes_and_fractional_scale \
+    -- --nocapture
 
-  if ! compgen -G "target/ui-screenshots/*/initial-ui-*.png" >/dev/null; then
-    echo "[ci] screenshot-test feature is enabled but no initial-ui screenshots were produced under target/ui-screenshots" >&2
+  if ! compgen -G "target/ui-screenshots/pump/pump-*.png" >/dev/null; then
+    echo "[ci] screenshot-test feature is enabled but no Pump Radiant screenshots were produced under target/ui-screenshots/pump" >&2
     exit 1
   fi
 fi

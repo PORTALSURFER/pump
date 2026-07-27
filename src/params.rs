@@ -30,6 +30,7 @@ pub(crate) use model::{
 };
 
 #[cfg(test)]
+#[allow(unused_imports)]
 pub(crate) use global_curve_slots::with_test_curve_slot_path;
 #[cfg(feature = "vst3")]
 pub use host_api::{
@@ -40,9 +41,10 @@ pub use host_api::{
     apply_param_event, get_param_value, param_count, text_to_value, value_to_text,
     write_param_info, MAX_SYNC_DIVISION,
 };
-#[cfg(any(feature = "vst3", test))]
+#[cfg(any(feature = "radiant-gui", feature = "vst3", test))]
 pub(crate) use host_api::{format_plain_value_text, parse_plain_value_text};
 #[cfg(test)]
+#[allow(unused_imports)]
 pub(crate) use preset_store::{
     with_test_persistence_failure, with_test_persistence_path, TestPersistenceFailure,
 };

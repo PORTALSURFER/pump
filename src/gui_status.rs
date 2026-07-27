@@ -286,18 +286,12 @@ fn smooth_gain_reduction_db(current: f32, target: f32, elapsed_seconds: f32) -> 
 }
 
 #[allow(clippy::question_mark)]
-impl<'a> PluginGuiImpl for PumpMainThread<'a> {
-    toybox::patchbay_clap_gui_callbacks!(
+#[cfg(all(target_os = "macos", feature = "radiant-gui"))]
+impl<'a> toybox::clack_extensions::gui::PluginGuiImpl for PumpMainThread<'a> {
+    toybox::radiant_clap_gui_callbacks!(
         gui = gui,
         preferred_size = crate::gui::preferred_window_size,
-        show = |plugin: &mut Self| {
-            plugin.gui.open(
-                &plugin.shared.params,
-                &plugin.shared.status,
-                plugin.shared.automation_queue.clone(),
-                host_param_requester(plugin.host),
-            )
-        }
+        show = |_plugin: &mut Self| Ok(())
     );
 }
 

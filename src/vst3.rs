@@ -13,9 +13,9 @@ use toybox::vst3::prelude::Steinberg::*;
 use toybox::vst3::prelude::*;
 
 use crate::dsp::PumpEngine;
-use crate::gui::preferred_window_size;
-#[cfg(not(target_os = "macos"))]
-use crate::gui::PumpGui;
+use crate::gui::{
+    preferred_window_size, MAX_WINDOW_HEIGHT, MAX_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
+};
 #[cfg(test)]
 use crate::params::PARAM_MIX_NUM;
 use crate::params::{
@@ -55,9 +55,11 @@ use shared_state::{shared_registry, SharedRegistryEntry};
 
 mod controller;
 mod factory;
+#[cfg(target_os = "macos")]
 mod gui_adapter;
 
 use controller::PumpVst3Controller;
+#[cfg(target_os = "macos")]
 use gui_adapter::PumpVst3GuiAdapter;
 use processor::PumpVst3Processor;
 
