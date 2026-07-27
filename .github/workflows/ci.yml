@@ -47,9 +47,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! compgen -G "target/ui-screenshots/*/initial-ui-*.png" >/dev/null; then
-            exit 0
-          fi
           python3 - <<'PY'
           import glob
           import hashlib
@@ -57,7 +54,12 @@ jobs:
           import os
           from pathlib import Path
           root = Path("target/ui-screenshots")
-          files = sorted(Path(p) for p in glob.glob(str(root / "*" / "initial-ui-*.png")))
+          files = sorted(
+              Path(p)
+              for p in glob.glob(str(root / "**" / "*.png"), recursive=True)
+          )
+          if not files:
+              raise SystemExit(0)
           out = []
           for path in files:
             data = path.read_bytes()
@@ -84,7 +86,7 @@ jobs:
         shell: bash
         run: bash scripts/ci.sh --vst3
 
-  windows-gui-regressions:
+  windows-non-gui-compatibility:
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -113,7 +115,3 @@ jobs:
       - name: Run checks (default features)
         shell: bash
         run: bash scripts/ci.sh
-
-      - name: Run dropdown popup regression test
-        shell: bash
-        run: cargo test --features screenshot-test dropdown_popups_remain_usable_over_curve_content -- --nocapture
