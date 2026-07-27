@@ -164,25 +164,39 @@ impl IEditControllerTrait for PumpVst3Controller {
     }
 
     unsafe fn createView(&self, name: FIDString) -> *mut IPlugView {
-        if name.is_null() {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = name;
             return ptr::null_mut();
         }
 
-        let requested = unsafe { CStr::from_ptr(name) };
-        let editor = unsafe { CStr::from_ptr(ViewType::kEditor) };
-        if requested.to_bytes() != editor.to_bytes() {
-            return ptr::null_mut();
-        }
+        #[cfg(target_os = "macos")]
+        {
+            if name.is_null() {
+                return ptr::null_mut();
+            }
 
-        let adapter = PumpVst3GuiAdapter::new(self.shared.clone());
-        let (default_width, default_height) = preferred_window_size();
-        let Some(view) =
-            ComWrapper::new(HostedVst3View::new(adapter, default_width, default_height))
-                .to_com_ptr::<IPlugView>()
-        else {
-            return ptr::null_mut();
-        };
-        ComPtr::into_raw(view)
+            let requested = unsafe { CStr::from_ptr(name) };
+            let editor = unsafe { CStr::from_ptr(ViewType::kEditor) };
+            if requested.to_bytes() != editor.to_bytes() {
+                return ptr::null_mut();
+            }
+
+            let adapter = PumpVst3GuiAdapter::new(self.shared.clone());
+            let (default_width, default_height) = preferred_window_size();
+            let Some(view) = ComWrapper::new(
+                HostedVst3View::new(adapter, default_width, default_height).with_size_bounds(
+                    MIN_WINDOW_WIDTH,
+                    MIN_WINDOW_HEIGHT,
+                    MAX_WINDOW_WIDTH,
+                    MAX_WINDOW_HEIGHT,
+                ),
+            )
+            .to_com_ptr::<IPlugView>() else {
+                return ptr::null_mut();
+            };
+            ComPtr::into_raw(view)
+        }
     }
 }
 

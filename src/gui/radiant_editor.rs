@@ -8,23 +8,27 @@ use radiant::gui::visualization::{
 };
 use radiant::layout::LayoutOutput;
 use radiant::prelude::{
-    column, custom_widget, custom_widget_mapped, row, slider, text, IntoView, TextAlign, ViewNode,
+    button, column, custom_widget, custom_widget_mapped, dropdown, row, slider, text, toggle,
+    IntoView, TextAlign, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
 use radiant::runtime::{
-    DeclarativeSurfaceRuntime, PaintBrush, PaintFillRect, PaintLinearGradient, PaintPrimitive,
-    PaintStrokePolyline, PaintStrokeRect, PaintText, PaintTextAlign, PaintTextRun, UiSurface,
+    DeclarativeSurfaceRuntime, PaintBrush, PaintFillPath, PaintFillRect, PaintFillRule,
+    PaintLinearGradient, PaintPath, PaintPathCommand, PaintPrimitive, PaintStrokePolyline,
+    PaintStrokeRect, PaintText, PaintTextAlign, PaintTextRun, UiSurface,
 };
-#[cfg(feature = "vst3")]
+#[cfg(any(feature = "radiant-gui", feature = "vst3"))]
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
     FocusBehavior, PointerButton, TextWrap, Widget, WidgetCommon, WidgetInput, WidgetKey,
-    WidgetOutput,
+    WidgetOutput, WidgetSemantics,
 };
+use toybox::clack_extensions::params::HostParams;
+use toybox::clack_plugin::prelude::HostSharedHandle;
 use toybox::clack_plugin::utils::ClapId;
-use toybox::clap::automation::{AutomationConfig, AutomationQueue};
+use toybox::clap::automation::{AutomationConfig, AutomationEnqueueStatus, AutomationQueue};
 
 use crate::curve::{
     cyclically_offset_editable_curve, sample_editable_curve, CurveNode, CurveSegment,
@@ -36,31 +40,59 @@ use crate::params::{
     GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
     MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
     PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID,
-    PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
+    PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID, PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS,
+    TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
-use super::{build_version_label, snap_curve_time_to_beat_grid, WINDOW_HEIGHT, WINDOW_WIDTH};
+#[cfg(test)]
+use super::WINDOW_HEIGHT;
+use super::{build_version_label, snap_curve_time_to_beat_grid, WINDOW_WIDTH};
 
-const BUILD_LABEL_HEIGHT: f32 = 16.0;
-const CURVE_PREVIEW_HEIGHT: f32 = 68.0;
+/// Main-thread CLAP parameter flush callback retained by the hosted editor.
+#[derive(Clone, Copy)]
+pub(crate) struct HostParamFlushRequester {
+    host: HostSharedHandle<'static>,
+    params: HostParams,
+}
+
+impl HostParamFlushRequester {
+    /// Capture the host parameter extension when the host exposes it.
+    pub(crate) fn new(host: HostSharedHandle<'_>) -> Option<Self> {
+        let params = host.get_extension::<HostParams>()?;
+        let host =
+            unsafe { std::mem::transmute::<HostSharedHandle<'_>, HostSharedHandle<'static>>(host) };
+        Some(Self { host, params })
+    }
+
+    /// Ask the host to collect the queued parameter events.
+    fn request_flush(self) {
+        self.params.request_flush(&self.host);
+    }
+}
+
+const BUILD_LABEL_HEIGHT: f32 = 54.0;
+const PRESET_TIMING_HEIGHT: f32 = 72.0;
+const CURVE_PREVIEW_HEIGHT: f32 = 180.0;
+const PARAMETER_DECK_HEIGHT: f32 = 96.0;
 const GAIN_REDUCTION_METER_WIDTH: f32 = 34.0;
 const GAIN_REDUCTION_METER_BAR_WIDTH: f32 = 8.0;
-const CURVE_SLOT_ROW_HEIGHT: f32 = 22.0;
+const CURVE_SLOT_ROW_HEIGHT: f32 = 75.0;
 const CURVE_SLOT_SPACING: f32 = 4.0;
 const CURVE_SLOT_VISIBLE_COUNT: usize = 6;
 const CURVE_SLOT_NAV_WIDTH: f32 = 20.0;
 const CURVE_SLOT_CORAL: Rgba8 = Rgba8::new(255, 128, 128, 255);
 const CURVE_SLOT_CORAL_SOFT: Rgba8 = Rgba8::new(255, 128, 128, 96);
-const CURVE_SLOT_WIDTH: f32 = ((WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0)
-    - CURVE_SLOT_NAV_WIDTH
-    - CURVE_SLOT_SPACING * CURVE_SLOT_VISIBLE_COUNT as f32)
-    / CURVE_SLOT_VISIBLE_COUNT as f32;
-const CONTROL_ROW_HEIGHT: f32 = 22.0;
-const CONTROL_LABEL_WIDTH: f32 = 54.0;
-const CONTROL_VALUE_WIDTH: f32 = 60.0;
+// Six slots remain inside the minimum supported host width; larger hosts keep the same deck.
+const CURVE_SLOT_WIDTH: f32 = 100.0;
+const CONTROL_ROW_HEIGHT: f32 = 16.0;
+// Timing and parameter labels are intentionally wider than the compact legacy
+// shell so the longest supported values ("Trigger", "Classic", and +0.0 dB)
+// retain their full glyph bounds at the minimum host size.
+const CONTROL_LABEL_WIDTH: f32 = 84.0;
+const CONTROL_VALUE_WIDTH: f32 = 78.0;
 const SURFACE_PADDING: f32 = 12.0;
-const SURFACE_SPACING: f32 = 6.0;
+const SURFACE_SPACING: f32 = 1.0;
 const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_FILL_TOP_ALPHA: u8 = 96;
 const CURVE_FILL_BOTTOM_ALPHA: u8 = 12;
@@ -292,6 +324,9 @@ struct RadiantEditorState {
     status: Arc<GuiStatus>,
     automation_queue: Arc<AutomationQueue>,
     automation_config: AutomationConfig,
+    host_param_requester: Option<HostParamFlushRequester>,
+    #[cfg(test)]
+    automation_flush_count: usize,
     active_curve_node: Option<usize>,
     active_curve_node_drag: Option<ActiveCurveNodeDrag>,
     active_curve_segment: Option<ActiveCurveSegmentDrag>,
@@ -306,10 +341,37 @@ struct RadiantEditorState {
     loaded_global_curve_slot: Option<usize>,
     curve_slot_scroll_offset: usize,
     numeric_entry: Option<NumericEntryState>,
+    preset_dropdown_open: bool,
+    snap_enabled: bool,
+    undo_history: Vec<RadiantHistorySnapshot>,
+    redo_history: Vec<RadiantHistorySnapshot>,
+}
+
+#[derive(Clone)]
+struct RadiantHistorySnapshot {
+    mix: f32,
+    smooth: f32,
+    depth_db: f32,
+    floor_db: f32,
+    phase_offset: f32,
+    output_gain_db: f32,
+    sync_division: usize,
+    mode: usize,
+    curve: EditableCurve,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 enum RadiantEditorMessage {
+    Undo,
+    Redo,
+    ToggleSnap(bool),
+    TogglePresetDropdown,
+    PresetSelect(usize),
+    PresetPrevious,
+    PresetNext,
+    PresetFavorite,
+    PresetAdd,
+    PresetSave,
     Mix(f32),
     Depth(f32),
     Floor(f32),
@@ -334,21 +396,23 @@ type EditorSurfaceRuntime = DeclarativeSurfaceRuntime<
 >;
 
 /// Host-controlled Radiant editor surface used by embedded Pump GUIs.
-#[cfg(feature = "vst3")]
+#[cfg(any(feature = "radiant-gui", feature = "vst3"))]
 pub(crate) struct RadiantPumpEditor {
     runtime: EditorSurfaceRuntime,
     status: Arc<GuiStatus>,
     theme: ThemeTokens,
     paint_plan: SurfacePaintPlan,
+    viewport: Vector2,
 }
 
-#[cfg(feature = "vst3")]
+#[cfg(any(feature = "radiant-gui", feature = "vst3"))]
 impl RadiantPumpEditor {
     /// Build a Radiant editor runtime at the provided logical viewport.
     pub(crate) fn new(
         params: Arc<PumpParams>,
         status: Arc<GuiStatus>,
         automation_queue: Arc<AutomationQueue>,
+        host_param_requester: Option<HostParamFlushRequester>,
         width: u32,
         height: u32,
     ) -> Self {
@@ -356,7 +420,12 @@ impl RadiantPumpEditor {
         let viewport = Vector2::new(width.max(1) as f32, height.max(1) as f32);
         Self {
             runtime: EditorSurfaceRuntime::new_declarative(
-                RadiantEditorState::new(params, Arc::clone(&status), automation_queue),
+                RadiantEditorState::new(
+                    params,
+                    Arc::clone(&status),
+                    automation_queue,
+                    host_param_requester,
+                ),
                 viewport,
                 project_editor_surface,
                 reduce_editor_message,
@@ -364,11 +433,13 @@ impl RadiantPumpEditor {
             status,
             paint_plan: SurfacePaintPlan::empty(&theme),
             theme,
+            viewport,
         }
     }
 
     /// Apply a host-driven viewport resize.
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
+        self.viewport = Vector2::new(width.max(1) as f32, height.max(1) as f32);
         self.runtime.dispatch_event(Event::resize(Vector2::new(
             width.max(1) as f32,
             height.max(1) as f32,
@@ -418,12 +489,74 @@ impl RadiantPumpEditor {
         let _ = self
             .runtime
             .borrowed_frame_into(&self.theme, &mut self.paint_plan);
+        // The host owns window chrome; plugin content still receives a rounded
+        // in-bounds frame so embedded surfaces retain the target's outer shell.
+        self.paint_plan.primitives.push(PaintPrimitive::FillPath(
+            PaintFillPath::new(
+                0,
+                rounded_frame_path(self.viewport),
+                PaintBrush::solid(self.theme.border_emphasis),
+            )
+            .fill_rule(PaintFillRule::EvenOdd),
+        ));
         &self.paint_plan
     }
 }
 
-#[cfg(all(feature = "vst3", target_os = "macos"))]
-impl toybox::vst3::gui::RadiantVst3Editor for RadiantPumpEditor {
+fn rounded_frame_path(viewport: Vector2) -> PaintPath {
+    let outer = Rect::from_xy_size(
+        0.5,
+        0.5,
+        (viewport.x - 1.0).max(1.0),
+        (viewport.y - 1.0).max(1.0),
+    );
+    let inner = outer.inset(1.0, 1.0, 1.0, 1.0);
+    let radius = 9.0_f32.min(outer.width() * 0.5).min(outer.height() * 0.5);
+    let inner_radius = (radius - 1.0).max(0.0);
+    let mut commands = rounded_rect_commands(outer, radius);
+    commands.extend(rounded_rect_commands(inner, inner_radius));
+    PaintPath::from(commands)
+}
+
+fn rounded_rect_commands(rect: Rect, radius: f32) -> Vec<PaintPathCommand> {
+    let left = rect.min.x;
+    let right = rect.max.x;
+    let top = rect.min.y;
+    let bottom = rect.max.y;
+    let r = radius.min(rect.width() * 0.5).min(rect.height() * 0.5);
+    let k = 0.552_284_8 * r;
+    vec![
+        PaintPathCommand::MoveTo(Point::new(left + r, top)),
+        PaintPathCommand::LineTo(Point::new(right - r, top)),
+        PaintPathCommand::CurveTo {
+            control1: Point::new(right - r + k, top),
+            control2: Point::new(right, top + r - k),
+            to: Point::new(right, top + r),
+        },
+        PaintPathCommand::LineTo(Point::new(right, bottom - r)),
+        PaintPathCommand::CurveTo {
+            control1: Point::new(right, bottom - r + k),
+            control2: Point::new(right - r + k, bottom),
+            to: Point::new(right - r, bottom),
+        },
+        PaintPathCommand::LineTo(Point::new(left + r, bottom)),
+        PaintPathCommand::CurveTo {
+            control1: Point::new(left + r - k, bottom),
+            control2: Point::new(left, bottom - r + k),
+            to: Point::new(left, bottom - r),
+        },
+        PaintPathCommand::LineTo(Point::new(left, top + r)),
+        PaintPathCommand::CurveTo {
+            control1: Point::new(left, top + r - k),
+            control2: Point::new(left + r - k, top),
+            to: Point::new(left + r, top),
+        },
+        PaintPathCommand::Close,
+    ]
+}
+
+#[cfg(any(feature = "radiant-gui", feature = "vst3"))]
+impl toybox::radiant_gui::RadiantEditor for RadiantPumpEditor {
     fn resize(&mut self, width: u32, height: u32) {
         Self::resize(self, width, height);
     }
@@ -461,7 +594,7 @@ pub(crate) fn radiant_editor_frame_for_params(
     viewport: Vector2,
 ) -> SurfaceFrame {
     EditorSurfaceRuntime::new_declarative(
-        RadiantEditorState::new(params, status, Arc::new(AutomationQueue::default())),
+        RadiantEditorState::new(params, status, Arc::new(AutomationQueue::default()), None),
         viewport,
         project_editor_surface,
         reduce_editor_message,
@@ -474,12 +607,16 @@ impl RadiantEditorState {
         params: Arc<PumpParams>,
         status: Arc<GuiStatus>,
         automation_queue: Arc<AutomationQueue>,
+        host_param_requester: Option<HostParamFlushRequester>,
     ) -> Self {
         Self {
             params,
             status,
             automation_queue,
             automation_config: AutomationConfig::default(),
+            host_param_requester,
+            #[cfg(test)]
+            automation_flush_count: 0,
             active_curve_node: None,
             active_curve_node_drag: None,
             active_curve_segment: None,
@@ -494,10 +631,64 @@ impl RadiantEditorState {
             loaded_global_curve_slot: None,
             curve_slot_scroll_offset: 0,
             numeric_entry: None,
+            preset_dropdown_open: false,
+            snap_enabled: false,
+            undo_history: Vec::new(),
+            redo_history: Vec::new(),
+        }
+    }
+
+    fn snapshot(&self) -> RadiantHistorySnapshot {
+        RadiantHistorySnapshot {
+            mix: self.params.mix(),
+            smooth: self.params.smooth(),
+            depth_db: self.params.depth_db(),
+            floor_db: self.params.floor_db(),
+            phase_offset: self.params.phase_offset(),
+            output_gain_db: self.params.output_gain_db(),
+            sync_division: self.params.sync_division(),
+            mode: self.params.mode(),
+            curve: self.params.editable_curve_snapshot(),
+        }
+    }
+
+    fn push_history(&mut self) {
+        self.undo_history.push(self.snapshot());
+        if self.undo_history.len() > 128 {
+            self.undo_history.remove(0);
+        }
+        self.redo_history.clear();
+    }
+
+    fn restore(&self, snapshot: &RadiantHistorySnapshot) {
+        self.params.set_mix(snapshot.mix);
+        self.params.set_smooth(snapshot.smooth);
+        self.params.set_depth_db(snapshot.depth_db);
+        self.params.set_floor_db(snapshot.floor_db);
+        self.params.set_phase_offset(snapshot.phase_offset);
+        self.params.set_output_gain_db(snapshot.output_gain_db);
+        self.params.set_sync_division(snapshot.sync_division as f32);
+        self.params.set_mode(snapshot.mode as f32);
+        self.params
+            .set_editable_curve_preserving_phase(&snapshot.curve);
+    }
+
+    fn undo(&mut self) {
+        if let Some(snapshot) = self.undo_history.pop() {
+            self.redo_history.push(self.snapshot());
+            self.restore(&snapshot);
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(snapshot) = self.redo_history.pop() {
+            self.undo_history.push(self.snapshot());
+            self.restore(&snapshot);
         }
     }
 }
 
+#[allow(clippy::arc_with_non_send_sync)]
 fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<RadiantEditorMessage>> {
     let params = state.params.as_ref();
     let curve = state
@@ -511,148 +702,242 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let sync = params.sync_division();
     let playhead_phase = (state.status.has_host_beats_timeline() || state.status.is_playing())
         .then_some(state.status.phase());
+    let preset_bank = params.preset_bank_snapshot();
+    let preset_selected = preset_bank
+        .selected
+        .min(preset_bank.presets.len().saturating_sub(1));
+    let preset_label = preset_bank
+        .presets
+        .get(preset_selected)
+        .map(|preset| preset.name.clone())
+        .unwrap_or_else(|| "Init".to_string());
+    let mut preset_dropdown = dropdown(&preset_label, state.preset_dropdown_open)
+        .toggle_message(RadiantEditorMessage::TogglePresetDropdown);
+    for (index, preset) in preset_bank.presets.iter().enumerate() {
+        preset_dropdown = preset_dropdown.option(
+            preset.name.clone(),
+            index == preset_selected,
+            RadiantEditorMessage::PresetSelect(index),
+        );
+    }
+    let timing_strip = row([
+        preset_dropdown
+            .build()
+            .width(150.0)
+            .height(PRESET_TIMING_HEIGHT),
+        enum_control_row(
+            "Sync",
+            sync_division_label(sync).to_string(),
+            normalize_sync_division(sync),
+            RadiantEditorMessage::SyncDivision,
+        ),
+        enum_control_row(
+            "Trigger",
+            if state.status.sidechain_available() {
+                TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
+            } else if params.trigger_mode() == TRIGGER_MODE_SIDECHAIN {
+                "Sidechain (unavailable)".to_string()
+            } else {
+                TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
+            },
+            params.trigger_mode() as f32,
+            RadiantEditorMessage::TriggerMode,
+        ),
+        enum_control_row(
+            "Mode",
+            PROCESSING_MODE_LABELS[params.mode()].to_string(),
+            params.mode() as f32,
+            RadiantEditorMessage::ProcessingMode,
+        ),
+    ])
+    .spacing(4.0)
+    .fill_width()
+    .height(PRESET_TIMING_HEIGHT);
     Arc::new(
         column([
-            text(if params.preset_persistence_warning().is_some() {
-                super::PRESET_WARNING_STORAGE.to_string()
-            } else {
-                build_version_label()
-            })
-            .muted_text()
-            .align_text(TextAlign::Right)
+            row([
+                text("PUMP").muted_text().fill_width(),
+                button("<")
+                    .message(RadiantEditorMessage::PresetPrevious)
+                    .size(36.0, BUILD_LABEL_HEIGHT),
+                button(">")
+                    .message(RadiantEditorMessage::PresetNext)
+                    .size(36.0, BUILD_LABEL_HEIGHT),
+                button("F")
+                    .message(RadiantEditorMessage::PresetFavorite)
+                    .size(36.0, BUILD_LABEL_HEIGHT),
+                button("+")
+                    .message(RadiantEditorMessage::PresetAdd)
+                    .size(36.0, BUILD_LABEL_HEIGHT),
+                button("S")
+                    .message(RadiantEditorMessage::PresetSave)
+                    .size(36.0, BUILD_LABEL_HEIGHT),
+                text(if params.preset_persistence_warning().is_some() {
+                    super::PRESET_WARNING_STORAGE.to_string()
+                } else {
+                    build_version_label()
+                })
+                .muted_text()
+                .align_text(TextAlign::Right)
+                .fill_width(),
+            ])
             .height(BUILD_LABEL_HEIGHT)
             .fill_width(),
-            row([
-                custom_widget_mapped(
-                    CurvePreviewWidget::new(
-                        curve,
-                        state.active_curve_node,
-                        state.active_curve_segment.as_ref().map(|drag| drag.index),
-                        state.hover_curve_node,
-                        state.preview_curve_node,
-                        state.hover_curve_segment,
-                        state.option_hover_held,
-                    )
-                    .with_command_hover_held(state.command_hover_held)
-                    .with_shift_hover_held(state.shift_hover_held)
-                    .with_active_segment_move(
-                        state
-                            .active_curve_segment
-                            .as_ref()
-                            .is_some_and(|drag| drag.mode == CurveSegmentDragMode::MovePair),
-                    )
-                    .with_active_curve_offset(
-                        state
-                            .active_curve_offset
-                            .as_ref()
-                            .map(|drag| drag.start_pointer_x),
-                    )
-                    .with_incoming_waveform(state.status.incoming_waveform_snapshot())
-                    .with_sync_division(sync)
-                    .with_gain_mapping(depth, floor)
-                    .with_playhead_phase(playhead_phase),
-                    RadiantEditorMessage::Curve,
+            timing_strip,
+            row([custom_widget_mapped(
+                CurvePreviewWidget::new(
+                    curve,
+                    state.active_curve_node,
+                    state.active_curve_segment.as_ref().map(|drag| drag.index),
+                    state.hover_curve_node,
+                    state.preview_curve_node,
+                    state.hover_curve_segment,
+                    state.option_hover_held,
                 )
-                .fill_width()
-                .height(CURVE_PREVIEW_HEIGHT),
-                custom_widget(
-                    GainReductionMeterWidget::new(state.status.gain_reduction_db()),
-                    |_| None,
+                .with_command_hover_held(state.command_hover_held)
+                .with_shift_hover_held(state.shift_hover_held)
+                .with_active_segment_move(
+                    state
+                        .active_curve_segment
+                        .as_ref()
+                        .is_some_and(|drag| drag.mode == CurveSegmentDragMode::MovePair),
                 )
-                .width(GAIN_REDUCTION_METER_WIDTH)
-                .height(CURVE_PREVIEW_HEIGHT),
-            ])
+                .with_active_curve_offset(
+                    state
+                        .active_curve_offset
+                        .as_ref()
+                        .map(|drag| drag.start_pointer_x),
+                )
+                .with_incoming_waveform(state.status.incoming_waveform_snapshot())
+                .with_sync_division(sync)
+                .with_gain_mapping(depth, floor)
+                .with_playhead_phase(playhead_phase),
+                RadiantEditorMessage::Curve,
+            )
+            .fill_width()
+            .fill_height()])
             .spacing(4.0)
             .fill_width()
-            .height(CURVE_PREVIEW_HEIGHT),
+            .fill_height(),
             curve_slot_row(state),
-            control_row(
-                NumericEntryTarget::Mix,
-                format!("{:.0}%", params.mix() * 100.0),
-                params.mix(),
-                state.numeric_entry.as_ref(),
-                RadiantEditorMessage::Mix,
-            ),
-            control_row(
-                NumericEntryTarget::Depth,
-                format!("{depth:.0} dB"),
-                normalize_depth(depth),
-                state.numeric_entry.as_ref(),
-                RadiantEditorMessage::Depth,
-            ),
-            control_row(
-                NumericEntryTarget::Floor,
-                if floor <= MIN_FLOOR_DB {
-                    "−∞".to_string()
-                } else {
-                    format!("{floor:.0} dB")
-                },
-                normalize_floor(floor),
-                state.numeric_entry.as_ref(),
-                RadiantEditorMessage::Floor,
-            ),
-            control_row(
-                NumericEntryTarget::Phase,
-                format!("{:.0}%", params.phase_offset() * 100.0),
-                params.phase_offset(),
-                state.numeric_entry.as_ref(),
-                RadiantEditorMessage::Phase,
-            ),
-            control_row(
-                NumericEntryTarget::OutputGain,
-                format!("{output:+.1} dB"),
-                normalize_output_gain(output),
-                state.numeric_entry.as_ref(),
-                RadiantEditorMessage::OutputGain,
-            ),
-            control_row(
-                NumericEntryTarget::Smooth,
-                format!("{:.0}%", smooth * 100.0),
-                smooth,
-                state.numeric_entry.as_ref(),
-                RadiantEditorMessage::Smooth,
-            ),
-            enum_control_row(
-                "Sync",
-                sync_division_label(sync).to_string(),
-                normalize_sync_division(sync),
-                RadiantEditorMessage::SyncDivision,
-            ),
-            enum_control_row(
-                "Trigger",
-                if state.status.sidechain_available() {
-                    TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
-                } else if params.trigger_mode() == TRIGGER_MODE_SIDECHAIN {
-                    "Sidechain (unavailable)".to_string()
-                } else {
-                    TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
-                },
-                params.trigger_mode() as f32,
-                RadiantEditorMessage::TriggerMode,
-            ),
-            enum_control_row(
-                "Mode",
-                PROCESSING_MODE_LABELS[params.mode()].to_string(),
-                params.mode() as f32,
-                RadiantEditorMessage::ProcessingMode,
-            ),
+            parameter_deck(state, params, depth, floor, output, smooth),
+            button("Undo")
+                .message(RadiantEditorMessage::Undo)
+                .size(64.0, CONTROL_ROW_HEIGHT),
+            button("Redo")
+                .message(RadiantEditorMessage::Redo)
+                .size(64.0, CONTROL_ROW_HEIGHT),
+            toggle("Snap", state.snap_enabled)
+                .message(RadiantEditorMessage::ToggleSnap)
+                .size(86.0, CONTROL_ROW_HEIGHT),
+            text(format!(
+                "Grid {}  |  {}",
+                sync_division_label(sync),
+                build_version_label()
+            ))
+            .muted_text()
+            .height(CONTROL_ROW_HEIGHT)
+            .fill_width(),
         ])
         .padding(SURFACE_PADDING)
         .spacing(SURFACE_SPACING)
-        .size(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32)
+        .fill_height()
         .into_surface(),
     )
 }
 
-fn control_row(
+fn parameter_deck(
+    state: &RadiantEditorState,
+    params: &PumpParams,
+    depth: f32,
+    floor: f32,
+    output: f32,
+    smooth: f32,
+) -> ViewNode<RadiantEditorMessage> {
+    row([
+        control_column(
+            NumericEntryTarget::Mix,
+            "Mix",
+            format!("{:.0}%", params.mix() * 100.0),
+            params.mix(),
+            state.numeric_entry.as_ref(),
+            RadiantEditorMessage::Mix,
+        ),
+        control_column(
+            NumericEntryTarget::Depth,
+            "Depth",
+            format!("{depth:.0} dB"),
+            normalize_depth(depth),
+            state.numeric_entry.as_ref(),
+            RadiantEditorMessage::Depth,
+        ),
+        control_column(
+            NumericEntryTarget::Floor,
+            "Floor",
+            if floor <= MIN_FLOOR_DB {
+                "−∞".to_string()
+            } else {
+                format!("{floor:.0} dB")
+            },
+            normalize_floor(floor),
+            state.numeric_entry.as_ref(),
+            RadiantEditorMessage::Floor,
+        ),
+        control_column(
+            NumericEntryTarget::Phase,
+            "Phase",
+            format!("{:.0}%", params.phase_offset() * 100.0),
+            params.phase_offset(),
+            state.numeric_entry.as_ref(),
+            RadiantEditorMessage::Phase,
+        ),
+        control_column(
+            NumericEntryTarget::OutputGain,
+            "Output",
+            format!("{output:+.1} dB"),
+            normalize_output_gain(output),
+            state.numeric_entry.as_ref(),
+            RadiantEditorMessage::OutputGain,
+        ),
+        control_column(
+            NumericEntryTarget::Smooth,
+            "Smooth",
+            format!("{:.0}%", smooth * 100.0),
+            smooth,
+            state.numeric_entry.as_ref(),
+            RadiantEditorMessage::Smooth,
+        ),
+        custom_widget(
+            GainReductionMeterWidget::new(state.status.gain_reduction_db()),
+            |_| None,
+        )
+        .width(GAIN_REDUCTION_METER_WIDTH)
+        .height(PARAMETER_DECK_HEIGHT),
+    ])
+    .spacing(8.0)
+    .fill_width()
+    .height(PARAMETER_DECK_HEIGHT)
+}
+
+fn control_column(
     target: NumericEntryTarget,
+    label: &'static str,
     value_label: String,
     value: f32,
     active_entry: Option<&NumericEntryState>,
     message: fn(f32) -> RadiantEditorMessage,
 ) -> ViewNode<RadiantEditorMessage> {
-    let value_label = value_label_node(target, value_label, active_entry);
-    slider_control_row(target.label(), value_label, value, message)
+    column([
+        text(label).height(CONTROL_ROW_HEIGHT),
+        slider(value.clamp(0.0, 1.0))
+            .message(message)
+            .fill_width()
+            .fill_height(),
+        value_label_node(target, value_label, active_entry),
+    ])
+    .spacing(4.0)
+    .fill_width()
+    .height(PARAMETER_DECK_HEIGHT)
 }
 
 fn enum_control_row(
@@ -713,33 +998,94 @@ fn value_label_node(
 
 fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorMessage) {
     match message {
-        RadiantEditorMessage::Mix(value) => state.params.set_mix(value),
-        RadiantEditorMessage::Depth(value) => state.params.set_depth_db(denormalize_depth(value)),
-        RadiantEditorMessage::Floor(value) => state.params.set_floor_db(denormalize_floor(value)),
-        RadiantEditorMessage::Phase(value) => state.params.set_phase_offset(value),
-        RadiantEditorMessage::OutputGain(value) => {
-            state
-                .params
-                .set_output_gain_db(denormalize_output_gain(value));
+        RadiantEditorMessage::Undo => state.undo(),
+        RadiantEditorMessage::Redo => state.redo(),
+        RadiantEditorMessage::ToggleSnap(enabled) => state.snap_enabled = enabled,
+        RadiantEditorMessage::TogglePresetDropdown => {
+            state.preset_dropdown_open = !state.preset_dropdown_open;
         }
-        RadiantEditorMessage::Smooth(value) => state.params.set_smooth(value),
+        RadiantEditorMessage::PresetSelect(index) => {
+            state.push_history();
+            let _ = state.params.load_preset(index);
+            state.preset_dropdown_open = false;
+        }
+        RadiantEditorMessage::PresetPrevious => {
+            state.push_history();
+            let _ = state.params.load_preset_relative(-1);
+        }
+        RadiantEditorMessage::PresetNext => {
+            state.push_history();
+            let _ = state.params.load_preset_relative(1);
+        }
+        RadiantEditorMessage::PresetFavorite => {
+            let _ = state.params.toggle_selected_preset_favorite();
+        }
+        RadiantEditorMessage::PresetAdd => {
+            let _ = state.params.add_preset_from_current_state();
+        }
+        RadiantEditorMessage::PresetSave => {
+            let bank = state.params.preset_bank_snapshot();
+            if let Some(preset) = bank.presets.get(bank.selected) {
+                let _ = state.params.save_current_state_by_name(&preset.name);
+            }
+        }
+        RadiantEditorMessage::Mix(value) => {
+            state.push_history();
+            state.params.set_mix(value);
+            push_radiant_param_update(state, PARAM_MIX_ID, value as f64);
+        }
+        RadiantEditorMessage::Depth(value) => {
+            state.push_history();
+            let value = denormalize_depth(value);
+            state.params.set_depth_db(value);
+            push_radiant_param_update(state, PARAM_DEPTH_ID, value as f64);
+        }
+        RadiantEditorMessage::Floor(value) => {
+            state.push_history();
+            let value = denormalize_floor(value);
+            state.params.set_floor_db(value);
+            push_radiant_param_update(state, PARAM_FLOOR_ID, value as f64);
+        }
+        RadiantEditorMessage::Phase(value) => {
+            state.push_history();
+            state.params.set_phase_offset(value);
+            push_radiant_param_update(state, PARAM_PHASE_OFFSET_ID, value as f64);
+        }
+        RadiantEditorMessage::OutputGain(value) => {
+            state.push_history();
+            let value = denormalize_output_gain(value);
+            state.params.set_output_gain_db(value);
+            push_radiant_param_update(state, PARAM_OUTPUT_GAIN_ID, value as f64);
+        }
+        RadiantEditorMessage::Smooth(value) => {
+            state.push_history();
+            state.params.set_smooth(value);
+            push_radiant_param_update(state, PARAM_SMOOTH_ID, value as f64);
+        }
         RadiantEditorMessage::SyncDivision(value) => {
-            state
-                .params
-                .set_sync_division((value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round());
+            state.push_history();
+            let value = (value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round();
+            state.params.set_sync_division(value);
+            push_radiant_param_update(state, PARAM_SYNC_DIVISION_ID, value as f64);
         }
         RadiantEditorMessage::TriggerMode(value) => {
+            state.push_history();
             let mode = value.round().clamp(0.0, TRIGGER_MODE_SIDECHAIN as f32) as usize;
             if mode == TRIGGER_MODE_SIDECHAIN && !state.status.sidechain_available() {
                 return;
             }
             state.params.set_trigger_mode(mode as f32);
+            push_radiant_param_update(state, PARAM_TRIGGER_MODE_ID, mode as f64);
         }
         RadiantEditorMessage::ProcessingMode(value) => {
+            state.push_history();
             state.params.set_mode(value);
             push_radiant_param_update(state, PARAM_MODE_ID, state.params.mode() as f64);
         }
-        RadiantEditorMessage::Curve(message) => reduce_curve_message(state, message),
+        RadiantEditorMessage::Curve(message) => {
+            state.push_history();
+            reduce_curve_message(state, message)
+        }
         RadiantEditorMessage::CurveSlot(message) => reduce_curve_slot_message(state, message),
         RadiantEditorMessage::NumericEntry(message) => reduce_numeric_entry_message(state, message),
     }
@@ -765,7 +1111,7 @@ fn curve_slot_row(state: &RadiantEditorState) -> ViewNode<RadiantEditorMessage> 
                 ),
                 RadiantEditorMessage::CurveSlot,
             )
-            .width(CURVE_SLOT_WIDTH)
+            .fill_width()
             .height(CURVE_SLOT_ROW_HEIGHT)
         })
         .collect();
@@ -899,16 +1245,34 @@ fn apply_numeric_entry_value(
     push_radiant_param_update(state, target.param_id(), value);
 }
 
-fn push_radiant_param_update(state: &RadiantEditorState, param_id: ClapId, value: f64) {
-    let _ = state
+/// Queue one complete discrete gesture and flush it once.
+///
+/// Pointer drags currently arrive as discrete reducer messages, so each update
+/// is represented by its own begin/value/end batch. A future pointer-stream
+/// reducer can coalesce these into one host gesture without changing the queue
+/// contract here.
+fn push_radiant_param_update(state: &mut RadiantEditorState, param_id: ClapId, value: f64) {
+    let begin = state
         .automation_queue
         .push_gesture_begin(&state.automation_config, param_id);
-    let _ = state
+    let value = state
         .automation_queue
         .push_value(&state.automation_config, param_id, value);
-    let _ = state
+    let end = state
         .automation_queue
         .push_gesture_end(&state.automation_config, param_id);
+    if [begin, value, end]
+        .into_iter()
+        .all(|status| status == AutomationEnqueueStatus::Enqueued)
+    {
+        #[cfg(test)]
+        {
+            state.automation_flush_count += 1;
+        }
+        if let Some(requester) = state.host_param_requester {
+            requester.request_flush();
+        }
+    }
 }
 
 fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMessage) {
@@ -1739,7 +2103,9 @@ impl Widget for NumericValueLabelWidget {
             wrap: TextWrap::None,
         }));
     }
+}
 
+impl WidgetSemantics for NumericValueLabelWidget {
     fn automation_label(&self) -> Option<String> {
         Some(format!("{} value", self.target.label()))
     }
@@ -1964,7 +2330,9 @@ impl Widget for CurveSlotWidget {
             }));
         }
     }
+}
 
+impl WidgetSemantics for CurveSlotWidget {
     fn automation_label(&self) -> Option<String> {
         Some(format!("Curve slot {}", self.index + 1))
     }
@@ -2121,7 +2489,7 @@ struct GainReductionMeterWidget {
 impl GainReductionMeterWidget {
     fn new(reduction_db: f32) -> Self {
         Self {
-            common: WidgetCommon::fixed(0, GAIN_REDUCTION_METER_WIDTH, CURVE_PREVIEW_HEIGHT)
+            common: WidgetCommon::fixed(0, GAIN_REDUCTION_METER_WIDTH, PARAMETER_DECK_HEIGHT)
                 .without_default_chrome(),
             reduction_db: reduction_db.clamp(0.0, crate::gui_status::GAIN_REDUCTION_METER_MAX_DB),
         }
@@ -3154,6 +3522,7 @@ mod tests {
             params,
             Arc::new(GuiStatus::default()),
             Arc::new(AutomationQueue::default()),
+            None,
         )
     }
 
@@ -3304,12 +3673,17 @@ mod tests {
             Arc::clone(&params),
             Arc::new(GuiStatus::default()),
             Arc::clone(&queue),
+            None,
         );
 
         reduce_editor_message(&mut state, RadiantEditorMessage::Mix(0.25));
+        reduce_editor_message(&mut state, RadiantEditorMessage::Depth(0.5));
+        reduce_editor_message(&mut state, RadiantEditorMessage::Floor(0.5));
         reduce_editor_message(&mut state, RadiantEditorMessage::Phase(0.5));
         reduce_editor_message(&mut state, RadiantEditorMessage::OutputGain(0.5));
+        reduce_editor_message(&mut state, RadiantEditorMessage::Smooth(0.5));
         reduce_editor_message(&mut state, RadiantEditorMessage::SyncDivision(1.0));
+        reduce_editor_message(&mut state, RadiantEditorMessage::TriggerMode(0.0));
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::ProcessingMode(PROCESSING_MODE_PUNCH as f32),
@@ -3325,14 +3699,46 @@ mod tests {
         let mut output = buffer.as_output();
         let mut scratch = Vec::new();
         let stats = queue.drain_to_output(&mut output, &mut scratch);
-        assert_eq!(stats.attempted, 3);
+        assert_eq!(stats.attempted, 27);
         let value_ids: Vec<_> = (0..buffer.len())
             .filter_map(|index| match buffer.get(index as u32)?.as_core_event()? {
                 CoreEventSpace::ParamValue(value) => value.param_id(),
                 _ => None,
             })
             .collect();
-        assert_eq!(value_ids, vec![PARAM_MODE_ID]);
+        assert_eq!(
+            value_ids,
+            vec![
+                PARAM_MIX_ID,
+                PARAM_DEPTH_ID,
+                PARAM_FLOOR_ID,
+                PARAM_PHASE_OFFSET_ID,
+                PARAM_OUTPUT_GAIN_ID,
+                PARAM_SMOOTH_ID,
+                PARAM_SYNC_DIVISION_ID,
+                PARAM_TRIGGER_MODE_ID,
+                PARAM_MODE_ID,
+            ]
+        );
+    }
+
+    #[test]
+    fn radiant_automation_batch_requests_one_flush_only_when_complete() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::ProcessingMode(PROCESSING_MODE_PUNCH as f32),
+        );
+        assert_eq!(state.automation_flush_count, 1);
+
+        state.automation_config.disable_param(PARAM_MODE_ID);
+        reduce_editor_message(&mut state, RadiantEditorMessage::ProcessingMode(0.0));
+        assert_eq!(
+            state.automation_flush_count, 1,
+            "a disabled batch must not request a host flush"
+        );
     }
 
     #[test]
@@ -5758,7 +6164,7 @@ mod tests {
             .expect("editable curve stroke should be present");
         let node_index = primitives
             .iter()
-            .position(|primitive| {
+            .rposition(|primitive| {
                 matches!(
                     primitive,
                     PaintPrimitive::FillRect(fill) if fill.color == theme.surface_raised
@@ -5801,7 +6207,8 @@ mod tests {
 
     #[test]
     fn gain_reduction_meter_paints_labeled_top_down_db_fill() {
-        let bounds = Rect::from_xy_size(0.0, 0.0, GAIN_REDUCTION_METER_WIDTH, CURVE_PREVIEW_HEIGHT);
+        let bounds =
+            Rect::from_xy_size(0.0, 0.0, GAIN_REDUCTION_METER_WIDTH, PARAMETER_DECK_HEIGHT);
         let theme = ThemeTokens::default();
         let mut unity_primitives = Vec::new();
         GainReductionMeterWidget::new(0.0).append_paint(
@@ -5830,7 +6237,8 @@ mod tests {
             })
             .expect("reduction should paint one meter fill");
         assert!((fill.rect.min.y - 15.0).abs() < 1.0e-6);
-        assert!((fill.rect.height() - 19.0).abs() < 1.0e-6);
+        let expected_fill_height = ((PARAMETER_DECK_HEIGHT - 14.0 - 14.0) - 2.0) * 0.5;
+        assert!((fill.rect.height() - expected_fill_height).abs() < 1.0e-6);
         for expected in ["GR dB", "18.0"] {
             assert!(reduced_primitives.iter().any(|primitive| {
                 matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == expected)
@@ -5973,6 +6381,7 @@ mod tests {
             params,
             Arc::clone(&status),
             Arc::new(AutomationQueue::default()),
+            None,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
         );
@@ -6031,6 +6440,7 @@ mod tests {
             Arc::clone(&params),
             Arc::clone(&status),
             Arc::new(AutomationQueue::default()),
+            None,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
         );
@@ -6089,8 +6499,8 @@ mod tests {
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == version_label)
         }));
-        assert!(!frame.paint_plan.primitives.iter().any(|primitive| {
-            matches!(primitive, PaintPrimitive::Text(text) if text.text.eq_ignore_ascii_case("pump"))
+        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::Text(text) if text.text == "PUMP")
         }));
         assert!(frame
             .paint_plan
