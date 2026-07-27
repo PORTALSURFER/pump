@@ -82,6 +82,10 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Auto-update changelog on push (b5a9434)
 
+- Align screenshot manifest and windows compatibility lane (39fb40a)
+
+- Run Pump checks on macOS only (dc184f8)
+
 
 ### Chores
 
@@ -156,6 +160,8 @@ All notable changes to this project are documented in this file.
 - (gui) Pin radiant for pump gui surface smoke (709219c)
 
 - Remove local agent state files (9a5e07a)
+
+- Repin canonical Radiant and Toybox merges (1fb2078)
 
 
 ### Documentation
@@ -326,6 +332,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (eb9043c)
 
+- (changelog) Update changelog [skip ci] (362c980)
+
 
 ### Features
 
@@ -342,6 +350,8 @@ All notable changes to this project are documented in this file.
 - (pump) Add host-automatable Smooth parameter (#34) (64b9cf0)
 
 - Define Pump processing modes and add Mode selector (#35) (d3fc439)
+
+- (pump) Rebuild responsive Radiant editor shell (f279636)
 
 
 ### Other
@@ -1135,6 +1145,10 @@ Approved and validated. Merge OPT-1127 sidechain trigger routing. (4ddff72)
 - Merge pull request #33 from PORTALSURFER/wsvasek/opt-1291-pump-remove-the-input-waveform-toggle-and-keep-the-waveform
 
 OPT-1291: Keep the input waveform always on (ffa3201)
+
+- Merge pull request #36 from PORTALSURFER/wsvasek/opt-1122-pump-redesign-rebuild-the-responsive-editor-layout-shell
+
+OPT-1122 Rebuild responsive Radiant editor layout shell (0985c1c)
 
 
 ### Refactoring
