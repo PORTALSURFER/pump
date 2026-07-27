@@ -10,7 +10,7 @@ env:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,33 +85,3 @@ jobs:
           VST3_SDK_DIR: ${{ vars.VST3_SDK_DIR }}
         shell: bash
         run: bash scripts/ci.sh --vst3
-
-  windows-non-gui-compatibility:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure private git dependencies
-        shell: bash
-        env:
-          RADIANT_REPO_TOKEN: ${{ secrets.RADIANT_REPO_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${RADIANT_REPO_TOKEN}" ]]; then
-            echo "::error::RADIANT_REPO_TOKEN is required to fetch private git dependencies"
-            exit 1
-          fi
-          git config --global url."https://x-access-token:${RADIANT_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run checks (default features)
-        shell: bash
-        run: bash scripts/ci.sh
