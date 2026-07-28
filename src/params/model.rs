@@ -7,7 +7,82 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 13;
+pub(crate) const STATE_VERSION: u32 = 14;
+
+/// The two independently editable Pump sound sides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoundSide {
+    /// The A sound (the legacy/default side).
+    A,
+    /// The B sound.
+    B,
+}
+
+impl SoundSide {
+    /// Return the storage index used by the A/B snapshot bank.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::A => 0,
+            Self::B => 1,
+        }
+    }
+
+    /// Return the other sound side.
+    pub const fn other(self) -> Self {
+        match self {
+            Self::A => Self::B,
+            Self::B => Self::A,
+        }
+    }
+
+    /// Return the stable host/UI label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::A => "A",
+            Self::B => "B",
+        }
+    }
+}
+
+/// Complete editable sound state used by one A/B side.
+///
+/// This intentionally mirrors the audio-affecting fields in [`PumpPreset`].
+/// Quick slots are included so changing a quick shape while one side is active
+/// cannot silently alter the other side's editing context.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PumpSoundState {
+    pub mix: f32,
+    pub depth_db: f32,
+    pub floor_db: f32,
+    pub phase_offset: f32,
+    pub output_gain_db: f32,
+    pub sync_division: usize,
+    pub trigger_mode: usize,
+    pub smooth: f32,
+    pub mode: usize,
+    pub swing: f32,
+    pub editable_curve: EditableCurve,
+    pub quick_slots: Vec<QuickShapeSlot>,
+}
+
+impl PumpSoundState {
+    pub(crate) fn default_init() -> Self {
+        Self {
+            mix: DEFAULT_MIX,
+            depth_db: DEFAULT_DEPTH_DB,
+            floor_db: DEFAULT_FLOOR_DB,
+            phase_offset: DEFAULT_PHASE_OFFSET,
+            output_gain_db: DEFAULT_OUTPUT_GAIN_DB,
+            sync_division: DEFAULT_SYNC_DIVISION_INDEX,
+            trigger_mode: DEFAULT_TRIGGER_MODE,
+            smooth: DEFAULT_SMOOTH,
+            mode: PROCESSING_MODE_CLASSIC,
+            swing: DEFAULT_SWING,
+            editable_curve: default_editable_curve(),
+            quick_slots: seeded_quick_shape_slots(),
+        }
+    }
+}
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
@@ -31,6 +106,8 @@ pub const PARAM_MODE_NUM: u32 = 9;
 pub const PARAM_BYPASS_NUM: u32 = 10;
 /// Host-visible numeric parameter id for alternating-subdivision swing.
 pub const PARAM_SWING_NUM: u32 = 11;
+/// Host-visible numeric parameter id for the active A/B sound side.
+pub const PARAM_SOUND_NUM: u32 = 12;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
@@ -54,6 +131,8 @@ pub const PARAM_MODE_ID: ClapId = ClapId::new(PARAM_MODE_NUM);
 pub const PARAM_BYPASS_ID: ClapId = ClapId::new(PARAM_BYPASS_NUM);
 /// Parameter id for alternating-subdivision swing.
 pub const PARAM_SWING_ID: ClapId = ClapId::new(PARAM_SWING_NUM);
+/// Parameter id for the active A/B sound side.
+pub const PARAM_SOUND_ID: ClapId = ClapId::new(PARAM_SOUND_NUM);
 
 /// Plain host value for active processing.
 pub const BYPASS_ACTIVE_VALUE: f32 = 0.0;
@@ -427,4 +506,19 @@ pub struct PumpParams {
     pub(super) curve_revision: AtomicU32,
     pub(super) preset_bank: RwLock<PumpPresetBank>,
     pub(super) preset_persistence_warning: RwLock<Option<String>>,
+    pub(super) active_sound: AtomicU32,
+    pub(super) pending_active_sound: AtomicU32,
+    pub(super) active_sound_dirty: AtomicBool,
+    pub(super) realtime_mix: [AtomicF32; 2],
+    pub(super) realtime_depth_db: [AtomicF32; 2],
+    pub(super) realtime_floor_db: [AtomicF32; 2],
+    pub(super) realtime_phase_offset: [AtomicF32; 2],
+    pub(super) realtime_output_gain_db: [AtomicF32; 2],
+    pub(super) realtime_sync_division: [AtomicU32; 2],
+    pub(super) realtime_trigger_mode: [AtomicU32; 2],
+    pub(super) realtime_smooth: [AtomicF32; 2],
+    pub(super) realtime_mode: [AtomicU32; 2],
+    pub(super) realtime_swing: [AtomicF32; 2],
+    pub(super) realtime_curve: [[AtomicF32; CURVE_TABLE_LEN]; 2],
+    pub(super) sound_states: RwLock<[PumpSoundState; 2]>,
 }

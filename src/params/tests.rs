@@ -1,3 +1,11 @@
+#[cfg(feature = "vst3")]
+use super::{
+    apply_normalized_param_value, clap_id_from_vst3_param_id, format_plain_value_text,
+    parse_plain_value_text, vst3_param_info_for_index, PARAM_MIX_NUM, PARAM_MODE_NUM,
+    PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM,
+    PARAM_SOUND_ID, PARAM_SOUND_NUM, PARAM_SWING_NUM, PARAM_SYNC_DIVISION_ID,
+    PARAM_SYNC_DIVISION_NUM,
+};
 use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
     sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
@@ -5,16 +13,9 @@ use super::{
     PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID,
     PARAM_SWING_ID, PROCESSING_MODE_PUNCH, TRIGGER_MODE_SIDECHAIN,
 };
-#[cfg(feature = "vst3")]
-use super::{
-    clap_id_from_vst3_param_id, format_plain_value_text, parse_plain_value_text,
-    vst3_param_info_for_index, PARAM_MIX_NUM, PARAM_MODE_NUM, PARAM_OUTPUT_GAIN_NUM,
-    PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM, PARAM_SWING_NUM,
-    PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
-};
 use crate::curve::{
-    cyclically_offset_editable_curve, sample_editable_curve, CurveNode, CurveSegment,
-    EditableCurve, CURVE_TABLE_LEN,
+    cyclically_offset_editable_curve, editable_curve_to_table, sample_editable_curve, CurveNode,
+    CurveSegment, EditableCurve, CURVE_TABLE_LEN,
 };
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -70,7 +71,7 @@ fn sync_division_clamping_is_bounded() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 11);
+    assert_eq!(super::param_count(), 12);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -164,8 +165,136 @@ fn swing_is_a_stable_percent_parameter_with_straight_default() {
 }
 
 #[test]
+fn sound_sides_switch_copy_and_roundtrip_as_complete_states() {
+    let params = PumpParams::new();
+    params.set_mix(0.31);
+    params.set_depth_db(48.0);
+    let curve = params.editable_curve_snapshot();
+    assert_eq!(params.active_sound(), super::SoundSide::A);
+    assert!(params.sound_sides_differ());
+
+    assert!(params.copy_active_to_inactive());
+    assert!(!params.sound_sides_differ());
+    assert_eq!(params.active_sound(), super::SoundSide::A);
+
+    assert!(params.set_active_sound(super::SoundSide::B));
+    assert!((params.mix() - 0.31).abs() < 1.0e-6);
+    assert!((params.depth_db() - 48.0).abs() < 1.0e-6);
+    assert_eq!(params.editable_curve_snapshot(), curve);
+    params.set_mix(0.82);
+    assert!(params.set_active_sound(super::SoundSide::A));
+    assert!((params.mix() - 0.31).abs() < 1.0e-6);
+    assert!(params.copy_active_to_inactive());
+    assert!(params.set_active_sound(super::SoundSide::B));
+    params.set_mix(0.17);
+    assert!(params.copy_active_to_inactive());
+    assert!(params.set_active_sound(super::SoundSide::A));
+    assert!((params.mix() - 0.17).abs() < 1.0e-6);
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("A/B state should decode");
+    assert_eq!(restored.active_sound(), super::SoundSide::A);
+    assert!((restored.sound_state_snapshot(super::SoundSide::B).mix - 0.17).abs() < 1.0e-6);
+}
+
+#[test]
+fn host_sound_automation_is_queued_without_audio_thread_snapshot_access() {
+    let params = PumpParams::new();
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    assert_eq!(params.active_sound(), super::SoundSide::B);
+    assert_eq!(
+        params.consume_pending_active_sound(),
+        Some(super::SoundSide::B)
+    );
+    assert_eq!(params.active_sound(), super::SoundSide::B);
+}
+
+#[test]
+fn copy_and_host_switch_publish_distinct_curves_before_selection() {
+    let params = PumpParams::new();
+    let mut curve_a = params.editable_curve_snapshot();
+    curve_a.nodes[1].y = 0.21;
+    params.set_editable_curve(&curve_a);
+    assert!(params.copy_active_to_inactive());
+    let expected = editable_curve_to_table(&curve_a);
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    assert_eq!(params.curve_snapshot(), expected);
+    assert_eq!(
+        params.consume_pending_active_sound(),
+        Some(super::SoundSide::B)
+    );
+    assert_eq!(params.editable_curve_snapshot(), curve_a);
+
+    let mut curve_b = curve_a.clone();
+    curve_b.nodes[1].y = 0.79;
+    params.set_editable_curve(&curve_b);
+    let expected_b = editable_curve_to_table(&curve_b);
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 0.0);
+    assert_eq!(params.curve_snapshot(), expected);
+    params.consume_pending_active_sound();
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    assert_eq!(params.curve_snapshot(), expected_b);
+    params.consume_pending_active_sound();
+    assert_eq!(params.editable_curve_snapshot(), curve_b);
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("distinct A/B curves should round-trip");
+    super::apply_param_event(&restored, super::PARAM_SOUND_ID, 1.0);
+    assert_eq!(restored.curve_snapshot(), expected_b);
+    restored.consume_pending_active_sound();
+    assert_eq!(restored.editable_curve_snapshot(), curve_b);
+
+    let editor_closed = PumpParams::new();
+    editor_closed.set_editable_curve(&curve_a);
+    editor_closed.copy_active_to_inactive();
+    super::apply_param_event(&editor_closed, super::PARAM_SOUND_ID, 1.0);
+    let closed_payload = encode_state_payload(&editor_closed);
+    let reopened = PumpParams::new();
+    decode_state_payload(&reopened, &closed_payload).expect("editor-closed B state should decode");
+    assert_eq!(reopened.active_sound(), super::SoundSide::B);
+    assert_eq!(reopened.editable_curve_snapshot(), curve_a);
+}
+
+#[test]
+fn editor_closed_host_switch_preserves_active_side_curve_during_scalar_save() {
+    let params = PumpParams::new();
+    let mut curve_a = params.editable_curve_snapshot();
+    curve_a.nodes[1].y = 0.18;
+    params.set_editable_curve(&curve_a);
+    params.copy_active_to_inactive();
+
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    params.consume_pending_active_sound();
+    let mut curve_b = curve_a.clone();
+    curve_b.nodes[1].y = 0.82;
+    params.set_editable_curve(&curve_b);
+    params.consume_pending_active_sound();
+
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 0.0);
+    params.consume_pending_active_sound();
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    // Simulate a host save while the editor has not consumed the pending
+    // selector projection. A scalar automation event makes the active side
+    // dirty without changing its stored editable curve.
+    params.set_mix(0.63);
+    let payload = encode_state_payload(&params);
+
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("editor-closed state should decode");
+    assert_eq!(restored.active_sound(), super::SoundSide::B);
+    assert_eq!(
+        restored
+            .sound_state_snapshot(super::SoundSide::B)
+            .editable_curve,
+        curve_b
+    );
+}
+
+#[test]
 fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
-    assert_eq!(super::param_count(), 11);
+    assert_eq!(super::param_count(), 12);
     let flags = super::param_flags_for_index(9).expect("bypass metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -268,9 +397,14 @@ fn unsupported_processing_mode_falls_back_to_classic() {
     for unsupported in [99.0_f32, 0.6_f32] {
         let params = PumpParams::new();
         params.set_mode(PROCESSING_MODE_PUNCH as f32);
-        let mut payload = encode_state_payload(&params);
-        let mode_offset = payload.len() - 12;
-        payload[mode_offset..mode_offset + 4].copy_from_slice(&unsupported.to_le_bytes());
+        let mut states = [
+            params.sound_state_snapshot(super::SoundSide::A),
+            params.sound_state_snapshot(super::SoundSide::B),
+        ];
+        states[0].mode = unsupported as usize;
+        states[1].mode = unsupported as usize;
+        params.set_sound_states_without_persistence(super::SoundSide::A, states);
+        let payload = encode_state_payload(&params);
 
         let restored = PumpParams::new();
         decode_state_payload(&restored, &payload).expect("unknown mode should be recoverable");
@@ -929,6 +1063,10 @@ fn vst3_mapping_resolves_to_shared_clap_ids() {
         clap_id_from_vst3_param_id(PARAM_SWING_NUM),
         Some(PARAM_SWING_ID)
     );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_SOUND_NUM),
+        Some(PARAM_SOUND_ID)
+    );
     assert_eq!(clap_id_from_vst3_param_id(999), None);
 }
 
@@ -957,6 +1095,15 @@ fn vst3_info_and_text_conversions_share_param_rules() {
     assert_eq!(swing_info.units, "%");
     assert_eq!(smooth_info.title, "Smooth");
     assert_eq!(smooth_info.units, "%");
+    let sound_info = vst3_param_info_for_index(11).expect("sound info should exist");
+    assert_eq!(sound_info.id, PARAM_SOUND_NUM);
+    assert_eq!(sound_info.step_count, 1);
+    assert_eq!(sound_info.default_normalized, 0.0);
+    assert_eq!(
+        format_plain_value_text(PARAM_SOUND_ID, 1.0),
+        Some("B".into())
+    );
+    assert_eq!(parse_plain_value_text(PARAM_SOUND_ID, "B"), Some(1.0));
 
     let mix_text = format_plain_value_text(PARAM_MIX_ID, 0.5).expect("mix text");
     assert_eq!(mix_text, "50%");
@@ -976,6 +1123,15 @@ fn vst3_info_and_text_conversions_share_param_rules() {
         parse_plain_value_text(PARAM_SYNC_DIVISION_ID, "2 Bars"),
         Some(7.0)
     );
+}
+
+#[cfg(feature = "vst3")]
+#[test]
+fn vst3_sound_automation_switches_without_editor_state() {
+    let params = PumpParams::new();
+    assert!(apply_normalized_param_value(&params, PARAM_SOUND_ID, 1.0));
+    assert_eq!(params.active_sound(), super::SoundSide::B);
+    assert_eq!(params.mix(), 1.0);
 }
 
 #[test]

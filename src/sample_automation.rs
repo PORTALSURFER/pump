@@ -176,12 +176,18 @@ pub(crate) fn process_stereo_block(
     let StereoBlockSlices { left, right } = block;
     let frame_count = left.len().min(right.len());
     let mut transport_for_sample = transport;
+    let mut curve_revision = params.curve_revision();
     let mut last_telemetry = None;
     let mut minimum_reduction_gain = 1.0_f32;
     let mut input_active = false;
 
     for sample_offset in 0..frame_count {
         schedule.apply_through(sample_offset, params, settings);
+        let revision = params.curve_revision();
+        if revision != curve_revision {
+            engine.set_target_curve(params.curve_snapshot());
+            curve_revision = revision;
+        }
         let input_left = left[sample_offset];
         let input_right = right[sample_offset];
         let telemetry = engine.process_sample(
@@ -282,12 +288,18 @@ pub(crate) unsafe fn process_stereo_block_raw(
     mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
     let mut transport_for_sample = transport;
+    let mut curve_revision = params.curve_revision();
     let mut last_telemetry = None;
     let mut minimum_reduction_gain = 1.0_f32;
     let mut input_active = false;
 
     for sample_offset in 0..block.num_samples {
         schedule.apply_through(sample_offset, params, settings);
+        let revision = params.curve_revision();
+        if revision != curve_revision {
+            engine.set_target_curve(params.curve_snapshot());
+            curve_revision = revision;
+        }
         // Read both inputs before either output is written so exact in-place
         // buffers preserve the original stereo sample pair.
         let mut left = unsafe { block.input_left.add(sample_offset).read() };

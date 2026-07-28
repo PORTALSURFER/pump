@@ -41,12 +41,12 @@ use crate::curve::{
 use crate::incoming_waveform::IncomingWaveformSnapshot;
 use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
-    BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS, GLOBAL_CURVE_SLOT_COUNT,
-    MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_DEPTH_DB, MIN_FLOOR_DB,
-    MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
-    PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SWING_ID,
-    PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID, PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS,
-    TRIGGER_MODE_SIDECHAIN,
+    PumpSoundState, SoundSide, BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS,
+    GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
+    MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DEPTH_ID,
+    PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
+    PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID,
+    PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
@@ -637,6 +637,7 @@ struct RadiantEditorState {
     curve_slot_scroll_offset: usize,
     numeric_entry: Option<NumericEntryState>,
     preset_dropdown_open: bool,
+    ab_confirmation: Option<String>,
     snap_enabled: bool,
     undo_history: Vec<RadiantHistorySnapshot>,
     redo_history: Vec<RadiantHistorySnapshot>,
@@ -654,6 +655,8 @@ struct RadiantHistorySnapshot {
     sync_division: usize,
     mode: usize,
     curve: EditableCurve,
+    active_sound: SoundSide,
+    sound_states: [PumpSoundState; 2],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -678,6 +681,8 @@ enum RadiantEditorMessage {
     SyncDivision(f32),
     TriggerMode(f32),
     ProcessingMode(f32),
+    SelectSound(SoundSide),
+    CopyActiveSound,
     ToggleBypass,
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
@@ -804,6 +809,12 @@ impl RadiantPumpEditor {
                 .state()
                 .params
                 .bypass_automation_recent()
+            || self
+                .runtime
+                .bridge()
+                .state()
+                .params
+                .has_pending_active_sound()
     }
 
     /// Refresh and return the current backend-neutral paint plan.
@@ -976,6 +987,7 @@ impl RadiantEditorState {
             curve_slot_scroll_offset: 0,
             numeric_entry: None,
             preset_dropdown_open: false,
+            ab_confirmation: None,
             snap_enabled: false,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
@@ -994,10 +1006,16 @@ impl RadiantEditorState {
             sync_division: self.params.sync_division(),
             mode: self.params.mode(),
             curve: self.params.editable_curve_snapshot(),
+            active_sound: self.params.active_sound(),
+            sound_states: [
+                self.params.sound_state_snapshot(SoundSide::A),
+                self.params.sound_state_snapshot(SoundSide::B),
+            ],
         }
     }
 
     fn push_history(&mut self) {
+        self.ab_confirmation = None;
         self.undo_history.push(self.snapshot());
         if self.undo_history.len() > 128 {
             self.undo_history.remove(0);
@@ -1017,6 +1035,10 @@ impl RadiantEditorState {
         self.params.set_mode(snapshot.mode as f32);
         self.params
             .set_editable_curve_preserving_phase(&snapshot.curve);
+        self.params.set_sound_states_without_persistence(
+            snapshot.active_sound,
+            snapshot.sound_states.clone(),
+        );
     }
 
     fn undo(&mut self) {
@@ -1036,6 +1058,7 @@ impl RadiantEditorState {
 
 #[allow(clippy::arc_with_non_send_sync)]
 fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<RadiantEditorMessage>> {
+    let _ = state.params.consume_pending_active_sound();
     let params = state.params.as_ref();
     let curve = state
         .preview_curve_offset
@@ -1058,6 +1081,17 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         .get(preset_selected)
         .map(|preset| preset.name.clone())
         .unwrap_or_else(|| "Init".to_string());
+    let active_sound = params.active_sound();
+    let live_ab_status = if params.sound_sides_differ() {
+        format!("{} active · A/B differ", active_sound.label())
+    } else {
+        format!("{} active · A/B match", active_sound.label())
+    };
+    let ab_status = state
+        .ab_confirmation
+        .as_ref()
+        .map(|confirmation| format!("{confirmation} · {live_ab_status}"))
+        .unwrap_or(live_ab_status);
     let mut preset_dropdown = dropdown(&preset_label, state.preset_dropdown_open)
         .toggle_message(RadiantEditorMessage::TogglePresetDropdown);
     for (index, preset) in preset_bank.presets.iter().enumerate() {
@@ -1131,6 +1165,24 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         column([
             row([
                 text("PUMP").muted_text().fill_width(),
+                toggle("A", active_sound == SoundSide::A)
+                    .message(|_| RadiantEditorMessage::SelectSound(SoundSide::A))
+                    .size(34.0, BUILD_LABEL_HEIGHT),
+                toggle("B", active_sound == SoundSide::B)
+                    .message(|_| RadiantEditorMessage::SelectSound(SoundSide::B))
+                    .size(34.0, BUILD_LABEL_HEIGHT),
+                action_icon_button(
+                    IconName::Copy,
+                    if active_sound == SoundSide::A {
+                        "Copy A to B"
+                    } else {
+                        "Copy B to A"
+                    },
+                    RadiantEditorMessage::CopyActiveSound,
+                    46.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
+                text(ab_status).muted_text().width(120.0),
                 action_icon_button(
                     IconName::ChevronLeft,
                     "Previous preset",
@@ -1432,12 +1484,15 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             let _ = state.params.load_preset_relative(1);
         }
         RadiantEditorMessage::PresetFavorite => {
+            state.ab_confirmation = None;
             let _ = state.params.toggle_selected_preset_favorite();
         }
         RadiantEditorMessage::PresetAdd => {
+            state.ab_confirmation = None;
             let _ = state.params.add_preset_from_current_state();
         }
         RadiantEditorMessage::PresetSave => {
+            state.ab_confirmation = None;
             let bank = state.params.preset_bank_snapshot();
             if let Some(preset) = bank.presets.get(bank.selected) {
                 let _ = state.params.save_current_state_by_name(&preset.name);
@@ -1500,6 +1555,32 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             state.push_history();
             state.params.set_mode(value);
             push_radiant_param_update(state, PARAM_MODE_ID, state.params.mode() as f64);
+        }
+        RadiantEditorMessage::SelectSound(side) => {
+            if state.params.active_sound() != side {
+                state.push_history();
+                if state.params.set_active_sound(side) {
+                    state.ab_confirmation = Some(format!("Switched to sound {}", side.label()));
+                    push_radiant_param_update(state, PARAM_SOUND_ID, side.index() as f64);
+                }
+            }
+        }
+        RadiantEditorMessage::CopyActiveSound => {
+            state.push_history();
+            let active = state.params.active_sound();
+            if state.params.copy_active_to_inactive() {
+                state.ab_confirmation = Some(format!(
+                    "Copied {} → {}",
+                    active.label(),
+                    active.other().label()
+                ));
+            } else {
+                state.ab_confirmation = Some(format!(
+                    "{} and {} already match",
+                    active.label(),
+                    active.other().label()
+                ));
+            }
         }
         RadiantEditorMessage::ToggleBypass => {
             if try_toggle_bypass(
@@ -4002,6 +4083,25 @@ mod tests {
             option_held: false,
             command_held: false,
         }
+    }
+
+    #[test]
+    fn ab_copy_and_switch_are_coherent_undo_redo_actions() {
+        let params = Arc::new(PumpParams::new());
+        params.set_mix(0.2);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_editor_message(&mut state, RadiantEditorMessage::CopyActiveSound);
+        assert!(!params.sound_sides_differ());
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert!(params.sound_sides_differ());
+        reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
+        assert!(!params.sound_sides_differ());
+        reduce_editor_message(&mut state, RadiantEditorMessage::SelectSound(SoundSide::B));
+        assert_eq!(params.active_sound(), SoundSide::B);
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert_eq!(params.active_sound(), SoundSide::A);
+        reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
+        assert_eq!(params.active_sound(), SoundSide::B);
     }
 
     #[test]
@@ -7319,6 +7419,29 @@ mod tests {
             .any(|primitive| matches!(primitive, PaintPrimitive::FillRect(_))));
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, PaintPrimitive::StrokePolyline(polyline) if polyline.points.len() > 16)
+        }));
+    }
+
+    #[test]
+    fn radiant_editor_paints_live_ab_match_and_difference_status() {
+        let params = Arc::new(PumpParams::new());
+        params.set_mix(0.25);
+        let frame = radiant_editor_frame_for_params(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+        );
+        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::Text(text) if text.text.contains("A active · A/B differ"))
+        }));
+        params.copy_active_to_inactive();
+        let frame = radiant_editor_frame_for_params(
+            params,
+            Arc::new(GuiStatus::default()),
+            Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+        );
+        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::Text(text) if text.text.contains("A active · A/B match"))
         }));
     }
 }
