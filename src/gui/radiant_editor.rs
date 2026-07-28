@@ -2,14 +2,16 @@
 
 use std::sync::Arc;
 
+use radiant::gui::automation::AutomationRole;
+use radiant::gui::svg::IconName;
 use radiant::gui::types::{Point, Rect, Rgba8, Vector2};
 use radiant::gui::visualization::{
     push_sampled_curve_area_fill, SampledCurveAreaBaseline, SampledCurveAreaFillParts,
 };
 use radiant::layout::LayoutOutput;
 use radiant::prelude::{
-    button, column, custom_widget, custom_widget_mapped, dropdown, row, slider, text, toggle,
-    IntoView, TextAlign, ViewNode,
+    column, custom_widget, custom_widget_mapped, dropdown, row, slider, text, toggle, IntoView,
+    TextAlign, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
@@ -22,8 +24,9 @@ use radiant::runtime::{
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
-    FocusBehavior, PointerButton, TextWrap, Widget, WidgetCommon, WidgetInput, WidgetKey,
-    WidgetOutput, WidgetSemantics,
+    ButtonMessage, FocusBehavior, IconButtonWidget, PointerButton, TextWrap, Widget,
+    WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput, WidgetSemantics,
+    WidgetSizing,
 };
 use toybox::clack_extensions::params::HostParams;
 use toybox::clack_plugin::prelude::HostSharedHandle;
@@ -116,6 +119,88 @@ const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
 const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
 const VALUE_LABEL_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.value.0;
+
+#[derive(Clone, Debug)]
+struct ActionIconButtonWidget {
+    button: IconButtonWidget,
+    label: &'static str,
+}
+
+impl ActionIconButtonWidget {
+    fn new(icon: IconName, label: &'static str, width: f32, height: f32) -> Self {
+        Self {
+            button: IconButtonWidget::new(
+                0,
+                icon.icon(),
+                WidgetSizing::fixed(Vector2::new(width, height)),
+            ),
+            label,
+        }
+    }
+}
+
+impl Widget for ActionIconButtonWidget {
+    fn common(&self) -> &WidgetCommon {
+        self.button.common()
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        self.button.common_mut()
+    }
+
+    fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        self.button.handle_input(bounds, input)
+    }
+
+    fn accepts_pointer_move(&self) -> bool {
+        self.button.accepts_pointer_move()
+    }
+
+    fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
+        let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        self.button.synchronize_from_previous(&previous.button);
+    }
+
+    fn capabilities(&self) -> WidgetCapabilities<'_> {
+        WidgetCapabilities::new().semantics(self)
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        self.button.append_paint(primitives, bounds, layout, theme);
+    }
+}
+
+impl WidgetSemantics for ActionIconButtonWidget {
+    fn automation_role(&self) -> AutomationRole {
+        AutomationRole::Button
+    }
+
+    fn automation_label(&self) -> Option<String> {
+        Some(self.label.to_owned())
+    }
+}
+
+fn action_icon_button(
+    icon: IconName,
+    label: &'static str,
+    message: RadiantEditorMessage,
+    width: f32,
+    height: f32,
+) -> ViewNode<RadiantEditorMessage> {
+    custom_widget_mapped(
+        ActionIconButtonWidget::new(icon, label, width, height),
+        move |_: ButtonMessage| message.clone(),
+    )
+    .size(width, height)
+}
 
 fn curve_reference_gutter_width(preview_width: f32) -> f32 {
     CURVE_REFERENCE_GUTTER_WIDTH.min((preview_width - 1.0).max(0.0))
@@ -756,21 +841,41 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         column([
             row([
                 text("PUMP").muted_text().fill_width(),
-                button("<")
-                    .message(RadiantEditorMessage::PresetPrevious)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
-                button(">")
-                    .message(RadiantEditorMessage::PresetNext)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
-                button("F")
-                    .message(RadiantEditorMessage::PresetFavorite)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
-                button("+")
-                    .message(RadiantEditorMessage::PresetAdd)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
-                button("S")
-                    .message(RadiantEditorMessage::PresetSave)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
+                action_icon_button(
+                    IconName::ChevronLeft,
+                    "Previous preset",
+                    RadiantEditorMessage::PresetPrevious,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
+                action_icon_button(
+                    IconName::ChevronRight,
+                    "Next preset",
+                    RadiantEditorMessage::PresetNext,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
+                action_icon_button(
+                    IconName::Favorite,
+                    "Favorite preset",
+                    RadiantEditorMessage::PresetFavorite,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
+                action_icon_button(
+                    IconName::Copy,
+                    "Add preset",
+                    RadiantEditorMessage::PresetAdd,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
+                action_icon_button(
+                    IconName::Pattern,
+                    "Save preset",
+                    RadiantEditorMessage::PresetSave,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
                 text(if params.preset_persistence_warning().is_some() {
                     super::PRESET_WARNING_STORAGE.to_string()
                 } else {
@@ -820,12 +925,20 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             .fill_height(),
             curve_slot_row(state),
             parameter_deck(state, params, depth, floor, output, smooth),
-            button("Undo")
-                .message(RadiantEditorMessage::Undo)
-                .size(64.0, CONTROL_ROW_HEIGHT),
-            button("Redo")
-                .message(RadiantEditorMessage::Redo)
-                .size(64.0, CONTROL_ROW_HEIGHT),
+            action_icon_button(
+                IconName::History,
+                "Undo",
+                RadiantEditorMessage::Undo,
+                64.0,
+                CONTROL_ROW_HEIGHT,
+            ),
+            action_icon_button(
+                IconName::ChevronRight,
+                "Redo",
+                RadiantEditorMessage::Redo,
+                64.0,
+                CONTROL_ROW_HEIGHT,
+            ),
             toggle("Snap", state.snap_enabled)
                 .message(RadiantEditorMessage::ToggleSnap)
                 .size(86.0, CONTROL_ROW_HEIGHT),
@@ -3546,6 +3659,71 @@ mod tests {
             shift_held: false,
             option_held: false,
             command_held: false,
+        }
+    }
+
+    #[test]
+    fn action_icon_buttons_paint_svg_and_expose_button_labels_and_keyboard_activation() {
+        let theme = ThemeTokens::default();
+        let layout = LayoutOutput::default();
+        for (icon, label, width, height) in [
+            (
+                IconName::ChevronLeft,
+                "Previous preset",
+                36.0,
+                BUILD_LABEL_HEIGHT,
+            ),
+            (
+                IconName::ChevronRight,
+                "Next preset",
+                36.0,
+                BUILD_LABEL_HEIGHT,
+            ),
+            (
+                IconName::Favorite,
+                "Favorite preset",
+                36.0,
+                BUILD_LABEL_HEIGHT,
+            ),
+            (IconName::Copy, "Add preset", 36.0, BUILD_LABEL_HEIGHT),
+            (IconName::Pattern, "Save preset", 36.0, BUILD_LABEL_HEIGHT),
+            (IconName::History, "Undo", 64.0, CONTROL_ROW_HEIGHT),
+            (IconName::ChevronRight, "Redo", 64.0, CONTROL_ROW_HEIGHT),
+        ] {
+            let bounds = Rect::from_xy_size(0.0, 0.0, width, height);
+            let mut widget = ActionIconButtonWidget::new(icon, label, width, height);
+            let semantics = widget.automation_semantics();
+            assert_eq!(semantics.role, AutomationRole::Button);
+            assert_eq!(semantics.label.as_deref(), Some(label));
+            assert!(semantics.focusable);
+
+            let mut primitives = Vec::new();
+            widget.append_paint(&mut primitives, bounds, &layout, &theme);
+            assert_eq!(
+                primitives
+                    .iter()
+                    .filter(|primitive| matches!(primitive, PaintPrimitive::Svg(_)))
+                    .count(),
+                1,
+                "{label} must paint one retained SVG"
+            );
+            assert!(
+                primitives
+                    .iter()
+                    .all(|primitive| !matches!(primitive, PaintPrimitive::Text(_))),
+                "{label} must not paint an action text glyph"
+            );
+
+            widget.handle_input(bounds, WidgetInput::FocusChanged(true));
+            for key in [WidgetKey::Enter, WidgetKey::Space] {
+                let output = widget
+                    .handle_input(bounds, WidgetInput::KeyPress(key))
+                    .unwrap_or_else(|| panic!("{label} should activate from {key:?}"));
+                assert_eq!(
+                    output.typed_copied::<ButtonMessage>(),
+                    Some(ButtonMessage::Activate)
+                );
+            }
         }
     }
 
@@ -6512,6 +6690,27 @@ mod tests {
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, PaintPrimitive::Text(text) if text.text == "PUMP")
         }));
+        assert!(
+            frame
+                .paint_plan
+                .primitives
+                .iter()
+                .filter(|primitive| matches!(primitive, PaintPrimitive::Svg(_)))
+                .count()
+                >= 7,
+            "editor action buttons must paint retained SVG icons"
+        );
+        for obsolete_label in ["<", ">", "F", "+", "S", "Undo", "Redo"] {
+            assert!(
+                frame
+                    .paint_plan
+                    .primitives
+                    .iter()
+                    .all(|primitive| !matches!(primitive, PaintPrimitive::Text(text)
+                        if text.text.as_str() == obsolete_label)),
+                "{obsolete_label} must not remain as action text paint"
+            );
+        }
         assert!(frame
             .paint_plan
             .primitives

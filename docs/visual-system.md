@@ -45,6 +45,15 @@ Shared controls use the retained Lucide v0.468 ISC catalog in Radiant: `History`
 `ChevronUp`, `ChevronDown`, `Trigger`, `Pattern`, and `Power`. Icon identity is
 retained SVG identity, never a single-character text approximation.
 
+Pump action buttons map to that catalog with explicit automation labels:
+`PresetPrevious` → `ChevronLeft` ("Previous preset"), `PresetNext` →
+`ChevronRight` ("Next preset"), `PresetFavorite` → `Favorite` ("Favorite
+preset"), `PresetAdd` → `Copy` ("Add preset"), `PresetSave` → `Pattern` ("Save
+preset"), `Undo` → `History` ("Undo"), and `Redo` → `ChevronRight` ("Redo").
+`Copy` is intentional because adding a preset clones the current state, while
+`Pattern` intentionally represents saving the current state into the preset
+bank.
+
 ## Metrics and states
 
 The base unit is 4 px. The spacing scale is 4/8/12/16; surface padding is 12,

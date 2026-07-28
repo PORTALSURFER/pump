@@ -133,7 +133,7 @@ impl GalleryState {
             Self::Hover => "Hover",
             Self::Pressed => "Pressed",
             Self::Selected => "Selected",
-            Self::Disabled => "Disabled",
+            Self::Disabled => "Disabled+sel+auto",
             Self::Focused => "Focused",
             Self::Automation => "Automation active",
             Self::SelectedFocusedAutomation => "Selected+focus+auto",
@@ -149,11 +149,17 @@ impl GalleryState {
     }
 
     fn is_automation(self) -> bool {
-        matches!(self, Self::Automation | Self::SelectedFocusedAutomation)
+        matches!(
+            self,
+            Self::Disabled | Self::Automation | Self::SelectedFocusedAutomation
+        )
     }
 
     fn is_selected(self) -> bool {
-        matches!(self, Self::Selected | Self::SelectedFocusedAutomation)
+        matches!(
+            self,
+            Self::Selected | Self::Disabled | Self::SelectedFocusedAutomation
+        )
     }
 }
 
@@ -389,7 +395,21 @@ fn gallery_button_focus_ring_count(plan: &SurfacePaintPlan, widget_id: u64, boun
         .count()
 }
 
+fn gallery_button_fill_count(plan: &SurfacePaintPlan, widget_id: u64, color: Rgba8) -> usize {
+    plan.primitives
+        .iter()
+        .filter(|primitive| {
+            matches!(primitive, PaintPrimitive::FillPolygon(fill)
+                if fill.widget_id == widget_id && fill.color == color)
+        })
+        .count()
+}
+
 fn assert_component_state_gallery_contract(plan: &SurfacePaintPlan) {
+    let disabled_state = gallery_widget_state(GalleryState::Disabled);
+    assert!(disabled_state.disabled);
+    assert!(disabled_state.selected);
+    assert!(disabled_state.automation_active);
     assert_eq!(
         plan.primitives
             .iter()
@@ -486,6 +506,18 @@ fn assert_component_state_gallery_contract(plan: &SurfacePaintPlan) {
             gallery_vertical_state_marker_count(plan, disabled_id, disabled_bounds, false),
             0,
             "disabled actual-widget cell must suppress automation state markers (row {row})"
+        );
+    }
+    for row in [1, 2] {
+        let disabled_id = gallery_widget_id(row, 4);
+        assert_eq!(
+            gallery_button_fill_count(
+                plan,
+                disabled_id,
+                pump_theme().control_disabled_fill
+            ),
+            1,
+            "disabled selected+automation actual-button cell must paint exactly one disabled chrome fill (row {row})"
         );
     }
     assert_eq!(
