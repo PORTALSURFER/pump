@@ -1,0 +1,80 @@
+name: Pump release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        required: true
+        default: stable
+        type: choice
+        options: [stable, rc, nightly]
+      publish:
+        description: Publish after production signing and notarization
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pump-release-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    environment: production
+    steps:
+      - name: Checkout exact main source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure private git dependencies
+        env:
+          RADIANT_REPO_TOKEN: ${{ secrets.RADIANT_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$RADIANT_REPO_TOKEN"
+          git config --global url."https://x-access-token:${RADIANT_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Checkout pinned VST3 SDK
+        run: |
+          set -euo pipefail
+          git clone https://github.com/steinbergmedia/vst3sdk.git "$RUNNER_TEMP/vst3sdk"
+          git -C "$RUNNER_TEMP/vst3sdk" fetch --depth 1 origin 58f8da7936800732561402d7936584ca4505de07
+          git -C "$RUNNER_TEMP/vst3sdk" checkout --detach 58f8da7936800732561402d7936584ca4505de07
+          echo "VST3_SDK_DIR=$RUNNER_TEMP/vst3sdk" >> "$GITHUB_ENV"
+
+      - name: Produce and optionally publish Pump release
+        env:
+          PORTALSURFER_RELEASE_TOKEN: ${{ inputs.publish && secrets.PORTALSURFER_RELEASE_TOKEN || '' }}
+          APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64 }}
+          APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.publish }}" == true ]]; then
+            bash scripts/release.sh --publish --channel "${{ inputs.channel }}"
+          else
+            bash scripts/release.sh --package-only --channel "${{ inputs.channel }}"
+          fi
+
+      - name: Upload immutable bundle for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: pump-release-${{ inputs.channel }}-${{ github.sha }}
+          path: dist/releases/*
+          if-no-files-found: error
+          retention-days: 3
