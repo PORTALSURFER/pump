@@ -72,6 +72,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         };
         let transport = TransportState {
@@ -96,6 +97,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         };
         let transport = TransportState {

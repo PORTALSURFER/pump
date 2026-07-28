@@ -24,6 +24,8 @@ pub struct DspSettings {
     pub smooth: f32,
     /// Processing mode (`Classic` or `Punch`).
     pub mode: usize,
+    /// Alternating-subdivision swing amount in `[0, 1]`.
+    pub swing: f32,
     /// Whether complete Pump output should crossfade to original dry unity.
     pub bypassed: bool,
 }
@@ -168,6 +170,7 @@ pub struct PumpEngine {
     depth_db: OnePole,
     floor_db: OnePole,
     phase_offset: OnePole,
+    swing: OnePole,
     output_gain_db: OnePole,
     mode_blend: OnePole,
     wet_gain_smoother: GainSmoother,
@@ -203,6 +206,7 @@ impl PumpEngine {
             depth_db: OnePole::new(120.0, sample_rate, 0.01),
             floor_db: OnePole::new(-60.0, sample_rate, 0.01),
             phase_offset: OnePole::new(0.0, sample_rate, 0.01),
+            swing: OnePole::new(0.0, sample_rate, 0.01),
             output_gain_db: OnePole::new(0.0, sample_rate, 0.01),
             mode_blend: OnePole::new(0.0, sample_rate, 0.01),
             wet_gain_smoother: GainSmoother::new(1.0),
@@ -295,16 +299,21 @@ impl PumpEngine {
         let phase_offset = self
             .phase_offset
             .next(settings.phase_offset.rem_euclid(1.0).clamp(0.0, 1.0));
+        let swing = self.swing.next(if settings.swing.is_finite() {
+            settings.swing.clamp(0.0, 1.0)
+        } else {
+            0.0
+        });
         let output_gain_db = self
             .output_gain_db
             .next(settings.output_gain_db.clamp(-60.0, 24.0));
 
-        let phase = if sidechain_active {
+        let raw_phase = if sidechain_active {
             if sidechain_trigger {
                 self.sidechain_phase = 0.0;
                 self.sidechain_running = true;
             }
-            let phase = (self.sidechain_phase + phase_offset).rem_euclid(1.0);
+            let phase = self.sidechain_phase.rem_euclid(1.0);
             if self.sidechain_running {
                 let beat_increment = transport.tempo_bpm.clamp(20.0, 320.0)
                     / (self.clock_sample_rate() * 60.0 * settings.beats_per_cycle.max(1.0e-4));
@@ -312,7 +321,19 @@ impl PumpEngine {
             }
             phase
         } else {
-            frame.phase_for_cycle(settings.beats_per_cycle, phase_offset)
+            frame.phase_for_cycle(settings.beats_per_cycle, 0.0)
+        };
+        // Keep the zero-swing path byte-for-byte compatible with the legacy
+        // phase calculation. Non-zero swing warps the cyclic phase first and
+        // then applies phase offset as a pure cyclic translation.
+        let phase = if swing <= 0.0 {
+            if sidechain_active {
+                (raw_phase + phase_offset).rem_euclid(1.0)
+            } else {
+                frame.phase_for_cycle(settings.beats_per_cycle, phase_offset)
+            }
+        } else {
+            (swing_warp_phase(raw_phase, swing) + phase_offset).rem_euclid(1.0)
         };
         let shape = self.sample_active_curve(phase);
         let mode_target = if settings.mode == crate::params::PROCESSING_MODE_PUNCH {
@@ -393,6 +414,25 @@ fn resolve_effective_transport(transport: TransportState) -> TransportState {
         }
     } else {
         transport
+    }
+}
+
+/// Warp a normalized cycle phase for alternating-subdivision swing.
+///
+/// A value of zero is an exact identity. At one, the logical cycle midpoint
+/// occurs at 2/3 of the elapsed cycle (a 2:1 triplet feel); the second half is
+/// compressed so the cycle still ends at phase one.
+pub fn swing_warp_phase(phase: f32, swing: f32) -> f32 {
+    if !phase.is_finite() || !swing.is_finite() || swing <= 0.0 {
+        return phase;
+    }
+    let phase = phase.rem_euclid(1.0);
+    let swing = swing.clamp(0.0, 1.0);
+    let midpoint = 0.5 + swing / 6.0;
+    if phase <= midpoint {
+        phase * 0.5 / midpoint
+    } else {
+        0.5 + (phase - midpoint) * 0.5 / (1.0 - midpoint)
     }
 }
 
@@ -559,6 +599,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         };
 
@@ -600,6 +641,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         };
         let punch = DspSettings {
@@ -648,6 +690,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed,
         }
     }
@@ -773,6 +816,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         };
         let transport = TransportState {
@@ -807,6 +851,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         };
 
@@ -855,6 +900,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: amount,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         }
     }
@@ -1065,6 +1111,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         };
         let transport = TransportState {
@@ -1100,6 +1147,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         };
         let transport = TransportState {
@@ -1128,6 +1176,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
             bypassed: false,
         };
         let transport = TransportState {
@@ -1161,5 +1210,13 @@ mod tests {
             assert!(!detector.process(0.0, 0.0));
         }
         assert!(!detector.process(f32::NAN, f32::NAN));
+    }
+
+    #[test]
+    fn swing_warp_is_identity_at_zero_and_triplet_at_full() {
+        assert_eq!(super::swing_warp_phase(0.5, 0.0), 0.5);
+        assert!((super::swing_warp_phase(0.5, 1.0) - 0.375).abs() < 1.0e-6);
+        assert!((super::swing_warp_phase(2.0 / 3.0, 1.0) - 0.5).abs() < 1.0e-6);
+        assert!((super::swing_warp_phase(1.0, 1.0) - 0.0).abs() < 1.0e-6);
     }
 }

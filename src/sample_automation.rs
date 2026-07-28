@@ -145,6 +145,7 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         trigger_mode: params.trigger_mode(),
         smooth: params.smooth(),
         mode: params.mode(),
+        swing: params.swing(),
         bypassed: params.bypassed(),
     }
 }
@@ -351,8 +352,9 @@ mod tests {
     use crate::incoming_waveform::IncomingWaveformWriter;
     use crate::params::{
         PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID,
-        PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SYNC_DIVISION_ID,
-        PARAM_TRIGGER_MODE_ID, PROCESSING_MODE_PUNCH, TRIGGER_MODE_SIDECHAIN,
+        PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SWING_ID,
+        PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID, PROCESSING_MODE_PUNCH,
+        TRIGGER_MODE_SIDECHAIN,
     };
 
     fn constant_curve(value: f32) -> [f32; CURVE_TABLE_LEN] {
@@ -566,6 +568,7 @@ mod tests {
         schedule.push(7, PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_SIDECHAIN as f32);
         schedule.push(7, PARAM_SMOOTH_ID, 0.75);
         schedule.push(7, PARAM_MODE_ID, PROCESSING_MODE_PUNCH as f32);
+        schedule.push(7, PARAM_SWING_ID, 0.8);
         schedule.push(7, PARAM_BYPASS_ID, 1.0);
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
@@ -592,6 +595,7 @@ mod tests {
         assert_eq!(settings.trigger_mode, TRIGGER_MODE_SIDECHAIN);
         assert!((settings.smooth - 0.75).abs() < f32::EPSILON);
         assert_eq!(settings.mode, PROCESSING_MODE_PUNCH);
+        assert!((settings.swing - 0.8).abs() < f32::EPSILON);
         assert!(settings.bypassed);
     }
 

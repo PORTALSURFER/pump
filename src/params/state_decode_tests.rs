@@ -73,6 +73,17 @@ fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
 
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 13 {
+        // Swing was added only to the top-level active state in v13.
+        payload.truncate(payload.len().saturating_sub(4));
+        // Swing was also added once per preset; remove it from each encoded
+        // preset before applying the older-version field removals below.
+        let preset_count = read_u32(&payload, first_preset_start(&payload) - 4) as usize;
+        for _ in 0..preset_count {
+            let swing_offset = payload.len().saturating_sub(4);
+            payload.truncate(swing_offset);
+        }
+    }
     if version < 12 {
         // Host bypass was added only to the top-level active state in v12.
         payload.truncate(payload.len().saturating_sub(4));
@@ -123,7 +134,7 @@ fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
             let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
             payload.truncate(quick_slot_offset);
         }
-        5..=11 => {}
+        5..=12 => {}
         _ => panic!("unsupported test state version"),
     }
     payload
@@ -170,7 +181,7 @@ fn decode_v11_state_migrates_bypass_to_active() {
 fn decode_rejects_malformed_v12_bypass_without_mutating_state() {
     let params = sample_params();
     params.set_bypass(1.0);
-    let mut payload = encode_state_payload(&params);
+    let mut payload = payload_for_state_version(&params, 12);
     payload.truncate(payload.len().saturating_sub(2));
     assert_decode_error_preserves_state(&params, &payload, "invalid bypass field");
 }

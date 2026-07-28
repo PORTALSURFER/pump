@@ -105,3 +105,6 @@ use preallocated audio-thread state and do not block, log, or allocate.
 - If the transport indicator never lights:
   - Start host playback.
   - Confirm the plugin build includes transport telemetry propagation from the processor to GUI status.
+
+Timing controls are documented in [docs/swing.md](docs/swing.md), including the
+host-automatable Swing mapping.
