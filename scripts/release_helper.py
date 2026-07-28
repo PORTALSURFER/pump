@@ -6,10 +6,14 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
+import platform
 import struct
 import re
+import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -215,22 +219,17 @@ def _request(url: str, method: str, body: Optional[bytes], headers: dict[str, st
 Transport = Callable[[str, str, Optional[bytes], dict[str, str]], tuple[int, bytes]]
 
 
-def publish_manifest(
+def _publish_validated_manifest(
     *,
     endpoint: str,
     token: str,
     manifest: dict[str, Any],
     root: Path,
-    transport: Optional[Transport] = None,
+    transport: Transport,
 ) -> None:
-    """Capability-check, stage four bytes, and commit one immutable manifest."""
-    if not token:
-        raise ValueError("PORTALSURFER_RELEASE_TOKEN is required for --publish")
-    if endpoint != PRODUCTION_ORIGIN:
-        raise ValueError(f"production publishing requires exact origin {PRODUCTION_ORIGIN}")
-    validate_publish_manifest(manifest, root)
-    request = transport or _request
-    base = PRODUCTION_ORIGIN
+    """Publish a manifest after the caller has completed all local validation."""
+    request = transport
+    base = endpoint
     status, payload = request(f"{base}/plugins/api/v1/products/pump/releases", "GET", None, {"Accept": "application/json"})
     if status < 200 or status >= 300:
         raise RuntimeError(f"capability check failed ({status})")
@@ -283,6 +282,150 @@ def publish_manifest(
         body,
         commit_headers,
     )
+
+
+def _run_checked(args: Sequence[str], *, cwd: Path, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            list(args),
+            cwd=str(cwd),
+            check=True,
+            capture_output=capture_output,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(f"required release command is unavailable: {args[0]}") from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "").strip()
+        raise ValueError(f"release command failed: {' '.join(args)}{': ' + detail if detail else ''}") from error
+
+
+def _repo_output(args: Sequence[str], repo_root: Path) -> str:
+    return _run_checked(args, cwd=repo_root, capture_output=True).stdout.strip()
+
+
+def _validate_canonical_source(manifest: dict[str, Any], repo_root: Path) -> None:
+    try:
+        branch = _repo_output(("git", "symbolic-ref", "--quiet", "--short", "HEAD"), repo_root)
+    except ValueError:
+        branch = ""
+    if not branch:
+        raise ValueError("production publishing requires a non-detached checkout")
+    if _repo_output(("git", "status", "--porcelain", "--untracked-files=all"), repo_root):
+        raise ValueError("production release source must be clean")
+    _run_checked(("git", "fetch", "origin", "main", "--quiet"), cwd=repo_root)
+    head = _repo_output(("git", "rev-parse", "HEAD"), repo_root)
+    canonical_main = _repo_output(("git", "rev-parse", "refs/remotes/origin/main"), repo_root)
+    source_sha = manifest["source"]["git_sha"]
+    if head != source_sha or canonical_main != source_sha:
+        raise ValueError("production release source must match HEAD, origin/main, and manifest source SHA")
+
+
+def _assert_no_symlinks(path: Path) -> None:
+    if path.is_symlink():
+        raise ValueError(f"release ZIP contains an unexpected symlink: {path.name}")
+
+
+def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path) -> None:
+    if platform.system() != "Darwin":
+        raise ValueError("production ZIP audits require macOS")
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"release ZIP is not a regular file: {path.name}")
+    with tempfile.TemporaryDirectory(prefix="pump-release-audit-") as temporary:
+        extracted = Path(temporary)
+        _run_checked(("/usr/bin/ditto", "-x", "-k", str(path), str(extracted)), cwd=cwd)
+        bundle = extracted / f"pump.{format_name}"
+        contents = bundle / "Contents"
+        required = {
+            bundle,
+            contents,
+            contents / "Info.plist",
+            contents / "PkgInfo",
+            contents / "MacOS",
+            contents / "MacOS" / "pump",
+        }
+        allowed = required | {contents / "_CodeSignature", contents / "_CodeSignature" / "CodeResources"}
+        if not bundle.is_dir() or not contents.is_dir():
+            raise ValueError(f"{format_name} ZIP bundle layout is invalid")
+        for current, directories, files in os.walk(extracted, followlinks=False):
+            current_path = Path(current)
+            _assert_no_symlinks(current_path)
+            for name in directories + files:
+                child = current_path / name
+                _assert_no_symlinks(child)
+                if child not in allowed:
+                    raise ValueError(f"{format_name} ZIP contains unexpected topology: {child.relative_to(extracted)}")
+        if not all(p.exists() for p in required) or not (contents / "MacOS" / "pump").is_file() or not os.access(contents / "MacOS" / "pump", os.X_OK):
+            raise ValueError(f"{format_name} ZIP bundle layout is invalid")
+        info = contents / "Info.plist"
+        binary = contents / "MacOS" / "pump"
+        _run_checked(("/usr/bin/plutil", "-lint", str(info)), cwd=cwd)
+        identifier = _run_checked(("/usr/bin/plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", str(info)), cwd=cwd, capture_output=True).stdout.strip()
+        if identifier != f"com.portalsurfer.pump.{format_name}":
+            raise ValueError(f"{format_name} ZIP bundle identifier is invalid")
+        package_type = _run_checked(("/usr/bin/plutil", "-extract", "CFBundlePackageType", "raw", "-o", "-", str(info)), cwd=cwd, capture_output=True).stdout.strip()
+        if package_type != "BNDL":
+            raise ValueError(f"{format_name} ZIP package type is invalid")
+        _run_checked(("codesign", "--verify", "--deep", "--strict", str(bundle)), cwd=cwd)
+        details = _run_checked(("codesign", "-dv", "--verbose=4", str(bundle)), cwd=cwd, capture_output=True)
+        signing_details = f"{details.stdout}\n{details.stderr}"
+        if not any(line.startswith("Authority=Developer ID Application:") for line in signing_details.splitlines()):
+            raise ValueError(f"{format_name} ZIP is not signed by a Developer ID Application authority")
+        team_ids = [line.removeprefix("TeamIdentifier=") for line in signing_details.splitlines() if line.startswith("TeamIdentifier=")]
+        if team_ids != [expected_team]:
+            raise ValueError(f"{format_name} ZIP Developer ID signing team does not match manifest")
+        _run_checked(("xcrun", "stapler", "validate", str(bundle)), cwd=cwd)
+        _run_checked(("spctl", "--assess", "--type", "execute", "--verbose=2", str(bundle)), cwd=cwd)
+        architectures = _run_checked(("lipo", "-archs", str(binary)), cwd=cwd, capture_output=True).stdout.strip()
+        if architectures != "arm64":
+            raise ValueError(f"{format_name} ZIP binary must contain exactly arm64")
+        symbols = _run_checked(("/usr/bin/nm", "-gU", str(binary)), cwd=cwd, capture_output=True).stdout
+        required_symbols = ("_clap_entry",) if format_name == "clap" else ("_GetPluginFactory", "_bundleEntry", "_bundleExit")
+        if any(symbol not in symbols for symbol in required_symbols):
+            raise ValueError(f"{format_name} ZIP required export is missing")
+
+
+def _validate_exact_manifest_names(manifest: dict[str, Any]) -> None:
+    expected = {"clap": f"pump-v{manifest['version']}-macos.clap.zip", "vst3": f"pump-v{manifest['version']}-macos.vst3.zip"}
+    actual = {artifact["format"]: artifact["name"] for artifact in manifest["artifacts"]}
+    if actual != expected:
+        raise ValueError("manifest artifact names do not match the exact Pump ZIP contract")
+    if manifest["screenshot"]["role"] != "default-ui" or manifest["screenshot"]["name"] != "pump-default-912x684.png" or manifest["changelog"]["name"] != "CHANGELOG.md":
+        raise ValueError("manifest support-file roles or names do not match the Pump release contract")
+
+
+def publish_release(*, endpoint: str, token: str, manifest_path: Path, root: Optional[Path] = None, repo_root: Optional[Path] = None) -> None:
+    """Validate and publish one production Pump manifest through the real request path."""
+    if endpoint != PRODUCTION_ORIGIN:
+        raise ValueError(f"production publishing requires exact origin {PRODUCTION_ORIGIN}")
+    if not token:
+        raise ValueError("PORTALSURFER_RELEASE_TOKEN is required for --publish")
+    manifest_path = Path(manifest_path)
+    artifact_root = Path(root) if root is not None else manifest_path.parent
+    source_root = Path(repo_root) if repo_root is not None else Path.cwd()
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("release manifest must be a regular file")
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"could not load release manifest: {manifest_path}") from error
+    if not isinstance(manifest, dict) or canonical_json(manifest) != manifest_bytes:
+        raise ValueError("release manifest is not canonical JSON")
+    validate_publish_manifest(manifest, artifact_root)
+    _validate_exact_manifest_names(manifest)
+    _validate_canonical_source(manifest, source_root)
+    expected_team = manifest["signing"]["team_id"]
+    for artifact in manifest["artifacts"]:
+        _audit_zip(artifact_root / artifact["name"], artifact["format"], expected_team, cwd=source_root)
+    for entry in [*manifest["artifacts"], manifest["screenshot"], manifest["changelog"]]:
+        path = artifact_root / entry["name"]
+        if path.is_symlink():
+            raise ValueError(f"release file must not be a symlink: {entry['name']}")
+        digest, size = file_digest(path)
+        if digest != entry["sha256"] or size != entry["size_bytes"]:
+            raise ValueError(f"release bytes changed after ZIP audit: {entry['name']}")
+    _publish_validated_manifest(endpoint=endpoint, token=token, manifest=manifest, root=artifact_root, transport=_request)
 
 
 def validate_publish_manifest(manifest: dict[str, Any], root: Path) -> None:

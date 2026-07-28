@@ -269,48 +269,21 @@ manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys
 PY
 
 if [[ "${mode}" == publish ]]; then
-  echo "[release] final audit of exact publish bytes"
-  audit_zip clap "${release_dir}/pump-v${version}-macos.clap.zip" "${signing_team_id}"
-  audit_zip vst3 "${release_dir}/pump-v${version}-macos.vst3.zip" "${signing_team_id}"
-  python3 - "${release_dir}" "${version}" "${git_sha}" "${signing_team_id}" <<'PY'
-import json
-import pathlib
-import sys
-
-sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
-from release_helper import validate_publish_manifest
-
-root = pathlib.Path(sys.argv[1])
-version, git_sha, signing_team = sys.argv[2:]
-manifest = json.loads((root / "release-manifest.json").read_text(encoding="utf-8"))
-expected_names = {
-    "clap": f"pump-v{version}-macos.clap.zip",
-    "vst3": f"pump-v{version}-macos.vst3.zip",
-}
-actual_names = {artifact.get("format"): artifact.get("name") for artifact in manifest.get("artifacts", [])}
-if actual_names != expected_names:
-    raise ValueError("manifest artifact names do not match the exact audited ZIPs")
-if manifest.get("screenshot", {}).get("name") != "pump-default-912x684.png" or manifest.get("changelog", {}).get("name") != "CHANGELOG.md":
-    raise ValueError("manifest support-file names do not match the release bundle")
-if manifest.get("source", {}).get("git_sha") != git_sha or manifest.get("signing", {}).get("team_id") != signing_team:
-    raise ValueError("manifest provenance does not match the audited source")
-validate_publish_manifest(manifest, root)
-PY
   python3 - "${release_dir}" "${endpoint}" <<'PY'
-import json
 import os
 import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
-from release_helper import publish_manifest
+from release_helper import publish_release
 
 root = pathlib.Path(sys.argv[1])
-publish_manifest(
+publish_release(
     endpoint=sys.argv[2],
     token=os.environ.get("PORTALSURFER_RELEASE_TOKEN", ""),
-    manifest=json.loads((root / "release-manifest.json").read_text(encoding="utf-8")),
+    manifest_path=root / "release-manifest.json",
     root=root,
+    repo_root=pathlib.Path.cwd(),
 )
 PY
 fi
