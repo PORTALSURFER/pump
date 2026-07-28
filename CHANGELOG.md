@@ -334,6 +334,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (362c980)
 
+- (changelog) Update changelog [skip ci] (d5076b5)
+
 
 ### Features
 
@@ -1149,6 +1151,14 @@ OPT-1291: Keep the input waveform always on (ffa3201)
 - Merge pull request #36 from PORTALSURFER/wsvasek/opt-1122-pump-redesign-rebuild-the-responsive-editor-layout-shell
 
 OPT-1122 Rebuild responsive Radiant editor layout shell (0985c1c)
+
+- Define Pump dark coral visual system (cba5f5a)
+
+- Use retained icons for Pump actions (17fecc4)
+
+- Merge pull request #37 from PORTALSURFER/wsvasek/opt-1121-pump-redesign-define-the-dark-coral-visual-system-and-shared
+
+OPT-1121 Define the Pump dark coral visual system (d667b42)
 
 
 ### Refactoring
