@@ -71,17 +71,53 @@ fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
     node_count_offset + 4 + curve_bytes
 }
 
+fn skip_encoded_curve(payload: &[u8], mut offset: usize, with_phase_metadata: bool) -> usize {
+    let node_count = read_u32(payload, offset) as usize;
+    offset += 4 + node_count * 8 + node_count.saturating_sub(1) * 4;
+    if with_phase_metadata && read_u32(payload, offset) == u32::from_le_bytes(*b"PHAS") {
+        offset += 8;
+        let source_node_count = read_u32(payload, offset) as usize;
+        offset += 4 + source_node_count * 8 + source_node_count.saturating_sub(1) * 4;
+    }
+    offset
+}
+
+fn preset_swing_offsets(payload: &[u8]) -> Vec<usize> {
+    let mut offset = first_preset_start(payload);
+    let preset_count = read_u32(payload, offset - 4) as usize;
+    let mut swing_offsets = Vec::with_capacity(preset_count);
+
+    for _ in 0..preset_count {
+        let name_len = read_u32(payload, offset) as usize;
+        offset += 4 + name_len + 6 * 4 + 1;
+        offset = skip_encoded_curve(payload, offset, true);
+
+        let quick_slot_count = read_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_slot_count {
+            offset = skip_encoded_curve(payload, offset, true);
+        }
+
+        // Trigger, smooth, processing mode, favorite, then Swing.
+        offset += 4 + 4 + 4 + 1;
+        swing_offsets.push(offset);
+        offset += 4;
+    }
+
+    debug_assert_eq!(offset + 20, payload.len());
+    swing_offsets
+}
+
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
     if version < 13 {
-        // Swing was added only to the top-level active state in v13.
+        // Swing was added to the top-level active state and each preset in v13.
+        let preset_swing_offsets = preset_swing_offsets(&payload);
+        // The trailing field is the active-state Swing; remove it separately
+        // from the variable-length preset records.
         payload.truncate(payload.len().saturating_sub(4));
-        // Swing was also added once per preset; remove it from each encoded
-        // preset before applying the older-version field removals below.
-        let preset_count = read_u32(&payload, first_preset_start(&payload) - 4) as usize;
-        for _ in 0..preset_count {
-            let swing_offset = payload.len().saturating_sub(4);
-            payload.truncate(swing_offset);
+        for swing_offset in preset_swing_offsets.into_iter().rev() {
+            payload.drain(swing_offset..swing_offset + 4);
         }
     }
     if version < 12 {
@@ -184,6 +220,44 @@ fn decode_rejects_malformed_v12_bypass_without_mutating_state() {
     let mut payload = payload_for_state_version(&params, 12);
     payload.truncate(payload.len().saturating_sub(2));
     assert_decode_error_preserves_state(&params, &payload, "invalid bypass field");
+}
+
+#[test]
+fn decode_v12_preserves_controls_and_defaults_swing() {
+    let source = sample_params();
+    source.set_trigger_mode(super::TRIGGER_MODE_SIDECHAIN as f32);
+    source.set_smooth(0.67);
+    source.set_mode(super::PROCESSING_MODE_PUNCH as f32);
+    source.set_bypass(1.0);
+    source.set_swing(0.42);
+
+    let mut bank = source.preset_bank_snapshot();
+    for preset in &mut bank.presets {
+        preset.trigger_mode = super::TRIGGER_MODE_SIDECHAIN;
+        preset.smooth = 0.67;
+        preset.mode = super::PROCESSING_MODE_PUNCH;
+        preset.swing = 0.42;
+    }
+    source.set_preset_bank_without_persistence(bank);
+
+    let payload = payload_for_state_version(&source, 12);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("v12 state should decode");
+
+    assert_eq!(restored.trigger_mode(), super::TRIGGER_MODE_SIDECHAIN);
+    assert!((restored.smooth() - 0.67).abs() < 1.0e-6);
+    assert_eq!(restored.mode(), super::PROCESSING_MODE_PUNCH);
+    assert!(restored.bypassed());
+    assert_eq!(restored.swing(), super::DEFAULT_SWING);
+
+    let bank = restored.preset_bank_snapshot();
+    assert!(!bank.presets.is_empty());
+    for preset in bank.presets {
+        assert_eq!(preset.trigger_mode, super::TRIGGER_MODE_SIDECHAIN);
+        assert!((preset.smooth - 0.67).abs() < 1.0e-6);
+        assert_eq!(preset.mode, super::PROCESSING_MODE_PUNCH);
+        assert_eq!(preset.swing, super::DEFAULT_SWING);
+    }
 }
 
 #[test]

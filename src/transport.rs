@@ -1,6 +1,6 @@
 //! Shared transport-phase helpers used by both CLAP and VST3 paths.
 
-use crate::dsp::DspSettings;
+use crate::dsp::{swing_warp_phase, DspSettings};
 use crate::GuiTransportTelemetry;
 use toybox::dsp::{phase_from_beats, TransportState};
 
@@ -15,7 +15,16 @@ pub(crate) fn gui_phase_from_transport(
 ) -> f32 {
     transport
         .song_pos_beats
-        .map(|beats| phase_from_beats(beats, settings.beats_per_cycle, settings.phase_offset))
+        .map(|beats| {
+            if settings.swing <= 0.0 {
+                // Preserve the legacy host-timeline phase calculation exactly.
+                phase_from_beats(beats, settings.beats_per_cycle, settings.phase_offset)
+            } else {
+                let raw_phase = phase_from_beats(beats, settings.beats_per_cycle, 0.0);
+                (swing_warp_phase(raw_phase, settings.swing) + settings.phase_offset)
+                    .rem_euclid(1.0)
+            }
+        })
         .unwrap_or_else(|| fallback_phase.rem_euclid(1.0))
 }
 
@@ -52,7 +61,7 @@ pub(crate) fn gui_transport_telemetry(
 
 #[cfg(test)]
 mod tests {
-    use crate::dsp::DspSettings;
+    use crate::dsp::{swing_warp_phase, DspSettings};
     use toybox::dsp::{phase_from_beats, TransportState};
 
     use super::{
@@ -83,6 +92,34 @@ mod tests {
         let expected = phase_from_beats(9.5, settings.beats_per_cycle, settings.phase_offset);
         let resolved = gui_phase_from_transport(transport, settings, 0.75);
         assert!((resolved - expected).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gui_phase_from_transport_warps_raw_host_phase_before_offset() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.2,
+            output_gain_db: 0.0,
+            beats_per_cycle: 4.0,
+            trigger_mode: crate::params::TRIGGER_MODE_HOST,
+            smooth: 0.0,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 1.0,
+            bypassed: false,
+        };
+        let transport = TransportState {
+            tempo_bpm: 128.0,
+            is_playing: true,
+            song_pos_beats: Some(2.0),
+        };
+        let raw_phase = phase_from_beats(2.0, settings.beats_per_cycle, 0.0);
+        let expected =
+            (swing_warp_phase(raw_phase, settings.swing) + settings.phase_offset).rem_euclid(1.0);
+        let resolved = gui_phase_from_transport(transport, settings, 0.75);
+        assert!((resolved - expected).abs() < 1.0e-6);
+        assert!((resolved - 0.575).abs() < 1.0e-6);
     }
 
     #[test]
