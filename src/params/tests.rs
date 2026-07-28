@@ -18,6 +18,7 @@ use crate::curve::{
 };
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use toybox::clack_extensions::params::ParamInfoFlags;
 fn temp_preset_store_path(label: &str) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -69,7 +70,7 @@ fn sync_division_clamping_is_bounded() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 9);
+    assert_eq!(super::param_count(), 10);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -104,6 +105,10 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     assert_eq!(super::get_param_value(&params, PARAM_MIX_ID), Some(1.0));
     assert_eq!(super::get_param_value(&params, PARAM_SMOOTH_ID), Some(0.0));
     assert_eq!(super::get_param_value(&params, PARAM_MODE_ID), Some(0.0));
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_BYPASS_ID),
+        Some(0.0)
+    );
     super::apply_param_event(&params, PARAM_SMOOTH_ID, 0.67);
     assert!((params.smooth() - 0.67).abs() < f32::EPSILON);
     assert_eq!(
@@ -128,6 +133,33 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
         super::get_param_value(&params, PARAM_OUTPUT_GAIN_ID),
         Some(0.0)
     );
+    assert_eq!(
+        super::format_plain_value_text(super::PARAM_BYPASS_ID, 0.0),
+        Some("ACTIVE".into())
+    );
+    assert_eq!(
+        super::format_plain_value_text(super::PARAM_BYPASS_ID, 1.0),
+        Some("BYPASSED".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_BYPASS_ID, "bypassed"),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
+    assert_eq!(super::param_count(), 10);
+    let flags = super::param_flags_for_index(9).expect("bypass metadata should exist");
+    assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
+    assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
+    assert!(flags.contains(ParamInfoFlags::IS_BYPASS));
+    assert!(!flags.contains(ParamInfoFlags::IS_ENUM));
+    let params = PumpParams::new();
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_BYPASS_ID),
+        Some(0.0)
+    );
 }
 
 #[test]
@@ -142,6 +174,7 @@ fn state_roundtrip_preserves_values() {
     params.set_sync_division(6.0);
     params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
     params.set_mode(PROCESSING_MODE_PUNCH as f32);
+    params.set_bypass(1.0);
     params
         .save_current_state_by_name("Init")
         .expect("preset snapshot should save");
@@ -174,6 +207,7 @@ fn state_roundtrip_preserves_values() {
     assert_eq!(restored.sync_division(), 6);
     assert_eq!(restored.trigger_mode(), TRIGGER_MODE_SIDECHAIN);
     assert_eq!(restored.mode(), PROCESSING_MODE_PUNCH);
+    assert!(restored.bypassed());
     assert!((restored.preset_bank_snapshot().presets[0].smooth - 0.67).abs() < 1.0e-6);
     assert_eq!(
         restored.preset_bank_snapshot().presets[0].mode,
@@ -185,13 +219,39 @@ fn state_roundtrip_preserves_values() {
 }
 
 #[test]
+fn bypass_is_top_level_state_but_never_part_of_preset_load_or_save() {
+    let params = PumpParams::new();
+    params.set_bypass(1.0);
+    params
+        .add_preset_from_current_state()
+        .expect("preset insertion should succeed");
+    params.set_bypass(0.0);
+    params.load_preset(1).expect("preset should load");
+    assert!(!params.bypassed(), "preset load must not restore bypass");
+
+    params.set_bypass(1.0);
+    params
+        .save_current_state_by_name("Init")
+        .expect("preset save should succeed");
+    params.set_bypass(0.0);
+    params.load_preset(0).expect("saved preset should load");
+    assert!(!params.bypassed(), "preset save must not capture bypass");
+
+    params.set_bypass(1.0);
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("project state should decode");
+    assert!(restored.bypassed(), "project state must restore bypass");
+}
+
+#[test]
 fn unsupported_processing_mode_falls_back_to_classic() {
     for unsupported in [99.0_f32, 0.6_f32] {
         let params = PumpParams::new();
         params.set_mode(PROCESSING_MODE_PUNCH as f32);
         let mut payload = encode_state_payload(&params);
-        let mode_offset = payload.len() - 4;
-        payload[mode_offset..].copy_from_slice(&unsupported.to_le_bytes());
+        let mode_offset = payload.len() - 8;
+        payload[mode_offset..mode_offset + 4].copy_from_slice(&unsupported.to_le_bytes());
 
         let restored = PumpParams::new();
         decode_state_payload(&restored, &payload).expect("unknown mode should be recoverable");
@@ -862,6 +922,11 @@ fn vst3_info_and_text_conversions_share_param_rules() {
     assert_eq!(smooth_info.id, PARAM_SMOOTH_NUM);
     let mode_info = vst3_param_info_for_index(8).expect("mode info should exist");
     assert_eq!(mode_info.id, PARAM_MODE_NUM);
+    let bypass_info = vst3_param_info_for_index(9).expect("bypass info should exist");
+    assert_eq!(bypass_info.id, super::PARAM_BYPASS_NUM);
+    assert_eq!(bypass_info.step_count, 1);
+    assert_eq!(bypass_info.default_normalized, 0.0);
+    assert!(bypass_info.is_bypass);
     assert_eq!(smooth_info.title, "Smooth");
     assert_eq!(smooth_info.units, "%");
 

@@ -14,6 +14,9 @@ impl PumpParams {
             trigger_mode: AtomicU32::new(DEFAULT_TRIGGER_MODE as u32),
             smooth: AtomicF32::new(DEFAULT_SMOOTH),
             mode: AtomicU32::new(PROCESSING_MODE_CLASSIC as u32),
+            bypass: AtomicBool::new(false),
+            bypass_revision: AtomicU32::new(1),
+            bypass_last_automation_micros: AtomicU64::new(0),
             editable_curve: RwLock::new(editable_curve),
             curve: std::array::from_fn(|index| AtomicF32::new(default_curve[index])),
             curve_revision: AtomicU32::new(1),
@@ -83,6 +86,33 @@ impl PumpParams {
     /// Get the selected processing mode, falling back to Classic for unknown values.
     pub fn mode(&self) -> usize {
         clamp_processing_mode(self.mode.load(Ordering::Relaxed) as f32)
+    }
+
+    /// Return whether complete Pump output is currently bypassed.
+    pub fn bypassed(&self) -> bool {
+        self.bypass.load(Ordering::Relaxed)
+    }
+
+    /// Return the bypass value in its plain host representation.
+    pub fn bypass_value(&self) -> f32 {
+        if self.bypassed() {
+            BYPASS_BYPASSED_VALUE
+        } else {
+            BYPASS_ACTIVE_VALUE
+        }
+    }
+
+    /// Read the bypass projection revision used by hosted editors.
+    pub fn bypass_revision(&self) -> u32 {
+        self.bypass_revision.load(Ordering::Acquire)
+    }
+
+    /// Return whether host bypass automation was observed in the last 250 ms.
+    pub fn bypass_automation_recent(&self) -> bool {
+        let last = self.bypass_last_automation_micros.load(Ordering::Acquire);
+        last != 0
+            && crate::time_utils::monotonic_micros().saturating_sub(last)
+                < BYPASS_AUTOMATION_CUE_MICROS
     }
 
     /// Set dry/wet mix amount.
@@ -165,6 +195,23 @@ impl PumpParams {
     pub fn set_mode(&self, value: f32) {
         self.mode
             .store(clamp_processing_mode(value) as u32, Ordering::Relaxed);
+    }
+
+    /// Set bypass from its stepped plain host value.
+    pub fn set_bypass(&self, value: f32) {
+        let bypassed = value.is_finite() && value.round() >= BYPASS_BYPASSED_VALUE;
+        if self.bypass.swap(bypassed, Ordering::AcqRel) != bypassed {
+            self.bypass_revision.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// Set bypass from host automation and publish the GUI automation cue.
+    pub(crate) fn set_bypass_from_host(&self, value: f32) {
+        self.set_bypass(value);
+        self.bypass_last_automation_micros.store(
+            crate::time_utils::monotonic_micros().max(1),
+            Ordering::Release,
+        );
     }
 
     /// Read the current curve revision counter.

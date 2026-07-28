@@ -8,7 +8,6 @@ use std::ptr;
 use std::slice;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use toybox::clap::automation::AutomationQueue;
 use toybox::vst3::prelude::Steinberg::*;
 use toybox::vst3::prelude::*;
 

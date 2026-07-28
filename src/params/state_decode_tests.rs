@@ -73,6 +73,10 @@ fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
 
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 12 {
+        // Host bypass was added only to the top-level active state in v12.
+        payload.truncate(payload.len().saturating_sub(4));
+    }
     if version < 11 {
         // Processing mode was added in v11, once in the active record and
         // once per preset.
@@ -119,7 +123,7 @@ fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
             let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
             payload.truncate(quick_slot_offset);
         }
-        5..=7 => {}
+        5..=11 => {}
         _ => panic!("unsupported test state version"),
     }
     payload
@@ -148,6 +152,27 @@ fn decode_v7_state_migrates_trigger_mode_to_host() {
         restored.preset_bank_snapshot().presets[0].trigger_mode,
         super::DEFAULT_TRIGGER_MODE
     );
+}
+
+#[test]
+fn decode_v11_state_migrates_bypass_to_active() {
+    let params = sample_params();
+    params.set_bypass(1.0);
+    let payload = payload_for_state_version(&params, 11);
+
+    let restored = PumpParams::new();
+    restored.set_bypass(1.0);
+    decode_state_payload(&restored, &payload).expect("v11 state should decode");
+    assert!(!restored.bypassed());
+}
+
+#[test]
+fn decode_rejects_malformed_v12_bypass_without_mutating_state() {
+    let params = sample_params();
+    params.set_bypass(1.0);
+    let mut payload = encode_state_payload(&params);
+    payload.truncate(payload.len().saturating_sub(2));
+    assert_decode_error_preserves_state(&params, &payload, "invalid bypass field");
 }
 
 #[test]
@@ -247,6 +272,21 @@ fn decode_preserves_v2_through_v5_state_compatibility() {
             .unwrap_or_else(|error| panic!("state v{version} should decode: {error}"));
         assert_eq!(params.depth_db(), 120.0);
         assert_eq!(params.floor_db(), -60.0);
+    }
+}
+
+#[test]
+fn every_pre_v12_project_state_migrates_bypass_to_active() {
+    for version in 2..=11 {
+        let source = sample_params();
+        source.set_bypass(1.0);
+        let payload = payload_for_state_version(&source, version);
+        let restored = PumpParams::new();
+        restored.set_bypass(1.0);
+
+        decode_state_payload(&restored, &payload)
+            .unwrap_or_else(|error| panic!("state v{version} should decode: {error}"));
+        assert!(!restored.bypassed(), "state v{version} must migrate Active");
     }
 }
 

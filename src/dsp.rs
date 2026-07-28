@@ -24,7 +24,12 @@ pub struct DspSettings {
     pub smooth: f32,
     /// Processing mode (`Classic` or `Punch`).
     pub mode: usize,
+    /// Whether complete Pump output should crossfade to original dry unity.
+    pub bypassed: bool,
 }
+
+/// Host-bypass crossfade duration in seconds.
+pub const BYPASS_RAMP_SECONDS: f32 = 0.005;
 
 /// Maximum one-pole time constant at 100% Smooth.
 pub const MAX_SMOOTH_TIME_SECONDS: f32 = 0.1;
@@ -98,6 +103,61 @@ pub struct DspTelemetry {
     pub reduction_gain: f32,
     /// Whether this block contained at least one non-silent input sample.
     pub input_active: bool,
+    /// Whether the click-safe bypass ramp has reached full dry unity.
+    pub bypassed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ClickSafeBypass {
+    current: f32,
+    target: f32,
+    step: f32,
+    remaining: usize,
+    total: usize,
+}
+
+impl ClickSafeBypass {
+    fn new(sample_rate: f32, bypassed: bool) -> Self {
+        let value = f32::from(bypassed);
+        Self {
+            current: value,
+            target: value,
+            step: 0.0,
+            remaining: 0,
+            total: (sample_rate.max(1.0) * BYPASS_RAMP_SECONDS)
+                .round()
+                .max(1.0) as usize,
+        }
+    }
+
+    fn reset(&mut self, bypassed: bool) {
+        let value = f32::from(bypassed);
+        self.current = value;
+        self.target = value;
+        self.step = 0.0;
+        self.remaining = 0;
+    }
+
+    fn next(&mut self, bypassed: bool) -> f32 {
+        let target = f32::from(bypassed);
+        if target != self.target {
+            self.target = target;
+            self.remaining = self.total;
+            self.step = (self.target - self.current) / self.total as f32;
+        }
+        if self.remaining > 0 {
+            self.current += self.step;
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.current = self.target;
+            }
+        }
+        self.current
+    }
+
+    fn fully_bypassed(&self) -> bool {
+        self.remaining == 0 && self.current == 1.0
+    }
 }
 
 /// Stateful real-time gain engine.
@@ -120,11 +180,22 @@ pub struct PumpEngine {
     sidechain_running: bool,
     sidechain_mode: bool,
     sidechain_bus_present: bool,
+    bypass: ClickSafeBypass,
 }
 
 impl PumpEngine {
     /// Create a new engine for the current sample rate and initial curve.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(sample_rate: f32, curve: [f32; CURVE_TABLE_LEN]) -> Self {
+        Self::new_with_bypass(sample_rate, curve, false)
+    }
+
+    /// Create an engine whose bypass blend is initialized from restored state.
+    pub fn new_with_bypass(
+        sample_rate: f32,
+        curve: [f32; CURVE_TABLE_LEN],
+        bypassed: bool,
+    ) -> Self {
         let mut engine = Self {
             clock: TransportClock::new(sample_rate),
             sample_rate: sample_rate.max(1.0),
@@ -144,8 +215,9 @@ impl PumpEngine {
             sidechain_running: false,
             sidechain_mode: false,
             sidechain_bus_present: false,
+            bypass: ClickSafeBypass::new(sample_rate, bypassed),
         };
-        engine.reset();
+        engine.reset_with_bypass(bypassed);
         engine
     }
 
@@ -156,7 +228,14 @@ impl PumpEngine {
     }
 
     /// Reset stateful DSP history at a processing-session boundary.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn reset(&mut self) {
+        let bypassed = self.bypass.fully_bypassed();
+        self.reset_with_bypass(bypassed);
+    }
+
+    /// Reset DSP history and snap bypass to restored activation state.
+    pub fn reset_with_bypass(&mut self, bypassed: bool) {
         self.wet_gain_smoother.reset(1.0);
         self.mode_blend.reset(0.0);
         self.sidechain_detector.reset();
@@ -164,6 +243,7 @@ impl PumpEngine {
         self.sidechain_running = false;
         self.sidechain_mode = false;
         self.sidechain_bus_present = false;
+        self.bypass.reset(bypassed);
     }
 
     /// Process one sample pair in-place and return telemetry for the last sample.
@@ -175,6 +255,8 @@ impl PumpEngine {
         transport: TransportState,
         sidechain: Option<(f32, f32)>,
     ) -> DspTelemetry {
+        let dry_left = *left;
+        let dry_right = *right;
         let frame = self.clock.tick(resolve_effective_transport(transport));
 
         let sidechain_mode = settings.trigger_mode == crate::params::TRIGGER_MODE_SIDECHAIN;
@@ -254,14 +336,26 @@ impl PumpEngine {
         let output_gain = db_to_linear(output_gain_db);
         let gain = (blend_gain * output_gain).clamp(0.0, 4.0);
 
-        *left *= gain;
-        *right *= gain;
+        let pumped_left = dry_left * gain;
+        let pumped_right = dry_right * gain;
+        let bypass_blend = self.bypass.next(settings.bypassed);
+        if bypass_blend == 1.0 {
+            *left = dry_left;
+            *right = dry_right;
+        } else if bypass_blend == 0.0 {
+            *left = pumped_left;
+            *right = pumped_right;
+        } else {
+            *left = lerp(pumped_left, dry_left, bypass_blend);
+            *right = lerp(pumped_right, dry_right, bypass_blend);
+        }
 
         DspTelemetry {
             phase,
             gain,
             reduction_gain: blend_gain.clamp(0.0, 1.0),
             input_active: false,
+            bypassed: self.bypass.fully_bypassed(),
         }
     }
 
@@ -465,6 +559,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         };
 
         let mut left = 1.0;
@@ -505,6 +600,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         };
         let punch = DspSettings {
             mode: crate::params::PROCESSING_MODE_PUNCH,
@@ -541,6 +637,127 @@ mod tests {
         assert!((db_to_linear(6.0) - 1.9952623).abs() < 1.0e-4);
     }
 
+    fn bypass_test_settings(bypassed: bool) -> DspSettings {
+        DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            trigger_mode: crate::params::TRIGGER_MODE_HOST,
+            smooth: 0.0,
+            mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed,
+        }
+    }
+
+    fn bypass_test_transport() -> TransportState {
+        TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: None,
+        }
+    }
+
+    #[test]
+    fn bypass_crossfade_has_exact_five_millisecond_endpoints_at_multiple_rates() {
+        for sample_rate in [1_000.0_f32, 44_100.0, 48_000.0, 96_000.0] {
+            let ramp_samples = (sample_rate * 0.005).round().max(1.0) as usize;
+            let mut engine = PumpEngine::new(sample_rate, [0.0; crate::curve::CURVE_TABLE_LEN]);
+            let mut penultimate = 0.0;
+            for sample in 0..ramp_samples {
+                let dry = f32::from_bits(0x3f12_3456);
+                let mut left = dry;
+                let mut right = -dry;
+                let telemetry = engine.process_sample(
+                    &mut left,
+                    &mut right,
+                    bypass_test_settings(true),
+                    bypass_test_transport(),
+                    None,
+                );
+                if sample + 1 < ramp_samples {
+                    penultimate = left;
+                    assert!(!telemetry.bypassed);
+                } else {
+                    assert_eq!(left.to_bits(), dry.to_bits());
+                    assert_eq!(right.to_bits(), (-dry).to_bits());
+                    assert!(telemetry.bypassed);
+                }
+            }
+            if ramp_samples > 1 {
+                assert!(penultimate < f32::from_bits(0x3f12_3456));
+            }
+
+            let dry = f32::from_bits(0x3e91_2345);
+            let mut left = dry;
+            let mut right = -dry;
+            engine.process_sample(
+                &mut left,
+                &mut right,
+                bypass_test_settings(true),
+                bypass_test_transport(),
+                None,
+            );
+            assert_eq!(left.to_bits(), dry.to_bits());
+            assert_eq!(right.to_bits(), (-dry).to_bits());
+        }
+    }
+
+    #[test]
+    fn bypass_retargets_from_the_current_blend_without_a_jump() {
+        let mut engine = PumpEngine::new(1_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut render = |bypassed| {
+            let mut left = 1.0;
+            let mut right = 1.0;
+            engine.process_sample(
+                &mut left,
+                &mut right,
+                bypass_test_settings(bypassed),
+                bypass_test_transport(),
+                None,
+            );
+            left
+        };
+
+        assert!((render(true) - 0.2).abs() < 1.0e-6);
+        assert!((render(true) - 0.4).abs() < 1.0e-6);
+        assert!((render(false) - 0.32).abs() < 1.0e-6);
+        assert!((render(true) - 0.456).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn restored_activation_starts_bypassed_while_dsp_timing_keeps_advancing() {
+        let curve = [0.0; crate::curve::CURVE_TABLE_LEN];
+        let mut active = PumpEngine::new(1_000.0, curve);
+        let mut bypassed = PumpEngine::new_with_bypass(1_000.0, curve, true);
+        for _ in 0..16 {
+            let dry = f32::from_bits(0x3f01_2345);
+            let mut active_left = dry;
+            let mut active_right = dry;
+            let mut bypass_left = dry;
+            let mut bypass_right = dry;
+            let active_telemetry = active.process_sample(
+                &mut active_left,
+                &mut active_right,
+                bypass_test_settings(false),
+                bypass_test_transport(),
+                None,
+            );
+            let bypass_telemetry = bypassed.process_sample(
+                &mut bypass_left,
+                &mut bypass_right,
+                bypass_test_settings(true),
+                bypass_test_transport(),
+                None,
+            );
+            assert_eq!(bypass_left.to_bits(), dry.to_bits());
+            assert!(bypass_telemetry.bypassed);
+            assert_eq!(bypass_telemetry.phase, active_telemetry.phase);
+        }
+    }
+
     #[test]
     fn reduction_telemetry_excludes_output_trim() {
         let mut engine = PumpEngine::new(48_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
@@ -556,6 +773,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -589,6 +807,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         };
 
         let mut min_gain = 1.0_f32;
@@ -636,6 +855,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: amount,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         }
     }
 
@@ -845,6 +1065,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -879,6 +1100,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -906,6 +1128,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,

@@ -16,6 +16,8 @@ pub(crate) mod visual_system;
 mod screenshot_tests;
 
 #[cfg(all(target_os = "macos", any(feature = "radiant-gui", feature = "vst3")))]
+#[cfg(feature = "vst3")]
+pub(crate) use radiant_editor::HostParamEditSink;
 pub(crate) use radiant_editor::{HostParamFlushRequester, RadiantPumpEditor};
 
 /// Minimum supported logical editor size.
