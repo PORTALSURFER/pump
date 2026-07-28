@@ -118,6 +118,7 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertLess(script.index('security create-keychain'), script.index(register))
         self.assertLess(script.index(register), script.index('security import'))
         self.assertLess(script.index(register), script.index('codesign_identity='))
+        self.assertLess(script.index(restore), script.index('security delete-keychain'))
 
     def test_publish_rejects_tampered_final_zip_before_transport(self):
         transport = FakeTransport()
