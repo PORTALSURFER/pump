@@ -311,8 +311,14 @@ def _validate_canonical_source(manifest: dict[str, Any], repo_root: Path) -> Non
         branch = ""
     if not branch:
         raise ValueError("production publishing requires a non-detached checkout")
-    if _repo_output(("git", "status", "--porcelain", "--untracked-files=all"), repo_root):
-        raise ValueError("production release source must be clean")
+    dirty_status = _run_checked(
+        ("git", "status", "--porcelain", "--untracked-files=all"),
+        cwd=repo_root,
+        capture_output=True,
+    ).stdout.rstrip("\r\n")
+    if dirty_status:
+        entries = " | ".join(dirty_status.splitlines())
+        raise ValueError(f"production release source must be clean; git status entries: {entries}")
     _run_checked(("git", "fetch", "origin", "main", "--quiet"), cwd=repo_root)
     head = _repo_output(("git", "rev-parse", "HEAD"), repo_root)
     canonical_main = _repo_output(("git", "rev-parse", "refs/remotes/origin/main"), repo_root)

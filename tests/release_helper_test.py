@@ -269,6 +269,22 @@ class ReleaseHelperTests(unittest.TestCase):
             release_helper._validate_canonical_source(manifest, Path("/repo"))
         self.assertEqual(calls[2], ("git", "fetch", "origin", "main", "--quiet"))
 
+    def test_source_gate_reports_exact_dirty_status_entries(self):
+        sha = "a" * 40
+        manifest = {"source": {"git_sha": sha}}
+        status = " M scripts/release.sh\n?? target/release-note.txt\n"
+
+        def run(args, *, cwd, capture_output=False):
+            output = status if args[:2] == ("git", "status") else "main\n"
+            return subprocess.CompletedProcess(args, 0, output, "")
+
+        with mock.patch.object(release_helper, "_run_checked", side_effect=run):
+            with self.assertRaisesRegex(
+                ValueError,
+                r"production release source must be clean; git status entries:  M scripts/release\.sh \| \?\? target/release-note\.txt",
+            ):
+                release_helper._validate_canonical_source(manifest, Path("/repo"))
+
     def test_publish_rejects_more_than_two_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
