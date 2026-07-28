@@ -2,14 +2,16 @@
 
 use std::sync::Arc;
 
+use radiant::gui::automation::AutomationRole;
+use radiant::gui::svg::IconName;
 use radiant::gui::types::{Point, Rect, Rgba8, Vector2};
 use radiant::gui::visualization::{
     push_sampled_curve_area_fill, SampledCurveAreaBaseline, SampledCurveAreaFillParts,
 };
 use radiant::layout::LayoutOutput;
 use radiant::prelude::{
-    button, column, custom_widget, custom_widget_mapped, dropdown, row, slider, text, toggle,
-    IntoView, TextAlign, ViewNode,
+    column, custom_widget, custom_widget_mapped, dropdown, row, slider, text, toggle, IntoView,
+    TextAlign, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
@@ -22,8 +24,9 @@ use radiant::runtime::{
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
-    FocusBehavior, PointerButton, TextWrap, Widget, WidgetCommon, WidgetInput, WidgetKey,
-    WidgetOutput, WidgetSemantics,
+    ButtonMessage, FocusBehavior, IconButtonWidget, PointerButton, TextWrap, Widget,
+    WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput, WidgetSemantics,
+    WidgetSizing,
 };
 use toybox::clack_extensions::params::HostParams;
 use toybox::clack_plugin::prelude::HostSharedHandle;
@@ -45,6 +48,7 @@ use crate::params::{
 };
 use crate::GuiStatus;
 
+use super::visual_system::{pump_meter_colors, pump_theme, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS};
 #[cfg(test)]
 use super::WINDOW_HEIGHT;
 use super::{build_version_label, snap_curve_time_to_beat_grid, WINDOW_WIDTH};
@@ -74,25 +78,23 @@ impl HostParamFlushRequester {
 const BUILD_LABEL_HEIGHT: f32 = 54.0;
 const PRESET_TIMING_HEIGHT: f32 = 72.0;
 const CURVE_PREVIEW_HEIGHT: f32 = 180.0;
-const PARAMETER_DECK_HEIGHT: f32 = 96.0;
+const PARAMETER_DECK_HEIGHT: f32 = PUMP_VISUAL_METRICS.deck_height;
 const GAIN_REDUCTION_METER_WIDTH: f32 = 34.0;
 const GAIN_REDUCTION_METER_BAR_WIDTH: f32 = 8.0;
 const CURVE_SLOT_ROW_HEIGHT: f32 = 75.0;
-const CURVE_SLOT_SPACING: f32 = 4.0;
+const CURVE_SLOT_SPACING: f32 = PUMP_VISUAL_METRICS.space_4;
 const CURVE_SLOT_VISIBLE_COUNT: usize = 6;
 const CURVE_SLOT_NAV_WIDTH: f32 = 20.0;
-const CURVE_SLOT_CORAL: Rgba8 = Rgba8::new(255, 128, 128, 255);
-const CURVE_SLOT_CORAL_SOFT: Rgba8 = Rgba8::new(255, 128, 128, 96);
 // Six slots remain inside the minimum supported host width; larger hosts keep the same deck.
 const CURVE_SLOT_WIDTH: f32 = 100.0;
-const CONTROL_ROW_HEIGHT: f32 = 16.0;
+const CONTROL_ROW_HEIGHT: f32 = PUMP_VISUAL_METRICS.label_line;
 // Timing and parameter labels are intentionally wider than the compact legacy
 // shell so the longest supported values ("Trigger", "Classic", and +0.0 dB)
 // retain their full glyph bounds at the minimum host size.
 const CONTROL_LABEL_WIDTH: f32 = 84.0;
 const CONTROL_VALUE_WIDTH: f32 = 78.0;
-const SURFACE_PADDING: f32 = 12.0;
-const SURFACE_SPACING: f32 = 1.0;
+const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
+const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.divider;
 const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_FILL_TOP_ALPHA: u8 = 96;
 const CURVE_FILL_BOTTOM_ALPHA: u8 = 12;
@@ -112,11 +114,93 @@ const CURVE_PLAYHEAD_STROKE_COLOR: Rgba8 = Rgba8::new(255, 196, 232, 255);
 const CURVE_SEGMENT_MOVE_COLOR: Rgba8 = Rgba8::new(96, 176, 255, 255);
 const CURVE_REFERENCE_GUTTER_WIDTH: f32 = 52.0;
 const CURVE_REFERENCE_LABEL_HEIGHT: f32 = 12.0;
-const CURVE_REFERENCE_FONT_SIZE: f32 = 9.0;
+const CURVE_REFERENCE_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.meta.0;
 const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
 const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
-const VALUE_LABEL_FONT_SIZE: f32 = 12.0;
+const VALUE_LABEL_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.value.0;
+
+#[derive(Clone, Debug)]
+struct ActionIconButtonWidget {
+    button: IconButtonWidget,
+    label: &'static str,
+}
+
+impl ActionIconButtonWidget {
+    fn new(icon: IconName, label: &'static str, width: f32, height: f32) -> Self {
+        Self {
+            button: IconButtonWidget::new(
+                0,
+                icon.icon(),
+                WidgetSizing::fixed(Vector2::new(width, height)),
+            ),
+            label,
+        }
+    }
+}
+
+impl Widget for ActionIconButtonWidget {
+    fn common(&self) -> &WidgetCommon {
+        self.button.common()
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        self.button.common_mut()
+    }
+
+    fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        self.button.handle_input(bounds, input)
+    }
+
+    fn accepts_pointer_move(&self) -> bool {
+        self.button.accepts_pointer_move()
+    }
+
+    fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
+        let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        self.button.synchronize_from_previous(&previous.button);
+    }
+
+    fn capabilities(&self) -> WidgetCapabilities<'_> {
+        WidgetCapabilities::new().semantics(self)
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        self.button.append_paint(primitives, bounds, layout, theme);
+    }
+}
+
+impl WidgetSemantics for ActionIconButtonWidget {
+    fn automation_role(&self) -> AutomationRole {
+        AutomationRole::Button
+    }
+
+    fn automation_label(&self) -> Option<String> {
+        Some(self.label.to_owned())
+    }
+}
+
+fn action_icon_button(
+    icon: IconName,
+    label: &'static str,
+    message: RadiantEditorMessage,
+    width: f32,
+    height: f32,
+) -> ViewNode<RadiantEditorMessage> {
+    custom_widget_mapped(
+        ActionIconButtonWidget::new(icon, label, width, height),
+        move |_: ButtonMessage| message.clone(),
+    )
+    .size(width, height)
+}
 
 fn curve_reference_gutter_width(preview_width: f32) -> f32 {
     CURVE_REFERENCE_GUTTER_WIDTH.min((preview_width - 1.0).max(0.0))
@@ -416,7 +500,7 @@ impl RadiantPumpEditor {
         width: u32,
         height: u32,
     ) -> Self {
-        let theme = ThemeTokens::default();
+        let theme = pump_theme();
         let viewport = Vector2::new(width.max(1) as f32, height.max(1) as f32);
         Self {
             runtime: EditorSurfaceRuntime::new_declarative(
@@ -599,7 +683,7 @@ pub(crate) fn radiant_editor_frame_for_params(
         project_editor_surface,
         reduce_editor_message,
     )
-    .frame(&ThemeTokens::default())
+    .frame(&pump_theme())
 }
 
 impl RadiantEditorState {
@@ -750,28 +834,48 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             RadiantEditorMessage::ProcessingMode,
         ),
     ])
-    .spacing(4.0)
+    .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
     .height(PRESET_TIMING_HEIGHT);
     Arc::new(
         column([
             row([
                 text("PUMP").muted_text().fill_width(),
-                button("<")
-                    .message(RadiantEditorMessage::PresetPrevious)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
-                button(">")
-                    .message(RadiantEditorMessage::PresetNext)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
-                button("F")
-                    .message(RadiantEditorMessage::PresetFavorite)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
-                button("+")
-                    .message(RadiantEditorMessage::PresetAdd)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
-                button("S")
-                    .message(RadiantEditorMessage::PresetSave)
-                    .size(36.0, BUILD_LABEL_HEIGHT),
+                action_icon_button(
+                    IconName::ChevronLeft,
+                    "Previous preset",
+                    RadiantEditorMessage::PresetPrevious,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
+                action_icon_button(
+                    IconName::ChevronRight,
+                    "Next preset",
+                    RadiantEditorMessage::PresetNext,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
+                action_icon_button(
+                    IconName::Favorite,
+                    "Favorite preset",
+                    RadiantEditorMessage::PresetFavorite,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
+                action_icon_button(
+                    IconName::Copy,
+                    "Add preset",
+                    RadiantEditorMessage::PresetAdd,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
+                action_icon_button(
+                    IconName::Pattern,
+                    "Save preset",
+                    RadiantEditorMessage::PresetSave,
+                    36.0,
+                    BUILD_LABEL_HEIGHT,
+                ),
                 text(if params.preset_persistence_warning().is_some() {
                     super::PRESET_WARNING_STORAGE.to_string()
                 } else {
@@ -816,17 +920,25 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             )
             .fill_width()
             .fill_height()])
-            .spacing(4.0)
+            .spacing(PUMP_VISUAL_METRICS.space_4)
             .fill_width()
             .fill_height(),
             curve_slot_row(state),
             parameter_deck(state, params, depth, floor, output, smooth),
-            button("Undo")
-                .message(RadiantEditorMessage::Undo)
-                .size(64.0, CONTROL_ROW_HEIGHT),
-            button("Redo")
-                .message(RadiantEditorMessage::Redo)
-                .size(64.0, CONTROL_ROW_HEIGHT),
+            action_icon_button(
+                IconName::History,
+                "Undo",
+                RadiantEditorMessage::Undo,
+                64.0,
+                CONTROL_ROW_HEIGHT,
+            ),
+            action_icon_button(
+                IconName::ChevronRight,
+                "Redo",
+                RadiantEditorMessage::Redo,
+                64.0,
+                CONTROL_ROW_HEIGHT,
+            ),
             toggle("Snap", state.snap_enabled)
                 .message(RadiantEditorMessage::ToggleSnap)
                 .size(86.0, CONTROL_ROW_HEIGHT),
@@ -914,7 +1026,7 @@ fn parameter_deck(
         .width(GAIN_REDUCTION_METER_WIDTH)
         .height(PARAMETER_DECK_HEIGHT),
     ])
-    .spacing(8.0)
+    .spacing(PUMP_VISUAL_METRICS.gap)
     .fill_width()
     .height(PARAMETER_DECK_HEIGHT)
 }
@@ -935,7 +1047,7 @@ fn control_column(
             .fill_height(),
         value_label_node(target, value_label, active_entry),
     ])
-    .spacing(4.0)
+    .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
     .height(PARAMETER_DECK_HEIGHT)
 }
@@ -973,7 +1085,7 @@ fn slider_control_row(
             .height(CONTROL_ROW_HEIGHT),
         value_label,
     ])
-    .spacing(8.0)
+    .spacing(PUMP_VISUAL_METRICS.gap)
     .fill_width()
     .height(CONTROL_ROW_HEIGHT)
 }
@@ -2259,7 +2371,7 @@ impl Widget for CurveSlotWidget {
         let fill = if self.deviated {
             theme.accent_danger
         } else if pressed {
-            CURVE_SLOT_CORAL_SOFT
+            theme.accent_copper.with_alpha(96)
         } else if self.loaded {
             theme.surface_raised
         } else if hovered {
@@ -2270,12 +2382,12 @@ impl Widget for CurveSlotWidget {
         let outline = if self.deviated {
             theme.accent_danger
         } else if self.loaded || hovered || pressed {
-            CURVE_SLOT_CORAL
+            theme.accent_copper
         } else {
             theme.border
         };
         let curve_color = if self.deviated || self.curve.is_some() {
-            CURVE_SLOT_CORAL
+            theme.accent_copper
         } else {
             theme.text_muted
         };
@@ -2294,7 +2406,7 @@ impl Widget for CurveSlotWidget {
             primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
                 widget_id: self.common.id,
                 rect: bounds.inset(2.0, 2.0, 2.0, 2.0),
-                color: CURVE_SLOT_CORAL,
+                color: theme.accent_copper,
                 width: 1.0,
             }));
         }
@@ -2316,7 +2428,7 @@ impl Widget for CurveSlotWidget {
                     Point::new(center.x - 2.0, center.y),
                     Point::new(center.x + 2.0, center.y),
                 ]),
-                color: CURVE_SLOT_CORAL,
+                color: theme.accent_copper,
                 width: 1.0,
             }));
             primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
@@ -2325,7 +2437,7 @@ impl Widget for CurveSlotWidget {
                     Point::new(center.x, center.y - 2.0),
                     Point::new(center.x, center.y + 2.0),
                 ]),
-                color: CURVE_SLOT_CORAL,
+                color: theme.accent_copper,
                 width: 1.0,
             }));
         }
@@ -2435,7 +2547,7 @@ impl Widget for CurveSlotNavigationWidget {
         theme: &ThemeTokens,
     ) {
         let fill = if self.common.state.pressed {
-            CURVE_SLOT_CORAL_SOFT
+            theme.accent_copper.with_alpha(96)
         } else if self.common.state.hovered || self.common.state.focused {
             theme.bg_secondary
         } else {
@@ -2445,7 +2557,7 @@ impl Widget for CurveSlotNavigationWidget {
             || self.common.state.focused
             || self.common.state.pressed
         {
-            CURVE_SLOT_CORAL
+            theme.accent_copper
         } else {
             theme.border
         };
@@ -2474,7 +2586,7 @@ impl Widget for CurveSlotNavigationWidget {
                 Point::new(tip_x, center.y),
                 Point::new(base_x, center.y + 5.0),
             ]),
-            color: CURVE_SLOT_CORAL,
+            color: theme.accent_copper,
             width: 1.5,
         }));
     }
@@ -2514,8 +2626,9 @@ impl Widget for GainReductionMeterWidget {
         primitives: &mut Vec<PaintPrimitive>,
         bounds: Rect,
         _layout: &LayoutOutput,
-        theme: &ThemeTokens,
+        _theme: &ThemeTokens,
     ) {
+        let meter_colors = pump_meter_colors();
         let title_height = 14.0;
         let value_height = 14.0;
         let bar_top = bounds.min.y + title_height;
@@ -2527,11 +2640,16 @@ impl Widget for GainReductionMeterWidget {
             GAIN_REDUCTION_METER_BAR_WIDTH,
             bar_height,
         );
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.common.id,
+            rect: bar,
+            color: meter_colors.track,
+        }));
         primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
             widget_id: self.common.id,
             rect: bar,
-            color: theme.border_emphasis,
-            width: 1.0,
+            color: meter_colors.border,
+            width: PUMP_VISUAL_METRICS.border,
         }));
         let fraction = crate::gui_status::gain_reduction_meter_fraction(self.reduction_db);
         let fill_height = (bar.height() - 2.0).max(0.0) * fraction;
@@ -2544,7 +2662,11 @@ impl Widget for GainReductionMeterWidget {
                     (bar.width() - 2.0).max(0.0),
                     fill_height,
                 ),
-                color: theme.accent_warning,
+                color: if fraction >= 0.75 {
+                    meter_colors.hot
+                } else {
+                    meter_colors.nominal
+                },
             }));
         }
         for step in 1..3 {
@@ -2555,8 +2677,8 @@ impl Widget for GainReductionMeterWidget {
                     Point::new(bar.min.x - 2.0, y),
                     Point::new(bar.max.x + 2.0, y),
                 ]),
-                color: theme.border_emphasis,
-                width: 1.0,
+                color: meter_colors.border,
+                width: PUMP_VISUAL_METRICS.divider,
             }));
         }
         for (text_value, rect) in [
@@ -2578,9 +2700,9 @@ impl Widget for GainReductionMeterWidget {
                 widget_id: self.common.id,
                 text: PaintText::from(text_value),
                 rect,
-                font_size: 9.0,
+                font_size: PUMP_TYPOGRAPHY.meta.0,
                 baseline: None,
-                color: theme.text_muted,
+                color: meter_colors.text,
                 align: PaintTextAlign::Center,
                 wrap: TextWrap::None,
             }));
@@ -3537,6 +3659,71 @@ mod tests {
             shift_held: false,
             option_held: false,
             command_held: false,
+        }
+    }
+
+    #[test]
+    fn action_icon_buttons_paint_svg_and_expose_button_labels_and_keyboard_activation() {
+        let theme = ThemeTokens::default();
+        let layout = LayoutOutput::default();
+        for (icon, label, width, height) in [
+            (
+                IconName::ChevronLeft,
+                "Previous preset",
+                36.0,
+                BUILD_LABEL_HEIGHT,
+            ),
+            (
+                IconName::ChevronRight,
+                "Next preset",
+                36.0,
+                BUILD_LABEL_HEIGHT,
+            ),
+            (
+                IconName::Favorite,
+                "Favorite preset",
+                36.0,
+                BUILD_LABEL_HEIGHT,
+            ),
+            (IconName::Copy, "Add preset", 36.0, BUILD_LABEL_HEIGHT),
+            (IconName::Pattern, "Save preset", 36.0, BUILD_LABEL_HEIGHT),
+            (IconName::History, "Undo", 64.0, CONTROL_ROW_HEIGHT),
+            (IconName::ChevronRight, "Redo", 64.0, CONTROL_ROW_HEIGHT),
+        ] {
+            let bounds = Rect::from_xy_size(0.0, 0.0, width, height);
+            let mut widget = ActionIconButtonWidget::new(icon, label, width, height);
+            let semantics = widget.automation_semantics();
+            assert_eq!(semantics.role, AutomationRole::Button);
+            assert_eq!(semantics.label.as_deref(), Some(label));
+            assert!(semantics.focusable);
+
+            let mut primitives = Vec::new();
+            widget.append_paint(&mut primitives, bounds, &layout, &theme);
+            assert_eq!(
+                primitives
+                    .iter()
+                    .filter(|primitive| matches!(primitive, PaintPrimitive::Svg(_)))
+                    .count(),
+                1,
+                "{label} must paint one retained SVG"
+            );
+            assert!(
+                primitives
+                    .iter()
+                    .all(|primitive| !matches!(primitive, PaintPrimitive::Text(_))),
+                "{label} must not paint an action text glyph"
+            );
+
+            widget.handle_input(bounds, WidgetInput::FocusChanged(true));
+            for key in [WidgetKey::Enter, WidgetKey::Space] {
+                let output = widget
+                    .handle_input(bounds, WidgetInput::KeyPress(key))
+                    .unwrap_or_else(|| panic!("{label} should activate from {key:?}"));
+                assert_eq!(
+                    output.typed_copied::<ButtonMessage>(),
+                    Some(ButtonMessage::Activate)
+                );
+            }
         }
     }
 
@@ -6217,8 +6404,9 @@ mod tests {
             &LayoutOutput::default(),
             &theme,
         );
+        let meter_colors = pump_meter_colors();
         assert!(!unity_primitives.iter().any(|primitive| {
-            matches!(primitive, PaintPrimitive::FillRect(fill) if fill.color == theme.accent_warning)
+            matches!(primitive, PaintPrimitive::FillRect(fill) if fill.color == meter_colors.nominal)
         }));
 
         let reduction_db = crate::gui_status::GAIN_REDUCTION_METER_MAX_DB * 0.5;
@@ -6232,7 +6420,7 @@ mod tests {
         let fill = reduced_primitives
             .iter()
             .find_map(|primitive| match primitive {
-                PaintPrimitive::FillRect(fill) if fill.color == theme.accent_warning => Some(fill),
+                PaintPrimitive::FillRect(fill) if fill.color == meter_colors.nominal => Some(fill),
                 _ => None,
             })
             .expect("reduction should paint one meter fill");
@@ -6502,6 +6690,27 @@ mod tests {
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, PaintPrimitive::Text(text) if text.text == "PUMP")
         }));
+        assert!(
+            frame
+                .paint_plan
+                .primitives
+                .iter()
+                .filter(|primitive| matches!(primitive, PaintPrimitive::Svg(_)))
+                .count()
+                >= 7,
+            "editor action buttons must paint retained SVG icons"
+        );
+        for obsolete_label in ["<", ">", "F", "+", "S", "Undo", "Redo"] {
+            assert!(
+                frame
+                    .paint_plan
+                    .primitives
+                    .iter()
+                    .all(|primitive| !matches!(primitive, PaintPrimitive::Text(text)
+                        if text.text.as_str() == obsolete_label)),
+                "{obsolete_label} must not remain as action text paint"
+            );
+        }
         assert!(frame
             .paint_plan
             .primitives
