@@ -87,6 +87,8 @@ All notable changes to this project are documented in this file.
 
 - (release) Verify notarized plugin bundles (#44) (9aa7f3a)
 
+- (release) Label artifact with checkout source (#45) (75ab159)
+
 
 ### CI
 
@@ -359,6 +361,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (aab0c73)
 
 - (changelog) Update changelog [skip ci] (742121f)
+
+- (changelog) Update changelog [skip ci] (af186a3)
 
 
 ### Features
