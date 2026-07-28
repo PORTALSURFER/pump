@@ -10,8 +10,8 @@ use radiant::gui::visualization::{
 };
 use radiant::layout::LayoutOutput;
 use radiant::prelude::{
-    column, custom_widget, custom_widget_mapped, dropdown, row, slider, text, toggle, IntoView,
-    TextAlign, ViewNode,
+    column, custom_widget, custom_widget_mapped, dropdown, knob, row, slider, text, toggle,
+    IntoView, KnobMessage, TextAlign, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
@@ -42,11 +42,12 @@ use crate::incoming_waveform::IncomingWaveformSnapshot;
 use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
     PumpSoundState, SoundSide, BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS,
-    GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
-    MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DEPTH_ID,
-    PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
-    PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID,
-    PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
+    DEFAULT_DEPTH_DB, DEFAULT_FLOOR_DB, DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET,
+    DEFAULT_SMOOTH, GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB,
+    MAX_SYNC_DIVISION, MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID,
+    PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID,
+    PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID,
+    PARAM_TRIGGER_MODE_ID, PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::GuiStatus;
 
@@ -81,6 +82,15 @@ impl HostParamFlushRequester {
 pub(crate) trait HostParamEditSink: Send + Sync {
     /// Deliver begin/value/end on the editor's host/UI thread.
     fn edit(&self, config: &AutomationConfig, param_id: ClapId, value: f64) -> bool;
+
+    /// Begin a continuous knob gesture.
+    fn gesture_started(&self, config: &AutomationConfig, param_id: ClapId) -> bool;
+
+    /// Deliver one ordered value in a continuous knob gesture.
+    fn gesture_value(&self, config: &AutomationConfig, param_id: ClapId, value: f64) -> bool;
+
+    /// End a continuous knob gesture.
+    fn gesture_ended(&self, config: &AutomationConfig, param_id: ClapId) -> bool;
 }
 
 struct ClapHostParamEditSink {
@@ -98,14 +108,44 @@ impl HostParamEditSink for ClapHostParamEditSink {
         }
         complete
     }
+
+    fn gesture_started(&self, config: &AutomationConfig, param_id: ClapId) -> bool {
+        let accepted = self.queue.push_gesture_begin(config, param_id);
+        if accepted {
+            if let Some(requester) = self.requester {
+                requester.request_flush();
+            }
+        }
+        accepted
+    }
+
+    fn gesture_value(&self, config: &AutomationConfig, param_id: ClapId, value: f64) -> bool {
+        let accepted = self.queue.push_gesture_value(config, param_id, value);
+        if accepted {
+            if let Some(requester) = self.requester {
+                requester.request_flush();
+            }
+        }
+        accepted
+    }
+
+    fn gesture_ended(&self, config: &AutomationConfig, param_id: ClapId) -> bool {
+        let complete = self.queue.push_gesture_end(config, param_id);
+        if complete {
+            if let Some(requester) = self.requester {
+                requester.request_flush();
+            }
+        }
+        complete
+    }
 }
 
 const BUILD_LABEL_HEIGHT: f32 = 54.0;
 const PRESET_TIMING_HEIGHT: f32 = 72.0;
 const CURVE_PREVIEW_HEIGHT: f32 = 180.0;
 const PARAMETER_DECK_HEIGHT: f32 = PUMP_VISUAL_METRICS.deck_height;
-const GAIN_REDUCTION_METER_WIDTH: f32 = 34.0;
-const GAIN_REDUCTION_METER_BAR_WIDTH: f32 = 8.0;
+const GAIN_REDUCTION_METER_WIDTH: f32 = PUMP_VISUAL_METRICS.meter_panel;
+const GAIN_REDUCTION_METER_BAR_WIDTH: f32 = PUMP_VISUAL_METRICS.meter_track;
 const CURVE_SLOT_ROW_HEIGHT: f32 = 75.0;
 const CURVE_SLOT_SPACING: f32 = PUMP_VISUAL_METRICS.space_4;
 const CURVE_SLOT_VISIBLE_COUNT: usize = 6;
@@ -556,7 +596,7 @@ impl NumericEntryTarget {
             Self::Mix => "Mix",
             Self::Depth => "Depth",
             Self::Floor => "Floor",
-            Self::Phase => "Phase",
+            Self::Phase => "Offset",
             Self::OutputGain => "Output",
             Self::Smooth => "Smooth",
             Self::Swing => "Swing",
@@ -636,6 +676,7 @@ struct RadiantEditorState {
     loaded_global_curve_slot: Option<usize>,
     curve_slot_scroll_offset: usize,
     numeric_entry: Option<NumericEntryState>,
+    active_knob_gesture: Option<NumericEntryTarget>,
     preset_dropdown_open: bool,
     ab_confirmation: Option<String>,
     snap_enabled: bool,
@@ -671,12 +712,10 @@ enum RadiantEditorMessage {
     PresetFavorite,
     PresetAdd,
     PresetSave,
-    Mix(f32),
-    Depth(f32),
-    Floor(f32),
-    Phase(f32),
-    OutputGain(f32),
-    Smooth(f32),
+    Knob {
+        target: NumericEntryTarget,
+        message: KnobMessage,
+    },
     Swing(f32),
     SyncDivision(f32),
     TriggerMode(f32),
@@ -986,6 +1025,7 @@ impl RadiantEditorState {
             loaded_global_curve_slot: None,
             curve_slot_scroll_offset: 0,
             numeric_entry: None,
+            active_knob_gesture: None,
             preset_dropdown_open: false,
             ab_confirmation: None,
             snap_enabled: false,
@@ -1322,57 +1362,60 @@ fn parameter_deck(
 ) -> ViewNode<RadiantEditorMessage> {
     row([
         control_column(
-            NumericEntryTarget::Mix,
-            "Mix",
-            format!("{:.0}%", params.mix() * 100.0),
-            params.mix(),
-            state.numeric_entry.as_ref(),
-            RadiantEditorMessage::Mix,
-        ),
-        control_column(
             NumericEntryTarget::Depth,
-            "Depth",
+            "DEPTH",
             format!("{depth:.0} dB"),
             normalize_depth(depth),
+            normalize_depth(DEFAULT_DEPTH_DB),
             state.numeric_entry.as_ref(),
-            RadiantEditorMessage::Depth,
         ),
         control_column(
             NumericEntryTarget::Floor,
-            "Floor",
+            "FLOOR",
             if floor <= MIN_FLOOR_DB {
                 "−∞".to_string()
             } else {
                 format!("{floor:.0} dB")
             },
             normalize_floor(floor),
+            normalize_floor(DEFAULT_FLOOR_DB),
             state.numeric_entry.as_ref(),
-            RadiantEditorMessage::Floor,
         ),
         control_column(
             NumericEntryTarget::Phase,
-            "Phase",
+            "OFFSET",
             format!("{:.0}%", params.phase_offset() * 100.0),
             params.phase_offset(),
+            DEFAULT_PHASE_OFFSET,
             state.numeric_entry.as_ref(),
-            RadiantEditorMessage::Phase,
-        ),
-        control_column(
-            NumericEntryTarget::OutputGain,
-            "Output",
-            format!("{output:+.1} dB"),
-            normalize_output_gain(output),
-            state.numeric_entry.as_ref(),
-            RadiantEditorMessage::OutputGain,
         ),
         control_column(
             NumericEntryTarget::Smooth,
-            "Smooth",
-            format!("{:.0}%", smooth * 100.0),
+            "SMOOTH",
+            format_plain_value_text(PARAM_SMOOTH_ID, smooth as f64)
+                .unwrap_or_else(|| format!("{smooth:.0}%")),
             smooth,
+            DEFAULT_SMOOTH,
             state.numeric_entry.as_ref(),
-            RadiantEditorMessage::Smooth,
         ),
+        parameter_deck_divider(),
+        control_column(
+            NumericEntryTarget::Mix,
+            "MIX",
+            format!("{:.0}%", params.mix() * 100.0),
+            params.mix(),
+            DEFAULT_MIX,
+            state.numeric_entry.as_ref(),
+        ),
+        control_column(
+            NumericEntryTarget::OutputGain,
+            "OUTPUT",
+            format!("{output:+.1} dB"),
+            normalize_output_gain(output),
+            normalize_output_gain(DEFAULT_OUTPUT_GAIN_DB),
+            state.numeric_entry.as_ref(),
+        ),
+        parameter_deck_divider(),
         custom_widget(
             GainReductionMeterWidget::new(state.status.gain_reduction_db()),
             |_| None,
@@ -1385,18 +1428,27 @@ fn parameter_deck(
     .height(PARAMETER_DECK_HEIGHT)
 }
 
+fn parameter_deck_divider() -> ViewNode<RadiantEditorMessage> {
+    custom_widget(ParameterDeckDividerWidget::new(), |_| None)
+        .width(PUMP_VISUAL_METRICS.divider)
+        .height(PARAMETER_DECK_HEIGHT)
+}
+
 fn control_column(
     target: NumericEntryTarget,
     label: &'static str,
     value_label: String,
     value: f32,
+    default_value: f32,
     active_entry: Option<&NumericEntryState>,
-    message: fn(f32) -> RadiantEditorMessage,
 ) -> ViewNode<RadiantEditorMessage> {
     column([
         text(label).height(CONTROL_ROW_HEIGHT),
-        slider(value.clamp(0.0, 1.0))
-            .message(message)
+        knob(value.clamp(0.0, 1.0))
+            .diameter(PUMP_VISUAL_METRICS.knob)
+            .default_value(default_value.clamp(0.0, 1.0))
+            .primary()
+            .message(move |message| RadiantEditorMessage::Knob { target, message })
             .fill_width()
             .fill_height(),
         value_label_node(target, value_label, active_entry),
@@ -1404,6 +1456,115 @@ fn control_column(
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
     .height(PARAMETER_DECK_HEIGHT)
+}
+
+fn reduce_knob_message(
+    state: &mut RadiantEditorState,
+    target: NumericEntryTarget,
+    message: KnobMessage,
+) {
+    match message {
+        KnobMessage::GestureStarted { .. } => {
+            if state.active_knob_gesture.is_none()
+                && state
+                    .host_param_edit_sink
+                    .gesture_started(&state.automation_config, target.param_id())
+            {
+                state.push_history();
+                state.active_knob_gesture = Some(target);
+            }
+        }
+        KnobMessage::ValueChanged { value } => {
+            if state.active_knob_gesture == Some(target) {
+                let (param_id, plain_value) = knob_plain_value(target, value);
+                if !state.host_param_edit_sink.gesture_value(
+                    &state.automation_config,
+                    param_id,
+                    plain_value as f64,
+                ) {
+                    return;
+                }
+                let _ = set_knob_param(state.params.as_ref(), target, value);
+            }
+        }
+        KnobMessage::GestureEnded { .. } => {
+            if state.active_knob_gesture == Some(target) {
+                let _ = state
+                    .host_param_edit_sink
+                    .gesture_ended(&state.automation_config, target.param_id());
+                state.active_knob_gesture = None;
+            }
+        }
+        KnobMessage::Reset { value } => {
+            if state.active_knob_gesture == Some(target) {
+                let _ = state
+                    .host_param_edit_sink
+                    .gesture_ended(&state.automation_config, target.param_id());
+                state.active_knob_gesture = None;
+            }
+            let (param_id, plain_value) = knob_plain_value(target, value);
+            if state.host_param_edit_sink.edit(
+                &state.automation_config,
+                param_id,
+                plain_value as f64,
+            ) {
+                state.push_history();
+                let _ = set_knob_param(state.params.as_ref(), target, value);
+            }
+        }
+        KnobMessage::KeyboardGesture(gesture) => {
+            let Some(value) = (match gesture.events[1] {
+                radiant::prelude::KnobAutomationEvent::ValueChanged { value } => Some(value),
+                _ => None,
+            }) else {
+                return;
+            };
+            if !state
+                .host_param_edit_sink
+                .gesture_started(&state.automation_config, target.param_id())
+            {
+                return;
+            }
+            state.push_history();
+            let (param_id, plain_value) = knob_plain_value(target, value);
+            if state.host_param_edit_sink.gesture_value(
+                &state.automation_config,
+                param_id,
+                plain_value as f64,
+            ) {
+                let _ = set_knob_param(state.params.as_ref(), target, value);
+            }
+            let _ = state
+                .host_param_edit_sink
+                .gesture_ended(&state.automation_config, target.param_id());
+        }
+    }
+}
+
+fn knob_plain_value(target: NumericEntryTarget, value: f32) -> (ClapId, f32) {
+    match target {
+        NumericEntryTarget::Mix => (PARAM_MIX_ID, value),
+        NumericEntryTarget::Depth => (PARAM_DEPTH_ID, denormalize_depth(value)),
+        NumericEntryTarget::Floor => (PARAM_FLOOR_ID, denormalize_floor(value)),
+        NumericEntryTarget::Phase => (PARAM_PHASE_OFFSET_ID, value),
+        NumericEntryTarget::OutputGain => (PARAM_OUTPUT_GAIN_ID, denormalize_output_gain(value)),
+        NumericEntryTarget::Smooth => (PARAM_SMOOTH_ID, value),
+        NumericEntryTarget::Swing => (PARAM_SWING_ID, value),
+    }
+}
+
+fn set_knob_param(params: &PumpParams, target: NumericEntryTarget, value: f32) -> (ClapId, f32) {
+    let (param_id, plain_value) = knob_plain_value(target, value);
+    match target {
+        NumericEntryTarget::Mix => params.set_mix(value),
+        NumericEntryTarget::Depth => params.set_depth_db(plain_value),
+        NumericEntryTarget::Floor => params.set_floor_db(plain_value),
+        NumericEntryTarget::Phase => params.set_phase_offset(value),
+        NumericEntryTarget::OutputGain => params.set_output_gain_db(plain_value),
+        NumericEntryTarget::Smooth => params.set_smooth(value),
+        NumericEntryTarget::Swing => params.set_swing(value),
+    }
+    (param_id, plain_value)
 }
 
 fn enum_control_row(
@@ -1498,38 +1659,8 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                 let _ = state.params.save_current_state_by_name(&preset.name);
             }
         }
-        RadiantEditorMessage::Mix(value) => {
-            state.push_history();
-            state.params.set_mix(value);
-            push_radiant_param_update(state, PARAM_MIX_ID, value as f64);
-        }
-        RadiantEditorMessage::Depth(value) => {
-            state.push_history();
-            let value = denormalize_depth(value);
-            state.params.set_depth_db(value);
-            push_radiant_param_update(state, PARAM_DEPTH_ID, value as f64);
-        }
-        RadiantEditorMessage::Floor(value) => {
-            state.push_history();
-            let value = denormalize_floor(value);
-            state.params.set_floor_db(value);
-            push_radiant_param_update(state, PARAM_FLOOR_ID, value as f64);
-        }
-        RadiantEditorMessage::Phase(value) => {
-            state.push_history();
-            state.params.set_phase_offset(value);
-            push_radiant_param_update(state, PARAM_PHASE_OFFSET_ID, value as f64);
-        }
-        RadiantEditorMessage::OutputGain(value) => {
-            state.push_history();
-            let value = denormalize_output_gain(value);
-            state.params.set_output_gain_db(value);
-            push_radiant_param_update(state, PARAM_OUTPUT_GAIN_ID, value as f64);
-        }
-        RadiantEditorMessage::Smooth(value) => {
-            state.push_history();
-            state.params.set_smooth(value);
-            push_radiant_param_update(state, PARAM_SMOOTH_ID, value as f64);
+        RadiantEditorMessage::Knob { target, message } => {
+            reduce_knob_message(state, target, message);
         }
         RadiantEditorMessage::Swing(value) => {
             state.push_history();
@@ -3004,6 +3135,53 @@ impl Widget for CurveSlotNavigationWidget {
 }
 
 #[derive(Clone)]
+struct ParameterDeckDividerWidget {
+    common: WidgetCommon,
+}
+
+impl ParameterDeckDividerWidget {
+    fn new() -> Self {
+        Self {
+            common: WidgetCommon::fixed(0, PUMP_VISUAL_METRICS.divider, PARAMETER_DECK_HEIGHT)
+                .without_default_chrome(),
+        }
+    }
+}
+
+impl Widget for ParameterDeckDividerWidget {
+    fn common(&self) -> &WidgetCommon {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        &mut self.common
+    }
+
+    fn handle_input(&mut self, _bounds: Rect, _input: WidgetInput) -> Option<WidgetOutput> {
+        None
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        let x = bounds.min.x + bounds.width() * 0.5;
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: Arc::from([
+                Point::new(x, bounds.min.y + PUMP_VISUAL_METRICS.space_4),
+                Point::new(x, bounds.max.y - PUMP_VISUAL_METRICS.space_4),
+            ]),
+            color: theme.grid_strong,
+            width: PUMP_VISUAL_METRICS.divider,
+        }));
+    }
+}
+
+#[derive(Clone)]
 struct GainReductionMeterWidget {
     common: WidgetCommon,
     reduction_db: f32,
@@ -3063,33 +3241,33 @@ impl Widget for GainReductionMeterWidget {
             width: PUMP_VISUAL_METRICS.border,
         }));
         let fraction = crate::gui_status::gain_reduction_meter_fraction(self.reduction_db);
-        let fill_height = (bar.height() - 2.0).max(0.0) * fraction;
-        if fill_height > 0.0 {
+        let segment_step =
+            PUMP_VISUAL_METRICS.meter_segment + PUMP_VISUAL_METRICS.meter_segment_gap;
+        let segment_count = ((bar.height() - 2.0 + PUMP_VISUAL_METRICS.meter_segment_gap)
+            / segment_step)
+            .floor()
+            .max(1.0) as usize;
+        let active_segments = (fraction * segment_count as f32).round() as usize;
+        for segment in 0..segment_count {
+            let y =
+                bar.max.y - 1.0 - PUMP_VISUAL_METRICS.meter_segment - segment as f32 * segment_step;
             primitives.push(PaintPrimitive::FillRect(PaintFillRect {
                 widget_id: self.common.id,
                 rect: Rect::from_xy_size(
                     bar.min.x + 1.0,
-                    bar.min.y + 1.0,
+                    y,
                     (bar.width() - 2.0).max(0.0),
-                    fill_height,
+                    PUMP_VISUAL_METRICS.meter_segment,
                 ),
-                color: if fraction >= 0.75 {
-                    meter_colors.hot
+                color: if segment < active_segments {
+                    if fraction >= 0.75 {
+                        meter_colors.hot
+                    } else {
+                        meter_colors.nominal
+                    }
                 } else {
-                    meter_colors.nominal
+                    meter_colors.track
                 },
-            }));
-        }
-        for step in 1..3 {
-            let y = bar.min.y + bar.height() * step as f32 / 3.0;
-            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
-                widget_id: self.common.id,
-                points: Arc::from([
-                    Point::new(bar.min.x - 2.0, y),
-                    Point::new(bar.max.x + 2.0, y),
-                ]),
-                color: meter_colors.border,
-                width: PUMP_VISUAL_METRICS.divider,
             }));
         }
         for (text_value, rect) in [
@@ -4056,8 +4234,12 @@ mod tests {
     use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
     use radiant::widgets::PointerModifiers;
+    use toybox::clack_plugin::events::event_types::{
+        ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
+    };
     use toybox::clack_plugin::events::io::EventBuffer;
     use toybox::clack_plugin::events::spaces::CoreEventSpace;
+    use toybox::clack_plugin::events::Event;
     use toybox::clap::automation::{AutomationDropPolicy, AutomationQueueConfig};
 
     fn editor_state(params: Arc<PumpParams>) -> RadiantEditorState {
@@ -4398,12 +4580,22 @@ mod tests {
             }),
         );
 
-        reduce_editor_message(&mut state, RadiantEditorMessage::Mix(0.25));
-        reduce_editor_message(&mut state, RadiantEditorMessage::Depth(0.5));
-        reduce_editor_message(&mut state, RadiantEditorMessage::Floor(0.5));
-        reduce_editor_message(&mut state, RadiantEditorMessage::Phase(0.5));
-        reduce_editor_message(&mut state, RadiantEditorMessage::OutputGain(0.5));
-        reduce_editor_message(&mut state, RadiantEditorMessage::Smooth(0.5));
+        for (target, value) in [
+            (NumericEntryTarget::Mix, 0.25),
+            (NumericEntryTarget::Depth, 0.5),
+            (NumericEntryTarget::Floor, 0.5),
+            (NumericEntryTarget::Phase, 0.5),
+            (NumericEntryTarget::OutputGain, 0.5),
+            (NumericEntryTarget::Smooth, 0.5),
+        ] {
+            reduce_editor_message(
+                &mut state,
+                RadiantEditorMessage::Knob {
+                    target,
+                    message: KnobMessage::Reset { value },
+                },
+            );
+        }
         reduce_editor_message(&mut state, RadiantEditorMessage::SyncDivision(1.0));
         reduce_editor_message(&mut state, RadiantEditorMessage::TriggerMode(0.0));
         reduce_editor_message(
@@ -7094,7 +7286,7 @@ mod tests {
     }
 
     #[test]
-    fn gain_reduction_meter_paints_labeled_top_down_db_fill() {
+    fn gain_reduction_meter_paints_target_width_segments_and_labels() {
         let bounds =
             Rect::from_xy_size(0.0, 0.0, GAIN_REDUCTION_METER_WIDTH, PARAMETER_DECK_HEIGHT);
         let theme = ThemeTokens::default();
@@ -7118,16 +7310,21 @@ mod tests {
             &LayoutOutput::default(),
             &theme,
         );
-        let fill = reduced_primitives
+        let fills: Vec<_> = reduced_primitives
             .iter()
-            .find_map(|primitive| match primitive {
+            .filter_map(|primitive| match primitive {
                 PaintPrimitive::FillRect(fill) if fill.color == meter_colors.nominal => Some(fill),
                 _ => None,
             })
-            .expect("reduction should paint one meter fill");
-        assert!((fill.rect.min.y - 15.0).abs() < 1.0e-6);
-        let expected_fill_height = ((PARAMETER_DECK_HEIGHT - 14.0 - 14.0) - 2.0) * 0.5;
-        assert!((fill.rect.height() - expected_fill_height).abs() < 1.0e-6);
+            .collect();
+        assert!(
+            !fills.is_empty(),
+            "reduction should paint active meter segments"
+        );
+        assert!(fills.iter().all(|fill| {
+            (fill.rect.width() - (GAIN_REDUCTION_METER_BAR_WIDTH - 2.0)).abs() < 1.0e-6
+                && (fill.rect.height() - PUMP_VISUAL_METRICS.meter_segment).abs() < 1.0e-6
+        }));
         for expected in ["GR dB", "18.0"] {
             assert!(reduced_primitives.iter().any(|primitive| {
                 matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == expected)
@@ -7379,7 +7576,11 @@ mod tests {
     #[test]
     fn radiant_editor_surface_emits_visible_paint() {
         let frame = radiant_editor_frame_for_params(
-            Arc::new(PumpParams::new()),
+            {
+                let params = PumpParams::new();
+                params.set_smooth(0.67);
+                Arc::new(params)
+            },
             Arc::new(GuiStatus::default()),
             Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
         );
@@ -7420,6 +7621,245 @@ mod tests {
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, PaintPrimitive::StrokePolyline(polyline) if polyline.points.len() > 16)
         }));
+    }
+
+    #[test]
+    fn parameter_deck_matches_target_order_and_keeps_phase_offset_routing() {
+        let params = PumpParams::new();
+        params.set_smooth(0.67);
+        let frame = radiant_editor_frame_for_params(
+            Arc::new(params),
+            Arc::new(GuiStatus::default()),
+            Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+        );
+        let labels: Vec<_> = frame
+            .paint_plan
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::Text(text)
+                    if matches!(
+                        text.text.as_str(),
+                        "DEPTH" | "FLOOR" | "OFFSET" | "SMOOTH" | "MIX" | "OUTPUT"
+                    ) =>
+                {
+                    Some(text.text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            ["DEPTH", "FLOOR", "OFFSET", "SMOOTH", "MIX", "OUTPUT"]
+        );
+        assert_eq!(NumericEntryTarget::Phase.param_id(), PARAM_PHASE_OFFSET_ID);
+        assert_eq!(NumericEntryTarget::Phase.label(), "Offset");
+        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "67%")
+        }));
+        assert_eq!(
+            knob_plain_value(NumericEntryTarget::Phase, 0.75),
+            (PARAM_PHASE_OFFSET_ID, 0.75)
+        );
+    }
+
+    #[test]
+    fn knob_routes_pointer_keyboard_and_reset_lifecycles_without_batch_spam() {
+        let params = Arc::new(PumpParams::new());
+        let queue = Arc::new(PumpAutomationQueue::default());
+        let mut state = RadiantEditorState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            }),
+        );
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Phase,
+                message: KnobMessage::GestureStarted { value: 0.0 },
+            },
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Phase,
+                message: KnobMessage::ValueChanged { value: 0.25 },
+            },
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Phase,
+                message: KnobMessage::ValueChanged { value: 0.5 },
+            },
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Phase,
+                message: KnobMessage::GestureEnded { value: 0.5 },
+            },
+        );
+        assert!((params.phase_offset() - 0.5).abs() < f32::EPSILON);
+
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        let stats = queue.drain_to_output(&mut output, &mut scratch);
+        assert_eq!(stats.attempted, 4);
+        let kinds: Vec<_> = (0..buffer.len())
+            .filter_map(|index| {
+                let event = buffer.get(index as u32)?;
+                Some(match event.as_core_event() {
+                    Some(CoreEventSpace::ParamValue(value)) => {
+                        assert_eq!(value.param_id(), Some(PARAM_PHASE_OFFSET_ID));
+                        "value"
+                    }
+                    Some(CoreEventSpace::ParamGestureBegin(_)) => "begin",
+                    Some(CoreEventSpace::ParamGestureEnd(_)) => "end",
+                    _ => "other",
+                })
+            })
+            .collect();
+        assert_eq!(kinds, ["other", "value", "value", "other"]);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Phase,
+                message: KnobMessage::KeyboardGesture(radiant::prelude::KnobKeyboardGesture::new(
+                    0.5, 0.75,
+                )),
+            },
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Phase,
+                message: KnobMessage::Reset { value: 0.0 },
+            },
+        );
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            queue.drain_to_output(&mut output, &mut scratch).attempted,
+            6
+        );
+        assert!((params.phase_offset()).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn clap_sink_enqueues_each_continuous_event_as_it_arrives() {
+        let queue = Arc::new(PumpAutomationQueue::default());
+        let sink = ClapHostParamEditSink {
+            queue: Arc::clone(&queue),
+            requester: None,
+        };
+        let config = AutomationConfig::default();
+
+        assert!(sink.gesture_started(&config, PARAM_PHASE_OFFSET_ID));
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            queue.drain_to_output(&mut output, &mut scratch).attempted,
+            1
+        );
+
+        assert!(sink.gesture_value(&config, PARAM_PHASE_OFFSET_ID, 0.5));
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            queue.drain_to_output(&mut output, &mut scratch).attempted,
+            1
+        );
+
+        assert!(sink.gesture_ended(&config, PARAM_PHASE_OFFSET_ID));
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            queue.drain_to_output(&mut output, &mut scratch).attempted,
+            1
+        );
+    }
+
+    #[test]
+    fn clap_sink_preserves_lifecycle_order_for_each_deck_control() {
+        let config = AutomationConfig::default();
+        for param_id in [
+            PARAM_DEPTH_ID,
+            PARAM_FLOOR_ID,
+            PARAM_PHASE_OFFSET_ID,
+            PARAM_SMOOTH_ID,
+            PARAM_MIX_ID,
+            PARAM_OUTPUT_GAIN_ID,
+        ] {
+            let queue = Arc::new(PumpAutomationQueue::default());
+            let sink = ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            };
+            assert!(sink.gesture_started(&config, param_id));
+            assert!(sink.gesture_value(&config, param_id, 0.25));
+            assert!(sink.gesture_ended(&config, param_id));
+
+            let mut buffer = EventBuffer::new();
+            let mut output = buffer.as_output();
+            let mut scratch = Vec::new();
+            assert_eq!(
+                queue.drain_to_output(&mut output, &mut scratch).attempted,
+                3,
+                "each deck control should emit one complete lifecycle"
+            );
+            let kinds: Vec<_> = (0..buffer.len())
+                .map(|index| {
+                    let event = buffer
+                        .get(index as u32)
+                        .expect("lifecycle event should be present");
+                    match event.header().type_id() {
+                        ParamGestureBeginEvent::TYPE_ID => {
+                            assert_eq!(
+                                event
+                                    .as_event::<ParamGestureBeginEvent>()
+                                    .expect("gesture begin should decode")
+                                    .param_id(),
+                                Some(param_id)
+                            );
+                            "begin"
+                        }
+                        ParamValueEvent::TYPE_ID => {
+                            let CoreEventSpace::ParamValue(event) = event
+                                .as_core_event()
+                                .expect("value should decode as a core event")
+                            else {
+                                unreachable!()
+                            };
+                            assert_eq!(event.param_id(), Some(param_id));
+                            "value"
+                        }
+                        ParamGestureEndEvent::TYPE_ID => {
+                            assert_eq!(
+                                event
+                                    .as_event::<ParamGestureEndEvent>()
+                                    .expect("gesture end should decode")
+                                    .param_id(),
+                                Some(param_id)
+                            );
+                            "end"
+                        }
+                        _ => "other",
+                    }
+                })
+                .collect();
+            assert_eq!(kinds, ["begin", "value", "end"]);
+        }
     }
 
     #[test]

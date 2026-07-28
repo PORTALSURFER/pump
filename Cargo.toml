@@ -10,8 +10,8 @@ build = "build.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "5b550cc0389c81f003c983a48f53282c85735d7e", default-features = false }
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "5c27da99a29687ed803b3bddb4775cdbe9d219bc", features = ["radiant-gui"] }
+radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "546af893d7089b67b5b1da7000c5b8369f60cdd3", default-features = false }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "1cabfba3135f166721f1e0f1e55151fd05beb1c4", features = ["radiant-gui"] }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 [lints.rust]

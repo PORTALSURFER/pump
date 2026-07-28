@@ -19,6 +19,7 @@ pub struct PumpAutomationQueue {
     queue: AutomationQueue,
     gate: Mutex<()>,
     pending: AtomicUsize,
+    gesture_end_reservation: AtomicUsize,
 }
 
 impl PumpAutomationQueue {
@@ -28,6 +29,7 @@ impl PumpAutomationQueue {
             queue: AutomationQueue::with_config(config),
             gate: Mutex::new(()),
             pending: AtomicUsize::new(0),
+            gesture_end_reservation: AtomicUsize::new(0),
         }
     }
 
@@ -87,6 +89,84 @@ impl PumpAutomationQueue {
             self.record_enqueued(GESTURE_EVENT_COUNT);
         }
         complete
+    }
+
+    /// Begin a continuous gesture while reserving space for its terminal event.
+    pub fn push_gesture_begin(&self, config: &AutomationConfig, param_id: ClapId) -> bool {
+        if !config.is_enabled(param_id) {
+            return false;
+        }
+        let Ok(_gate) = self.gate.lock() else {
+            return false;
+        };
+        if self.gesture_end_reservation.load(Ordering::Relaxed) != 0 {
+            return false;
+        }
+        let queue_config = self.config();
+        let pending = self.pending.load(Ordering::Relaxed);
+        if queue_config.drop_policy == AutomationDropPolicy::DropNewest
+            && pending.saturating_add(2) > queue_config.max_events
+        {
+            return false;
+        }
+        let status = self.queue.push_gesture_begin(config, param_id);
+        if status != AutomationEnqueueStatus::Enqueued {
+            return false;
+        }
+        self.record_enqueued(1);
+        self.gesture_end_reservation.store(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Append one value to an active continuous gesture when capacity permits.
+    pub fn push_gesture_value(
+        &self,
+        config: &AutomationConfig,
+        param_id: ClapId,
+        value: f64,
+    ) -> bool {
+        if !config.is_enabled(param_id) {
+            return false;
+        }
+        let Ok(_gate) = self.gate.lock() else {
+            return false;
+        };
+        if self.gesture_end_reservation.load(Ordering::Relaxed) == 0 {
+            return false;
+        }
+        let queue_config = self.config();
+        let pending = self.pending.load(Ordering::Relaxed);
+        if queue_config.drop_policy == AutomationDropPolicy::DropNewest
+            && pending.saturating_add(1) >= queue_config.max_events
+        {
+            return false;
+        }
+        let status = self.queue.push_value(config, param_id, value);
+        if status != AutomationEnqueueStatus::Enqueued {
+            return false;
+        }
+        self.record_enqueued(1);
+        true
+    }
+
+    /// End a continuous gesture, consuming its terminal-event reservation.
+    pub fn push_gesture_end(&self, config: &AutomationConfig, param_id: ClapId) -> bool {
+        if !config.is_enabled(param_id) {
+            return false;
+        }
+        let Ok(_gate) = self.gate.lock() else {
+            return false;
+        };
+        if self.gesture_end_reservation.load(Ordering::Relaxed) == 0 {
+            return false;
+        }
+        let status = self.queue.push_gesture_end(config, param_id);
+        if status != AutomationEnqueueStatus::Enqueued {
+            return false;
+        }
+        self.record_enqueued(1);
+        self.gesture_end_reservation.store(0, Ordering::Relaxed);
+        true
     }
 
     /// Drain pending events without ever waiting for a GUI producer.
@@ -185,5 +265,29 @@ mod tests {
 
         assert!(stats.locked);
         assert_eq!(stats.attempted, 0);
+    }
+
+    #[test]
+    fn continuous_gesture_preserves_begin_values_end_and_reserves_terminal_space() {
+        let queue = PumpAutomationQueue::with_config(AutomationQueueConfig::new(
+            4,
+            AutomationDropPolicy::DropNewest,
+        ));
+        let config = AutomationConfig::default();
+        let param = ClapId::new(1);
+
+        assert!(queue.push_gesture_begin(&config, param));
+        assert!(queue.push_gesture_value(&config, param, 0.25));
+        assert!(queue.push_gesture_value(&config, param, 0.5));
+        assert!(!queue.push_gesture_value(&config, param, 0.75));
+        assert!(queue.push_gesture_end(&config, param));
+
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        let stats = queue.drain_to_output(&mut output, &mut scratch);
+        assert_eq!(stats.attempted, 4);
+        assert_eq!(buffer.len(), 4);
+        assert_eq!(queue.pending_count(), 0);
     }
 }

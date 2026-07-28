@@ -33,6 +33,61 @@ impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
             performed
         }
     }
+
+    fn gesture_started(
+        &self,
+        config: &toybox::clap::automation::AutomationConfig,
+        param_id: toybox::clack_plugin::utils::ClapId,
+    ) -> bool {
+        if !config.is_enabled(param_id) {
+            return false;
+        }
+        let Ok(handler) = self.shared.component_handler.lock() else {
+            return false;
+        };
+        let Some(handler) = handler.as_ref() else {
+            return false;
+        };
+        unsafe { handler.beginEdit(param_id.get()) == kResultOk }
+    }
+
+    fn gesture_value(
+        &self,
+        config: &toybox::clap::automation::AutomationConfig,
+        param_id: toybox::clack_plugin::utils::ClapId,
+        value: f64,
+    ) -> bool {
+        if !config.is_enabled(param_id) {
+            return false;
+        }
+        let Some(normalized) = normalized_from_plain_value(param_id, value) else {
+            return false;
+        };
+        let Ok(handler) = self.shared.component_handler.lock() else {
+            return false;
+        };
+        let Some(handler) = handler.as_ref() else {
+            return false;
+        };
+        unsafe { handler.performEdit(param_id.get(), normalized) == kResultOk }
+    }
+
+    fn gesture_ended(
+        &self,
+        config: &toybox::clap::automation::AutomationConfig,
+        param_id: toybox::clack_plugin::utils::ClapId,
+    ) -> bool {
+        if !config.is_enabled(param_id) {
+            return false;
+        }
+        let Ok(handler) = self.shared.component_handler.lock() else {
+            return false;
+        };
+        let Some(handler) = handler.as_ref() else {
+            return false;
+        };
+        unsafe { handler.endEdit(param_id.get()) == kResultOk }
+    }
 }
 
 pub(super) struct PumpVst3GuiAdapter {

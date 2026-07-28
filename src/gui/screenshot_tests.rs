@@ -104,6 +104,82 @@ fn render_case_with_bypass(
     (plan, pixels)
 }
 
+fn render_non_default_active_meter_case(
+    name: &str,
+    width: u32,
+    height: u32,
+    dpi: DpiScale,
+) -> (SurfacePaintPlan, Vec<u8>) {
+    let store_path = std::env::temp_dir().join(format!(
+        "pump-opt1134-screenshot-fixture-{}-{}.bin",
+        std::process::id(),
+        name
+    ));
+    let (plan, pixels) = with_test_curve_slot_path(store_path.clone(), || {
+        let params = Arc::new(PumpParams::new());
+        params.set_depth_db(48.0);
+        params.set_floor_db(-18.0);
+        params.set_phase_offset(0.23);
+        params.set_smooth(0.62);
+        params.set_mix(0.37);
+        params.set_output_gain_db(-3.5);
+        let status = Arc::new(GuiStatus::default());
+        status.update(
+            0.25,
+            0.5,
+            crate::GuiTransportTelemetry {
+                is_playing: true,
+                transport_is_playing: true,
+                has_host_beats_timeline: true,
+                beat_phase: 0.25,
+                tempo_bpm: 120.0,
+                beats_per_cycle: 4.0,
+            },
+        );
+        let mut editor = RadiantPumpEditor::new(
+            params,
+            Arc::clone(&status),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        editor.resize(width, height);
+        // Refresh immediately before the retained frame is painted so the
+        // active meter cannot age out while the fixture is being assembled.
+        status.publish_gain_reduction(0.5, true);
+        let plan = editor.paint_plan().clone();
+        let mut renderer = radiant::gui_runtime::OffscreenVelloCapture::new(
+            Vector2::new(width as f32, height as f32),
+            dpi,
+        )
+        .expect("Vello offscreen adapter should be available for screenshot tests");
+        let pixels = renderer
+            .capture(&plan)
+            .expect("Radiant paint plan should render through Vello");
+        (plan, pixels)
+    });
+    let _ = fs::remove_file(store_path);
+    let (physical_width, physical_height) = (
+        (width as f32 * dpi.factor()).ceil() as u32,
+        (height as f32 * dpi.factor()).ceil() as u32,
+    );
+    assert_eq!(
+        pixels.len(),
+        physical_width as usize * physical_height as usize * 4
+    );
+    image::save_buffer_with_format(
+        screenshot_root().join(format!("{name}.png")),
+        &pixels,
+        physical_width,
+        physical_height,
+        ColorType::Rgba8,
+        ImageFormat::Png,
+    )
+    .expect("screenshot PNG should be writable");
+    (plan, pixels)
+}
+
 const GALLERY_WIDTH: u32 = 720;
 const GALLERY_HEIGHT: u32 = 360;
 const GALLERY_LABEL_WIDTH: f32 = 104.0;
@@ -654,7 +730,7 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
         "quick-shape carousel must paint seeded curves instead of flat empty tiles"
     );
     for label in [
-        "PUMP", "Sync", "Trigger", "Mode", "Mix", "Depth", "Floor", "Phase", "Output", "Smooth",
+        "PUMP", "Sync", "Trigger", "Mode", "DEPTH", "FLOOR", "OFFSET", "SMOOTH", "MIX", "OUTPUT",
     ] {
         assert!(labels.contains(&label), "missing editor label {label:?}");
     }
@@ -718,6 +794,33 @@ fn pump_editor_screenshots_capture_explicit_active_and_bypassed_states() {
         matches!(
             primitive,
             PaintPrimitive::Text(text) if text.text.as_str() == "BYPASSED"
+        )
+    }));
+}
+
+#[test]
+fn pump_editor_screenshot_fixture_renders_non_default_deck_and_active_meter() {
+    let (plan, pixels) = render_non_default_active_meter_case(
+        "pump-non-default-active-meter-912x684",
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        DpiScale::ONE,
+    );
+    assert!(!pixels.is_empty());
+    for expected in ["48 dB", "-18 dB", "23%", "62%", "37%", "-3.5 dB"] {
+        assert!(
+            plan.primitives.iter().any(
+                |primitive| matches!(primitive, PaintPrimitive::Text(text) if text.text.contains(expected))
+            ),
+            "non-default screenshot fixture should expose {expected}"
+        );
+    }
+    let meter = pump_meter_colors();
+    assert!(plan.primitives.iter().any(|primitive| {
+        matches!(
+            primitive,
+            PaintPrimitive::FillRect(fill)
+                if fill.color == meter.nominal || fill.color == meter.hot
         )
     }));
 }
