@@ -364,6 +364,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (af186a3)
 
+- (changelog) Update changelog [skip ci] (ce49662)
+
 
 ### Features
 
@@ -1227,6 +1229,12 @@ Add Pump A/B sound states (e1fc475)
 * fix(release): register temporary signing keychain
 
 * test(release): assert keychain restore ordering (e5e67a9)
+
+- Build target knob deck and gain reduction section (e16cd60)
+
+- Merge pull request #46 from PORTALSURFER/wsvasek/opt-1134-pump-redesign-build-the-target-knob-deck-and-gain-reduction
+
+Build target knob deck and gain reduction section (ff44770)
 
 
 ### Refactoring
