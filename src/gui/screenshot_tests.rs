@@ -11,7 +11,7 @@ use radiant::{
     },
     layout::LayoutOutput,
     runtime::{
-        PaintFillRect, PaintPathCommand, PaintPrimitive, PaintStrokePolyline, PaintText,
+        Event, PaintFillRect, PaintPathCommand, PaintPrimitive, PaintStrokePolyline, PaintText,
         PaintTextAlign, PaintTextRun, SurfacePaintPlan,
     },
     theme::DpiScale,
@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{
     curve_presets::quick_slot_seeds,
-    params::{with_test_curve_slot_path, PumpParams},
+    params::{with_test_curve_slot_path, PumpParams, SoundSide},
     GuiStatus,
 };
 
@@ -43,6 +43,120 @@ fn screenshot_root() -> PathBuf {
 
 fn render_case(name: &str, width: u32, height: u32, dpi: DpiScale) -> (SurfacePaintPlan, Vec<u8>) {
     render_case_with_bypass(name, width, height, dpi, false)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeaderCaptureState {
+    Normal,
+    Hovered,
+    CopyHovered,
+    AHovered,
+    BHovered,
+    Pressed,
+    Disabled,
+    AActive,
+    BActive,
+}
+
+fn header_svg_centers(plan: &SurfacePaintPlan) -> Vec<Point> {
+    plan.primitives
+        .iter()
+        .filter_map(|primitive| match primitive {
+            PaintPrimitive::Svg(svg) if svg.rect.min.y < 70.0 => Some(Point::new(
+                svg.rect.min.x + svg.rect.width() * 0.5,
+                svg.rect.min.y + svg.rect.height() * 0.5,
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn header_text_center(plan: &SurfacePaintPlan, label: &str) -> Point {
+    plan.primitives
+        .iter()
+        .find_map(|primitive| match primitive {
+            PaintPrimitive::Text(text) if text.text.as_str() == label && text.rect.min.y < 70.0 => {
+                Some(Point::new(
+                    text.rect.min.x + text.rect.width() * 0.5,
+                    text.rect.min.y + text.rect.height() * 0.5,
+                ))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("production header should expose {label} selector text"))
+}
+
+fn render_header_case(name: &str, state: HeaderCaptureState) -> (SurfacePaintPlan, Vec<u8>) {
+    let store_path = std::env::temp_dir().join(format!(
+        "pump-opt1124-header-{}-{}.bin",
+        std::process::id(),
+        name
+    ));
+    let (plan, pixels) = with_test_curve_slot_path(store_path.clone(), || {
+        let params = Arc::new(PumpParams::new());
+        if state == HeaderCaptureState::BActive {
+            assert!(params.set_active_sound(SoundSide::B));
+        }
+        let mut editor = RadiantPumpEditor::new(
+            params,
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        let initial = editor.paint_plan().clone();
+        let header_icons = header_svg_centers(&initial);
+        assert!(
+            header_icons.len() >= 5,
+            "production header should expose history, A/B, copy, and settings icons"
+        );
+        match state {
+            HeaderCaptureState::Normal
+            | HeaderCaptureState::AActive
+            | HeaderCaptureState::BActive => {}
+            HeaderCaptureState::Hovered => {
+                editor.dispatch_event(Event::pointer_move(header_icons[2]));
+            }
+            HeaderCaptureState::CopyHovered => {
+                editor.dispatch_event(Event::pointer_move(header_icons[3]));
+            }
+            HeaderCaptureState::AHovered => {
+                editor.dispatch_event(Event::pointer_move(header_text_center(&initial, "A")));
+            }
+            HeaderCaptureState::BHovered => {
+                editor.dispatch_event(Event::pointer_move(header_text_center(&initial, "B")));
+            }
+            HeaderCaptureState::Pressed => {
+                editor.dispatch_event(Event::pointer_move(header_icons[3]));
+                editor.dispatch_event(Event::primary_press(header_icons[3]));
+            }
+            HeaderCaptureState::Disabled => {
+                editor.dispatch_event(Event::pointer_move(header_icons[4]));
+            }
+        }
+        let plan = editor.paint_plan().clone();
+        let mut renderer = radiant::gui_runtime::OffscreenVelloCapture::new(
+            Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+            DpiScale::ONE,
+        )
+        .expect("Vello offscreen adapter should be available for header screenshots");
+        let pixels = renderer
+            .capture(&plan)
+            .expect("production header paint plan should render through Vello");
+        (plan, pixels)
+    });
+    let _ = fs::remove_file(store_path);
+    image::save_buffer_with_format(
+        screenshot_root().join(format!("{name}.png")),
+        &pixels,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        ColorType::Rgba8,
+        ImageFormat::Png,
+    )
+    .expect("header screenshot PNG should be writable");
+    (plan, pixels)
 }
 
 fn render_case_with_bypass(
@@ -795,6 +909,69 @@ fn pump_editor_screenshots_capture_explicit_active_and_bypassed_states() {
             primitive,
             PaintPrimitive::Text(text) if text.text.as_str() == "BYPASSED"
         )
+    }));
+}
+
+#[test]
+fn pump_editor_header_captures_production_interaction_states() {
+    let (normal, normal_pixels) =
+        render_header_case("pump-header-normal-912x684", HeaderCaptureState::Normal);
+    let (hovered, hovered_pixels) =
+        render_header_case("pump-header-hovered-912x684", HeaderCaptureState::Hovered);
+    let (copy_hovered, _) = render_header_case(
+        "pump-header-copy-hovered-912x684",
+        HeaderCaptureState::CopyHovered,
+    );
+    let (a_hovered, _) = render_header_case(
+        "pump-header-a-hovered-912x684",
+        HeaderCaptureState::AHovered,
+    );
+    let (b_hovered, _) = render_header_case(
+        "pump-header-b-hovered-912x684",
+        HeaderCaptureState::BHovered,
+    );
+    let (pressed, pressed_pixels) =
+        render_header_case("pump-header-pressed-912x684", HeaderCaptureState::Pressed);
+    let (disabled, _) =
+        render_header_case("pump-header-disabled-912x684", HeaderCaptureState::Disabled);
+    let (a_active, _) =
+        render_header_case("pump-header-a-active-912x684", HeaderCaptureState::AActive);
+    let (b_active, _) =
+        render_header_case("pump-header-b-active-912x684", HeaderCaptureState::BActive);
+
+    for plan in [&normal, &hovered, &pressed, &disabled, &a_active, &b_active] {
+        assert!(plan.primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "PUMP")
+        }));
+    }
+    assert!(hovered.primitives.iter().any(|primitive| {
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Switch to sound B")
+    }));
+    assert!(copy_hovered.primitives.iter().any(|primitive| {
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Copy sound A to sound B")
+    }));
+    assert!(a_hovered.primitives.iter().any(|primitive| {
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Select sound A")
+    }));
+    assert!(b_hovered.primitives.iter().any(|primitive| {
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Select sound B")
+    }));
+    assert_ne!(
+        normal_pixels, hovered_pixels,
+        "hovered header should repaint"
+    );
+    assert_ne!(
+        normal_pixels, pressed_pixels,
+        "pressed header should repaint"
+    );
+    assert!(disabled.primitives.iter().any(|primitive| {
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Settings are not available in this build")
+    }));
+    assert!(a_active.primitives.iter().any(|primitive| {
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.contains("A active"))
+    }));
+    assert!(b_active.primitives.iter().any(|primitive| {
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.contains("B active"))
     }));
 }
 

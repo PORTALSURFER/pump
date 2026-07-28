@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use radiant::gui::automation::AutomationRole;
+use radiant::gui::automation::{AutomationLiveRegion, AutomationNodeSemantics, AutomationRole};
 use radiant::gui::svg::IconName;
 use radiant::gui::types::{Point, Rect, Rgba8, Vector2};
 use radiant::gui::visualization::{
@@ -24,9 +24,9 @@ use radiant::runtime::{
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
-    ButtonMessage, FocusBehavior, IconButtonWidget, PointerButton, TextWrap, Widget,
-    WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput, WidgetSemantics,
-    WidgetSizing,
+    ButtonMessage, FocusBehavior, IconButtonWidget, PointerButton, PointerModifiers, TextWrap,
+    Widget, WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput,
+    WidgetSemantics, WidgetSizing,
 };
 use toybox::clack_extensions::params::HostParams;
 use toybox::clack_plugin::prelude::HostSharedHandle;
@@ -365,17 +365,26 @@ impl WidgetSemantics for BypassControlWidget {
 struct ActionIconButtonWidget {
     button: IconButtonWidget,
     label: &'static str,
+    disabled: bool,
 }
 
 impl ActionIconButtonWidget {
-    fn new(icon: IconName, label: &'static str, width: f32, height: f32) -> Self {
+    fn new_with_state(
+        icon: IconName,
+        label: &'static str,
+        width: f32,
+        height: f32,
+        disabled: bool,
+    ) -> Self {
+        let button = IconButtonWidget::new(
+            0,
+            icon.icon(),
+            WidgetSizing::fixed(Vector2::new(width, height)),
+        );
         Self {
-            button: IconButtonWidget::new(
-                0,
-                icon.icon(),
-                WidgetSizing::fixed(Vector2::new(width, height)),
-            ),
+            button,
             label,
+            disabled,
         }
     }
 }
@@ -390,6 +399,14 @@ impl Widget for ActionIconButtonWidget {
     }
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        if self.disabled {
+            if let WidgetInput::PointerMove { position } = input {
+                // Disabled actions remain hoverable so their explanatory
+                // tooltip can be discovered without making them activatable.
+                self.button.common.state.hovered = bounds.contains(position);
+            }
+            return None;
+        }
         self.button.handle_input(bounds, input)
     }
 
@@ -415,7 +432,9 @@ impl Widget for ActionIconButtonWidget {
         layout: &LayoutOutput,
         theme: &ThemeTokens,
     ) {
-        self.button.append_paint(primitives, bounds, layout, theme);
+        let mut button = self.button.clone();
+        button.common.state.disabled = self.disabled;
+        button.append_paint(primitives, bounds, layout, theme);
     }
 }
 
@@ -427,6 +446,25 @@ impl WidgetSemantics for ActionIconButtonWidget {
     fn automation_label(&self) -> Option<String> {
         Some(self.label.to_owned())
     }
+
+    fn resolve_automation_semantics(&self, common: &WidgetCommon) -> AutomationNodeSemantics {
+        AutomationNodeSemantics {
+            role: self.automation_role(),
+            label: self.automation_label(),
+            description: self.automation_description(),
+            value_text: self.automation_value_text(),
+            checked: self.automation_checked(),
+            selected: common.state.selected,
+            disabled: self.disabled,
+            read_only: common.state.read_only,
+            focusable: common.focus != FocusBehavior::None && !self.disabled,
+            focused: common.state.focused,
+            tab_index: (common.focus == FocusBehavior::Keyboard && !self.disabled).then_some(0),
+            focus_hints: Default::default(),
+            live_region: AutomationLiveRegion::None,
+            metadata: Default::default(),
+        }
+    }
 }
 
 fn action_icon_button(
@@ -436,8 +474,19 @@ fn action_icon_button(
     width: f32,
     height: f32,
 ) -> ViewNode<RadiantEditorMessage> {
+    action_icon_button_with_state(icon, label, message, width, height, false)
+}
+
+fn action_icon_button_with_state(
+    icon: IconName,
+    label: &'static str,
+    message: RadiantEditorMessage,
+    width: f32,
+    height: f32,
+    disabled: bool,
+) -> ViewNode<RadiantEditorMessage> {
     custom_widget_mapped(
-        ActionIconButtonWidget::new(icon, label, width, height),
+        ActionIconButtonWidget::new_with_state(icon, label, width, height, disabled),
         move |_: ButtonMessage| message.clone(),
     )
     .size(width, height)
@@ -712,6 +761,7 @@ enum RadiantEditorMessage {
     PresetFavorite,
     PresetAdd,
     PresetSave,
+    SettingsUnavailable,
     Knob {
         target: NumericEntryTarget,
         message: KnobMessage,
@@ -822,6 +872,32 @@ impl RadiantPumpEditor {
     /// Route a focused text character into the Radiant runtime.
     pub(crate) fn dispatch_character(&mut self, ch: char) -> bool {
         self.runtime.dispatch_event(Event::character(ch)).is_some()
+    }
+
+    /// Dispatch a command-modified undo or redo shortcut from the host.
+    pub(crate) fn dispatch_shortcut(
+        &mut self,
+        character: char,
+        modifiers: PointerModifiers,
+    ) -> bool {
+        if !modifiers.command || modifiers.alt || !character.eq_ignore_ascii_case(&'z') {
+            return false;
+        }
+
+        let state = self.runtime.bridge().state();
+        let message = if modifiers.shift {
+            if state.redo_history.is_empty() {
+                return false;
+            }
+            RadiantEditorMessage::Redo
+        } else {
+            if state.undo_history.is_empty() {
+                return false;
+            }
+            RadiantEditorMessage::Undo
+        };
+        self.runtime.dispatch_message(message);
+        true
     }
 
     /// Cancel active numeric value entry, if any.
@@ -968,6 +1044,10 @@ impl toybox::radiant_gui::RadiantEditor for RadiantPumpEditor {
 
     fn dispatch_character(&mut self, character: char) -> bool {
         Self::dispatch_character(self, character)
+    }
+
+    fn dispatch_shortcut(&mut self, character: char, modifiers: PointerModifiers) -> bool {
+        Self::dispatch_shortcut(self, character, modifiers)
     }
 
     fn cancel_text_entry(&mut self) -> bool {
@@ -1191,81 +1271,142 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
     .height(PRESET_TIMING_HEIGHT);
+    let preset_actions = row([
+        action_icon_button(
+            IconName::ChevronLeft,
+            "Previous preset",
+            RadiantEditorMessage::PresetPrevious,
+            36.0,
+            PRESET_TIMING_HEIGHT,
+        ),
+        action_icon_button(
+            IconName::ChevronRight,
+            "Next preset",
+            RadiantEditorMessage::PresetNext,
+            36.0,
+            PRESET_TIMING_HEIGHT,
+        ),
+        action_icon_button(
+            IconName::Favorite,
+            "Favorite preset",
+            RadiantEditorMessage::PresetFavorite,
+            36.0,
+            PRESET_TIMING_HEIGHT,
+        ),
+        action_icon_button(
+            IconName::Copy,
+            "Add preset",
+            RadiantEditorMessage::PresetAdd,
+            36.0,
+            PRESET_TIMING_HEIGHT,
+        ),
+        action_icon_button(
+            IconName::Pattern,
+            "Save preset",
+            RadiantEditorMessage::PresetSave,
+            36.0,
+            PRESET_TIMING_HEIGHT,
+        ),
+    ])
+    .spacing(PUMP_VISUAL_METRICS.space_4)
+    .width(196.0)
+    .height(PRESET_TIMING_HEIGHT);
     let timing_strip = row([
         preset_dropdown
             .build()
             .width(150.0)
             .height(PRESET_TIMING_HEIGHT),
+        preset_actions,
         timing_controls,
     ])
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
     .height(PRESET_TIMING_HEIGHT);
+    let history_actions = row([
+        action_icon_button_with_state(
+            IconName::History,
+            "Undo",
+            RadiantEditorMessage::Undo,
+            PUMP_VISUAL_METRICS.icon_hit,
+            BUILD_LABEL_HEIGHT,
+            state.undo_history.is_empty(),
+        ),
+        action_icon_button_with_state(
+            IconName::ChevronRight,
+            "Redo",
+            RadiantEditorMessage::Redo,
+            PUMP_VISUAL_METRICS.icon_hit,
+            BUILD_LABEL_HEIGHT,
+            state.redo_history.is_empty(),
+        ),
+    ])
+    .spacing(PUMP_VISUAL_METRICS.space_4)
+    .width(320.0)
+    .height(BUILD_LABEL_HEIGHT);
+    let ab_actions = row([
+        action_icon_button(
+            IconName::CompareAb,
+            "Switch active A/B sound",
+            RadiantEditorMessage::SelectSound(active_sound.other()),
+            PUMP_VISUAL_METRICS.icon_hit,
+            BUILD_LABEL_HEIGHT,
+        )
+        .tooltip(if active_sound == SoundSide::A {
+            "Switch to sound B"
+        } else {
+            "Switch to sound A"
+        }),
+        toggle("A", active_sound == SoundSide::A)
+            .message(|_| RadiantEditorMessage::SelectSound(SoundSide::A))
+            .size(34.0, BUILD_LABEL_HEIGHT)
+            .tooltip("Select sound A"),
+        toggle("B", active_sound == SoundSide::B)
+            .message(|_| RadiantEditorMessage::SelectSound(SoundSide::B))
+            .size(34.0, BUILD_LABEL_HEIGHT)
+            .tooltip("Select sound B"),
+        action_icon_button(
+            IconName::Copy,
+            if active_sound == SoundSide::A {
+                "Copy A to B"
+            } else {
+                "Copy B to A"
+            },
+            RadiantEditorMessage::CopyActiveSound,
+            PUMP_VISUAL_METRICS.icon_hit,
+            BUILD_LABEL_HEIGHT,
+        )
+        .tooltip(if active_sound == SoundSide::A {
+            "Copy sound A to sound B"
+        } else {
+            "Copy sound B to sound A"
+        }),
+        action_icon_button_with_state(
+            IconName::Settings,
+            "Settings",
+            RadiantEditorMessage::SettingsUnavailable,
+            PUMP_VISUAL_METRICS.icon_hit,
+            BUILD_LABEL_HEIGHT,
+            true,
+        )
+        .tooltip("Settings are not available in this build"),
+        text(if params.preset_persistence_warning().is_some() {
+            super::PRESET_WARNING_STORAGE.to_string()
+        } else {
+            build_version_label()
+        })
+        .muted_text()
+        .align_text(TextAlign::Right)
+        .fill_width(),
+    ])
+    .spacing(PUMP_VISUAL_METRICS.space_4)
+    .width(320.0)
+    .height(BUILD_LABEL_HEIGHT);
     Arc::new(
         column([
             row([
-                text("PUMP").muted_text().fill_width(),
-                toggle("A", active_sound == SoundSide::A)
-                    .message(|_| RadiantEditorMessage::SelectSound(SoundSide::A))
-                    .size(34.0, BUILD_LABEL_HEIGHT),
-                toggle("B", active_sound == SoundSide::B)
-                    .message(|_| RadiantEditorMessage::SelectSound(SoundSide::B))
-                    .size(34.0, BUILD_LABEL_HEIGHT),
-                action_icon_button(
-                    IconName::Copy,
-                    if active_sound == SoundSide::A {
-                        "Copy A to B"
-                    } else {
-                        "Copy B to A"
-                    },
-                    RadiantEditorMessage::CopyActiveSound,
-                    46.0,
-                    BUILD_LABEL_HEIGHT,
-                ),
-                text(ab_status).muted_text().width(120.0),
-                action_icon_button(
-                    IconName::ChevronLeft,
-                    "Previous preset",
-                    RadiantEditorMessage::PresetPrevious,
-                    36.0,
-                    BUILD_LABEL_HEIGHT,
-                ),
-                action_icon_button(
-                    IconName::ChevronRight,
-                    "Next preset",
-                    RadiantEditorMessage::PresetNext,
-                    36.0,
-                    BUILD_LABEL_HEIGHT,
-                ),
-                action_icon_button(
-                    IconName::Favorite,
-                    "Favorite preset",
-                    RadiantEditorMessage::PresetFavorite,
-                    36.0,
-                    BUILD_LABEL_HEIGHT,
-                ),
-                action_icon_button(
-                    IconName::Copy,
-                    "Add preset",
-                    RadiantEditorMessage::PresetAdd,
-                    36.0,
-                    BUILD_LABEL_HEIGHT,
-                ),
-                action_icon_button(
-                    IconName::Pattern,
-                    "Save preset",
-                    RadiantEditorMessage::PresetSave,
-                    36.0,
-                    BUILD_LABEL_HEIGHT,
-                ),
-                text(if params.preset_persistence_warning().is_some() {
-                    super::PRESET_WARNING_STORAGE.to_string()
-                } else {
-                    build_version_label()
-                })
-                .muted_text()
-                .align_text(TextAlign::Right)
-                .fill_width(),
+                history_actions,
+                text("PUMP").align_text(TextAlign::Center).fill_width(),
+                ab_actions,
             ])
             .height(BUILD_LABEL_HEIGHT)
             .fill_width(),
@@ -1309,31 +1450,17 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             curve_slot_row(state),
             parameter_deck(state, params, depth, floor, output, smooth),
             row([
-                action_icon_button(
-                    IconName::History,
-                    "Undo",
-                    RadiantEditorMessage::Undo,
-                    64.0,
-                    CONTROL_ROW_HEIGHT,
-                ),
-                action_icon_button(
-                    IconName::ChevronRight,
-                    "Redo",
-                    RadiantEditorMessage::Redo,
-                    64.0,
-                    CONTROL_ROW_HEIGHT,
-                ),
                 toggle("Snap", state.snap_enabled)
                     .message(RadiantEditorMessage::ToggleSnap)
                     .size(86.0, CONTROL_ROW_HEIGHT),
-                text(format!(
-                    "Grid {}  |  {}",
-                    sync_division_label(sync),
-                    build_version_label()
-                ))
-                .muted_text()
-                .height(CONTROL_ROW_HEIGHT)
-                .fill_width(),
+                text(format!("Grid {}", sync_division_label(sync)))
+                    .muted_text()
+                    .height(CONTROL_ROW_HEIGHT)
+                    .fill_width(),
+                text(ab_status)
+                    .muted_text()
+                    .width(120.0)
+                    .height(CONTROL_ROW_HEIGHT),
                 custom_widget_mapped(
                     BypassControlWidget::new(params.bypassed(), params.bypass_automation_recent()),
                     move |_: ButtonMessage| RadiantEditorMessage::ToggleBypass,
@@ -1659,6 +1786,7 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                 let _ = state.params.save_current_state_by_name(&preset.name);
             }
         }
+        RadiantEditorMessage::SettingsUnavailable => {}
         RadiantEditorMessage::Knob { target, message } => {
             reduce_knob_message(state, target, message);
         }
@@ -4287,6 +4415,64 @@ mod tests {
     }
 
     #[test]
+    fn command_undo_redo_shortcuts_follow_history_availability() {
+        let params = Arc::new(PumpParams::new());
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        let command = PointerModifiers {
+            command: true,
+            ..PointerModifiers::default()
+        };
+
+        assert!(!editor.dispatch_shortcut('z', command));
+        assert!(!editor.dispatch_shortcut('z', PointerModifiers::default()));
+        assert!(!editor.dispatch_shortcut(
+            'z',
+            PointerModifiers {
+                command: true,
+                alt: true,
+                ..PointerModifiers::default()
+            }
+        ));
+        assert!(!editor.dispatch_shortcut('x', command));
+
+        let initial_swing = params.swing();
+        editor
+            .runtime
+            .dispatch_message(RadiantEditorMessage::Swing(0.25));
+        assert_ne!(params.swing(), initial_swing);
+        assert!(editor.dispatch_shortcut('Z', command));
+        assert_eq!(params.swing(), initial_swing);
+        assert!(editor.runtime.bridge().state().undo_history.is_empty());
+        assert_eq!(editor.runtime.bridge().state().redo_history.len(), 1);
+
+        assert!(!editor.dispatch_shortcut(
+            'z',
+            PointerModifiers {
+                command: true,
+                ..PointerModifiers::default()
+            }
+        ));
+        assert!(editor.dispatch_shortcut(
+            'z',
+            PointerModifiers {
+                command: true,
+                shift: true,
+                ..PointerModifiers::default()
+            }
+        ));
+        assert_eq!(params.swing(), 0.25);
+        assert_eq!(editor.runtime.bridge().state().undo_history.len(), 1);
+        assert!(editor.runtime.bridge().state().redo_history.is_empty());
+    }
+
+    #[test]
     fn action_icon_buttons_paint_svg_and_expose_button_labels_and_keyboard_activation() {
         let theme = ThemeTokens::default();
         let layout = LayoutOutput::default();
@@ -4315,7 +4501,8 @@ mod tests {
             (IconName::ChevronRight, "Redo", 64.0, CONTROL_ROW_HEIGHT),
         ] {
             let bounds = Rect::from_xy_size(0.0, 0.0, width, height);
-            let mut widget = ActionIconButtonWidget::new(icon, label, width, height);
+            let mut widget =
+                ActionIconButtonWidget::new_with_state(icon, label, width, height, false);
             let semantics = widget.automation_semantics();
             assert_eq!(semantics.role, AutomationRole::Button);
             assert_eq!(semantics.label.as_deref(), Some(label));
@@ -4349,6 +4536,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn settings_action_is_disabled_and_non_activatable_but_iconic() {
+        let theme = ThemeTokens::default();
+        let layout = LayoutOutput::default();
+        let bounds = Rect::from_xy_size(0.0, 0.0, PUMP_VISUAL_METRICS.icon_hit, BUILD_LABEL_HEIGHT);
+        let mut widget = ActionIconButtonWidget::new_with_state(
+            IconName::Settings,
+            "Settings",
+            bounds.width(),
+            bounds.height(),
+            true,
+        );
+        let semantics = widget.automation_semantics();
+        assert!(!semantics.focusable);
+        assert!(semantics.disabled);
+        assert!(!widget.common().state.disabled);
+        widget.handle_input(bounds, WidgetInput::FocusChanged(true));
+        assert!(widget
+            .handle_input(bounds, WidgetInput::KeyPress(WidgetKey::Enter))
+            .is_none());
+        widget.handle_input(
+            bounds,
+            WidgetInput::PointerMove {
+                position: Point::new(2.0, 2.0),
+            },
+        );
+        assert!(widget.common().state.hovered);
+
+        let mut primitives = Vec::new();
+        widget.append_paint(&mut primitives, bounds, &layout, &theme);
+        assert!(primitives
+            .iter()
+            .any(|primitive| matches!(primitive, PaintPrimitive::Svg(_))));
     }
 
     #[test]
@@ -7586,12 +7808,33 @@ mod tests {
         );
         let version_label = build_version_label();
 
-        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
-            matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == version_label)
-        }));
-        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
-            matches!(primitive, PaintPrimitive::Text(text) if text.text == "PUMP")
-        }));
+        assert_eq!(
+            frame
+                .paint_plan
+                .primitives
+                .iter()
+                .filter(|primitive| {
+                    matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == version_label)
+                })
+                .count(),
+            1,
+            "header should paint one subtle build label"
+        );
+        let pump_labels: Vec<_> = frame
+            .paint_plan
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) if text.text == "PUMP" => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            pump_labels.len(),
+            1,
+            "header should paint one centered wordmark"
+        );
+        assert_eq!(pump_labels[0].align, PaintTextAlign::Center);
         assert!(
             frame
                 .paint_plan
