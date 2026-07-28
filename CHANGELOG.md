@@ -354,6 +354,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (8a1bdbc)
 
+- (changelog) Update changelog [skip ci] (aab0c73)
+
 
 ### Features
 
@@ -1211,6 +1213,12 @@ Add production Pump release producer (411d96c)
 - Merge pull request #41 from PORTALSURFER/wsvasek/opt-1123-pump-redesign-add-ab-state-comparison-and-copy
 
 Add Pump A/B sound states (e1fc475)
+
+- Register temporary signing keychain for releases (#43)
+
+* fix(release): register temporary signing keychain
+
+* test(release): assert keychain restore ordering (e5e67a9)
 
 
 ### Refactoring
