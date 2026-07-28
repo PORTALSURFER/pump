@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use radiant::gui::automation::AutomationRole;
+use radiant::gui::automation::{AutomationLiveRegion, AutomationNodeSemantics, AutomationRole};
 use radiant::gui::svg::IconName;
 use radiant::gui::types::{Point, Rect, Rgba8, Vector2};
 use radiant::gui::visualization::{
@@ -365,6 +365,7 @@ impl WidgetSemantics for BypassControlWidget {
 struct ActionIconButtonWidget {
     button: IconButtonWidget,
     label: &'static str,
+    disabled: bool,
 }
 
 impl ActionIconButtonWidget {
@@ -375,13 +376,16 @@ impl ActionIconButtonWidget {
         height: f32,
         disabled: bool,
     ) -> Self {
-        let mut button = IconButtonWidget::new(
+        let button = IconButtonWidget::new(
             0,
             icon.icon(),
             WidgetSizing::fixed(Vector2::new(width, height)),
         );
-        button.common.state.disabled = disabled;
-        Self { button, label }
+        Self {
+            button,
+            label,
+            disabled,
+        }
     }
 }
 
@@ -395,7 +399,7 @@ impl Widget for ActionIconButtonWidget {
     }
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
-        if self.button.common.state.disabled {
+        if self.disabled {
             if let WidgetInput::PointerMove { position } = input {
                 // Disabled actions remain hoverable so their explanatory
                 // tooltip can be discovered without making them activatable.
@@ -428,7 +432,9 @@ impl Widget for ActionIconButtonWidget {
         layout: &LayoutOutput,
         theme: &ThemeTokens,
     ) {
-        self.button.append_paint(primitives, bounds, layout, theme);
+        let mut button = self.button.clone();
+        button.common.state.disabled = self.disabled;
+        button.append_paint(primitives, bounds, layout, theme);
     }
 }
 
@@ -439,6 +445,25 @@ impl WidgetSemantics for ActionIconButtonWidget {
 
     fn automation_label(&self) -> Option<String> {
         Some(self.label.to_owned())
+    }
+
+    fn resolve_automation_semantics(&self, common: &WidgetCommon) -> AutomationNodeSemantics {
+        AutomationNodeSemantics {
+            role: self.automation_role(),
+            label: self.automation_label(),
+            description: self.automation_description(),
+            value_text: self.automation_value_text(),
+            checked: self.automation_checked(),
+            selected: common.state.selected,
+            disabled: self.disabled,
+            read_only: common.state.read_only,
+            focusable: common.focus != FocusBehavior::None && !self.disabled,
+            focused: common.state.focused,
+            tab_index: (common.focus == FocusBehavior::Keyboard && !self.disabled).then_some(0),
+            focus_hints: Default::default(),
+            live_region: AutomationLiveRegion::None,
+            metadata: Default::default(),
+        }
     }
 }
 
@@ -1277,7 +1302,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             state.undo_history.is_empty(),
         ),
         action_icon_button_with_state(
-            IconName::ChevronLeft,
+            IconName::ChevronRight,
             "Redo",
             RadiantEditorMessage::Redo,
             PUMP_VISUAL_METRICS.icon_hit,
@@ -1295,13 +1320,20 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             RadiantEditorMessage::SelectSound(active_sound.other()),
             PUMP_VISUAL_METRICS.icon_hit,
             BUILD_LABEL_HEIGHT,
-        ),
+        )
+        .tooltip(if active_sound == SoundSide::A {
+            "Switch to sound B"
+        } else {
+            "Switch to sound A"
+        }),
         toggle("A", active_sound == SoundSide::A)
             .message(|_| RadiantEditorMessage::SelectSound(SoundSide::A))
-            .size(34.0, BUILD_LABEL_HEIGHT),
+            .size(34.0, BUILD_LABEL_HEIGHT)
+            .tooltip("Select sound A"),
         toggle("B", active_sound == SoundSide::B)
             .message(|_| RadiantEditorMessage::SelectSound(SoundSide::B))
-            .size(34.0, BUILD_LABEL_HEIGHT),
+            .size(34.0, BUILD_LABEL_HEIGHT)
+            .tooltip("Select sound B"),
         action_icon_button(
             IconName::Copy,
             if active_sound == SoundSide::A {
@@ -1312,7 +1344,12 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             RadiantEditorMessage::CopyActiveSound,
             PUMP_VISUAL_METRICS.icon_hit,
             BUILD_LABEL_HEIGHT,
-        ),
+        )
+        .tooltip(if active_sound == SoundSide::A {
+            "Copy sound A to sound B"
+        } else {
+            "Copy sound B to sound A"
+        }),
         action_icon_button_with_state(
             IconName::Settings,
             "Settings",
@@ -4425,8 +4462,10 @@ mod tests {
             bounds.height(),
             true,
         );
-        assert!(!widget.automation_semantics().focusable);
-        assert!(widget.common().state.disabled);
+        let semantics = widget.automation_semantics();
+        assert!(!semantics.focusable);
+        assert!(semantics.disabled);
+        assert!(!widget.common().state.disabled);
         widget.handle_input(bounds, WidgetInput::FocusChanged(true));
         assert!(widget
             .handle_input(bounds, WidgetInput::KeyPress(WidgetKey::Enter))
