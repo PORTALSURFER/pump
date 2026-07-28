@@ -1,5 +1,22 @@
 # Preset persistence contract
 
+## A/B sound-state contract
+
+Pump stores two complete editable sound snapshots. Side A is the compatibility
+default for v2-v13 project payloads; those payloads migrate by cloning the
+legacy active state into both sides and selecting A. New v14 payloads append
+the active side and both snapshots without changing any existing parameter ID.
+
+Changing A/B publishes the selected snapshot through the existing atomic audio
+parameter boundary. The processor never reads the UI-owned snapshot lock.
+Copy is explicit and directional (active to inactive), leaves the active audio
+unchanged, and is represented as one editor history action. Preset selection and
+quick-slot edits apply only to the active side; saving a preset captures that
+side's complete editable state. Host automation for the appended `Sound`
+parameter switches a pre-published realtime selector in the callback; the UI
+projection only consumes the repaint cue, avoiding a realtime lock while
+keeping the host-facing A/B value authoritative with the editor closed.
+
 Pump treats preset-bank mutations as durable transactions. Create, overwrite,
 rename, full-bank replacement, legacy preset quick-slot updates, and selected
 index changes are staged in a cloned bank. Pump writes that candidate bank with

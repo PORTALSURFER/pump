@@ -42,6 +42,10 @@ fn write_u32(payload: &mut [u8], offset: usize, value: u32) {
     target.copy_from_slice(&value.to_le_bytes());
 }
 
+fn write_f32(payload: &mut [u8], offset: usize, value: f32) {
+    payload[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
 fn first_preset_start(payload: &[u8]) -> usize {
     let (node_offset, curve_header_bytes) = if (2..=65).contains(&read_u32(payload, 32)) {
         (32, 36)
@@ -104,12 +108,31 @@ fn preset_swing_offsets(payload: &[u8]) -> Vec<usize> {
         offset += 4;
     }
 
-    debug_assert_eq!(offset + 20, payload.len());
     swing_offsets
+}
+
+fn v14_extension_start(payload: &[u8]) -> usize {
+    let mut offset = first_preset_start(payload);
+    let preset_count = read_u32(payload, offset - 4) as usize;
+    for _ in 0..preset_count {
+        let name_len = read_u32(payload, offset) as usize;
+        offset += 4 + name_len + 6 * 4 + 1;
+        offset = skip_encoded_curve(payload, offset, true);
+        let quick_slot_count = read_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_slot_count {
+            offset = skip_encoded_curve(payload, offset, true);
+        }
+        offset += 4 + 4 + 4 + 1 + 4;
+    }
+    offset + 20
 }
 
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 14 {
+        payload.truncate(v14_extension_start(&payload));
+    }
     if version < 13 {
         // Swing was added to the top-level active state and each preset in v13.
         let preset_swing_offsets = preset_swing_offsets(&payload);
@@ -382,4 +405,13 @@ fn decode_rejects_trailing_bytes_without_mutating_state() {
     payload.push(0xAA);
 
     assert_decode_error_preserves_state(&params, &payload, "unexpected trailing state bytes");
+}
+
+#[test]
+fn decode_rejects_nonfinite_v14_ab_scalar_without_mutating_state() {
+    let params = sample_params();
+    let mut payload = encode_state_payload(&params);
+    let offset = v14_extension_start(&payload) + 4;
+    write_f32(&mut payload, offset, f32::NAN);
+    assert_decode_error_preserves_state(&params, &payload, "invalid A/B scalar field");
 }

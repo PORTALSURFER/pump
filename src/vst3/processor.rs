@@ -443,6 +443,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 self.shared.params.as_ref(),
                 &mut runtime.param_schedule,
                 &mut settings,
+                &mut runtime.last_curve_revision,
                 transport,
                 sidechain,
                 Some(IncomingWaveformCapture::new(

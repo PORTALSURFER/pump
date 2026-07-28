@@ -68,7 +68,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 11] = [
+const PARAM_DEFS: [ParamDef; 12] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -234,6 +234,21 @@ const PARAM_DEFS: [ParamDef; 11] = [
         default_value: DEFAULT_SWING as f64,
         flags: AUTO,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_SOUND_NUM,
+        id: PARAM_SOUND_ID,
+        name: "Sound",
+        #[cfg(feature = "vst3")]
+        short_name: "Sound",
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Pump",
+        min_value: SoundSide::A.index() as f64,
+        max_value: SoundSide::B.index() as f64,
+        default_value: SoundSide::A.index() as f64,
+        flags: AUTO_ENUM,
+    },
 ];
 
 #[cfg(feature = "vst3")]
@@ -286,7 +301,11 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
     let plain = normalized_to_plain(normalized, def.min_value, def.max_value);
     if matches!(
         param_id,
-        PARAM_SYNC_DIVISION_ID | PARAM_TRIGGER_MODE_ID | PARAM_MODE_ID | PARAM_BYPASS_ID
+        PARAM_SYNC_DIVISION_ID
+            | PARAM_TRIGGER_MODE_ID
+            | PARAM_MODE_ID
+            | PARAM_BYPASS_ID
+            | PARAM_SOUND_ID
     ) {
         return Some(plain.round());
     }
@@ -350,6 +369,7 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_MODE_ID => Some(params.mode() as f64),
         PARAM_BYPASS_ID => Some(params.bypass_value() as f64),
         PARAM_SWING_ID => Some(params.swing() as f64),
+        PARAM_SOUND_ID => Some(params.active_sound().index() as f64),
         _ => None,
     }
 }
@@ -370,6 +390,17 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         PARAM_MODE_ID => params.set_mode(value as f32),
         PARAM_BYPASS_ID => params.set_bypass_from_host(value as f32),
         PARAM_SWING_ID => params.set_swing(value as f32),
+        PARAM_SOUND_ID => {
+            let side = if value.round() >= SoundSide::B.index() as f64 {
+                SoundSide::B
+            } else {
+                SoundSide::A
+            };
+            // Parameter events are delivered from the realtime callback. Queue
+            // the side change; the editor projection consumes it on its own
+            // thread so A/B snapshots never take an audio-thread lock.
+            params.request_active_sound_from_host(side);
+        }
         _ => return false,
     }
     true
@@ -452,6 +483,14 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
         PARAM_BYPASS_ID => BYPASS_LABELS
             .get(value.round().clamp(0.0, 1.0) as usize)
             .map(|label| (*label).to_string()),
+        PARAM_SOUND_ID => Some(
+            if value.round() >= SoundSide::B.index() as f64 {
+                "B"
+            } else {
+                "A"
+            }
+            .to_string(),
+        ),
         _ => None,
     }
 }
@@ -531,6 +570,14 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
                         .ok()
                         .map(|value| value.round().clamp(0.0, 1.0))
                 })
+        }
+        PARAM_SOUND_ID => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "a" | "0" => Some(0.0),
+                "b" | "1" => Some(1.0),
+                _ => None,
+            }
         }
         _ => None,
     }

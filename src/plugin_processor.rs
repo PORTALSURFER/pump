@@ -327,6 +327,7 @@ impl PumpAudioProcessor<'_> {
             self.shared.params.as_ref(),
             &mut self.param_schedule,
             settings,
+            &mut self.last_curve_revision,
             transport,
             sidechain,
             Some(IncomingWaveformCapture::new(

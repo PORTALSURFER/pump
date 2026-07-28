@@ -5,7 +5,9 @@ const MIN_ENCODED_CURVE_BYTES: usize = 4 + MIN_CURVE_BYTES;
 const PHASE_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"PHAS");
 /// Encode all parameter state including curve table into bytes.
 pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
-    let editable = params.editable_curve_snapshot();
+    let editable = params
+        .sound_state_snapshot(params.active_sound())
+        .editable_curve;
     let node_count = editable.nodes.len().min(MAX_EDITABLE_NODES);
     let segment_count = node_count.saturating_sub(1);
     let bank = params.preset_bank_snapshot();
@@ -39,6 +41,11 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     payload.extend_from_slice(&(params.mode() as f32).to_le_bytes());
     payload.extend_from_slice(&params.bypass_value().to_le_bytes());
     payload.extend_from_slice(&params.swing().to_le_bytes());
+
+    payload.extend_from_slice(&(params.active_sound().index() as u32).to_le_bytes());
+    for side in [SoundSide::A, SoundSide::B] {
+        encode_sound_state(&mut payload, &params.sound_state_snapshot(side));
+    }
 
     payload
 }
@@ -165,6 +172,58 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     } else {
         DEFAULT_SWING
     };
+    if version >= 14
+        && ![
+            mix,
+            depth_field,
+            floor_db,
+            phase_offset,
+            output_gain_db,
+            sync_division,
+            trigger_mode,
+            smooth,
+            bypass,
+            swing,
+        ]
+        .into_iter()
+        .all(f32::is_finite)
+    {
+        return Err("invalid A/B scalar field");
+    }
+    let (active_sound, sound_states) = if version >= 14 {
+        let Some(active_sound) = read_u32(&mut cursor).map(|value| {
+            if value == SoundSide::B.index() as u32 {
+                SoundSide::B
+            } else {
+                SoundSide::A
+            }
+        }) else {
+            return Err("invalid active sound field");
+        };
+        let a = decode_sound_state(&mut cursor)?;
+        let b = decode_sound_state(&mut cursor)?;
+        (active_sound, [a, b])
+    } else {
+        let legacy = PumpSoundState {
+            mix,
+            depth_db,
+            floor_db,
+            phase_offset,
+            output_gain_db,
+            sync_division: clamp_sync_division(sync_division),
+            trigger_mode: trigger_mode.round().clamp(0.0, 1.0) as usize,
+            smooth,
+            mode,
+            swing,
+            editable_curve: editable_curve.clone(),
+            quick_slots: preset_bank
+                .presets
+                .get(preset_bank.selected)
+                .map(|preset| preset.quick_slots.clone())
+                .unwrap_or_else(seeded_quick_shape_slots),
+        };
+        (SoundSide::A, [legacy.clone(), legacy])
+    };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -182,8 +241,107 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_swing(swing);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
+    params.set_sound_states_without_persistence(active_sound, sound_states);
 
     Ok(())
+}
+
+fn encode_sound_state(payload: &mut Vec<u8>, state: &PumpSoundState) {
+    payload.extend_from_slice(&state.mix.to_le_bytes());
+    payload.extend_from_slice(&state.depth_db.to_le_bytes());
+    payload.extend_from_slice(&state.floor_db.to_le_bytes());
+    payload.extend_from_slice(&state.phase_offset.to_le_bytes());
+    payload.extend_from_slice(&state.output_gain_db.to_le_bytes());
+    payload.extend_from_slice(&(state.sync_division as u32).to_le_bytes());
+    payload.extend_from_slice(&(state.trigger_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&state.smooth.to_le_bytes());
+    payload.extend_from_slice(&(state.mode as u32).to_le_bytes());
+    payload.extend_from_slice(&state.swing.to_le_bytes());
+    encode_curve(payload, &state.editable_curve);
+    payload.extend_from_slice(&(state.quick_slots.len() as u32).to_le_bytes());
+    for slot in &state.quick_slots {
+        encode_curve(payload, &slot.curve);
+    }
+}
+
+fn decode_sound_state(cursor: &mut Cursor<&[u8]>) -> Result<PumpSoundState, &'static str> {
+    let Some(mix) = read_f32(cursor) else {
+        return Err("invalid A/B mix field");
+    };
+    let Some(depth_db) = read_f32(cursor) else {
+        return Err("invalid A/B depth field");
+    };
+    let Some(floor_db) = read_f32(cursor) else {
+        return Err("invalid A/B floor field");
+    };
+    let Some(phase_offset) = read_f32(cursor) else {
+        return Err("invalid A/B phase field");
+    };
+    let Some(output_gain_db) = read_f32(cursor) else {
+        return Err("invalid A/B output field");
+    };
+    let Some(sync_division) = read_u32(cursor) else {
+        return Err("invalid A/B sync field");
+    };
+    let Some(trigger_mode) = read_u32(cursor) else {
+        return Err("invalid A/B trigger field");
+    };
+    let Some(smooth) = read_f32(cursor) else {
+        return Err("invalid A/B smooth field");
+    };
+    let Some(mode) = read_u32(cursor) else {
+        return Err("invalid A/B mode field");
+    };
+    let Some(swing) = read_f32(cursor) else {
+        return Err("invalid A/B swing field");
+    };
+    let Some(node_count) = read_u32(cursor).map(|count| count as usize) else {
+        return Err("invalid A/B node count");
+    };
+    let editable_curve = decode_curve(cursor, node_count, true)?;
+    let Some(quick_count) = read_u32(cursor).map(|count| count as usize) else {
+        return Err("invalid A/B quick slot count");
+    };
+    if quick_count != QUICK_SLOT_COUNT {
+        return Err("invalid A/B quick slot count bounds");
+    }
+    let mut quick_slots = Vec::with_capacity(quick_count);
+    for _ in 0..quick_count {
+        let Some(node_count) = read_u32(cursor).map(|count| count as usize) else {
+            return Err("invalid A/B quick slot node count");
+        };
+        quick_slots.push(QuickShapeSlot {
+            curve: decode_curve(cursor, node_count, true)?,
+        });
+    }
+    if ![
+        mix,
+        depth_db,
+        floor_db,
+        phase_offset,
+        output_gain_db,
+        smooth,
+        swing,
+    ]
+    .into_iter()
+    .all(f32::is_finite)
+    {
+        return Err("invalid A/B scalar field");
+    }
+    Ok(PumpSoundState {
+        mix,
+        depth_db,
+        floor_db,
+        phase_offset,
+        output_gain_db,
+        sync_division: (sync_division as usize).min(MAX_SYNC_DIVISION as usize),
+        trigger_mode: (trigger_mode as usize).min(TRIGGER_MODE_SIDECHAIN),
+        smooth,
+        mode: clamp_processing_mode(mode as f32),
+        swing,
+        editable_curve: editable_curve.normalized(),
+        quick_slots,
+    })
 }
 
 fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
@@ -492,6 +650,20 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     params.set_mode(PROCESSING_MODE_CLASSIC as f32);
     params.set_swing(DEFAULT_SWING);
     params.set_curve(&curve);
+    let legacy_state = PumpSoundState {
+        mix: params.mix(),
+        depth_db: params.depth_db(),
+        floor_db: params.floor_db(),
+        phase_offset: params.phase_offset(),
+        output_gain_db: params.output_gain_db(),
+        sync_division: params.sync_division(),
+        trigger_mode: DEFAULT_TRIGGER_MODE,
+        smooth: DEFAULT_SMOOTH,
+        mode: PROCESSING_MODE_CLASSIC,
+        swing: DEFAULT_SWING,
+        editable_curve: params.editable_curve_snapshot(),
+        quick_slots: seeded_quick_shape_slots(),
+    };
     params.set_preset_bank_without_persistence(PumpPresetBank {
         selected: 0,
         presets: vec![PumpPreset {
@@ -513,6 +685,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             quick_slots: seeded_quick_shape_slots(),
         }],
     });
+    params.set_sound_states_without_persistence(SoundSide::A, [legacy_state.clone(), legacy_state]);
 
     Ok(())
 }
