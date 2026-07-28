@@ -346,6 +346,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (788182e)
 
+- (changelog) Update changelog [skip ci] (d348da9)
+
 
 ### Features
 
@@ -1183,6 +1185,16 @@ OPT-1135 Add click-safe host bypass control (2bbf7ae)
 - Merge pull request #39 from PORTALSURFER/wsvasek/opt-1129-pump-redesign-add-a-host-automatable-swing-control
 
 feat: add host-automatable swing control (ab07edf)
+
+- Add production Pump release producer (5d2788f)
+
+- Harden Pump release publication (2b43f88)
+
+- Enforce audited Pump publication boundary (f6a177c)
+
+- Merge pull request #40 from PORTALSURFER/codex/plugin-release-producer
+
+Add production Pump release producer (411d96c)
 
 
 ### Refactoring
