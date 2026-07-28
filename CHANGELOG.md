@@ -83,6 +83,8 @@ All notable changes to this project are documented in this file.
 
 - Fit swing controls at minimum editor size (b291c87)
 
+- (release) Create temporary build parent (#42) (2ba8990)
+
 
 ### CI
 
@@ -349,6 +351,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (d348da9)
 
 - (changelog) Update changelog [skip ci] (53c9ac0)
+
+- (changelog) Update changelog [skip ci] (8a1bdbc)
 
 
 ### Features
