@@ -446,6 +446,10 @@ mod tests {
             None,
             None,
         );
+        assert!(
+            left[1] > left[2],
+            "interior sound target must retarget at its offset: left={left:?}"
+        );
         assert_eq!(last_curve_revision, params.curve_revision());
     }
 
