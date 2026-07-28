@@ -37,6 +37,20 @@ class FakeTransport:
 
 
 class ReleaseHelperTests(unittest.TestCase):
+    def test_release_workflow_artifact_uses_checked_out_source_sha(self):
+        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        checkout = workflow.index("- name: Checkout exact main source")
+        capture = workflow.index("- name: Capture checked-out source SHA")
+        upload = workflow.index("- name: Upload immutable bundle for inspection")
+        self.assertLess(checkout, capture)
+        self.assertLess(capture, upload)
+        capture_block = workflow[capture:upload]
+        self.assertIn("id: source_sha", capture_block)
+        self.assertIn('git rev-parse HEAD', capture_block)
+        upload_block = workflow[upload:]
+        self.assertIn("name: pump-release-${{ inputs.channel }}-${{ steps.source_sha.outputs.sha }}", upload_block)
+        self.assertNotIn("${{ github.sha }}", upload_block)
+
     def test_manifest_and_png_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
