@@ -49,7 +49,7 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
                 .mark_unavailable();
             self.waveform_writer.reset();
             apply_param_events(events.input, |param_id, value| {
-                apply_param_event(self.shared.params.as_ref(), param_id, value as f32)
+                apply_clap_param_event(self.shared.params.as_ref(), param_id, value as f32)
             });
             silence_audio(&mut audio);
             let _stats = self
@@ -208,7 +208,7 @@ fn collect_clap_param_points(
                 schedule.push_bounded(
                     i64::from(event.header().time()),
                     param_id,
-                    param.value() as f32,
+                    plain_value_from_clap_value(param_id, param.value()) as f32,
                 );
             }
         }
@@ -223,7 +223,7 @@ impl PluginAudioProcessorParams for PumpAudioProcessor<'_> {
         output_parameter_changes: &mut OutputEvents,
     ) {
         apply_param_events(input_parameter_changes, |param_id, value| {
-            apply_param_event(self.shared.params.as_ref(), param_id, value as f32)
+            apply_clap_param_event(self.shared.params.as_ref(), param_id, value as f32)
         });
 
         let _stats = self

@@ -31,7 +31,8 @@ impl IPluginBaseTrait for PumpVst3Controller {
 
 impl IEditControllerTrait for PumpVst3Controller {
     unsafe fn setComponentState(&self, state: *mut IBStream) -> tresult {
-        let payload = unsafe { read_versioned_payload(state, STATE_MAGIC, &[STATE_VERSION]) };
+        let payload =
+            unsafe { read_versioned_payload(state, STATE_MAGIC, ACCEPTED_STATE_VERSIONS) };
         let Ok(payload) = payload else {
             return kInvalidArgument;
         };

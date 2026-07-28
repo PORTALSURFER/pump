@@ -1,8 +1,131 @@
 use super::*;
 use crate::gui::HostParamEditSink;
+use crate::params::{PumpParams, DEFAULT_FREE_RATE_HZ, TIMING_MODE_FREE, TIMING_MODE_SYNC};
+use std::ffi::c_void;
 use std::mem;
 use std::ptr;
 use std::sync::Mutex as StdMutex;
+
+#[repr(C)]
+struct TestVst3Stream {
+    base: IBStream,
+    data: Vec<u8>,
+    cursor: usize,
+}
+
+impl TestVst3Stream {
+    fn v14(payload: Vec<u8>) -> Self {
+        let mut data = Vec::with_capacity(12 + payload.len());
+        data.extend_from_slice(&STATE_MAGIC.to_le_bytes());
+        data.extend_from_slice(&14u32.to_le_bytes());
+        data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        data.extend_from_slice(&payload);
+        Self {
+            base: IBStream {
+                vtbl: &TEST_STREAM_VTABLE,
+            },
+            data,
+            cursor: 0,
+        }
+    }
+
+    fn as_ptr(&mut self) -> *mut IBStream {
+        &mut self.base
+    }
+}
+
+static TEST_STREAM_VTABLE: IBStreamVtbl = IBStreamVtbl {
+    base: FUnknownVtbl {
+        queryInterface: test_stream_query_interface,
+        addRef: test_stream_add_ref,
+        release: test_stream_release,
+    },
+    read: test_stream_read,
+    write: test_stream_write,
+    seek: test_stream_seek,
+    tell: test_stream_tell,
+};
+
+unsafe extern "system" fn test_stream_query_interface(
+    _this: *mut FUnknown,
+    _iid: *const TUID,
+    obj: *mut *mut c_void,
+) -> tresult {
+    if !obj.is_null() {
+        unsafe { *obj = ptr::null_mut() };
+    }
+    kNoInterface
+}
+
+unsafe extern "system" fn test_stream_add_ref(_this: *mut FUnknown) -> u32 {
+    1
+}
+
+unsafe extern "system" fn test_stream_release(_this: *mut FUnknown) -> u32 {
+    1
+}
+
+unsafe extern "system" fn test_stream_read(
+    this: *mut IBStream,
+    buffer: *mut c_void,
+    num_bytes: int32,
+    num_bytes_read: *mut int32,
+) -> tresult {
+    let stream = unsafe { &mut *(this as *mut TestVst3Stream) };
+    let available = stream.data.len().saturating_sub(stream.cursor);
+    let count = (num_bytes.max(0) as usize).min(available);
+    if count > 0 {
+        unsafe {
+            ptr::copy_nonoverlapping(
+                stream.data.as_ptr().add(stream.cursor),
+                buffer.cast::<u8>(),
+                count,
+            );
+        }
+        stream.cursor += count;
+    }
+    if !num_bytes_read.is_null() {
+        unsafe { *num_bytes_read = count as int32 };
+    }
+    kResultOk
+}
+
+unsafe extern "system" fn test_stream_write(
+    _this: *mut IBStream,
+    _buffer: *mut c_void,
+    _num_bytes: int32,
+    num_bytes_written: *mut int32,
+) -> tresult {
+    if !num_bytes_written.is_null() {
+        unsafe { *num_bytes_written = 0 };
+    }
+    kResultFalse
+}
+
+unsafe extern "system" fn test_stream_seek(
+    this: *mut IBStream,
+    pos: int64,
+    _mode: int32,
+    result: *mut int64,
+) -> tresult {
+    if pos < 0 {
+        return kInvalidArgument;
+    }
+    let stream = unsafe { &mut *(this as *mut TestVst3Stream) };
+    stream.cursor = pos as usize;
+    if !result.is_null() {
+        unsafe { *result = stream.cursor as int64 };
+    }
+    kResultOk
+}
+
+unsafe extern "system" fn test_stream_tell(this: *mut IBStream, result: *mut int64) -> tresult {
+    let stream = unsafe { &mut *(this as *mut TestVst3Stream) };
+    if !result.is_null() {
+        unsafe { *result = stream.cursor as int64 };
+    }
+    kResultOk
+}
 
 #[derive(Clone, Debug, PartialEq)]
 enum RecordedEditCall {
@@ -113,7 +236,7 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 10);
+    assert_eq!(count, 12);
 }
 
 #[test]
@@ -497,6 +620,45 @@ fn controller_and_processor_share_param_state() {
     let result = unsafe { controller.setParamNormalized(PARAM_MIX_NUM, value) };
     assert_eq!(result, kResultOk);
     assert!((shared.params.mix() - 0.25).abs() < 1.0e-6);
+}
+
+#[test]
+fn component_and_controller_restore_v14_state_with_sync_timing_defaults() {
+    let source = PumpParams::new();
+    source.set_timing_mode(TIMING_MODE_FREE as f32);
+    source.set_free_rate_hz(17.0);
+    let payload = crate::params::payload_for_state_version(&source, 14);
+
+    let processor_shared = Arc::new(PumpVst3Shared::new());
+    processor_shared
+        .params
+        .set_timing_mode(TIMING_MODE_FREE as f32);
+    processor_shared.params.set_free_rate_hz(17.0);
+    let processor = PumpVst3Processor::new(Arc::clone(&processor_shared));
+    let mut processor_stream = TestVst3Stream::v14(payload.clone());
+    assert_eq!(
+        unsafe { processor.setState(processor_stream.as_ptr()) },
+        kResultOk
+    );
+    assert_eq!(processor_shared.params.timing_mode(), TIMING_MODE_SYNC);
+    assert_eq!(processor_shared.params.free_rate_hz(), DEFAULT_FREE_RATE_HZ);
+
+    let controller_shared = Arc::new(PumpVst3Shared::new());
+    controller_shared
+        .params
+        .set_timing_mode(TIMING_MODE_FREE as f32);
+    controller_shared.params.set_free_rate_hz(17.0);
+    let controller = PumpVst3Controller::new(Arc::clone(&controller_shared));
+    let mut controller_stream = TestVst3Stream::v14(payload);
+    assert_eq!(
+        unsafe { controller.setComponentState(controller_stream.as_ptr()) },
+        kResultOk
+    );
+    assert_eq!(controller_shared.params.timing_mode(), TIMING_MODE_SYNC);
+    assert_eq!(
+        controller_shared.params.free_rate_hz(),
+        DEFAULT_FREE_RATE_HZ
+    );
 }
 
 #[test]

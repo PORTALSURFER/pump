@@ -144,6 +144,8 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         beats_per_cycle: params.sync_beats_per_cycle(),
         smooth: params.smooth(),
         swing: params.swing(),
+        timing_mode: params.timing_mode(),
+        free_rate_hz: params.free_rate_hz(),
         bypassed: params.bypassed(),
     }
 }
@@ -328,9 +330,9 @@ mod tests {
     use crate::curve::CURVE_TABLE_LEN;
     use crate::incoming_waveform::IncomingWaveformWriter;
     use crate::params::{
-        PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
-        PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID,
-        PARAM_SYNC_DIVISION_ID,
+        PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
+        PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID,
+        PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID,
     };
 
     fn constant_curve(value: f32) -> [f32; CURVE_TABLE_LEN] {
@@ -454,6 +456,44 @@ mod tests {
         );
         assert_eq!(left, right);
         assert!((params.mix() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn free_timing_automation_takes_effect_at_its_sample_offset() {
+        let params = PumpParams::new();
+        let mut engine = PumpEngine::new(1_000.0, ramp_curve());
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(6);
+        schedule.push(
+            2,
+            PARAM_TIMING_MODE_ID,
+            crate::params::TIMING_MODE_FREE as f32,
+        );
+        schedule.push(2, PARAM_FREE_RATE_ID, 10.0);
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+        let mut last_curve_revision = params.curve_revision();
+        let mut left = [1.0; 6];
+        let mut right = [1.0; 6];
+
+        process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            &mut last_curve_revision,
+            playing_transport(3.0),
+            None,
+        );
+
+        assert_eq!(params.timing_mode(), crate::params::TIMING_MODE_FREE);
+        assert!((params.free_rate_hz() - 10.0).abs() < f32::EPSILON);
+        assert!((left[2] - left[3]).abs() > 1.0e-5);
+        assert_eq!(left, right);
     }
 
     #[test]

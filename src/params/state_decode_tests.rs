@@ -133,6 +133,43 @@ fn v14_extension_start(payload: &[u8]) -> usize {
     offset + 20
 }
 
+fn v15_extension_start(payload: &[u8]) -> usize {
+    let mut offset = first_preset_start(payload);
+    let preset_count = read_u32(payload, offset - 4) as usize;
+    for _ in 0..preset_count {
+        let name_len = read_u32(payload, offset) as usize;
+        offset += 4 + name_len + 6 * 4 + 1;
+        offset = skip_encoded_curve(payload, offset, true);
+        let quick_slot_count = read_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_slot_count {
+            offset = skip_encoded_curve(payload, offset, true);
+        }
+        offset += 4 + 4 + 4 + 1 + 4 + 8;
+    }
+    offset + 20
+}
+
+fn preset_timing_offsets(payload: &[u8]) -> Vec<usize> {
+    let mut offset = first_preset_start(payload);
+    let preset_count = read_u32(payload, offset - 4) as usize;
+    let mut timing_offsets = Vec::with_capacity(preset_count);
+    for _ in 0..preset_count {
+        let name_len = read_u32(payload, offset) as usize;
+        offset += 4 + name_len + 6 * 4 + 1;
+        offset = skip_encoded_curve(payload, offset, true);
+        let quick_slot_count = read_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_slot_count {
+            offset = skip_encoded_curve(payload, offset, true);
+        }
+        offset += 4 + 4 + 4 + 1 + 4;
+        timing_offsets.push(offset);
+        offset += 8;
+    }
+    timing_offsets
+}
+
 fn first_preset_trigger_and_mode_offsets(payload: &[u8]) -> (usize, usize) {
     let mut offset = first_preset_start(payload);
     let name_len = read_u32(payload, offset) as usize;
@@ -159,8 +196,21 @@ fn sound_state_offsets(payload: &[u8], start: usize) -> (usize, usize, usize) {
     (trigger, mode, offset)
 }
 
-fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
+pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 15 {
+        let preset_timing_offsets = preset_timing_offsets(&payload);
+        let extension_start = v15_extension_start(&payload);
+        let (_, _, a_end) = sound_state_offsets(&payload, extension_start + 4);
+        let b_start = a_end + 8;
+        let (_, _, b_end) = sound_state_offsets(&payload, b_start);
+        payload.drain(b_end..b_end + 8);
+        payload.drain(a_end..a_end + 8);
+        payload.truncate(payload.len().saturating_sub(8));
+        for timing_offset in preset_timing_offsets.into_iter().rev() {
+            payload.drain(timing_offset..timing_offset + 8);
+        }
+    }
     if version < 14 {
         payload.truncate(v14_extension_start(&payload));
     }
@@ -224,7 +274,7 @@ fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
             let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
             payload.truncate(quick_slot_offset);
         }
-        5..=12 => {}
+        5..=15 => {}
         _ => panic!("unsupported test state version"),
     }
     payload
@@ -259,7 +309,7 @@ fn decode_v7_state_defaults_trigger_mode_to_host() {
 fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
     let source = sample_params();
     let mut payload = encode_state_payload(&source);
-    let extension_start = v14_extension_start(&payload);
+    let extension_start = v15_extension_start(&payload);
     write_f32(
         &mut payload,
         extension_start - 20,
@@ -282,10 +332,10 @@ fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
         super::PROCESSING_MODE_PUNCH as u32,
     );
     let (a_trigger, a_mode, a_end) = sound_state_offsets(&payload, extension_start + 4);
-    let b_start = a_end;
+    let b_start = a_end + 8;
     let (b_trigger, b_mode, b_end) = sound_state_offsets(&payload, b_start);
-    assert_eq!(a_end, b_start);
-    assert_eq!(b_end, payload.len());
+    assert_eq!(a_end + 8, b_start);
+    assert_eq!(b_end + 8, payload.len() - 8);
     write_u32(
         &mut payload,
         a_trigger,
@@ -361,6 +411,8 @@ fn decode_v12_preserves_controls_and_defaults_swing() {
     assert_eq!(restored.mode(), super::PROCESSING_MODE_CLASSIC);
     assert!(restored.bypassed());
     assert_eq!(restored.swing(), super::DEFAULT_SWING);
+    assert_eq!(restored.timing_mode(), super::DEFAULT_TIMING_MODE);
+    assert_eq!(restored.free_rate_hz(), super::DEFAULT_FREE_RATE_HZ);
 
     let bank = restored.preset_bank_snapshot();
     assert!(!bank.presets.is_empty());
@@ -369,6 +421,8 @@ fn decode_v12_preserves_controls_and_defaults_swing() {
         assert!((preset.smooth - 0.67).abs() < 1.0e-6);
         assert_eq!(preset.mode, super::PROCESSING_MODE_CLASSIC);
         assert_eq!(preset.swing, super::DEFAULT_SWING);
+        assert_eq!(preset.timing_mode, super::DEFAULT_TIMING_MODE);
+        assert_eq!(preset.free_rate_hz, super::DEFAULT_FREE_RATE_HZ);
     }
 }
 

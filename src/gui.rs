@@ -26,8 +26,8 @@ pub(crate) use radiant_editor::{HostParamFlushRequester, RadiantPumpEditor};
 pub const MIN_WINDOW_WIDTH: u32 = 720;
 pub const MIN_WINDOW_HEIGHT: u32 = 540;
 /// Default logical editor size.
-pub const WINDOW_WIDTH: u32 = 912;
-pub const WINDOW_HEIGHT: u32 = 684;
+pub const WINDOW_WIDTH: u32 = 720;
+pub const WINDOW_HEIGHT: u32 = 540;
 /// Maximum supported logical editor size.
 pub const MAX_WINDOW_WIDTH: u32 = 1440;
 pub const MAX_WINDOW_HEIGHT: u32 = 1080;

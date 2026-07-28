@@ -8,24 +8,25 @@ use radiant::gui::types::{Point, Rect, Rgba8, Vector2};
 use radiant::gui::visualization::{
     push_sampled_curve_area_fill, SampledCurveAreaBaseline, SampledCurveAreaFillParts,
 };
-use radiant::layout::LayoutOutput;
+use radiant::layout::{CrossAlign, LayoutOutput, MainAlign};
 use radiant::prelude::{
-    column, custom_widget, custom_widget_mapped, dropdown, knob, row, slider, text, toggle,
-    IntoView, KnobMessage, TextAlign, ViewNode,
+    column, custom_widget, custom_widget_mapped, dismissible_overlay, dropdown_menu_overlay_below,
+    dropdown_trigger, knob, row, spacer, text, toggle, DropdownOption, IntoView, KnobMessage,
+    TextAlign, TextColorRole, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
 use radiant::runtime::{
-    DeclarativeSurfaceRuntime, PaintBrush, PaintFillPath, PaintFillRect, PaintFillRule,
-    PaintLinearGradient, PaintPath, PaintPathCommand, PaintPrimitive, PaintStrokePolyline,
-    PaintStrokeRect, PaintText, PaintTextAlign, PaintTextRun, UiSurface,
+    DeclarativeSurfaceRuntime, PaintBrush, PaintFillPath, PaintFillPolygon, PaintFillRect,
+    PaintFillRule, PaintLinearGradient, PaintPath, PaintPathCommand, PaintPrimitive,
+    PaintStrokePolyline, PaintStrokeRect, PaintText, PaintTextAlign, PaintTextRun, UiSurface,
 };
 #[cfg(any(feature = "radiant-gui", feature = "vst3"))]
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
-    ButtonMessage, FocusBehavior, IconButtonWidget, PointerButton, PointerModifiers, TextWrap,
-    Widget, WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput,
+    ButtonMessage, ButtonWidget, FocusBehavior, IconButtonWidget, PointerButton, PointerModifiers,
+    TextWrap, Widget, WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput,
     WidgetSemantics, WidgetSizing,
 };
 use toybox::clack_extensions::params::HostParams;
@@ -40,13 +41,13 @@ use crate::curve::{
 };
 use crate::incoming_waveform::IncomingWaveformSnapshot;
 use crate::params::{
-    format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
-    PumpSoundState, SoundSide, BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS,
-    DEFAULT_DEPTH_DB, DEFAULT_FLOOR_DB, DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET,
-    DEFAULT_SMOOTH, GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB,
-    MAX_SYNC_DIVISION, MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID,
-    PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
-    PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID,
+    format_plain_value_text, normalized_from_plain_value, parse_plain_value_text,
+    plain_from_normalized_value, sync_division_label, PumpParams, PumpSoundState, SoundSide,
+    BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS, DEFAULT_FREE_RATE_HZ, DEFAULT_MIX,
+    DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, GLOBAL_CURVE_SLOT_COUNT, MAX_OUTPUT_GAIN_DB,
+    MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
+    PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID,
+    PARAM_TIMING_MODE_ID, SYNC_DIVISIONS, TIMING_MODE_FREE, TIMING_MODE_SYNC,
 };
 use crate::GuiStatus;
 
@@ -140,21 +141,26 @@ impl HostParamEditSink for ClapHostParamEditSink {
 }
 
 const BUILD_LABEL_HEIGHT: f32 = 54.0;
-const PRESET_TIMING_HEIGHT: f32 = 72.0;
+const TIMING_STRIP_HEIGHT: f32 = 72.0;
+const TIMING_MODE_TOGGLE_WIDTH: f32 = 56.0;
+const TIMING_DROPDOWN_WIDTH: f32 = 128.0;
+const TIMING_KNOB_DIAMETER: f32 = 40.0;
+const HEADER_BRAND_WIDTH: f32 = 180.0;
+const HEADER_BRAND_TITLE_HEIGHT: f32 = 32.0;
+const HEADER_BRAND_META_HEIGHT: f32 = 16.0;
 const CURVE_PREVIEW_HEIGHT: f32 = 180.0;
 const PARAMETER_DECK_HEIGHT: f32 = PUMP_VISUAL_METRICS.deck_height;
 const GAIN_REDUCTION_METER_WIDTH: f32 = PUMP_VISUAL_METRICS.meter_panel;
 const GAIN_REDUCTION_METER_BAR_WIDTH: f32 = PUMP_VISUAL_METRICS.meter_track;
-const CURVE_SLOT_ROW_HEIGHT: f32 = 75.0;
+const CURVE_SLOT_ROW_HEIGHT: f32 = 60.0;
 const CURVE_SLOT_SPACING: f32 = PUMP_VISUAL_METRICS.space_4;
 const CURVE_SLOT_VISIBLE_COUNT: usize = 6;
-const CURVE_SLOT_NAV_WIDTH: f32 = 20.0;
+const CURVE_SLOT_NAV_WIDTH: f32 = 28.0;
 // Six slots remain inside the minimum supported host width; larger hosts keep the same deck.
 const CURVE_SLOT_WIDTH: f32 = 100.0;
 const CONTROL_ROW_HEIGHT: f32 = PUMP_VISUAL_METRICS.label_line;
 // Timing and parameter labels are intentionally wider than the compact legacy
 // shell so supported values retain their full glyph bounds at the minimum host size.
-const CONTROL_LABEL_WIDTH: f32 = 84.0;
 const CONTROL_VALUE_WIDTH: f32 = 78.0;
 const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
 const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.divider;
@@ -169,12 +175,12 @@ const CURVE_SEGMENT_HOVER_RADIUS: f32 = 7.0;
 const CURVE_SEGMENT_TENSION_PIXEL_SCALE: f32 = 120.0;
 const CURVE_NODE_PUSH_THROUGH_MARGIN_PX: f32 = 10.0;
 const CURVE_NODE_MIN_SPACING_X: f32 = 1.0e-3;
-const CURVE_PLAYHEAD_MARKER_SIZE: f32 = 5.5;
-const CURVE_PLAYHEAD_MARKER_GLOW_SIZE: f32 = 9.5;
-const CURVE_PLAYHEAD_GLOW_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 112);
-const CURVE_PLAYHEAD_CORE_COLOR: Rgba8 = Rgba8::new(255, 96, 208, 255);
-const CURVE_PLAYHEAD_STROKE_COLOR: Rgba8 = Rgba8::new(255, 196, 232, 255);
+const CURVE_PLAYHEAD_MARKER_HEIGHT: f32 = 5.0;
+const CURVE_PLAYHEAD_MARKER_WIDTH: f32 = 9.0;
+const CURVE_PLAYHEAD_CORE_COLOR: Rgba8 = Rgba8::new(128, 132, 132, 255);
 const CURVE_SEGMENT_MOVE_COLOR: Rgba8 = Rgba8::new(96, 176, 255, 255);
+const CURVE_OFFSET_MOVE_COLOR: Rgba8 = Rgba8::new(255, 168, 88, 255);
+const CURVE_OFFSET_HOVER_COLOR: Rgba8 = CURVE_OFFSET_MOVE_COLOR.with_alpha(224);
 const CURVE_REFERENCE_GUTTER_WIDTH: f32 = 52.0;
 const CURVE_REFERENCE_LABEL_HEIGHT: f32 = 12.0;
 const CURVE_REFERENCE_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.meta.0;
@@ -188,6 +194,7 @@ const BYPASS_CONTROL_WIDTH: f32 = 148.0;
 struct BypassControlWidget {
     button: IconButtonWidget,
     bypassed: bool,
+    pulse_phase: Option<f32>,
 }
 
 impl BypassControlWidget {
@@ -200,7 +207,16 @@ impl BypassControlWidget {
         button.common.state.selected = bypassed;
         button.common.state.active = !bypassed;
         button.common.state.automation_active = automation_active;
-        Self { button, bypassed }
+        Self {
+            button,
+            bypassed,
+            pulse_phase: None,
+        }
+    }
+
+    fn with_pulse_phase(mut self, phase: Option<f32>) -> Self {
+        self.pulse_phase = phase.map(|phase| phase.rem_euclid(1.0));
+        self
     }
 
     fn state_text(&self) -> &'static str {
@@ -235,6 +251,7 @@ impl Widget for BypassControlWidget {
         self.button.common.state.selected = selected;
         self.button.common.state.active = !selected;
         self.button.common.state.automation_active = automation_active;
+        self.pulse_phase = previous.pulse_phase;
     }
 
     fn capabilities(&self) -> WidgetCapabilities<'_> {
@@ -262,10 +279,14 @@ impl Widget for BypassControlWidget {
         primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
             widget_id: self.button.common.id,
             rect: bounds,
-            color: if self.button.common.state.focused {
-                theme.accent_warning
-            } else if self.bypassed {
-                theme.accent_mint
+            color: if self.bypassed {
+                self.pulse_phase
+                    .map(|phase| {
+                        theme
+                            .accent_danger
+                            .with_alpha(if phase < 0.5 { 180 } else { 255 })
+                    })
+                    .unwrap_or(theme.accent_danger)
             } else {
                 theme.border_emphasis
             },
@@ -305,21 +326,14 @@ impl Widget for BypassControlWidget {
                     Point::new(bounds.min.x + 3.0, bounds.max.y - 4.0),
                 ]
                 .into(),
-                color: theme.accent_mint,
+                color: if let Some(phase) = self.pulse_phase {
+                    theme
+                        .accent_danger
+                        .with_alpha(if phase < 0.5 { 180 } else { 255 })
+                } else {
+                    theme.accent_danger
+                },
                 width: 3.0,
-            }));
-        }
-        if self.button.common.state.focused {
-            primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
-                widget_id: self.button.common.id,
-                rect: Rect::from_xy_size(
-                    bounds.min.x + 3.0,
-                    bounds.min.y + 3.0,
-                    (bounds.width() - 6.0).max(1.0),
-                    (bounds.height() - 6.0).max(1.0),
-                ),
-                color: theme.accent_warning,
-                width: 1.0,
             }));
         }
         if self.button.common.state.automation_active {
@@ -364,6 +378,156 @@ struct ActionIconButtonWidget {
     button: IconButtonWidget,
     label: &'static str,
     disabled: bool,
+}
+
+#[derive(Clone, Debug)]
+struct SoundSwitchButtonWidget {
+    button: ButtonWidget,
+}
+
+impl SoundSwitchButtonWidget {
+    fn new() -> Self {
+        Self {
+            button: ButtonWidget::new(
+                0,
+                "",
+                WidgetSizing::fixed(Vector2::new(
+                    PUMP_VISUAL_METRICS.icon_hit,
+                    BUILD_LABEL_HEIGHT,
+                )),
+            ),
+        }
+    }
+}
+
+impl Widget for SoundSwitchButtonWidget {
+    fn common(&self) -> &WidgetCommon {
+        self.button.common()
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        self.button.common_mut()
+    }
+
+    fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        self.button
+            .handle_input(bounds, input)
+            .map(WidgetOutput::typed)
+    }
+
+    fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
+        let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        self.button.synchronize_from_previous(&previous.button);
+    }
+
+    fn capabilities(&self) -> WidgetCapabilities<'_> {
+        WidgetCapabilities::new().semantics(self)
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        let fill = if self.button.common.state.pressed {
+            theme.accent_copper.with_alpha(96)
+        } else if self.button.common.state.hovered {
+            theme.surface_raised
+        } else {
+            theme.surface_base
+        };
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.button.common.id,
+            rect: bounds,
+            color: fill,
+        }));
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.button.common.id,
+            rect: bounds,
+            color: if self.button.common.state.focused {
+                theme.accent_warning
+            } else {
+                theme.border_emphasis
+            },
+            width: 1.0,
+        }));
+    }
+}
+
+impl WidgetSemantics for SoundSwitchButtonWidget {
+    fn automation_role(&self) -> AutomationRole {
+        AutomationRole::Button
+    }
+
+    fn automation_label(&self) -> Option<String> {
+        Some("Switch sound".to_owned())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MetadataTextWidget {
+    common: WidgetCommon,
+    text: PaintText,
+}
+
+impl MetadataTextWidget {
+    fn new(text: impl Into<PaintText>) -> Self {
+        Self {
+            common: WidgetCommon::fixed(0, 1.0, HEADER_BRAND_META_HEIGHT),
+            text: text.into(),
+        }
+    }
+}
+
+impl Widget for MetadataTextWidget {
+    fn common(&self) -> &WidgetCommon {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        &mut self.common
+    }
+
+    fn handle_input(&mut self, _bounds: Rect, _input: WidgetInput) -> Option<WidgetOutput> {
+        None
+    }
+
+    fn capabilities(&self) -> WidgetCapabilities<'_> {
+        WidgetCapabilities::new().semantics(self)
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        primitives.push(PaintPrimitive::Text(PaintTextRun {
+            widget_id: self.common.id,
+            text: self.text.clone(),
+            rect: bounds,
+            font_size: PUMP_TYPOGRAPHY.meta.0,
+            baseline: None,
+            color: theme.text_muted,
+            align: PaintTextAlign::Right,
+            wrap: TextWrap::None,
+        }));
+    }
+}
+
+impl WidgetSemantics for MetadataTextWidget {
+    fn automation_role(&self) -> AutomationRole {
+        AutomationRole::Text
+    }
+
+    fn automation_label(&self) -> Option<String> {
+        Some(self.text.as_str().to_owned())
+    }
 }
 
 impl ActionIconButtonWidget {
@@ -511,6 +675,14 @@ fn curve_width_from_push_through_threshold_x(threshold_x: f32) -> f32 {
     }
 }
 
+fn quantize_curve_offset_delta(sync_division: usize, width: f32, swing: f32, delta: f32) -> f32 {
+    if !delta.is_finite() || delta.abs() <= f32::EPSILON {
+        return 0.0;
+    }
+    let sign = delta.signum();
+    sign * snap_curve_time_to_beat_grid_with_swing(sync_division, width, delta.abs(), swing)
+}
+
 #[derive(Clone)]
 struct ActiveCurveNodeDrag {
     origin_index: usize,
@@ -606,6 +778,14 @@ struct ActiveCurveSegmentDrag {
 struct ActiveCurveOffsetDrag {
     origin_curve: EditableCurve,
     start_pointer_x: f32,
+    raw_delta: f32,
+    quantized: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ActiveCurveMarquee {
+    start: CurveNode,
+    current: CurveNode,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -617,60 +797,85 @@ enum CurveSegmentDragMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NumericEntryTarget {
     Mix,
-    Depth,
-    Floor,
-    Phase,
     OutputGain,
     Smooth,
     Swing,
+    FreeRate,
 }
 
 impl NumericEntryTarget {
     fn param_id(self) -> ClapId {
         match self {
             Self::Mix => PARAM_MIX_ID,
-            Self::Depth => PARAM_DEPTH_ID,
-            Self::Floor => PARAM_FLOOR_ID,
-            Self::Phase => PARAM_PHASE_OFFSET_ID,
             Self::OutputGain => PARAM_OUTPUT_GAIN_ID,
             Self::Smooth => PARAM_SMOOTH_ID,
             Self::Swing => PARAM_SWING_ID,
+            Self::FreeRate => PARAM_FREE_RATE_ID,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             Self::Mix => "Mix",
-            Self::Depth => "Depth",
-            Self::Floor => "Floor",
-            Self::Phase => "Offset",
             Self::OutputGain => "Output",
             Self::Smooth => "Smooth",
             Self::Swing => "Swing",
+            Self::FreeRate => "Free Rate",
         }
     }
 
     fn widget_key(self) -> &'static str {
         match self {
             Self::Mix => "numeric-entry-mix",
-            Self::Depth => "numeric-entry-depth",
-            Self::Floor => "numeric-entry-floor",
-            Self::Phase => "numeric-entry-phase",
             Self::OutputGain => "numeric-entry-output",
             Self::Smooth => "numeric-entry-smooth",
             Self::Swing => "numeric-entry-swing",
+            Self::FreeRate => "numeric-entry-free-rate",
         }
     }
 
     fn current_plain_value(self, params: &PumpParams) -> f64 {
         match self {
             Self::Mix => params.mix() as f64,
-            Self::Depth => params.depth_db() as f64,
-            Self::Floor => params.floor_db() as f64,
-            Self::Phase => params.phase_offset() as f64,
             Self::OutputGain => params.output_gain_db() as f64,
             Self::Smooth => params.smooth() as f64,
             Self::Swing => params.swing() as f64,
+            Self::FreeRate => params.free_rate_hz() as f64,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FreeRateUnit {
+    Milliseconds,
+    Seconds,
+    Hertz,
+    Kilohertz,
+}
+
+impl FreeRateUnit {
+    const ALL: [Self; 4] = [
+        Self::Milliseconds,
+        Self::Seconds,
+        Self::Hertz,
+        Self::Kilohertz,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Milliseconds => "ms",
+            Self::Seconds => "s",
+            Self::Hertz => "Hz",
+            Self::Kilohertz => "kHz",
+        }
+    }
+
+    fn value(self, rate_hz: f32) -> f32 {
+        match self {
+            Self::Milliseconds => 1_000.0 / rate_hz,
+            Self::Seconds => 1.0 / rate_hz,
+            Self::Hertz => rate_hz,
+            Self::Kilohertz => rate_hz / 1_000.0,
         }
     }
 }
@@ -713,6 +918,8 @@ struct RadiantEditorState {
     active_curve_node_drag: Option<ActiveCurveNodeDrag>,
     active_curve_segment: Option<ActiveCurveSegmentDrag>,
     active_curve_offset: Option<ActiveCurveOffsetDrag>,
+    active_curve_marquee: Option<ActiveCurveMarquee>,
+    selected_curve_nodes: Vec<usize>,
     preview_curve_offset: Option<EditableCurve>,
     hover_curve_node: Option<usize>,
     preview_curve_node: Option<CurveNode>,
@@ -724,9 +931,9 @@ struct RadiantEditorState {
     curve_slot_scroll_offset: usize,
     numeric_entry: Option<NumericEntryState>,
     active_knob_gesture: Option<NumericEntryTarget>,
-    preset_dropdown_open: bool,
+    timing_dropdown_open: bool,
+    free_rate_unit: FreeRateUnit,
     ab_confirmation: Option<String>,
-    snap_enabled: bool,
     undo_history: Vec<RadiantHistorySnapshot>,
     redo_history: Vec<RadiantHistorySnapshot>,
 }
@@ -751,21 +958,14 @@ struct RadiantHistorySnapshot {
 enum RadiantEditorMessage {
     Undo,
     Redo,
-    ToggleSnap(bool),
-    TogglePresetDropdown,
-    PresetSelect(usize),
-    PresetPrevious,
-    PresetNext,
-    PresetFavorite,
-    PresetAdd,
-    PresetSave,
-    SettingsUnavailable,
+    ToggleTimingMode,
+    ToggleTimingDropdown,
     Knob {
         target: NumericEntryTarget,
         message: KnobMessage,
     },
-    Swing(f32),
     SyncDivision(f32),
+    FreeRateUnit(FreeRateUnit),
     SelectSound(SoundSide),
     CopyActiveSound,
     ToggleBypass,
@@ -1016,6 +1216,19 @@ fn rounded_rect_commands(rect: Rect, radius: f32) -> Vec<PaintPathCommand> {
     ]
 }
 
+fn rounded_ring_path(rect: Rect, radius: f32, thickness: f32) -> PaintPath {
+    let thickness = thickness.max(0.0);
+    let inner = rect.inset(thickness, thickness, thickness, thickness);
+    let outer_radius = radius.min(rect.width() * 0.5).min(rect.height() * 0.5);
+    let inner_radius = (outer_radius - thickness)
+        .min(inner.width() * 0.5)
+        .min(inner.height() * 0.5)
+        .max(0.0);
+    let mut commands = rounded_rect_commands(rect, outer_radius);
+    commands.extend(rounded_rect_commands(inner, inner_radius));
+    PaintPath::from(commands)
+}
+
 #[cfg(any(feature = "radiant-gui", feature = "vst3"))]
 impl toybox::radiant_gui::RadiantEditor for RadiantPumpEditor {
     fn resize(&mut self, width: u32, height: u32) {
@@ -1091,6 +1304,8 @@ impl RadiantEditorState {
             active_curve_node_drag: None,
             active_curve_segment: None,
             active_curve_offset: None,
+            active_curve_marquee: None,
+            selected_curve_nodes: Vec::new(),
             preview_curve_offset: None,
             hover_curve_node: None,
             preview_curve_node: None,
@@ -1102,9 +1317,9 @@ impl RadiantEditorState {
             curve_slot_scroll_offset: 0,
             numeric_entry: None,
             active_knob_gesture: None,
-            preset_dropdown_open: false,
+            timing_dropdown_open: false,
+            free_rate_unit: FreeRateUnit::Hertz,
             ab_confirmation: None,
-            snap_enabled: false,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
         }
@@ -1161,6 +1376,7 @@ impl RadiantEditorState {
         if let Some(snapshot) = self.undo_history.pop() {
             self.redo_history.push(self.snapshot());
             self.restore(&snapshot);
+            self.clear_curve_selection();
         }
     }
 
@@ -1168,13 +1384,21 @@ impl RadiantEditorState {
         if let Some(snapshot) = self.redo_history.pop() {
             self.undo_history.push(self.snapshot());
             self.restore(&snapshot);
+            self.clear_curve_selection();
         }
+    }
+
+    fn clear_curve_selection(&mut self) {
+        self.active_curve_marquee = None;
+        self.selected_curve_nodes.clear();
     }
 }
 
 #[allow(clippy::arc_with_non_send_sync)]
 fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<RadiantEditorMessage>> {
-    let _ = state.params.consume_pending_active_sound();
+    if state.params.consume_pending_active_sound().is_some() {
+        state.clear_curve_selection();
+    }
     let params = state.params.as_ref();
     let curve = state
         .preview_curve_offset
@@ -1186,116 +1410,73 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let depth = params.depth_db();
     let floor = params.floor_db();
     let sync = params.sync_division();
+    let free_timing = params.timing_mode() == TIMING_MODE_FREE;
+    let free_rate = params.free_rate_hz();
     let playhead_phase = (state.status.has_host_beats_timeline() || state.status.is_playing())
         .then_some(state.status.phase());
-    let preset_bank = params.preset_bank_snapshot();
-    let preset_selected = preset_bank
-        .selected
-        .min(preset_bank.presets.len().saturating_sub(1));
-    let preset_label = preset_bank
-        .presets
-        .get(preset_selected)
-        .map(|preset| preset.name.clone())
-        .unwrap_or_else(|| "Init".to_string());
     let active_sound = params.active_sound();
-    let live_ab_status = if params.sound_sides_differ() {
-        format!("{} active · A/B differ", active_sound.label())
+    let timing_options: Vec<_> = if free_timing {
+        FreeRateUnit::ALL
+            .into_iter()
+            .map(|unit| {
+                DropdownOption::new(
+                    unit.label(),
+                    unit == state.free_rate_unit,
+                    RadiantEditorMessage::FreeRateUnit(unit),
+                )
+            })
+            .collect()
     } else {
-        format!("{} active · A/B match", active_sound.label())
+        SYNC_DIVISIONS
+            .iter()
+            .enumerate()
+            .map(|(index, division)| {
+                DropdownOption::new(
+                    division.label,
+                    index == sync,
+                    RadiantEditorMessage::SyncDivision(normalize_sync_division(index)),
+                )
+            })
+            .collect()
     };
-    let ab_status = state
-        .ab_confirmation
-        .as_ref()
-        .map(|confirmation| format!("{confirmation} · {live_ab_status}"))
-        .unwrap_or(live_ab_status);
-    let mut preset_dropdown = dropdown(&preset_label, state.preset_dropdown_open)
-        .toggle_message(RadiantEditorMessage::TogglePresetDropdown);
-    for (index, preset) in preset_bank.presets.iter().enumerate() {
-        preset_dropdown = preset_dropdown.option(
-            preset.name.clone(),
-            index == preset_selected,
-            RadiantEditorMessage::PresetSelect(index),
-        );
-    }
-    let sync_control = enum_control_row(
-        "Sync",
-        sync_division_label(sync).to_string(),
-        normalize_sync_division(sync),
-        RadiantEditorMessage::SyncDivision,
-    );
-    let swing_control = slider_control_row(
-        "Swing",
-        value_label_node(
-            NumericEntryTarget::Swing,
-            format!("{:.0}%", swing * 100.0),
+    let timing_label = if free_timing {
+        state.free_rate_unit.label().to_string()
+    } else {
+        format!("Sync {}", sync_division_label(sync))
+    };
+    let timing_dropdown = dropdown_trigger(timing_label, state.timing_dropdown_open)
+        .toggle_message(RadiantEditorMessage::ToggleTimingDropdown)
+        .build();
+    let timing_toggle = toggle(if free_timing { "FREE" } else { "SYNC" }, free_timing)
+        .message(|_| RadiantEditorMessage::ToggleTimingMode)
+        .size(TIMING_MODE_TOGGLE_WIDTH, TIMING_STRIP_HEIGHT)
+        .tooltip(if free_timing {
+            "Switch to synchronized timing"
+        } else {
+            "Switch to free timing"
+        });
+    let swing_control = timing_knob_control(swing, state.numeric_entry.as_ref());
+    let mut timing_controls = vec![
+        timing_toggle,
+        timing_dropdown
+            .width(TIMING_DROPDOWN_WIDTH)
+            .height(TIMING_STRIP_HEIGHT),
+    ];
+    if free_timing {
+        timing_controls.push(free_rate_knob_control(
+            free_rate,
+            state.free_rate_unit,
             state.numeric_entry.as_ref(),
-        ),
-        swing,
-        RadiantEditorMessage::Swing,
-    );
-    // Keep the full-width labels and value cells readable at the minimum host
-    // size with the remaining sync controls beside the preset selector.
-    let timing_controls = column([row([sync_control, swing_control])
+        ));
+    }
+    timing_controls.push(swing_control);
+    let timing_strip = row(timing_controls)
         .spacing(PUMP_VISUAL_METRICS.space_4)
         .fill_width()
-        .height(PRESET_TIMING_HEIGHT)])
-    .spacing(PUMP_VISUAL_METRICS.space_4)
-    .fill_width()
-    .height(PRESET_TIMING_HEIGHT);
-    let preset_actions = row([
-        action_icon_button(
-            IconName::ChevronLeft,
-            "Previous preset",
-            RadiantEditorMessage::PresetPrevious,
-            36.0,
-            PRESET_TIMING_HEIGHT,
-        ),
-        action_icon_button(
-            IconName::ChevronRight,
-            "Next preset",
-            RadiantEditorMessage::PresetNext,
-            36.0,
-            PRESET_TIMING_HEIGHT,
-        ),
-        action_icon_button(
-            IconName::Favorite,
-            "Favorite preset",
-            RadiantEditorMessage::PresetFavorite,
-            36.0,
-            PRESET_TIMING_HEIGHT,
-        ),
-        action_icon_button(
-            IconName::Copy,
-            "Add preset",
-            RadiantEditorMessage::PresetAdd,
-            36.0,
-            PRESET_TIMING_HEIGHT,
-        ),
-        action_icon_button(
-            IconName::Pattern,
-            "Save preset",
-            RadiantEditorMessage::PresetSave,
-            36.0,
-            PRESET_TIMING_HEIGHT,
-        ),
-    ])
-    .spacing(PUMP_VISUAL_METRICS.space_4)
-    .width(196.0)
-    .height(PRESET_TIMING_HEIGHT);
-    let timing_strip = row([
-        preset_dropdown
-            .build()
-            .width(150.0)
-            .height(PRESET_TIMING_HEIGHT),
-        preset_actions,
-        timing_controls,
-    ])
-    .spacing(PUMP_VISUAL_METRICS.space_4)
-    .fill_width()
-    .height(PRESET_TIMING_HEIGHT);
+        .height(TIMING_STRIP_HEIGHT);
     let history_actions = row([
         action_icon_button_with_state(
-            IconName::History,
+            IconName::ChevronLeft,
             "Undo",
             RadiantEditorMessage::Undo,
             PUMP_VISUAL_METRICS.icon_hit,
@@ -1312,25 +1493,21 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         ),
     ])
     .spacing(PUMP_VISUAL_METRICS.space_4)
-    .width(320.0)
     .height(BUILD_LABEL_HEIGHT);
     let ab_actions = row([
-        action_icon_button(
-            IconName::CompareAb,
-            "Switch active A/B sound",
-            RadiantEditorMessage::SelectSound(active_sound.other()),
-            PUMP_VISUAL_METRICS.icon_hit,
-            BUILD_LABEL_HEIGHT,
-        )
+        toggle("A", active_sound == SoundSide::A)
+            .message(|_| RadiantEditorMessage::SelectSound(SoundSide::A))
+            .size(34.0, BUILD_LABEL_HEIGHT)
+            .tooltip("Select sound A"),
+        custom_widget_mapped(SoundSwitchButtonWidget::new(), move |_: ButtonMessage| {
+            RadiantEditorMessage::SelectSound(active_sound.other())
+        })
+        .size(PUMP_VISUAL_METRICS.icon_hit, BUILD_LABEL_HEIGHT)
         .tooltip(if active_sound == SoundSide::A {
             "Switch to sound B"
         } else {
             "Switch to sound A"
         }),
-        toggle("A", active_sound == SoundSide::A)
-            .message(|_| RadiantEditorMessage::SelectSound(SoundSide::A))
-            .size(34.0, BUILD_LABEL_HEIGHT)
-            .tooltip("Select sound A"),
         toggle("B", active_sound == SoundSide::B)
             .message(|_| RadiantEditorMessage::SelectSound(SoundSide::B))
             .size(34.0, BUILD_LABEL_HEIGHT)
@@ -1351,38 +1528,52 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         } else {
             "Copy sound B to sound A"
         }),
-        action_icon_button_with_state(
-            IconName::Settings,
-            "Settings",
-            RadiantEditorMessage::SettingsUnavailable,
-            PUMP_VISUAL_METRICS.icon_hit,
-            BUILD_LABEL_HEIGHT,
-            true,
-        )
-        .tooltip("Settings are not available in this build"),
-        text(if params.preset_persistence_warning().is_some() {
-            super::PRESET_WARNING_STORAGE.to_string()
-        } else {
-            build_version_label()
-        })
-        .muted_text()
-        .align_text(TextAlign::Right)
-        .fill_width(),
     ])
     .spacing(PUMP_VISUAL_METRICS.space_4)
-    .width(320.0)
     .height(BUILD_LABEL_HEIGHT);
-    Arc::new(
-        column([
-            row([
-                history_actions,
-                text("PUMP").align_text(TextAlign::Center).fill_width(),
-                ab_actions,
-            ])
+    let header_actions = row([history_actions, ab_actions])
+        .spacing(PUMP_VISUAL_METRICS.gap)
+        .fill_width()
+        .height(BUILD_LABEL_HEIGHT);
+    let header_brand = column([
+        row([
+            text("PORTALSURFER")
+                .muted_text()
+                .width(100.0)
+                .align_text(TextAlign::Right),
+            text("/")
+                .muted_text()
+                .width(10.0)
+                .align_text(TextAlign::Center),
+            text("PUMP")
+                .text_color(TextColorRole::Custom(pump_theme().accent_copper))
+                .align_text(TextAlign::Right)
+                .width(42.0),
+        ])
+        .align_main(MainAlign::End)
+        .fill_width()
+        .height(HEADER_BRAND_TITLE_HEIGHT),
+        custom_widget(
+            MetadataTextWidget::new(if params.preset_persistence_warning().is_some() {
+                super::PRESET_WARNING_STORAGE.to_string()
+            } else {
+                build_version_label()
+            }),
+            |_| None,
+        )
+        .fill_width()
+        .height(HEADER_BRAND_META_HEIGHT),
+    ])
+    .spacing(0.0)
+    .width(HEADER_BRAND_WIDTH)
+    .height(BUILD_LABEL_HEIGHT);
+    let base = column([
+        row([header_actions, header_brand])
             .height(BUILD_LABEL_HEIGHT)
             .fill_width(),
-            timing_strip,
-            row([custom_widget_mapped(
+        timing_strip,
+        row([
+            custom_widget_mapped(
                 CurvePreviewWidget::new(
                     curve,
                     state.active_curve_node,
@@ -1406,87 +1597,73 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                         .as_ref()
                         .map(|drag| drag.start_pointer_x),
                 )
+                .with_selected_curve_nodes(&state.selected_curve_nodes)
+                .with_active_curve_marquee(state.active_curve_marquee)
                 .with_incoming_waveform(state.status.incoming_waveform_snapshot())
                 .with_sync_division(sync)
                 .with_swing(swing)
+                .with_smooth(smooth)
                 .with_gain_mapping(depth, floor)
                 .with_playhead_phase(playhead_phase),
                 RadiantEditorMessage::Curve,
             )
             .fill_width()
-            .fill_height()])
-            .spacing(PUMP_VISUAL_METRICS.space_4)
-            .fill_width()
             .fill_height(),
-            curve_slot_row(state),
-            parameter_deck(state, params, depth, floor, output, smooth),
-            row([
-                toggle("Snap", state.snap_enabled)
-                    .message(RadiantEditorMessage::ToggleSnap)
-                    .size(86.0, CONTROL_ROW_HEIGHT),
-                text(format!("Grid {}", sync_division_label(sync)))
-                    .muted_text()
-                    .height(CONTROL_ROW_HEIGHT)
-                    .fill_width(),
-                text(ab_status)
-                    .muted_text()
-                    .width(120.0)
-                    .height(CONTROL_ROW_HEIGHT),
-                custom_widget_mapped(
-                    BypassControlWidget::new(params.bypassed(), params.bypass_automation_recent()),
-                    move |_: ButtonMessage| RadiantEditorMessage::ToggleBypass,
-                )
-                .width(BYPASS_CONTROL_WIDTH)
-                .height(CONTROL_ROW_HEIGHT),
-            ])
-            .spacing(PUMP_VISUAL_METRICS.space_4)
-            .fill_width()
+            custom_widget(
+                GainReductionMeterWidget::new(state.status.gain_reduction_db()),
+                |_| None,
+            )
+            .width(GAIN_REDUCTION_METER_WIDTH)
+            .fill_height(),
+        ])
+        .spacing(PUMP_VISUAL_METRICS.space_4)
+        .fill_width()
+        .fill_height(),
+        curve_slot_row(state),
+        parameter_deck(state, params, output, smooth),
+        row([
+            spacer().fill_width(),
+            custom_widget_mapped(
+                BypassControlWidget::new(params.bypassed(), params.bypass_automation_recent())
+                    .with_pulse_phase(state.status.is_playing().then_some(state.status.phase())),
+                move |_: ButtonMessage| RadiantEditorMessage::ToggleBypass,
+            )
+            .width(BYPASS_CONTROL_WIDTH)
             .height(CONTROL_ROW_HEIGHT),
         ])
-        .padding(SURFACE_PADDING)
-        .spacing(SURFACE_SPACING)
-        .fill_height()
-        .into_surface(),
-    )
+        .spacing(PUMP_VISUAL_METRICS.space_4)
+        .fill_width()
+        .height(CONTROL_ROW_HEIGHT),
+    ])
+    .padding(SURFACE_PADDING)
+    .spacing(SURFACE_SPACING)
+    .fill_height();
+    let surface = if state.timing_dropdown_open {
+        dismissible_overlay(
+            base,
+            dropdown_menu_overlay_below(
+                SURFACE_PADDING,
+                SURFACE_PADDING + BUILD_LABEL_HEIGHT + SURFACE_SPACING,
+                TIMING_STRIP_HEIGHT,
+                SURFACE_SPACING,
+                Some(TIMING_DROPDOWN_WIDTH),
+                timing_options,
+            ),
+            RadiantEditorMessage::ToggleTimingDropdown,
+        )
+    } else {
+        base
+    };
+    Arc::new(surface.into_surface())
 }
 
 fn parameter_deck(
     state: &RadiantEditorState,
     params: &PumpParams,
-    depth: f32,
-    floor: f32,
     output: f32,
     smooth: f32,
 ) -> ViewNode<RadiantEditorMessage> {
     row([
-        control_column(
-            NumericEntryTarget::Depth,
-            "DEPTH",
-            format!("{depth:.0} dB"),
-            normalize_depth(depth),
-            normalize_depth(DEFAULT_DEPTH_DB),
-            state.numeric_entry.as_ref(),
-        ),
-        control_column(
-            NumericEntryTarget::Floor,
-            "FLOOR",
-            if floor <= MIN_FLOOR_DB {
-                "−∞".to_string()
-            } else {
-                format!("{floor:.0} dB")
-            },
-            normalize_floor(floor),
-            normalize_floor(DEFAULT_FLOOR_DB),
-            state.numeric_entry.as_ref(),
-        ),
-        control_column(
-            NumericEntryTarget::Phase,
-            "OFFSET",
-            format!("{:.0}%", params.phase_offset() * 100.0),
-            params.phase_offset(),
-            DEFAULT_PHASE_OFFSET,
-            state.numeric_entry.as_ref(),
-        ),
         control_column(
             NumericEntryTarget::Smooth,
             "SMOOTH",
@@ -1514,12 +1691,6 @@ fn parameter_deck(
             state.numeric_entry.as_ref(),
         ),
         parameter_deck_divider(),
-        custom_widget(
-            GainReductionMeterWidget::new(state.status.gain_reduction_db()),
-            |_| None,
-        )
-        .width(GAIN_REDUCTION_METER_WIDTH)
-        .height(PARAMETER_DECK_HEIGHT),
     ])
     .spacing(PUMP_VISUAL_METRICS.gap)
     .fill_width()
@@ -1532,6 +1703,41 @@ fn parameter_deck_divider() -> ViewNode<RadiantEditorMessage> {
         .height(PARAMETER_DECK_HEIGHT)
 }
 
+fn knob_control(
+    target: NumericEntryTarget,
+    label: &'static str,
+    value_label: String,
+    value: f32,
+    default_value: Option<f32>,
+    active_entry: Option<&NumericEntryState>,
+    height: f32,
+) -> ViewNode<RadiantEditorMessage> {
+    let knob_diameter = (height - 2.0 * CONTROL_ROW_HEIGHT - 2.0 * PUMP_VISUAL_METRICS.space_4)
+        .clamp(16.0, PUMP_VISUAL_METRICS.knob);
+    let mut knob_builder = knob(value.clamp(0.0, 1.0))
+        .diameter(knob_diameter)
+        .primary();
+    if let Some(default_value) = default_value {
+        knob_builder = knob_builder.default_value(default_value.clamp(0.0, 1.0));
+    }
+    let knob_view = knob_builder
+        .message(move |message| RadiantEditorMessage::Knob { target, message })
+        .width(knob_diameter)
+        .height(knob_diameter);
+    column([
+        text(label)
+            .fill_width()
+            .height(CONTROL_ROW_HEIGHT)
+            .align_text(TextAlign::Center),
+        knob_view,
+        value_label_node(target, value_label, active_entry),
+    ])
+    .spacing(PUMP_VISUAL_METRICS.space_4)
+    .fill_width()
+    .align_cross(CrossAlign::Center)
+    .height(height)
+}
+
 fn control_column(
     target: NumericEntryTarget,
     label: &'static str,
@@ -1540,20 +1746,15 @@ fn control_column(
     default_value: f32,
     active_entry: Option<&NumericEntryState>,
 ) -> ViewNode<RadiantEditorMessage> {
-    column([
-        text(label).height(CONTROL_ROW_HEIGHT),
-        knob(value.clamp(0.0, 1.0))
-            .diameter(PUMP_VISUAL_METRICS.knob)
-            .default_value(default_value.clamp(0.0, 1.0))
-            .primary()
-            .message(move |message| RadiantEditorMessage::Knob { target, message })
-            .fill_width()
-            .fill_height(),
-        value_label_node(target, value_label, active_entry),
-    ])
-    .spacing(PUMP_VISUAL_METRICS.space_4)
-    .fill_width()
-    .height(PARAMETER_DECK_HEIGHT)
+    knob_control(
+        target,
+        label,
+        value_label,
+        value,
+        Some(default_value),
+        active_entry,
+        PARAMETER_DECK_HEIGHT,
+    )
 }
 
 fn reduce_knob_message(
@@ -1642,12 +1843,14 @@ fn reduce_knob_message(
 fn knob_plain_value(target: NumericEntryTarget, value: f32) -> (ClapId, f32) {
     match target {
         NumericEntryTarget::Mix => (PARAM_MIX_ID, value),
-        NumericEntryTarget::Depth => (PARAM_DEPTH_ID, denormalize_depth(value)),
-        NumericEntryTarget::Floor => (PARAM_FLOOR_ID, denormalize_floor(value)),
-        NumericEntryTarget::Phase => (PARAM_PHASE_OFFSET_ID, value),
         NumericEntryTarget::OutputGain => (PARAM_OUTPUT_GAIN_ID, denormalize_output_gain(value)),
         NumericEntryTarget::Smooth => (PARAM_SMOOTH_ID, value),
         NumericEntryTarget::Swing => (PARAM_SWING_ID, value),
+        NumericEntryTarget::FreeRate => (
+            PARAM_FREE_RATE_ID,
+            plain_from_normalized_value(PARAM_FREE_RATE_ID, value as f64)
+                .unwrap_or(DEFAULT_FREE_RATE_HZ as f64) as f32,
+        ),
     }
 }
 
@@ -1655,52 +1858,76 @@ fn set_knob_param(params: &PumpParams, target: NumericEntryTarget, value: f32) -
     let (param_id, plain_value) = knob_plain_value(target, value);
     match target {
         NumericEntryTarget::Mix => params.set_mix(value),
-        NumericEntryTarget::Depth => params.set_depth_db(plain_value),
-        NumericEntryTarget::Floor => params.set_floor_db(plain_value),
-        NumericEntryTarget::Phase => params.set_phase_offset(value),
         NumericEntryTarget::OutputGain => params.set_output_gain_db(plain_value),
         NumericEntryTarget::Smooth => params.set_smooth(value),
         NumericEntryTarget::Swing => params.set_swing(value),
+        NumericEntryTarget::FreeRate => params.set_free_rate_hz(plain_value),
     }
     (param_id, plain_value)
 }
 
-fn enum_control_row(
-    label: &'static str,
-    value_label: String,
+fn timing_knob_control(
     value: f32,
-    message: fn(f32) -> RadiantEditorMessage,
+    active_entry: Option<&NumericEntryState>,
 ) -> ViewNode<RadiantEditorMessage> {
-    slider_control_row(
-        label,
-        text(value_label)
-            .align_text(TextAlign::Right)
-            .width(CONTROL_VALUE_WIDTH)
-            .height(CONTROL_ROW_HEIGHT),
-        value,
-        message,
-    )
+    const TIMING_LABEL_HEIGHT: f32 = 12.0;
+    const TIMING_KNOB_SPACING: f32 = 2.0;
+    column([
+        text("SWING")
+            .fill_width()
+            .height(TIMING_LABEL_HEIGHT)
+            .align_text(TextAlign::Center),
+        knob(value.clamp(0.0, 1.0))
+            .diameter(TIMING_KNOB_DIAMETER)
+            .primary()
+            .message(|message| RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Swing,
+                message,
+            })
+            .width(TIMING_KNOB_DIAMETER)
+            .height(TIMING_KNOB_DIAMETER),
+        value_label_node(
+            NumericEntryTarget::Swing,
+            format!("{:.0}%", value * 100.0),
+            active_entry,
+        )
+        .height(TIMING_LABEL_HEIGHT),
+    ])
+    .spacing(TIMING_KNOB_SPACING)
+    .fill_width()
+    .align_cross(CrossAlign::Center)
+    .height(TIMING_STRIP_HEIGHT)
+    .width(PUMP_VISUAL_METRICS.knob_column)
 }
 
-fn slider_control_row(
-    label: &'static str,
-    value_label: ViewNode<RadiantEditorMessage>,
-    value: f32,
-    message: fn(f32) -> RadiantEditorMessage,
+fn free_rate_knob_control(
+    rate_hz: f32,
+    unit: FreeRateUnit,
+    active_entry: Option<&NumericEntryState>,
 ) -> ViewNode<RadiantEditorMessage> {
-    row([
-        text(label)
-            .width(CONTROL_LABEL_WIDTH)
-            .height(CONTROL_ROW_HEIGHT),
-        slider(value.clamp(0.0, 1.0))
-            .message(message)
-            .fill_width()
-            .height(CONTROL_ROW_HEIGHT),
-        value_label,
-    ])
-    .spacing(PUMP_VISUAL_METRICS.gap)
-    .fill_width()
-    .height(CONTROL_ROW_HEIGHT)
+    let normalized =
+        normalized_from_plain_value(PARAM_FREE_RATE_ID, rate_hz as f64).unwrap_or(0.0) as f32;
+    knob_control(
+        NumericEntryTarget::FreeRate,
+        "RATE",
+        format_free_rate_for_unit(rate_hz, unit),
+        normalized,
+        normalized_from_plain_value(PARAM_FREE_RATE_ID, DEFAULT_FREE_RATE_HZ as f64)
+            .map(|value| value as f32),
+        active_entry,
+        TIMING_STRIP_HEIGHT,
+    )
+    .width(PUMP_VISUAL_METRICS.knob_column)
+}
+
+fn format_free_rate_for_unit(rate_hz: f32, unit: FreeRateUnit) -> String {
+    let value = unit.value(rate_hz);
+    match unit {
+        FreeRateUnit::Milliseconds => format!("{value:.1} ms"),
+        FreeRateUnit::Seconds => format!("{value:.3} s"),
+        FreeRateUnit::Hertz => format!("{value:.2} Hz"),
+        FreeRateUnit::Kilohertz => format!("{value:.3} kHz"),
+    }
 }
 
 fn value_label_node(
@@ -1725,57 +1952,39 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
     match message {
         RadiantEditorMessage::Undo => state.undo(),
         RadiantEditorMessage::Redo => state.redo(),
-        RadiantEditorMessage::ToggleSnap(enabled) => state.snap_enabled = enabled,
-        RadiantEditorMessage::TogglePresetDropdown => {
-            state.preset_dropdown_open = !state.preset_dropdown_open;
-        }
-        RadiantEditorMessage::PresetSelect(index) => {
+        RadiantEditorMessage::ToggleTimingMode => {
             state.push_history();
-            let _ = state.params.load_preset(index);
-            state.preset_dropdown_open = false;
+            state.timing_dropdown_open = false;
+            let timing_mode = if state.params.timing_mode() == TIMING_MODE_FREE {
+                TIMING_MODE_SYNC
+            } else {
+                TIMING_MODE_FREE
+            };
+            state.params.set_timing_mode(timing_mode as f32);
+            push_radiant_param_update(state, PARAM_TIMING_MODE_ID, timing_mode as f64);
         }
-        RadiantEditorMessage::PresetPrevious => {
-            state.push_history();
-            let _ = state.params.load_preset_relative(-1);
+        RadiantEditorMessage::ToggleTimingDropdown => {
+            state.timing_dropdown_open = !state.timing_dropdown_open;
         }
-        RadiantEditorMessage::PresetNext => {
-            state.push_history();
-            let _ = state.params.load_preset_relative(1);
-        }
-        RadiantEditorMessage::PresetFavorite => {
-            state.ab_confirmation = None;
-            let _ = state.params.toggle_selected_preset_favorite();
-        }
-        RadiantEditorMessage::PresetAdd => {
-            state.ab_confirmation = None;
-            let _ = state.params.add_preset_from_current_state();
-        }
-        RadiantEditorMessage::PresetSave => {
-            state.ab_confirmation = None;
-            let bank = state.params.preset_bank_snapshot();
-            if let Some(preset) = bank.presets.get(bank.selected) {
-                let _ = state.params.save_current_state_by_name(&preset.name);
-            }
-        }
-        RadiantEditorMessage::SettingsUnavailable => {}
         RadiantEditorMessage::Knob { target, message } => {
             reduce_knob_message(state, target, message);
         }
-        RadiantEditorMessage::Swing(value) => {
-            state.push_history();
-            state.params.set_swing(value);
-            push_radiant_param_update(state, PARAM_SWING_ID, value as f64);
-        }
         RadiantEditorMessage::SyncDivision(value) => {
             state.push_history();
+            state.timing_dropdown_open = false;
             let value = (value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round();
             state.params.set_sync_division(value);
             push_radiant_param_update(state, PARAM_SYNC_DIVISION_ID, value as f64);
+        }
+        RadiantEditorMessage::FreeRateUnit(unit) => {
+            state.free_rate_unit = unit;
+            state.timing_dropdown_open = false;
         }
         RadiantEditorMessage::SelectSound(side) => {
             if state.params.active_sound() != side {
                 state.push_history();
                 if state.params.set_active_sound(side) {
+                    state.clear_curve_selection();
                     state.ab_confirmation = Some(format!("Switched to sound {}", side.label()));
                     push_radiant_param_update(state, PARAM_SOUND_ID, side.index() as f64);
                 }
@@ -1785,6 +1994,7 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             state.push_history();
             let active = state.params.active_sound();
             if state.params.copy_active_to_inactive() {
+                state.clear_curve_selection();
                 state.ab_confirmation = Some(format!(
                     "Copied {} → {}",
                     active.label(),
@@ -1811,7 +2021,17 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             }
         }
         RadiantEditorMessage::Curve(message) => {
-            state.push_history();
+            if matches!(
+                message,
+                CurvePreviewMessage::PressNode { .. }
+                    | CurvePreviewMessage::PressCurveOffset { .. }
+                    | CurvePreviewMessage::InsertNode { .. }
+                    | CurvePreviewMessage::DeleteNode { .. }
+                    | CurvePreviewMessage::PressSegment { .. }
+                    | CurvePreviewMessage::PressSegmentMove { .. }
+            ) {
+                state.push_history();
+            }
             reduce_curve_message(state, message)
         }
         RadiantEditorMessage::CurveSlot(message) => reduce_curve_slot_message(state, message),
@@ -1884,6 +2104,7 @@ fn reduce_curve_slot_message(state: &mut RadiantEditorState, message: CurveSlotM
                 return;
             };
             state.params.set_editable_curve_preserving_phase(&curve);
+            state.clear_curve_selection();
             state.active_curve_node = None;
             state.active_curve_segment = None;
             state.hover_curve_node = None;
@@ -1906,8 +2127,12 @@ fn reduce_numeric_entry_message(state: &mut RadiantEditorState, message: Numeric
     match message {
         NumericEntryMessage::Begin { target } => {
             let value = target.current_plain_value(state.params.as_ref());
-            let draft = format_plain_value_text(target.param_id(), value)
-                .unwrap_or_else(|| value.to_string());
+            let draft = if target == NumericEntryTarget::FreeRate {
+                format_free_rate_for_unit(value as f32, state.free_rate_unit)
+            } else {
+                format_plain_value_text(target.param_id(), value)
+                    .unwrap_or_else(|| value.to_string())
+            };
             state.numeric_entry = Some(NumericEntryState {
                 target,
                 draft,
@@ -1963,12 +2188,10 @@ fn apply_numeric_entry_value(
 ) {
     match target {
         NumericEntryTarget::Mix => state.params.set_mix(value as f32),
-        NumericEntryTarget::Depth => state.params.set_depth_db(value as f32),
-        NumericEntryTarget::Floor => state.params.set_floor_db(value as f32),
-        NumericEntryTarget::Phase => state.params.set_phase_offset(value as f32),
         NumericEntryTarget::OutputGain => state.params.set_output_gain_db(value as f32),
         NumericEntryTarget::Smooth => state.params.set_smooth(value as f32),
         NumericEntryTarget::Swing => state.params.set_swing(value as f32),
+        NumericEntryTarget::FreeRate => state.params.set_free_rate_hz(value as f32),
     }
 
     push_radiant_param_update(state, target.param_id(), value);
@@ -2032,6 +2255,23 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.option_hover_held = option_held;
             state.command_hover_held = command_held;
             state.shift_hover_held = shift_held;
+            if let Some(drag) = state.active_curve_offset.as_mut() {
+                drag.quantized = option_held;
+                let raw_delta = drag.raw_delta;
+                let origin_curve = drag.origin_curve.clone();
+                let delta = if drag.quantized {
+                    quantize_curve_offset_delta(
+                        state.params.sync_division(),
+                        (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0),
+                        state.params.swing(),
+                        raw_delta,
+                    )
+                } else {
+                    raw_delta
+                };
+                state.preview_curve_offset =
+                    Some(cyclically_offset_editable_curve(&origin_curve, delta));
+            }
             if constraint_changed {
                 let curve = state.params.editable_curve_snapshot();
                 let active_index = state.active_curve_node;
@@ -2065,6 +2305,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             command_held,
         } => {
             let curve = state.params.editable_curve_snapshot();
+            state.clear_curve_selection();
             if let Some(drag) =
                 start_curve_node_drag(&curve, index, pointer, shift_held, option_held)
             {
@@ -2081,11 +2322,63 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 state.hover_curve_segment = None;
             }
         }
-        CurvePreviewMessage::PressCurveOffset { pointer_x } => {
+        CurvePreviewMessage::PressMarquee { start } => {
+            state.active_curve_marquee = Some(ActiveCurveMarquee {
+                start,
+                current: start,
+            });
+            state.active_curve_node = None;
+            state.active_curve_node_drag = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.preview_curve_offset = None;
+            state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.hover_curve_segment = None;
+        }
+        CurvePreviewMessage::DragMarquee { current } => {
+            if let Some(marquee) = state.active_curve_marquee.as_mut() {
+                marquee.current = current;
+            }
+        }
+        CurvePreviewMessage::ReleaseMarquee { current } => {
+            let Some(marquee) = state.active_curve_marquee.take() else {
+                return;
+            };
+            let min_x = marquee.start.x.min(current.x);
+            let max_x = marquee.start.x.max(current.x);
+            let min_y = marquee.start.y.min(current.y);
+            let max_y = marquee.start.y.max(current.y);
+            let curve = state.params.editable_curve_snapshot();
+            state.selected_curve_nodes = curve
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    (node.x >= min_x && node.x <= max_x && node.y >= min_y && node.y <= max_y)
+                        .then_some(index)
+                })
+                .collect();
+            state.active_curve_node = None;
+            state.active_curve_node_drag = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.preview_curve_offset = None;
+            state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.hover_curve_segment = None;
+        }
+        CurvePreviewMessage::PressCurveOffset {
+            pointer_x,
+            quantized,
+        } => {
             let origin_curve = state.params.editable_curve_snapshot();
+            state.clear_curve_selection();
             state.active_curve_offset = Some(ActiveCurveOffsetDrag {
                 origin_curve: origin_curve.clone(),
                 start_pointer_x: pointer_x,
+                raw_delta: 0.0,
+                quantized,
             });
             state.preview_curve_offset = Some(origin_curve);
             state.active_curve_node = None;
@@ -2099,6 +2392,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         }
         CurvePreviewMessage::InsertNode { node, command_held } => {
             let mut curve = state.params.editable_curve_snapshot();
+            state.clear_curve_selection();
             state.command_hover_held = command_held;
             state.active_curve_node_drag = None;
             state.active_curve_segment = None;
@@ -2117,6 +2411,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         }
         CurvePreviewMessage::DeleteNode { index } => {
             let mut curve = state.params.editable_curve_snapshot();
+            state.clear_curve_selection();
             if delete_curve_node(&mut curve, index) {
                 state.params.set_editable_curve(&curve);
             }
@@ -2134,6 +2429,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             node,
             push_through_threshold_x,
         } => {
+            state.clear_curve_selection();
             let current_curve = state.params.editable_curve_snapshot();
             let current = state
                 .active_curve_node
@@ -2180,8 +2476,19 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.hover_curve_segment = None;
         }
         CurvePreviewMessage::DragCurveOffset { delta } => {
-            let Some(drag) = state.active_curve_offset.as_ref() else {
+            let Some(drag) = state.active_curve_offset.as_mut() else {
                 return;
+            };
+            drag.raw_delta = delta;
+            let delta = if drag.quantized {
+                quantize_curve_offset_delta(
+                    state.params.sync_division(),
+                    (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0),
+                    state.params.swing(),
+                    delta,
+                )
+            } else {
+                delta
             };
             let curve = cyclically_offset_editable_curve(&drag.origin_curve, delta);
             state.preview_curve_offset = Some(curve);
@@ -2191,12 +2498,25 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
-        CurvePreviewMessage::ReleaseCurveOffset { delta } => {
-            if let Some(drag) = state.active_curve_offset.take() {
+        CurvePreviewMessage::ReleaseCurveOffset { delta, option_held } => {
+            if let Some(mut drag) = state.active_curve_offset.take() {
+                drag.raw_delta = delta;
+                drag.quantized = option_held;
+                let delta = if drag.quantized {
+                    quantize_curve_offset_delta(
+                        state.params.sync_division(),
+                        (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0),
+                        state.params.swing(),
+                        delta,
+                    )
+                } else {
+                    delta
+                };
                 let curve = cyclically_offset_editable_curve(&drag.origin_curve, delta);
                 state.params.set_editable_curve_preserving_phase(&curve);
             }
             state.preview_curve_offset = None;
+            state.option_hover_held = option_held;
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
             state.active_curve_segment = None;
@@ -2212,6 +2532,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             option_held,
             command_held,
         } => {
+            state.clear_curve_selection();
             let current_curve = state.params.editable_curve_snapshot();
             let current = state
                 .active_curve_node
@@ -2323,6 +2644,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.active_curve_node_drag = None;
             state.active_curve_segment = None;
             state.active_curve_offset = None;
+            state.active_curve_marquee = None;
             state.preview_curve_offset = None;
             state.hover_curve_node = None;
             state.preview_curve_node = None;
@@ -2650,22 +2972,6 @@ fn denormalize_output_gain(value: f32) -> f32 {
     MIN_OUTPUT_GAIN_DB + value.clamp(0.0, 1.0) * (MAX_OUTPUT_GAIN_DB - MIN_OUTPUT_GAIN_DB)
 }
 
-fn normalize_depth(value: f32) -> f32 {
-    ((value - MIN_DEPTH_DB) / (MAX_DEPTH_DB - MIN_DEPTH_DB)).clamp(0.0, 1.0)
-}
-
-fn denormalize_depth(value: f32) -> f32 {
-    MIN_DEPTH_DB + value.clamp(0.0, 1.0) * (MAX_DEPTH_DB - MIN_DEPTH_DB)
-}
-
-fn normalize_floor(value: f32) -> f32 {
-    ((value - MIN_FLOOR_DB) / (MAX_FLOOR_DB - MIN_FLOOR_DB)).clamp(0.0, 1.0)
-}
-
-fn denormalize_floor(value: f32) -> f32 {
-    MIN_FLOOR_DB + value.clamp(0.0, 1.0) * (MAX_FLOOR_DB - MIN_FLOOR_DB)
-}
-
 fn normalize_sync_division(value: usize) -> f32 {
     (value as f32 / MAX_SYNC_DIVISION).clamp(0.0, 1.0)
 }
@@ -2837,7 +3143,7 @@ impl Widget for NumericValueLabelWidget {
             align: if self.editing {
                 PaintTextAlign::Left
             } else {
-                PaintTextAlign::Right
+                PaintTextAlign::Center
             },
             wrap: TextWrap::None,
         }));
@@ -2883,32 +3189,34 @@ impl CurveSlotWidget {
     }
 
     fn sample_points(&self, bounds: Rect) -> Arc<[Point]> {
-        let margin = CURVE_SLOT_MARGIN
-            .min(bounds.width() * 0.25)
-            .min(bounds.height() * 0.25)
-            .max(1.0);
-        let inner_w = (bounds.width() - margin * 2.0).max(1.0);
-        let inner_h = (bounds.height() - margin * 2.0).max(1.0);
+        let preview = bounds.inset(
+            (CURVE_SLOT_MARGIN + 5.0)
+                .min(bounds.width() * 0.25)
+                .max(1.0),
+            8.0_f32.min(bounds.height() * 0.25).max(1.0),
+            (CURVE_SLOT_MARGIN + 5.0)
+                .min(bounds.width() * 0.25)
+                .max(1.0),
+            8.0_f32.min(bounds.height() * 0.25).max(1.0),
+        );
+        let inner_w = preview.width().max(1.0);
+        let inner_h = preview.height().max(1.0);
         if let Some(curve) = self.curve.as_ref() {
             let points: Vec<Point> = (0..CURVE_SLOT_PREVIEW_STEPS.max(2))
                 .map(|step| {
                     let steps = CURVE_SLOT_PREVIEW_STEPS.max(2);
                     let t = step as f32 / (steps - 1) as f32;
                     Point::new(
-                        bounds.min.x + margin + t * inner_w,
-                        bounds.min.y
-                            + margin
+                        preview.min.x + t * inner_w,
+                        preview.min.y
                             + (1.0 - sample_editable_curve(curve, t).clamp(0.0, 1.0)) * inner_h,
                     )
                 })
                 .collect();
             Arc::from(points)
         } else {
-            let y = bounds.min.y + margin + inner_h * 0.5;
-            Arc::from([
-                Point::new(bounds.min.x + margin, y),
-                Point::new(bounds.max.x - margin, y),
-            ])
+            let y = preview.min.y + inner_h * 0.5;
+            Arc::from([Point::new(preview.min.x, y), Point::new(preview.max.x, y)])
         }
     }
 }
@@ -3002,49 +3310,54 @@ impl Widget for CurveSlotWidget {
         } else if self.loaded {
             theme.surface_raised
         } else if hovered {
-            theme.bg_secondary
+            theme.surface_raised.with_alpha(220)
         } else {
-            theme.bg_primary
-        };
-        let outline = if self.deviated {
-            theme.accent_danger
-        } else if self.loaded || hovered || pressed {
-            theme.accent_copper
-        } else {
-            theme.border
+            theme.surface_raised.with_alpha(176)
         };
         let curve_color = if self.deviated || self.curve.is_some() {
             theme.accent_copper
         } else {
             theme.text_muted
         };
-        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
-            widget_id: self.common.id,
-            rect: bounds,
-            color: fill,
-        }));
-        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
-            widget_id: self.common.id,
-            rect: bounds,
-            color: outline,
-            width: 1.0,
-        }));
+        let card_rect = bounds.inset(1.0, 1.0, 1.0, 1.0);
+        primitives.push(PaintPrimitive::FillPath(PaintFillPath::new(
+            self.common.id,
+            PaintPath::from(rounded_rect_commands(card_rect, 7.0)),
+            PaintBrush::solid(fill),
+        )));
+        let border = if self.deviated {
+            theme.accent_danger
+        } else if self.loaded || hovered || pressed {
+            theme.accent_copper
+        } else {
+            theme.border.with_alpha(190)
+        };
         if self.loaded {
-            primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
-                widget_id: self.common.id,
-                rect: bounds.inset(2.0, 2.0, 2.0, 2.0),
-                color: theme.accent_copper,
-                width: 1.0,
-            }));
+            primitives.push(PaintPrimitive::FillPath(
+                PaintFillPath::new(
+                    self.common.id,
+                    rounded_ring_path(bounds.inset(0.25, 0.25, 0.25, 0.25), 8.0, 3.5),
+                    PaintBrush::solid(theme.accent_copper.with_alpha(64)),
+                )
+                .fill_rule(PaintFillRule::EvenOdd),
+            ));
         }
+        primitives.push(PaintPrimitive::FillPath(
+            PaintFillPath::new(
+                self.common.id,
+                rounded_ring_path(bounds.inset(0.75, 0.75, 0.75, 0.75), 7.5, 1.25),
+                PaintBrush::solid(border),
+            )
+            .fill_rule(PaintFillRule::EvenOdd),
+        ));
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
             points: self.sample_points(bounds),
             color: curve_color,
             width: if hovered || pressed || self.loaded || self.deviated {
-                2.0
+                2.25
             } else {
-                1.0
+                1.75
             },
         }));
         if self.command_hovered {
@@ -3176,9 +3489,9 @@ impl Widget for CurveSlotNavigationWidget {
         let fill = if self.common.state.pressed {
             theme.accent_copper.with_alpha(96)
         } else if self.common.state.hovered || self.common.state.focused {
-            theme.bg_secondary
+            theme.surface_raised.with_alpha(220)
         } else {
-            theme.bg_primary
+            theme.surface_raised.with_alpha(176)
         };
         let outline = if self.common.state.hovered
             || self.common.state.focused
@@ -3188,17 +3501,19 @@ impl Widget for CurveSlotNavigationWidget {
         } else {
             theme.border
         };
-        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
-            widget_id: self.common.id,
-            rect: bounds,
-            color: fill,
-        }));
-        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
-            widget_id: self.common.id,
-            rect: bounds,
-            color: outline,
-            width: 1.0,
-        }));
+        primitives.push(PaintPrimitive::FillPath(PaintFillPath::new(
+            self.common.id,
+            PaintPath::from(rounded_rect_commands(bounds.inset(1.0, 1.0, 1.0, 1.0), 7.0)),
+            PaintBrush::solid(fill),
+        )));
+        primitives.push(PaintPrimitive::FillPath(
+            PaintFillPath::new(
+                self.common.id,
+                rounded_ring_path(bounds.inset(0.75, 0.75, 0.75, 0.75), 7.5, 1.25),
+                PaintBrush::solid(outline),
+            )
+            .fill_rule(PaintFillRule::EvenOdd),
+        ));
         let center = Point::new(
             bounds.min.x + bounds.width() * 0.5,
             bounds.min.y + bounds.height() * 0.5,
@@ -3214,7 +3529,7 @@ impl Widget for CurveSlotNavigationWidget {
                 Point::new(base_x, center.y + 5.0),
             ]),
             color: theme.accent_copper,
-            width: 1.5,
+            width: 1.75,
         }));
     }
 }
@@ -3275,7 +3590,7 @@ struct GainReductionMeterWidget {
 impl GainReductionMeterWidget {
     fn new(reduction_db: f32) -> Self {
         Self {
-            common: WidgetCommon::fixed(0, GAIN_REDUCTION_METER_WIDTH, PARAMETER_DECK_HEIGHT)
+            common: WidgetCommon::fixed(0, GAIN_REDUCTION_METER_WIDTH, CURVE_PREVIEW_HEIGHT)
                 .without_default_chrome(),
             reduction_db: reduction_db.clamp(0.0, crate::gui_status::GAIN_REDUCTION_METER_MAX_DB),
         }
@@ -3334,8 +3649,7 @@ impl Widget for GainReductionMeterWidget {
             .max(1.0) as usize;
         let active_segments = (fraction * segment_count as f32).round() as usize;
         for segment in 0..segment_count {
-            let y =
-                bar.max.y - 1.0 - PUMP_VISUAL_METRICS.meter_segment - segment as f32 * segment_step;
+            let y = bar.min.y + 1.0 + segment as f32 * segment_step;
             primitives.push(PaintPrimitive::FillRect(PaintFillRect {
                 widget_id: self.common.id,
                 rect: Rect::from_xy_size(
@@ -3398,10 +3712,13 @@ struct CurvePreviewWidget {
     shift_hover_held: bool,
     active_segment_move: bool,
     active_curve_offset_start_x: Option<f32>,
+    selected_nodes: Vec<usize>,
+    active_marquee: Option<ActiveCurveMarquee>,
     playhead_phase: Option<f32>,
     incoming_waveform: Option<IncomingWaveformSnapshot>,
     sync_division: usize,
     swing: f32,
+    smooth: f32,
     depth_db: f32,
     floor_db: f32,
 }
@@ -3435,10 +3752,13 @@ impl CurvePreviewWidget {
             shift_hover_held: false,
             active_segment_move: false,
             active_curve_offset_start_x: None,
+            selected_nodes: Vec::new(),
+            active_marquee: None,
             playhead_phase: None,
             incoming_waveform: None,
             sync_division: crate::params::DEFAULT_SYNC_DIVISION_INDEX,
             swing: crate::params::DEFAULT_SWING,
+            smooth: crate::params::DEFAULT_SMOOTH,
             depth_db: crate::params::DEFAULT_DEPTH_DB,
             floor_db: crate::params::DEFAULT_FLOOR_DB,
         }
@@ -3469,6 +3789,16 @@ impl CurvePreviewWidget {
         self
     }
 
+    fn with_selected_curve_nodes(mut self, selected_nodes: &[usize]) -> Self {
+        self.selected_nodes = selected_nodes.to_vec();
+        self
+    }
+
+    fn with_active_curve_marquee(mut self, marquee: Option<ActiveCurveMarquee>) -> Self {
+        self.active_marquee = marquee;
+        self
+    }
+
     fn with_incoming_waveform(
         mut self,
         incoming_waveform: Option<IncomingWaveformSnapshot>,
@@ -3484,6 +3814,11 @@ impl CurvePreviewWidget {
 
     fn with_swing(mut self, swing: f32) -> Self {
         self.swing = swing.clamp(0.0, 1.0);
+        self
+    }
+
+    fn with_smooth(mut self, smooth: f32) -> Self {
+        self.smooth = smooth.clamp(0.0, 1.0);
         self
     }
 
@@ -3797,12 +4132,33 @@ impl CurvePreviewWidget {
                 ))
             },
         );
+        if self.smooth > f32::EPSILON {
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from(self.sample_smoothed_curve_points(bounds)),
+                color: theme.text_primary.with_alpha(188),
+                width: 1.5,
+            }));
+        }
+        let active_offset = self.active_curve_offset_start_x.is_some();
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
-            points: Arc::from(points),
-            color: theme.accent_mint,
-            width: 2.0,
+            points: Arc::from(points.clone()),
+            color: if active_offset {
+                CURVE_OFFSET_MOVE_COLOR
+            } else {
+                theme.accent_mint
+            },
+            width: if active_offset { 3.0 } else { 2.0 },
         }));
+        if self.command_hover_held && self.shift_hover_held && !active_offset {
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from(points.clone()),
+                color: CURVE_OFFSET_HOVER_COLOR,
+                width: 3.5,
+            }));
+        }
 
         let move_segment = (self.active_segment_move && self.active_segment.is_some())
             .then_some(self.active_segment)
@@ -3893,6 +4249,36 @@ impl CurvePreviewWidget {
         points
     }
 
+    fn sample_smoothed_curve(&self, phase: f32) -> f32 {
+        if self.smooth <= f32::EPSILON {
+            return sample_editable_curve(&self.curve, phase);
+        }
+        let radius = (self.smooth * 8.0).round() as i32;
+        let sample_step = 1.0 / CURVE_SAMPLE_COUNT as f32;
+        let mut total = 0.0;
+        let mut count = 0.0;
+        for offset in -radius..=radius {
+            total += sample_editable_curve(&self.curve, phase + offset as f32 * sample_step);
+            count += 1.0;
+        }
+        (total / count).clamp(0.0, 1.0)
+    }
+
+    fn sample_smoothed_curve_points(&self, bounds: Rect) -> Vec<Point> {
+        (0..=CURVE_SAMPLE_COUNT)
+            .map(|step| {
+                let phase = step as f32 / CURVE_SAMPLE_COUNT as f32;
+                Self::curve_point(
+                    bounds,
+                    CurveNode {
+                        x: phase,
+                        y: self.sample_smoothed_curve(phase),
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn sample_segment_points(&self, bounds: Rect, index: usize) -> Vec<Point> {
         let Some(left) = self.curve.nodes.get(index).copied() else {
             return Vec::new();
@@ -3944,8 +4330,9 @@ impl CurvePreviewWidget {
         for (index, node) in self.curve.nodes.iter().copied().enumerate() {
             let center = Self::curve_point(bounds, node);
             let active = self.active_node == Some(index);
+            let selected = self.selected_nodes.contains(&index);
             let hovered = self.hover_node == Some(index);
-            let size = if active {
+            let size = if active || selected {
                 CURVE_NODE_SIZE + 2.0
             } else if hovered {
                 CURVE_NODE_SIZE + 1.5
@@ -3957,7 +4344,7 @@ impl CurvePreviewWidget {
             primitives.push(PaintPrimitive::FillRect(PaintFillRect {
                 widget_id: self.common.id,
                 rect,
-                color: if active {
+                color: if active || selected {
                     theme.accent_warning
                 } else if hovered {
                     theme.accent_mint
@@ -3968,7 +4355,7 @@ impl CurvePreviewWidget {
             primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
                 widget_id: self.common.id,
                 rect,
-                color: if active && hovered {
+                color: if selected || (active && hovered) {
                     theme.accent_mint
                 } else if hovered {
                     theme.accent_warning
@@ -3978,6 +4365,36 @@ impl CurvePreviewWidget {
                 width: if hovered { 1.5 } else { 1.0 },
             }));
         }
+    }
+
+    fn push_marquee(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        theme: &ThemeTokens,
+    ) {
+        let Some(marquee) = self.active_marquee else {
+            return;
+        };
+        let start = Self::curve_point(bounds, marquee.start);
+        let current = Self::curve_point(bounds, marquee.current);
+        let rect = Rect::from_xy_size(
+            start.x.min(current.x),
+            start.y.min(current.y),
+            (start.x - current.x).abs(),
+            (start.y - current.y).abs(),
+        );
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.common.id,
+            rect,
+            color: theme.accent_mint.with_alpha(32),
+        }));
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.common.id,
+            rect,
+            color: theme.accent_mint,
+            width: 1.0,
+        }));
     }
 
     fn push_playhead(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect) {
@@ -3992,38 +4409,25 @@ impl CurvePreviewWidget {
                 y: sample,
             },
         );
-        let glow_radius = CURVE_PLAYHEAD_MARKER_GLOW_SIZE * 0.5;
-        let core_radius = CURVE_PLAYHEAD_MARKER_SIZE * 0.5;
-        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
-            rect: Rect::from_xy_size(
-                center.x - glow_radius,
-                center.y - glow_radius,
-                CURVE_PLAYHEAD_MARKER_GLOW_SIZE,
-                CURVE_PLAYHEAD_MARKER_GLOW_SIZE,
-            ),
-            color: CURVE_PLAYHEAD_GLOW_COLOR,
-        }));
-        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
-            widget_id: self.common.id,
-            rect: Rect::from_xy_size(
-                center.x - core_radius,
-                center.y - core_radius,
-                CURVE_PLAYHEAD_MARKER_SIZE,
-                CURVE_PLAYHEAD_MARKER_SIZE,
-            ),
+            points: [
+                Point::new(center.x, bounds.min.y),
+                Point::new(center.x, bounds.max.y),
+            ]
+            .into(),
             color: CURVE_PLAYHEAD_CORE_COLOR,
+            width: 1.5,
         }));
-        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+        primitives.push(PaintPrimitive::FillPolygon(PaintFillPolygon {
             widget_id: self.common.id,
-            rect: Rect::from_xy_size(
-                center.x - core_radius,
-                center.y - core_radius,
-                CURVE_PLAYHEAD_MARKER_SIZE,
-                CURVE_PLAYHEAD_MARKER_SIZE,
-            ),
-            color: CURVE_PLAYHEAD_STROKE_COLOR,
-            width: 1.0,
+            points: [
+                Point::new(center.x - CURVE_PLAYHEAD_MARKER_WIDTH * 0.5, bounds.min.y),
+                Point::new(center.x + CURVE_PLAYHEAD_MARKER_WIDTH * 0.5, bounds.min.y),
+                Point::new(center.x, bounds.min.y + CURVE_PLAYHEAD_MARKER_HEIGHT),
+            ]
+            .into(),
+            color: CURVE_PLAYHEAD_CORE_COLOR,
         }));
     }
 }
@@ -4046,54 +4450,60 @@ impl Widget for CurvePreviewWidget {
             } => {
                 let command_held = self.command_hover_held || modifiers.command;
                 let option_held = self.option_hover_held || modifiers.alt;
-                if let Some(index) = self.hit_node(bounds, position) {
+                let shift_held = modifiers.shift;
+                let offset_gesture = modifiers.command
+                    && modifiers.shift
+                    && Self::curve_bounds(bounds).contains(position);
+                let hit_node = self.hit_node(bounds, position);
+                if offset_gesture {
+                    Some(CurvePreviewMessage::PressCurveOffset {
+                        pointer_x: Self::offset_pointer_x(bounds, position),
+                        quantized: option_held,
+                    })
+                } else if let Some(index) = hit_node {
                     Some(CurvePreviewMessage::PressNode {
                         index,
                         pointer: Self::node_from_point(bounds, position),
-                        shift_held: self.shift_hover_held || modifiers.shift,
+                        shift_held,
                         option_held,
                         command_held,
                     })
+                } else if shift_held
+                    && !option_held
+                    && Self::curve_bounds(bounds).contains(position)
+                {
+                    Some(CurvePreviewMessage::PressMarquee {
+                        start: Self::node_from_point(bounds, position),
+                    })
                 } else {
                     let hover = self.hover_at(bounds, position);
-                    if modifiers.command
-                        && modifiers.shift
-                        && !option_held
-                        && hover.segment.is_none()
-                        && Self::curve_bounds(bounds).contains(position)
-                    {
-                        Some(CurvePreviewMessage::PressCurveOffset {
-                            pointer_x: Self::offset_pointer_x(bounds, position),
-                        })
-                    } else {
-                        match (command_held, option_held, hover.segment) {
-                            (true, _, Some(index)) => {
-                                Some(CurvePreviewMessage::PressSegmentMove { index, position })
-                            }
-                            (false, true, Some(index)) => {
-                                Some(CurvePreviewMessage::PressSegment { index, position })
-                            }
-                            (false, true, None) => None,
-                            _ => hover
-                                .preview_node
-                                .or_else(|| self.insert_node_at(bounds, position))
-                                .map(|node| CurvePreviewMessage::InsertNode {
-                                    node: if command_held {
-                                        CurveNode {
-                                            x: snap_curve_time_to_beat_grid_with_swing(
-                                                self.sync_division,
-                                                Self::curve_bounds(bounds).width(),
-                                                node.x,
-                                                self.swing,
-                                            ),
-                                            ..node
-                                        }
-                                    } else {
-                                        node
-                                    },
-                                    command_held,
-                                }),
+                    match (command_held, option_held, hover.segment) {
+                        (true, _, Some(index)) => {
+                            Some(CurvePreviewMessage::PressSegmentMove { index, position })
                         }
+                        (false, true, Some(index)) => {
+                            Some(CurvePreviewMessage::PressSegment { index, position })
+                        }
+                        (false, true, None) => None,
+                        _ => hover
+                            .preview_node
+                            .or_else(|| self.insert_node_at(bounds, position))
+                            .map(|node| CurvePreviewMessage::InsertNode {
+                                node: if command_held {
+                                    CurveNode {
+                                        x: snap_curve_time_to_beat_grid_with_swing(
+                                            self.sync_division,
+                                            Self::curve_bounds(bounds).width(),
+                                            node.x,
+                                            self.swing,
+                                        ),
+                                        ..node
+                                    }
+                                } else {
+                                    node
+                                },
+                                command_held,
+                            }),
                     }
                 }
             }
@@ -4106,7 +4516,11 @@ impl Widget for CurvePreviewWidget {
                 .filter(|index| *index > 0 && *index + 1 < self.curve.nodes.len())
                 .map(|index| CurvePreviewMessage::DeleteNode { index }),
             WidgetInput::PointerMove { position } => {
-                if let Some(index) = self.active_node {
+                if self.active_marquee.is_some() {
+                    Some(CurvePreviewMessage::DragMarquee {
+                        current: Self::node_from_point(bounds, position),
+                    })
+                } else if let Some(index) = self.active_node {
                     Some(CurvePreviewMessage::DragNode {
                         index,
                         node: Self::node_from_point(bounds, position),
@@ -4158,7 +4572,11 @@ impl Widget for CurvePreviewWidget {
                 button: PointerButton::Primary,
                 modifiers,
             } => {
-                if let Some(index) = self.active_node {
+                if self.active_marquee.is_some() {
+                    Some(CurvePreviewMessage::ReleaseMarquee {
+                        current: Self::node_from_point(bounds, position),
+                    })
+                } else if let Some(index) = self.active_node {
                     Some(CurvePreviewMessage::ReleaseNode {
                         index,
                         node: Self::node_from_point(bounds, position),
@@ -4172,6 +4590,7 @@ impl Widget for CurvePreviewWidget {
                 } else if let Some(start_x) = self.active_curve_offset_start_x {
                     Some(CurvePreviewMessage::ReleaseCurveOffset {
                         delta: Self::offset_pointer_x(bounds, position) - start_x,
+                        option_held: modifiers.alt,
                     })
                 } else {
                     self.active_segment
@@ -4188,6 +4607,7 @@ impl Widget for CurvePreviewWidget {
             WidgetInput::FocusChanged(false) => (self.active_node.is_some()
                 || self.active_segment.is_some()
                 || self.active_curve_offset_start_x.is_some()
+                || self.active_marquee.is_some()
                 || self.hover_node.is_some()
                 || self.preview_node.is_some()
                 || self.hover_segment.is_some()
@@ -4211,6 +4631,7 @@ impl Widget for CurvePreviewWidget {
         self.push_incoming_waveform(primitives, bounds, theme);
         self.push_gain_references(primitives, bounds, theme);
         self.push_curve(primitives, bounds, theme);
+        self.push_marquee(primitives, bounds, theme);
         self.push_nodes(primitives, bounds, theme);
         self.push_playhead(primitives, bounds);
     }
@@ -4235,8 +4656,18 @@ enum CurvePreviewMessage {
         option_held: bool,
         command_held: bool,
     },
+    PressMarquee {
+        start: CurveNode,
+    },
+    DragMarquee {
+        current: CurveNode,
+    },
+    ReleaseMarquee {
+        current: CurveNode,
+    },
     PressCurveOffset {
         pointer_x: f32,
+        quantized: bool,
     },
     InsertNode {
         node: CurveNode,
@@ -4263,6 +4694,7 @@ enum CurvePreviewMessage {
     },
     ReleaseCurveOffset {
         delta: f32,
+        option_held: bool,
     },
     PressSegment {
         index: usize,
@@ -4399,9 +4831,20 @@ mod tests {
         assert!(!editor.dispatch_shortcut('x', command));
 
         let initial_swing = params.swing();
-        editor
-            .runtime
-            .dispatch_message(RadiantEditorMessage::Swing(0.25));
+        editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
+            target: NumericEntryTarget::Swing,
+            message: KnobMessage::GestureStarted {
+                value: initial_swing,
+            },
+        });
+        editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
+            target: NumericEntryTarget::Swing,
+            message: KnobMessage::ValueChanged { value: 0.25 },
+        });
+        editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
+            target: NumericEntryTarget::Swing,
+            message: KnobMessage::GestureEnded { value: 0.25 },
+        });
         assert_ne!(params.swing(), initial_swing);
         assert!(editor.dispatch_shortcut('Z', command));
         assert_eq!(params.swing(), initial_swing);
@@ -4433,27 +4876,7 @@ mod tests {
         let theme = ThemeTokens::default();
         let layout = LayoutOutput::default();
         for (icon, label, width, height) in [
-            (
-                IconName::ChevronLeft,
-                "Previous preset",
-                36.0,
-                BUILD_LABEL_HEIGHT,
-            ),
-            (
-                IconName::ChevronRight,
-                "Next preset",
-                36.0,
-                BUILD_LABEL_HEIGHT,
-            ),
-            (
-                IconName::Favorite,
-                "Favorite preset",
-                36.0,
-                BUILD_LABEL_HEIGHT,
-            ),
-            (IconName::Copy, "Add preset", 36.0, BUILD_LABEL_HEIGHT),
-            (IconName::Pattern, "Save preset", 36.0, BUILD_LABEL_HEIGHT),
-            (IconName::History, "Undo", 64.0, CONTROL_ROW_HEIGHT),
+            (IconName::ChevronLeft, "Undo", 64.0, CONTROL_ROW_HEIGHT),
             (IconName::ChevronRight, "Redo", 64.0, CONTROL_ROW_HEIGHT),
         ] {
             let bounds = Rect::from_xy_size(0.0, 0.0, width, height);
@@ -4577,7 +5000,7 @@ mod tests {
     }
 
     #[test]
-    fn bypass_control_paints_non_color_selected_focus_and_automation_cues() {
+    fn bypass_control_paints_non_color_selected_and_automation_cues_without_focus_chrome() {
         let bounds = Rect::from_xy_size(0.0, 0.0, BYPASS_CONTROL_WIDTH, CONTROL_ROW_HEIGHT);
         let mut widget = BypassControlWidget::new(true, true);
         widget.common_mut().state.focused = true;
@@ -4610,13 +5033,13 @@ mod tests {
             vertical_markers, 2,
             "selected and automation states need independent structural markers"
         );
-        assert!(
+        assert_eq!(
             primitives
                 .iter()
                 .filter(|primitive| matches!(primitive, PaintPrimitive::StrokeRect(_)))
-                .count()
-                >= 2,
-            "focused state needs a second structural outline"
+                .count(),
+            1,
+            "focus must not add a yellow structural outline"
         );
     }
 
@@ -4701,6 +5124,33 @@ mod tests {
     }
 
     #[test]
+    fn curve_slot_navigation_uses_documented_minimum_hit_target() {
+        assert_eq!(CURVE_SLOT_NAV_WIDTH, 28.0);
+        let widget = CurveSlotNavigationWidget::new(1);
+        assert_eq!(widget.common.sizing.min.x, CURVE_SLOT_NAV_WIDTH);
+        assert_eq!(widget.common.sizing.preferred.x, CURVE_SLOT_NAV_WIDTH);
+
+        let bounds = Rect::from_xy_size(0.0, 0.0, CURVE_SLOT_NAV_WIDTH, CURVE_SLOT_ROW_HEIGHT);
+        let mut widget = CurveSlotNavigationWidget::new(1);
+        let output = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: Point::new(CURVE_SLOT_NAV_WIDTH - 0.1, bounds.height() * 0.5),
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers::default(),
+                },
+            )
+            .expect("the full minimum-width navigation target should be clickable");
+        assert_eq!(
+            output.typed_copied(),
+            Some(CurveSlotMessage::Navigate {
+                delta: CURVE_SLOT_VISIBLE_COUNT as i8,
+            })
+        );
+    }
+
+    #[test]
     fn curve_slot_widget_paints_deviation_in_danger_color() {
         let bounds = Rect::from_xy_size(0.0, 0.0, 48.0, CURVE_SLOT_ROW_HEIGHT);
         let curve = PumpParams::new().editable_curve_snapshot();
@@ -4713,15 +5163,62 @@ mod tests {
         assert!(primitives.iter().any(|primitive| {
             matches!(
                 primitive,
-                PaintPrimitive::FillRect(fill) if fill.color == theme.accent_danger
+                PaintPrimitive::FillPath(path)
+                    if path.brush == PaintBrush::solid(theme.accent_danger)
             )
         }));
         assert!(primitives.iter().any(|primitive| {
             matches!(
                 primitive,
-                PaintPrimitive::StrokeRect(stroke) if stroke.color == theme.accent_danger
+                PaintPrimitive::FillPath(path)
+                    if path.brush == PaintBrush::solid(theme.accent_danger)
+                        && path.fill_rule == PaintFillRule::EvenOdd
             )
         }));
+        assert!(!primitives
+            .iter()
+            .any(|primitive| matches!(primitive, PaintPrimitive::StrokeRect(_))));
+    }
+
+    #[test]
+    fn curve_slot_widget_uses_inset_preview_and_rounded_card_primitives() {
+        assert_eq!(CURVE_SLOT_ROW_HEIGHT, 60.0);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 48.0, CURVE_SLOT_ROW_HEIGHT);
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let widget = CurveSlotWidget::new(0, Some(curve), true, false);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let preview = primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::StrokePolyline(polyline) if polyline.points.len() > 2 => {
+                    Some(polyline)
+                }
+                _ => None,
+            })
+            .expect("curve slot should paint a sampled preview");
+        assert!(preview.points.iter().all(|point| {
+            point.x >= bounds.min.x + 8.0
+                && point.x <= bounds.max.x - 8.0
+                && point.y >= bounds.min.y + 8.0
+                && point.y <= bounds.max.y - 8.0
+        }));
+        assert!(
+            primitives
+                .iter()
+                .filter(|primitive| {
+                    matches!(
+                        primitive,
+                        PaintPrimitive::FillPath(path)
+                            if path.fill_rule == PaintFillRule::EvenOdd
+                    )
+                })
+                .count()
+                >= 2
+        );
     }
 
     #[test]
@@ -4760,11 +5257,10 @@ mod tests {
 
         for (target, value) in [
             (NumericEntryTarget::Mix, 0.25),
-            (NumericEntryTarget::Depth, 0.5),
-            (NumericEntryTarget::Floor, 0.5),
-            (NumericEntryTarget::Phase, 0.5),
             (NumericEntryTarget::OutputGain, 0.5),
             (NumericEntryTarget::Smooth, 0.5),
+            (NumericEntryTarget::Swing, 0.5),
+            (NumericEntryTarget::FreeRate, 0.5),
         ] {
             reduce_editor_message(
                 &mut state,
@@ -4777,7 +5273,7 @@ mod tests {
         reduce_editor_message(&mut state, RadiantEditorMessage::SyncDivision(1.0));
 
         assert!((params.mix() - 0.25).abs() < f32::EPSILON);
-        assert!((params.phase_offset() - 0.5).abs() < f32::EPSILON);
+        assert!((params.free_rate_hz() - 31.622_776).abs() < 1.0e-3);
         assert!((params.output_gain_db() + 6.0).abs() < f32::EPSILON);
         assert_eq!(params.sync_division(), MAX_SYNC_DIVISION as usize);
 
@@ -4785,7 +5281,7 @@ mod tests {
         let mut output = buffer.as_output();
         let mut scratch = Vec::new();
         let stats = queue.drain_to_output(&mut output, &mut scratch);
-        assert_eq!(stats.attempted, 21);
+        assert_eq!(stats.attempted, 18);
         let value_ids: Vec<_> = (0..buffer.len())
             .filter_map(|index| match buffer.get(index as u32)?.as_core_event()? {
                 CoreEventSpace::ParamValue(value) => value.param_id(),
@@ -4796,11 +5292,10 @@ mod tests {
             value_ids,
             vec![
                 PARAM_MIX_ID,
-                PARAM_DEPTH_ID,
-                PARAM_FLOOR_ID,
-                PARAM_PHASE_OFFSET_ID,
                 PARAM_OUTPUT_GAIN_ID,
                 PARAM_SMOOTH_ID,
+                PARAM_SWING_ID,
+                PARAM_FREE_RATE_ID,
                 PARAM_SYNC_DIVISION_ID,
             ]
         );
@@ -4910,19 +5405,60 @@ mod tests {
     }
 
     #[test]
-    fn radiant_automation_batch_requests_one_flush_only_when_complete() {
+    fn swing_knob_transaction_updates_param_and_emits_complete_gesture() {
         let params = Arc::new(PumpParams::new());
-        let mut state = editor_state(Arc::clone(&params));
-
-        reduce_editor_message(&mut state, RadiantEditorMessage::Swing(0.5));
-        assert_eq!(state.automation_flush_count, 1);
-
-        state.automation_config.disable_param(PARAM_SWING_ID);
-        reduce_editor_message(&mut state, RadiantEditorMessage::Swing(0.0));
-        assert_eq!(
-            state.automation_flush_count, 1,
-            "a disabled batch must not request a host flush"
+        let queue = Arc::new(PumpAutomationQueue::default());
+        let mut state = RadiantEditorState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            }),
         );
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Swing,
+                message: KnobMessage::GestureStarted { value: 0.0 },
+            },
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Swing,
+                message: KnobMessage::ValueChanged { value: 0.5 },
+            },
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::Swing,
+                message: KnobMessage::GestureEnded { value: 0.5 },
+            },
+        );
+
+        assert!((params.swing() - 0.5).abs() < f32::EPSILON);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.active_knob_gesture.is_none());
+
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            queue.drain_to_output(&mut output, &mut scratch).attempted,
+            3
+        );
+        for index in 0..buffer.len() {
+            let event = buffer
+                .get(index as u32)
+                .expect("queued swing gesture event should be readable");
+            if let Some(CoreEventSpace::ParamValue(event)) = event.as_core_event() {
+                assert_eq!(event.param_id(), Some(PARAM_SWING_ID));
+                assert!((event.value() - 0.5).abs() < f64::EPSILON);
+            }
+        }
     }
 
     #[test]
@@ -4999,13 +5535,13 @@ mod tests {
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::NumericEntry(NumericEntryMessage::Begin {
-                target: NumericEntryTarget::Phase,
+                target: NumericEntryTarget::FreeRate,
             }),
         );
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::NumericEntry(NumericEntryMessage::DraftChanged {
-                target: NumericEntryTarget::Phase,
+                target: NumericEntryTarget::FreeRate,
                 draft: "75".to_string(),
                 dirty: true,
             }),
@@ -5013,7 +5549,7 @@ mod tests {
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::NumericEntry(NumericEntryMessage::Cancel {
-                target: NumericEntryTarget::Phase,
+                target: NumericEntryTarget::FreeRate,
             }),
         );
 
@@ -5147,6 +5683,51 @@ mod tests {
         assert!((curve.nodes[1].x - 0.24).abs() < f32::EPSILON);
         assert!((curve.nodes[1].y - 0.3).abs() < f32::EPSILON);
         assert_eq!(state.active_curve_node, None);
+    }
+
+    #[test]
+    fn radiant_editor_marquee_selects_node_centers_without_mutating_curve() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.2 },
+                CurveNode { x: 0.2, y: 0.8 },
+                CurveNode { x: 0.5, y: 0.5 },
+                CurveNode { x: 0.8, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.2 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let before = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressMarquee {
+                start: CurveNode { x: 0.15, y: 0.9 },
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragMarquee {
+                current: CurveNode { x: 0.6, y: 0.1 },
+            }),
+        );
+        assert!(state.active_curve_marquee.is_some());
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseMarquee {
+                current: CurveNode { x: 0.6, y: 0.1 },
+            }),
+        );
+
+        assert_eq!(state.selected_curve_nodes, vec![1, 2]);
+        assert_eq!(params.editable_curve_snapshot(), before);
+        assert!(state.active_curve_marquee.is_none());
+        assert!(state.undo_history.is_empty());
     }
 
     #[test]
@@ -6286,7 +6867,65 @@ mod tests {
     }
 
     #[test]
-    fn curve_preview_widget_forwards_shift_option_on_point_press_and_release() {
+    fn curve_preview_widget_shift_blank_press_starts_marquee_and_tracks_release() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let start = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.12, y: 0.94 });
+        let end = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.64, y: 0.16 });
+        let shift = PointerModifiers {
+            shift: true,
+            ..PointerModifiers::default()
+        };
+        let mut press_widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        assert_eq!(
+            press_widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerPress {
+                        position: start,
+                        button: PointerButton::Primary,
+                        modifiers: shift,
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::PressMarquee {
+                start: CurvePreviewWidget::node_from_point(bounds, start),
+            })
+        );
+
+        let mut drag_widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_active_curve_marquee(Some(ActiveCurveMarquee {
+                start: CurvePreviewWidget::node_from_point(bounds, start),
+                current: CurvePreviewWidget::node_from_point(bounds, start),
+            }));
+        assert_eq!(
+            drag_widget
+                .handle_input(bounds, WidgetInput::PointerMove { position: end })
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::DragMarquee {
+                current: CurvePreviewWidget::node_from_point(bounds, end),
+            })
+        );
+        assert_eq!(
+            drag_widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerRelease {
+                        position: end,
+                        button: PointerButton::Primary,
+                        modifiers: shift,
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::ReleaseMarquee {
+                current: CurvePreviewWidget::node_from_point(bounds, end),
+            })
+        );
+    }
+
+    #[test]
+    fn curve_preview_widget_cmd_shift_option_on_point_press_and_release_offsets_curve() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
         let position = CurvePreviewWidget::curve_point(bounds, curve.nodes[1]);
@@ -6310,17 +6949,17 @@ mod tests {
             .and_then(|output| output.typed_copied::<CurvePreviewMessage>());
         assert_eq!(
             press,
-            Some(CurvePreviewMessage::PressNode {
-                index: 1,
-                pointer: CurvePreviewWidget::node_from_point(bounds, position),
-                shift_held: true,
-                option_held: true,
-                command_held: true,
+            Some(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: CurvePreviewWidget::offset_pointer_x(bounds, position),
+                quantized: true,
             })
         );
 
         let mut release_widget =
-            CurvePreviewWidget::new(curve, Some(1), None, None, None, None, false);
+            CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+                .with_active_curve_offset(Some(CurvePreviewWidget::offset_pointer_x(
+                    bounds, position,
+                )));
         let release = release_widget
             .handle_input(
                 bounds,
@@ -6331,16 +6970,13 @@ mod tests {
                 },
             )
             .and_then(|output| output.typed_copied::<CurvePreviewMessage>());
-        assert!(matches!(
+        assert_eq!(
             release,
-            Some(CurvePreviewMessage::ReleaseNode {
-                index: 1,
-                shift_held: true,
+            Some(CurvePreviewMessage::ReleaseCurveOffset {
+                delta: 0.0,
                 option_held: true,
-                command_held: true,
-                ..
             })
-        ));
+        );
     }
 
     #[test]
@@ -6590,8 +7226,42 @@ mod tests {
             .expect("Cmd+Shift empty-canvas press should start an offset");
         assert!(matches!(
             output.typed_copied(),
-            Some(CurvePreviewMessage::PressCurveOffset { .. })
+            Some(CurvePreviewMessage::PressCurveOffset {
+                quantized: false,
+                ..
+            })
         ));
+    }
+
+    #[test]
+    fn curve_preview_widget_cmd_shift_press_on_node_starts_exclusive_offset() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let position = CurvePreviewWidget::curve_point(bounds, curve.nodes[1]);
+
+        let output = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers {
+                        command: true,
+                        shift: true,
+                        alt: true,
+                    },
+                },
+            )
+            .expect("Cmd+Shift node press should start whole-curve offset");
+        assert_eq!(
+            output.typed_copied(),
+            Some(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: CurvePreviewWidget::offset_pointer_x(bounds, position),
+                quantized: true,
+            })
+        );
     }
 
     #[test]
@@ -6653,8 +7323,12 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::PressCurveOffset { pointer_x: 0.4 }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: 0.4,
+                quantized: false,
+            }),
         );
+        assert_eq!(state.undo_history.len(), 1);
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragCurveOffset { delta: 0.25 }),
@@ -6680,11 +7354,164 @@ mod tests {
 
         reduce_editor_message(
             &mut state,
-            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseCurveOffset { delta: 0.25 }),
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseCurveOffset {
+                delta: 0.25,
+                option_held: false,
+            }),
         );
         assert!(state.active_curve_offset.is_none());
         assert!(state.preview_curve_offset.is_none());
         assert_ne!(params.editable_curve_snapshot(), origin);
+        assert_eq!(
+            params.editable_curve_snapshot().nodes.len(),
+            origin.nodes.len()
+        );
+        assert_eq!(
+            params.editable_curve_snapshot().segments.len(),
+            origin.segments.len()
+        );
+        assert_eq!(state.undo_history.len(), 1);
+    }
+
+    #[test]
+    fn radiant_editor_cmd_shift_offset_snaps_immediately_when_option_is_pressed() {
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        let raw_delta = 0.17;
+        let width = (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: 0.4,
+                quantized: false,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragCurveOffset { delta: raw_delta }),
+        );
+        let free_preview = state
+            .preview_curve_offset
+            .clone()
+            .expect("free offset should have a preview");
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ModifiersChanged {
+                option_held: true,
+                command_held: true,
+                shift_held: true,
+            }),
+        );
+        let quantized_preview = state
+            .preview_curve_offset
+            .clone()
+            .expect("option change should recompute the preview immediately");
+        let snapped = quantize_curve_offset_delta(
+            state.params.sync_division(),
+            width,
+            state.params.swing(),
+            raw_delta,
+        );
+        assert!(state
+            .active_curve_offset
+            .as_ref()
+            .is_some_and(|drag| drag.quantized));
+        assert!(
+            (sample_editable_curve(&free_preview, 0.31)
+                - sample_editable_curve(&origin, 0.31 - raw_delta))
+            .abs()
+                < 0.025
+        );
+        assert!(
+            (sample_editable_curve(&quantized_preview, 0.31)
+                - sample_editable_curve(&origin, 0.31 - snapped))
+            .abs()
+                < 0.025
+        );
+    }
+
+    #[test]
+    fn radiant_editor_cmd_shift_offset_reverses_to_free_mode_immediately() {
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        let raw_delta = 0.17;
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: 0.4,
+                quantized: true,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragCurveOffset { delta: raw_delta }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ModifiersChanged {
+                option_held: false,
+                command_held: true,
+                shift_held: true,
+            }),
+        );
+        let preview = state
+            .preview_curve_offset
+            .expect("releasing option should recompute a free preview immediately");
+        assert!(state
+            .active_curve_offset
+            .as_ref()
+            .is_some_and(|drag| !drag.quantized));
+        assert!(
+            (sample_editable_curve(&preview, 0.31)
+                - sample_editable_curve(&origin, 0.31 - raw_delta))
+            .abs()
+                < 0.025
+        );
+    }
+
+    #[test]
+    fn radiant_editor_cmd_shift_offset_uses_option_state_at_release_without_new_move() {
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        let raw_delta = 0.17;
+        let width = (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0);
+        let snapped = quantize_curve_offset_delta(
+            state.params.sync_division(),
+            width,
+            state.params.swing(),
+            raw_delta,
+        );
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: 0.4,
+                quantized: false,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseCurveOffset {
+                delta: raw_delta,
+                option_held: true,
+            }),
+        );
+
+        let committed = params.editable_curve_snapshot();
+        assert!(
+            (sample_editable_curve(&committed, 0.31)
+                - sample_editable_curve(&origin, 0.31 - snapped))
+            .abs()
+                < 0.025
+        );
+        assert!(state.active_curve_offset.is_none());
+        assert!(state.preview_curve_offset.is_none());
     }
 
     #[test]
@@ -6713,6 +7540,69 @@ mod tests {
             }
             other => panic!("unexpected empty canvas press output: {other:?}"),
         }
+    }
+
+    #[test]
+    fn curve_preview_widget_unmodified_blank_press_ignores_stale_shift_hover() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_shift_hover_held(true);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let expected = CurveNode { x: 0.72, y: 0.18 };
+        let position = CurvePreviewWidget::curve_point(bounds, expected);
+
+        let output = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers::default(),
+                },
+            )
+            .expect("blank canvas press should emit an insert message");
+
+        assert!(matches!(
+            output.typed_copied(),
+            Some(CurvePreviewMessage::InsertNode { .. })
+        ));
+    }
+
+    #[test]
+    fn host_sound_switch_clears_curve_selection_before_projecting_new_curve() {
+        let params = Arc::new(PumpParams::new());
+        let curve_a = params.editable_curve_snapshot();
+        params.copy_active_to_inactive();
+        params.set_active_sound(SoundSide::B);
+        let curve_b = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.1 },
+                CurveNode { x: 0.2, y: 0.8 },
+                CurveNode { x: 0.45, y: 0.3 },
+                CurveNode { x: 0.7, y: 0.9 },
+                CurveNode { x: 1.0, y: 0.2 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&curve_b);
+        params.set_active_sound(SoundSide::A);
+        assert_eq!(params.editable_curve_snapshot(), curve_a);
+
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![1];
+        state.active_curve_marquee = Some(ActiveCurveMarquee {
+            start: CurveNode { x: 0.1, y: 0.9 },
+            current: CurveNode { x: 0.8, y: 0.1 },
+        });
+
+        crate::params::apply_param_event(params.as_ref(), PARAM_SOUND_ID, 1.0);
+        let _ = project_editor_surface(&mut state);
+
+        assert!(state.selected_curve_nodes.is_empty());
+        assert!(state.active_curve_marquee.is_none());
+        assert_eq!(params.editable_curve_snapshot(), curve_b);
     }
 
     #[test]
@@ -7076,16 +7966,13 @@ mod tests {
                     },
                 },
             )
-            .expect("modified point press should remain a point gesture");
+            .expect("Cmd+Shift point press should start whole-curve offset");
 
         assert_eq!(
             output.typed_copied(),
-            Some(CurvePreviewMessage::PressNode {
-                index: 1,
-                pointer: CurvePreviewWidget::node_from_point(bounds, position),
-                shift_held: true,
-                option_held: false,
-                command_held: true,
+            Some(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: CurvePreviewWidget::offset_pointer_x(bounds, position),
+                quantized: false,
             })
         );
     }
@@ -7232,6 +8119,115 @@ mod tests {
                     if polyline.color == CURVE_SEGMENT_MOVE_COLOR
                         && (polyline.width - 3.5).abs() < 1.0e-6
                         && polyline.points.len() > 2
+            )
+        }));
+    }
+
+    #[test]
+    fn curve_preview_widget_highlights_entire_curve_during_offset_drag() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_active_curve_offset(Some(0.4));
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == CURVE_OFFSET_MOVE_COLOR
+                        && (polyline.width - 3.0).abs() < 1.0e-6
+                        && polyline.points.len() > 2
+            )
+        }));
+    }
+
+    #[test]
+    fn curve_preview_widget_uses_a_lighter_yellow_hover_for_offset_mode() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_command_hover_held(true)
+            .with_shift_hover_held(true);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let normal_index = primitives.iter().position(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == theme.accent_mint
+                        && (polyline.width - 2.0).abs() < 1.0e-6
+                        && polyline.points.len() > 2
+            )
+        });
+        let highlight_index = primitives.iter().position(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == CURVE_OFFSET_HOVER_COLOR
+                        && (polyline.width - 3.5).abs() < 1.0e-6
+                        && polyline.points.len() > 2
+            )
+        });
+        let normal_index = normal_index.expect("normal curve stroke should be rendered");
+        let highlight_index = highlight_index.expect("offset hover highlight should be rendered");
+        assert!(normal_index < highlight_index);
+        let (normal, highlight) = match (&primitives[normal_index], &primitives[highlight_index]) {
+            (PaintPrimitive::StrokePolyline(normal), PaintPrimitive::StrokePolyline(highlight)) => {
+                (normal, highlight)
+            }
+            _ => unreachable!("indices identify curve strokes"),
+        };
+        assert_eq!(normal.points, highlight.points);
+        assert_ne!(normal.color, highlight.color);
+        assert!(highlight.width > normal.width);
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_smoothed_secondary_curve_only_when_enabled() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut raw_primitives = Vec::new();
+        CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_smooth(0.0)
+            .append_paint(
+                &mut raw_primitives,
+                bounds,
+                &LayoutOutput::default(),
+                &theme,
+            );
+        assert!(!raw_primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == theme.text_primary.with_alpha(188)
+                        && (polyline.width - 1.5).abs() < 1.0e-6
+            )
+        }));
+
+        let mut smoothed_primitives = Vec::new();
+        CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_smooth(0.75)
+            .append_paint(
+                &mut smoothed_primitives,
+                bounds,
+                &LayoutOutput::default(),
+                &theme,
+            );
+        assert!(smoothed_primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == theme.text_primary.with_alpha(188)
+                        && (polyline.width - 1.5).abs() < 1.0e-6
+                        && polyline.points.len() == CURVE_SAMPLE_COUNT + 1
             )
         }));
     }
@@ -7453,9 +8449,49 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_paints_selected_nodes_and_active_marquee() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let start = CurveNode { x: 0.12, y: 0.94 };
+        let current = CurveNode { x: 0.64, y: 0.16 };
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_selected_curve_nodes(&[1])
+            .with_active_curve_marquee(Some(ActiveCurveMarquee { start, current }));
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let selected_size = CURVE_NODE_SIZE + 2.0;
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::FillRect(fill)
+                    if fill.color == theme.accent_warning
+                        && (fill.rect.width() - selected_size).abs() < 1.0e-6
+            )
+        }));
+        let start_point = CurvePreviewWidget::curve_point(bounds, start);
+        let current_point = CurvePreviewWidget::curve_point(bounds, current);
+        let expected_rect = Rect::from_xy_size(
+            start_point.x.min(current_point.x),
+            start_point.y.min(current_point.y),
+            (start_point.x - current_point.x).abs(),
+            (start_point.y - current_point.y).abs(),
+        );
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokeRect(stroke)
+                    if stroke.color == theme.accent_mint
+                        && stroke.rect == expected_rect
+            )
+        }));
+    }
+
+    #[test]
     fn gain_reduction_meter_paints_target_width_segments_and_labels() {
-        let bounds =
-            Rect::from_xy_size(0.0, 0.0, GAIN_REDUCTION_METER_WIDTH, PARAMETER_DECK_HEIGHT);
+        let bounds = Rect::from_xy_size(0.0, 0.0, GAIN_REDUCTION_METER_WIDTH, CURVE_PREVIEW_HEIGHT);
         let theme = ThemeTokens::default();
         let mut unity_primitives = Vec::new();
         GainReductionMeterWidget::new(0.0).append_paint(
@@ -7492,6 +8528,7 @@ mod tests {
             (fill.rect.width() - (GAIN_REDUCTION_METER_BAR_WIDTH - 2.0)).abs() < 1.0e-6
                 && (fill.rect.height() - PUMP_VISUAL_METRICS.meter_segment).abs() < 1.0e-6
         }));
+        assert!((fills[0].rect.min.y - (bounds.min.y + 14.0 + 1.0)).abs() < 1.0e-6);
         for expected in ["GR dB", "18.0"] {
             assert!(reduced_primitives.iter().any(|primitive| {
                 matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == expected)
@@ -7549,17 +8586,11 @@ mod tests {
             },
         );
         assert!(primitives.iter().any(|primitive| {
-            matches!(
-                primitive,
-                PaintPrimitive::FillRect(fill)
-                    if fill.color == CURVE_PLAYHEAD_CORE_COLOR
-                        && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-4
-                        && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-4
-                        && ((fill.rect.min.x + fill.rect.width() * 0.5) - expected_center.x).abs()
-                            < 1.0e-4
-                        && ((fill.rect.min.y + fill.rect.height() * 0.5) - expected_center.y).abs()
-                            < 1.0e-4
-            )
+            matches!(primitive, PaintPrimitive::StrokePolyline(line)
+                if line.color == CURVE_PLAYHEAD_CORE_COLOR
+                    && line.points.len() == 2
+                    && (line.points[0].x - expected_center.x).abs() < 1.0e-4
+                    && (line.points[1].x - expected_center.x).abs() < 1.0e-4)
         }));
     }
 
@@ -7594,10 +8625,8 @@ mod tests {
             .position(|primitive| {
                 matches!(
                     primitive,
-                    PaintPrimitive::FillRect(fill)
-                        if fill.color == CURVE_PLAYHEAD_CORE_COLOR
-                            && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
-                            && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
+                    PaintPrimitive::StrokePolyline(line)
+                        if line.color == CURVE_PLAYHEAD_CORE_COLOR && line.points.len() == 2
                 )
             })
             .expect("phase-zero playhead should paint over the endpoint node");
@@ -7620,9 +8649,7 @@ mod tests {
 
         for editable_color in editable_node_colors {
             assert_ne!(CURVE_PLAYHEAD_CORE_COLOR, editable_color);
-            assert_ne!(CURVE_PLAYHEAD_STROKE_COLOR, editable_color);
         }
-        assert_ne!(CURVE_PLAYHEAD_CORE_COLOR, CURVE_PLAYHEAD_STROKE_COLOR);
     }
 
     #[cfg(feature = "vst3")]
@@ -7726,15 +8753,10 @@ mod tests {
         plan.primitives
             .iter()
             .find_map(|primitive| match primitive {
-                PaintPrimitive::FillRect(fill)
-                    if fill.color == CURVE_PLAYHEAD_CORE_COLOR
-                        && (fill.rect.width() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6
-                        && (fill.rect.height() - CURVE_PLAYHEAD_MARKER_SIZE).abs() < 1.0e-6 =>
+                PaintPrimitive::StrokePolyline(line)
+                    if line.color == CURVE_PLAYHEAD_CORE_COLOR && line.points.len() == 2 =>
                 {
-                    Some(Point::new(
-                        fill.rect.min.x + fill.rect.width() * 0.5,
-                        fill.rect.min.y + fill.rect.height() * 0.5,
-                    ))
+                    Some(Point::new(line.points[0].x, line.points[0].y))
                 }
                 _ => None,
             })
@@ -7774,12 +8796,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            pump_labels.len(),
-            1,
-            "header should paint one centered wordmark"
-        );
-        assert_eq!(pump_labels[0].align, PaintTextAlign::Center);
+        assert_eq!(pump_labels.len(), 1, "header should paint one wordmark");
+        assert_eq!(pump_labels[0].align, PaintTextAlign::Right);
         assert!(
             frame
                 .paint_plan
@@ -7787,7 +8805,7 @@ mod tests {
                 .iter()
                 .filter(|primitive| matches!(primitive, PaintPrimitive::Svg(_)))
                 .count()
-                >= 7,
+                >= 5,
             "editor action buttons must paint retained SVG icons"
         );
         for obsolete_label in ["<", ">", "F", "+", "S", "Undo", "Redo"] {
@@ -7812,7 +8830,146 @@ mod tests {
     }
 
     #[test]
-    fn parameter_deck_matches_target_order_and_keeps_phase_offset_routing() {
+    fn sync_dropdown_overlay_is_below_trigger_above_curve_and_selectable() {
+        assert_eq!(TIMING_MODE_TOGGLE_WIDTH, 56.0);
+        assert_eq!(TIMING_DROPDOWN_WIDTH, 128.0);
+        assert_eq!(TIMING_KNOB_DIAMETER, 40.0);
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(params);
+        state.timing_dropdown_open = true;
+
+        let frame = project_editor_surface(&mut state).frame_at_size(
+            Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+            &pump_theme(),
+        );
+        let option_entries: Vec<_> = frame
+            .paint_plan
+            .primitives
+            .iter()
+            .enumerate()
+            .filter_map(|(index, primitive)| match primitive {
+                PaintPrimitive::Text(text)
+                    if SYNC_DIVISIONS
+                        .iter()
+                        .any(|division| division.label == text.text.as_str()) =>
+                {
+                    Some((index, text.rect))
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            option_entries.len(),
+            SYNC_DIVISIONS.len(),
+            "open dropdown should paint every sync option"
+        );
+        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Sync 1/4")
+        }));
+        let mut menu_entries = option_entries.iter();
+        let curve_index = frame
+            .paint_plan
+            .primitives
+            .iter()
+            .rposition(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::StrokePolyline(polyline) if polyline.points.len() > 16
+                )
+            })
+            .expect("curve canvas should paint a sampled curve polyline");
+        let timing_bottom =
+            SURFACE_PADDING + BUILD_LABEL_HEIGHT + SURFACE_SPACING + TIMING_STRIP_HEIGHT;
+        assert!(
+            menu_entries
+                .all(|(index, rect)| { *index > curve_index && rect.min.y >= timing_bottom }),
+            "sync options should be painted above the curve canvas and below the timing strip"
+        );
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::SyncDivision(normalize_sync_division(6)),
+        );
+        assert_eq!(state.params.sync_division(), 6);
+        assert!(
+            !state.timing_dropdown_open,
+            "selecting an option should close the menu"
+        );
+    }
+
+    #[test]
+    fn timing_toggle_switches_modes_and_free_unit_selection_is_sound_neutral() {
+        let params = Arc::new(PumpParams::new());
+        params.set_free_rate_hz(8.0);
+        let mut state = editor_state(params);
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::ToggleTimingMode);
+        assert_eq!(state.params.timing_mode(), TIMING_MODE_FREE);
+        assert_eq!(state.params.sync_division(), 4);
+        assert_eq!(state.free_rate_unit, FreeRateUnit::Hertz);
+
+        state.timing_dropdown_open = true;
+        let frame = project_editor_surface(&mut state).frame_at_size(
+            Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+            &pump_theme(),
+        );
+        for unit in FreeRateUnit::ALL {
+            assert!(frame.paint_plan.primitives.iter().any(|primitive| {
+                matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == unit.label())
+            }));
+        }
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::FreeRateUnit(FreeRateUnit::Milliseconds),
+        );
+        assert_eq!(state.free_rate_unit, FreeRateUnit::Milliseconds);
+        assert!(!state.timing_dropdown_open);
+        assert!((state.params.free_rate_hz() - 8.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sync_dropdown_dismisses_before_interactive_curve_click() {
+        let params = Arc::new(PumpParams::new());
+        let status = Arc::new(GuiStatus::default());
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            status,
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        editor.runtime.bridge_mut().state_mut().timing_dropdown_open = true;
+        editor.runtime.refresh();
+
+        let origin = params.editable_curve_snapshot();
+        let position = Point::new(300.0, 220.0);
+        editor.dispatch_event(radiant::runtime::Event::pointer_press(
+            position,
+            PointerButton::Primary,
+            PointerModifiers::default(),
+        ));
+        editor.dispatch_event(radiant::runtime::Event::pointer_release(
+            position,
+            PointerButton::Primary,
+            PointerModifiers::default(),
+        ));
+
+        assert!(
+            !editor.runtime.bridge().state().timing_dropdown_open,
+            "an outside click should dismiss the dropdown"
+        );
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            origin,
+            "dismissing on a curve click must not edit the underlying curve"
+        );
+    }
+
+    #[test]
+    fn parameter_deck_hides_legacy_depth_floor_offset_controls() {
         let params = PumpParams::new();
         params.set_smooth(0.67);
         let frame = radiant_editor_frame_for_params(
@@ -7836,19 +8993,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            labels,
-            ["DEPTH", "FLOOR", "OFFSET", "SMOOTH", "MIX", "OUTPUT"]
-        );
-        assert_eq!(NumericEntryTarget::Phase.param_id(), PARAM_PHASE_OFFSET_ID);
-        assert_eq!(NumericEntryTarget::Phase.label(), "Offset");
+        assert_eq!(labels, ["SMOOTH", "MIX", "OUTPUT"]);
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "67%")
         }));
-        assert_eq!(
-            knob_plain_value(NumericEntryTarget::Phase, 0.75),
-            (PARAM_PHASE_OFFSET_ID, 0.75)
-        );
     }
 
     #[test]
@@ -7867,32 +9015,32 @@ mod tests {
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
-                target: NumericEntryTarget::Phase,
+                target: NumericEntryTarget::FreeRate,
                 message: KnobMessage::GestureStarted { value: 0.0 },
             },
         );
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
-                target: NumericEntryTarget::Phase,
+                target: NumericEntryTarget::FreeRate,
                 message: KnobMessage::ValueChanged { value: 0.25 },
             },
         );
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
-                target: NumericEntryTarget::Phase,
+                target: NumericEntryTarget::FreeRate,
                 message: KnobMessage::ValueChanged { value: 0.5 },
             },
         );
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
-                target: NumericEntryTarget::Phase,
+                target: NumericEntryTarget::FreeRate,
                 message: KnobMessage::GestureEnded { value: 0.5 },
             },
         );
-        assert!((params.phase_offset() - 0.5).abs() < f32::EPSILON);
+        assert!((params.free_rate_hz() - 31.622_776).abs() < 1.0e-3);
 
         let mut buffer = EventBuffer::new();
         let mut output = buffer.as_output();
@@ -7904,7 +9052,7 @@ mod tests {
                 let event = buffer.get(index as u32)?;
                 Some(match event.as_core_event() {
                     Some(CoreEventSpace::ParamValue(value)) => {
-                        assert_eq!(value.param_id(), Some(PARAM_PHASE_OFFSET_ID));
+                        assert_eq!(value.param_id(), Some(PARAM_FREE_RATE_ID));
                         "value"
                     }
                     Some(CoreEventSpace::ParamGestureBegin(_)) => "begin",
@@ -7918,7 +9066,7 @@ mod tests {
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
-                target: NumericEntryTarget::Phase,
+                target: NumericEntryTarget::FreeRate,
                 message: KnobMessage::KeyboardGesture(radiant::prelude::KnobKeyboardGesture::new(
                     0.5, 0.75,
                 )),
@@ -7927,7 +9075,7 @@ mod tests {
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
-                target: NumericEntryTarget::Phase,
+                target: NumericEntryTarget::FreeRate,
                 message: KnobMessage::Reset { value: 0.0 },
             },
         );
@@ -7938,7 +9086,7 @@ mod tests {
             queue.drain_to_output(&mut output, &mut scratch).attempted,
             6
         );
-        assert!((params.phase_offset()).abs() < f32::EPSILON);
+        assert!((params.free_rate_hz() - 0.05).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -7950,7 +9098,7 @@ mod tests {
         };
         let config = AutomationConfig::default();
 
-        assert!(sink.gesture_started(&config, PARAM_PHASE_OFFSET_ID));
+        assert!(sink.gesture_started(&config, PARAM_FREE_RATE_ID));
         let mut buffer = EventBuffer::new();
         let mut output = buffer.as_output();
         let mut scratch = Vec::new();
@@ -7959,7 +9107,7 @@ mod tests {
             1
         );
 
-        assert!(sink.gesture_value(&config, PARAM_PHASE_OFFSET_ID, 0.5));
+        assert!(sink.gesture_value(&config, PARAM_FREE_RATE_ID, 0.5));
         let mut buffer = EventBuffer::new();
         let mut output = buffer.as_output();
         let mut scratch = Vec::new();
@@ -7968,7 +9116,7 @@ mod tests {
             1
         );
 
-        assert!(sink.gesture_ended(&config, PARAM_PHASE_OFFSET_ID));
+        assert!(sink.gesture_ended(&config, PARAM_FREE_RATE_ID));
         let mut buffer = EventBuffer::new();
         let mut output = buffer.as_output();
         let mut scratch = Vec::new();
@@ -7982,12 +9130,10 @@ mod tests {
     fn clap_sink_preserves_lifecycle_order_for_each_deck_control() {
         let config = AutomationConfig::default();
         for param_id in [
-            PARAM_DEPTH_ID,
-            PARAM_FLOOR_ID,
-            PARAM_PHASE_OFFSET_ID,
             PARAM_SMOOTH_ID,
             PARAM_MIX_ID,
             PARAM_OUTPUT_GAIN_ID,
+            PARAM_FREE_RATE_ID,
         ] {
             let queue = Arc::new(PumpAutomationQueue::default());
             let sink = ClapHostParamEditSink {
@@ -8051,7 +9197,7 @@ mod tests {
     }
 
     #[test]
-    fn radiant_editor_paints_live_ab_match_and_difference_status() {
+    fn radiant_editor_does_not_paint_bottom_ab_status_text() {
         let params = Arc::new(PumpParams::new());
         params.set_mix(0.25);
         let frame = radiant_editor_frame_for_params(
@@ -8059,8 +9205,8 @@ mod tests {
             Arc::new(GuiStatus::default()),
             Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
         );
-        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
-            matches!(primitive, PaintPrimitive::Text(text) if text.text.contains("A active · A/B differ"))
+        assert!(frame.paint_plan.primitives.iter().all(|primitive| {
+            !matches!(primitive, PaintPrimitive::Text(text) if text.text.contains("A active · A/B"))
         }));
         params.copy_active_to_inactive();
         let frame = radiant_editor_frame_for_params(
@@ -8068,8 +9214,8 @@ mod tests {
             Arc::new(GuiStatus::default()),
             Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
         );
-        assert!(frame.paint_plan.primitives.iter().any(|primitive| {
-            matches!(primitive, PaintPrimitive::Text(text) if text.text.contains("A active · A/B match"))
+        assert!(frame.paint_plan.primitives.iter().all(|primitive| {
+            !matches!(primitive, PaintPrimitive::Text(text) if text.text.contains("A active · A/B"))
         }));
     }
 }

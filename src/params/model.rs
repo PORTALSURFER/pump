@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 14;
+pub(crate) const STATE_VERSION: u32 = 15;
 
 /// The two independently editable Pump sound sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +61,10 @@ pub struct PumpSoundState {
     pub smooth: f32,
     pub mode: usize,
     pub swing: f32,
+    /// Timing source: synchronized divisions or a free-running rate.
+    pub timing_mode: usize,
+    /// Canonical free-running timing rate in hertz.
+    pub free_rate_hz: f32,
     pub editable_curve: EditableCurve,
     pub quick_slots: Vec<QuickShapeSlot>,
 }
@@ -78,6 +82,8 @@ impl PumpSoundState {
             smooth: DEFAULT_SMOOTH,
             mode: PROCESSING_MODE_CLASSIC,
             swing: DEFAULT_SWING,
+            timing_mode: DEFAULT_TIMING_MODE,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
             editable_curve: default_editable_curve(),
             quick_slots: seeded_quick_shape_slots(),
         }
@@ -110,6 +116,10 @@ pub const PARAM_BYPASS_NUM: u32 = 10;
 pub const PARAM_SWING_NUM: u32 = 11;
 /// Host-visible numeric parameter id for the active A/B sound side.
 pub const PARAM_SOUND_NUM: u32 = 12;
+/// Host-visible numeric parameter id for the timing source.
+pub const PARAM_TIMING_MODE_NUM: u32 = 13;
+/// Host-visible numeric parameter id for the canonical free timing rate.
+pub const PARAM_FREE_RATE_NUM: u32 = 14;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
@@ -137,6 +147,10 @@ pub const PARAM_BYPASS_ID: ClapId = ClapId::new(PARAM_BYPASS_NUM);
 pub const PARAM_SWING_ID: ClapId = ClapId::new(PARAM_SWING_NUM);
 /// Parameter id for the active A/B sound side.
 pub const PARAM_SOUND_ID: ClapId = ClapId::new(PARAM_SOUND_NUM);
+/// Parameter id for the timing source.
+pub const PARAM_TIMING_MODE_ID: ClapId = ClapId::new(PARAM_TIMING_MODE_NUM);
+/// Parameter id for the canonical free timing rate in hertz.
+pub const PARAM_FREE_RATE_ID: ClapId = ClapId::new(PARAM_FREE_RATE_NUM);
 
 /// Plain host value for active processing.
 pub const BYPASS_ACTIVE_VALUE: f32 = 0.0;
@@ -196,6 +210,18 @@ pub const DEFAULT_TRIGGER_MODE: usize = TRIGGER_MODE_HOST;
 pub const DEFAULT_SMOOTH: f32 = 0.0;
 /// Default swing amount (straight timing).
 pub const DEFAULT_SWING: f32 = 0.0;
+/// Timing source values.
+pub const TIMING_MODE_SYNC: usize = 0;
+pub const TIMING_MODE_FREE: usize = 1;
+pub const TIMING_MODE_LABELS: [&str; 2] = ["Sync", "Free"];
+/// Default timing source.
+pub const DEFAULT_TIMING_MODE: usize = TIMING_MODE_SYNC;
+/// Minimum free-running rate in hertz.
+pub const MIN_FREE_RATE_HZ: f32 = 0.05;
+/// Maximum free-running rate in hertz.
+pub const MAX_FREE_RATE_HZ: f32 = 20_000.0;
+/// Default free-running rate in hertz.
+pub const DEFAULT_FREE_RATE_HZ: f32 = 2.0;
 /// Default sync division index (`1/4`).
 pub const DEFAULT_SYNC_DIVISION_INDEX: usize = 4;
 /// Maximum number of stored user presets.
@@ -237,6 +263,22 @@ pub const MIN_SMOOTH: f32 = 0.0;
 pub const MIN_SWING: f32 = 0.0;
 /// Maximum swing amount. At 100%, a cycle midpoint lands at 2/3 of the cycle.
 pub const MAX_SWING: f32 = 1.0;
+
+/// Clamp a timing source value into the supported enum range.
+pub fn clamp_timing_mode(value: f32) -> usize {
+    value
+        .round()
+        .clamp(TIMING_MODE_SYNC as f32, TIMING_MODE_FREE as f32) as usize
+}
+
+/// Clamp a free-running rate into the canonical hertz range.
+pub fn clamp_free_rate_hz(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(MIN_FREE_RATE_HZ, MAX_FREE_RATE_HZ)
+    } else {
+        DEFAULT_FREE_RATE_HZ
+    }
+}
 
 /// One named beat division option.
 #[derive(Debug, Copy, Clone)]
@@ -368,6 +410,10 @@ pub struct PumpPreset {
     pub mode: usize,
     /// Alternating-subdivision swing amount in `[0, 1]`.
     pub swing: f32,
+    /// Timing source: synchronized divisions or a free-running rate.
+    pub timing_mode: usize,
+    /// Canonical free-running timing rate in hertz.
+    pub free_rate_hz: f32,
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
     /// Overwriteable quick-slot curves shown below the editor for this preset.
@@ -436,6 +482,8 @@ impl PumpPresetBank {
                 smooth: DEFAULT_SMOOTH,
                 mode: PROCESSING_MODE_CLASSIC,
                 swing: DEFAULT_SWING,
+                timing_mode: DEFAULT_TIMING_MODE,
+                free_rate_hz: DEFAULT_FREE_RATE_HZ,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -503,6 +551,8 @@ pub struct PumpParams {
     pub(super) smooth: AtomicF32,
     pub(super) mode: AtomicU32,
     pub(super) swing: AtomicF32,
+    pub(super) timing_mode: AtomicU32,
+    pub(super) free_rate_hz: AtomicF32,
     pub(super) bypass: AtomicBool,
     pub(super) bypass_revision: AtomicU32,
     pub(super) bypass_last_automation_micros: AtomicU64,
@@ -524,6 +574,8 @@ pub struct PumpParams {
     pub(super) realtime_smooth: [AtomicF32; 2],
     pub(super) realtime_mode: [AtomicU32; 2],
     pub(super) realtime_swing: [AtomicF32; 2],
+    pub(super) realtime_timing_mode: [AtomicU32; 2],
+    pub(super) realtime_free_rate_hz: [AtomicF32; 2],
     pub(super) realtime_curve: [[AtomicF32; CURVE_TABLE_LEN]; 2],
     pub(super) sound_states: RwLock<[PumpSoundState; 2]>,
 }

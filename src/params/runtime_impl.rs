@@ -20,6 +20,8 @@ impl PumpParams {
             smooth: AtomicF32::new(DEFAULT_SMOOTH),
             mode: AtomicU32::new(PROCESSING_MODE_CLASSIC as u32),
             swing: AtomicF32::new(DEFAULT_SWING),
+            timing_mode: AtomicU32::new(DEFAULT_TIMING_MODE as u32),
+            free_rate_hz: AtomicF32::new(DEFAULT_FREE_RATE_HZ),
             bypass: AtomicBool::new(false),
             bypass_revision: AtomicU32::new(1),
             bypass_last_automation_micros: AtomicU64::new(0),
@@ -47,6 +49,10 @@ impl PumpParams {
             realtime_smooth: std::array::from_fn(|_| AtomicF32::new(DEFAULT_SMOOTH)),
             realtime_mode: std::array::from_fn(|_| AtomicU32::new(PROCESSING_MODE_CLASSIC as u32)),
             realtime_swing: std::array::from_fn(|_| AtomicF32::new(DEFAULT_SWING)),
+            realtime_timing_mode: std::array::from_fn(|_| {
+                AtomicU32::new(DEFAULT_TIMING_MODE as u32)
+            }),
+            realtime_free_rate_hz: std::array::from_fn(|_| AtomicF32::new(DEFAULT_FREE_RATE_HZ)),
             realtime_curve: std::array::from_fn(|_| {
                 std::array::from_fn(|index| AtomicF32::new(default_curve[index]))
             }),
@@ -131,6 +137,20 @@ impl PumpParams {
         self.realtime_swing[self.realtime_index()]
             .load(Ordering::Relaxed)
             .clamp(MIN_SWING, MAX_SWING)
+    }
+
+    /// Get the timing source.
+    pub fn timing_mode(&self) -> usize {
+        clamp_timing_mode(
+            self.realtime_timing_mode[self.realtime_index()].load(Ordering::Relaxed) as f32,
+        )
+    }
+
+    /// Get the canonical free-running timing rate in hertz.
+    pub fn free_rate_hz(&self) -> f32 {
+        clamp_free_rate_hz(
+            self.realtime_free_rate_hz[self.realtime_index()].load(Ordering::Relaxed),
+        )
     }
 
     /// Return whether complete Pump output is currently bypassed.
@@ -262,6 +282,22 @@ impl PumpParams {
         let value = value.clamp(MIN_SWING, MAX_SWING);
         self.swing.store(value, Ordering::Relaxed);
         self.realtime_swing[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the timing source.
+    pub fn set_timing_mode(&self, value: f32) {
+        let value = clamp_timing_mode(value) as u32;
+        self.timing_mode.store(value, Ordering::Relaxed);
+        self.realtime_timing_mode[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the canonical free-running timing rate in hertz.
+    pub fn set_free_rate_hz(&self, value: f32) {
+        let value = clamp_free_rate_hz(value);
+        self.free_rate_hz.store(value, Ordering::Relaxed);
+        self.realtime_free_rate_hz[self.realtime_index()].store(value, Ordering::Relaxed);
         self.mark_active_sound_dirty();
     }
 
@@ -520,6 +556,8 @@ impl PumpParams {
             smooth: self.smooth(),
             mode: self.mode(),
             swing: self.swing(),
+            timing_mode: self.timing_mode(),
+            free_rate_hz: self.free_rate_hz(),
             editable_curve,
             quick_slots,
         }
@@ -566,6 +604,8 @@ impl PumpParams {
                 smooth: self.realtime_smooth[index].load(Ordering::Acquire),
                 mode: self.realtime_mode[index].load(Ordering::Acquire) as usize,
                 swing: self.realtime_swing[index].load(Ordering::Acquire),
+                timing_mode: self.realtime_timing_mode[index].load(Ordering::Acquire) as usize,
+                free_rate_hz: self.realtime_free_rate_hz[index].load(Ordering::Acquire),
                 editable_curve,
                 quick_slots,
             };
@@ -674,6 +714,20 @@ impl PumpParams {
         }
         self.realtime_swing[index]
             .store(state.swing.clamp(MIN_SWING, MAX_SWING), Ordering::Relaxed);
+        if index == active_index {
+            self.timing_mode.store(
+                clamp_timing_mode(state.timing_mode as f32) as u32,
+                Ordering::Relaxed,
+            );
+            self.free_rate_hz
+                .store(clamp_free_rate_hz(state.free_rate_hz), Ordering::Relaxed);
+        }
+        self.realtime_timing_mode[index].store(
+            clamp_timing_mode(state.timing_mode as f32) as u32,
+            Ordering::Relaxed,
+        );
+        self.realtime_free_rate_hz[index]
+            .store(clamp_free_rate_hz(state.free_rate_hz), Ordering::Relaxed);
         let normalized = state.editable_curve.clone().normalized();
         let curve_table = editable_curve_to_table(&normalized);
         for (curve, value) in self.realtime_curve[index]
@@ -727,6 +781,8 @@ impl PumpParams {
             smooth: self.smooth(),
             mode: self.mode(),
             swing: self.swing(),
+            timing_mode: self.timing_mode(),
+            free_rate_hz: self.free_rate_hz(),
             editable_curve: self.editable_curve_snapshot(),
             quick_slots: self.sound_state_snapshot(self.active_sound()).quick_slots,
         }
@@ -794,6 +850,8 @@ impl PumpParams {
             } else {
                 DEFAULT_SWING
             };
+            preset.timing_mode = clamp_timing_mode(preset.timing_mode as f32);
+            preset.free_rate_hz = clamp_free_rate_hz(preset.free_rate_hz);
             preset.smooth = if preset.smooth.is_finite() {
                 preset.smooth.clamp(MIN_SMOOTH, MAX_SMOOTH)
             } else {
@@ -830,6 +888,8 @@ impl PumpParams {
         self.set_smooth(preset.smooth);
         self.set_mode(preset.mode as f32);
         self.set_swing(preset.swing);
+        self.set_timing_mode(preset.timing_mode as f32);
+        self.set_free_rate_hz(preset.free_rate_hz);
         self.set_editable_curve_preserving_phase(&preset.editable_curve);
         let _ = self.set_active_sound_quick_slots(preset.quick_slots.clone());
     }

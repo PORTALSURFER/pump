@@ -46,6 +46,8 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     for side in [SoundSide::A, SoundSide::B] {
         encode_sound_state(&mut payload, &params.sound_state_snapshot(side));
     }
+    payload.extend_from_slice(&(params.timing_mode() as u32).to_le_bytes());
+    payload.extend_from_slice(&params.free_rate_hz().to_le_bytes());
 
     payload
 }
@@ -123,6 +125,8 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 smooth: DEFAULT_SMOOTH,
                 mode: PROCESSING_MODE_CLASSIC,
                 swing: DEFAULT_SWING,
+                timing_mode: DEFAULT_TIMING_MODE,
+                free_rate_hz: DEFAULT_FREE_RATE_HZ,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -200,8 +204,8 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
         }) else {
             return Err("invalid active sound field");
         };
-        let a = decode_sound_state(&mut cursor)?;
-        let b = decode_sound_state(&mut cursor)?;
+        let a = decode_sound_state(&mut cursor, version)?;
+        let b = decode_sound_state(&mut cursor, version)?;
         (active_sound, [a, b])
     } else {
         let legacy = PumpSoundState {
@@ -215,6 +219,8 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
             smooth,
             mode,
             swing,
+            timing_mode: DEFAULT_TIMING_MODE,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
             editable_curve: editable_curve.clone(),
             quick_slots: preset_bank
                 .presets
@@ -223,6 +229,23 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 .unwrap_or_else(seeded_quick_shape_slots),
         };
         (SoundSide::A, [legacy.clone(), legacy])
+    };
+    let (timing_mode, free_rate_hz) = if version >= 15 {
+        let Some(timing_mode) = read_u32(&mut cursor) else {
+            return Err("invalid timing mode field");
+        };
+        let Some(free_rate_hz) = read_f32(&mut cursor) else {
+            return Err("invalid free rate field");
+        };
+        if !free_rate_hz.is_finite() {
+            return Err("invalid free rate field");
+        }
+        (
+            clamp_timing_mode(timing_mode as f32),
+            clamp_free_rate_hz(free_rate_hz),
+        )
+    } else {
+        (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
     };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
@@ -239,6 +262,8 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_mode(mode as f32);
     params.set_bypass(bypass);
     params.set_swing(swing);
+    params.set_timing_mode(timing_mode as f32);
+    params.set_free_rate_hz(free_rate_hz);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
     params.set_sound_states_without_persistence(active_sound, sound_states);
@@ -262,9 +287,14 @@ fn encode_sound_state(payload: &mut Vec<u8>, state: &PumpSoundState) {
     for slot in &state.quick_slots {
         encode_curve(payload, &slot.curve);
     }
+    payload.extend_from_slice(&(state.timing_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&state.free_rate_hz.to_le_bytes());
 }
 
-fn decode_sound_state(cursor: &mut Cursor<&[u8]>) -> Result<PumpSoundState, &'static str> {
+fn decode_sound_state(
+    cursor: &mut Cursor<&[u8]>,
+    version: u32,
+) -> Result<PumpSoundState, &'static str> {
     let Some(mix) = read_f32(cursor) else {
         return Err("invalid A/B mix field");
     };
@@ -314,6 +344,23 @@ fn decode_sound_state(cursor: &mut Cursor<&[u8]>) -> Result<PumpSoundState, &'st
             curve: decode_curve(cursor, node_count, true)?,
         });
     }
+    let (timing_mode, free_rate_hz) = if version >= 15 {
+        let Some(timing_mode) = read_u32(cursor) else {
+            return Err("invalid A/B timing mode field");
+        };
+        let Some(free_rate_hz) = read_f32(cursor) else {
+            return Err("invalid A/B free rate field");
+        };
+        if !free_rate_hz.is_finite() {
+            return Err("invalid A/B free rate field");
+        }
+        (
+            clamp_timing_mode(timing_mode as f32),
+            clamp_free_rate_hz(free_rate_hz),
+        )
+    } else {
+        (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
+    };
     if ![
         mix,
         depth_db,
@@ -339,6 +386,8 @@ fn decode_sound_state(cursor: &mut Cursor<&[u8]>) -> Result<PumpSoundState, &'st
         smooth,
         mode: clamp_processing_mode(mode as f32),
         swing,
+        timing_mode,
+        free_rate_hz,
         editable_curve: editable_curve.normalized(),
         quick_slots,
     })
@@ -365,6 +414,8 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&(clamp_processing_mode(preset.mode as f32) as u32).to_le_bytes());
     payload.push(u8::from(preset.is_favorite));
     payload.extend_from_slice(&preset.swing.to_le_bytes());
+    payload.extend_from_slice(&(preset.timing_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&preset.free_rate_hz.to_le_bytes());
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -556,6 +607,19 @@ fn decode_preset_bank(
         } else {
             DEFAULT_SWING
         };
+        let (timing_mode, free_rate_hz) = if version >= 15 {
+            let timing_mode = read_u32(cursor).ok_or("invalid preset timing mode")?;
+            let free_rate_hz = read_f32(cursor).ok_or("invalid preset free rate")?;
+            if !free_rate_hz.is_finite() {
+                return Err("invalid preset free rate");
+            }
+            (
+                clamp_timing_mode(timing_mode as f32),
+                clamp_free_rate_hz(free_rate_hz),
+            )
+        } else {
+            (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -571,6 +635,8 @@ fn decode_preset_bank(
             smooth,
             mode,
             swing,
+            timing_mode,
+            free_rate_hz,
             editable_curve: editable_curve.normalized(),
             quick_slots,
         });
@@ -661,6 +727,8 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
         smooth: DEFAULT_SMOOTH,
         mode: PROCESSING_MODE_CLASSIC,
         swing: DEFAULT_SWING,
+        timing_mode: DEFAULT_TIMING_MODE,
+        free_rate_hz: DEFAULT_FREE_RATE_HZ,
         editable_curve: params.editable_curve_snapshot(),
         quick_slots: seeded_quick_shape_slots(),
     };
@@ -681,6 +749,8 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             smooth: DEFAULT_SMOOTH,
             mode: PROCESSING_MODE_CLASSIC,
             swing: DEFAULT_SWING,
+            timing_mode: DEFAULT_TIMING_MODE,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],
