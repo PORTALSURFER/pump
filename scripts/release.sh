@@ -214,7 +214,7 @@ PY
   if [[ "${format}" == clap ]]; then clap_notary_id="${notary_id}"; else vst3_notary_id="${notary_id}"; fi
   xcrun stapler staple "${bundle_dir}" >/dev/null
   xcrun stapler validate "${bundle_dir}" >/dev/null
-  spctl --assess --type execute --verbose=2 "${bundle_dir}" >/dev/null
+  codesign -vvvv -R=notarized --check-notarization "${bundle_dir}" >/dev/null
   local team_id
   team_id="$(codesign -dv --verbose=4 "${bundle_dir}" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
   [[ -n "${team_id}" ]] || { echo "could not capture Developer ID team identifier" >&2; exit 1; }
@@ -245,7 +245,7 @@ audit_zip() {
   [[ "$(/usr/bin/plutil -extract CFBundlePackageType raw -o - "${contents}/Info.plist")" == "BNDL" ]] || { echo "${format} ZIP package type is invalid" >&2; exit 1; }
   codesign --verify --deep --strict "${bundle}"
   xcrun stapler validate "${bundle}" >/dev/null
-  spctl --assess --type execute --verbose=2 "${bundle}" >/dev/null
+  codesign -vvvv -R=notarized --check-notarization "${bundle}" >/dev/null
   codesign_details="$(codesign -dv --verbose=4 "${bundle}" 2>&1)"
   printf '%s\n' "${codesign_details}" | grep -q '^Authority=Developer ID Application:' || { echo "${format} ZIP is not signed by a Developer ID Application authority" >&2; exit 1; }
   team_id="$(printf '%s\n' "${codesign_details}" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"

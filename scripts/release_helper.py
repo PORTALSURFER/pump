@@ -375,7 +375,7 @@ def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path) -
         if team_ids != [expected_team]:
             raise ValueError(f"{format_name} ZIP Developer ID signing team does not match manifest")
         _run_checked(("xcrun", "stapler", "validate", str(bundle)), cwd=cwd)
-        _run_checked(("spctl", "--assess", "--type", "execute", "--verbose=2", str(bundle)), cwd=cwd)
+        _run_checked(("codesign", "-vvvv", "-R=notarized", "--check-notarization", str(bundle)), cwd=cwd)
         architectures = _run_checked(("lipo", "-archs", str(binary)), cwd=cwd, capture_output=True).stdout.strip()
         if architectures != "arm64":
             raise ValueError(f"{format_name} ZIP binary must contain exactly arm64")

@@ -39,17 +39,18 @@ two host-installable ZIP bundles, `pump-default-912x684.png`, `CHANGELOG.md`, an
 the immutable bundle. The token is never accepted as a command-line argument.
 
 `--package-only` is still a production release: it signs, notarizes, staples, and
-assesses both bundles. The Actions workflow cannot run until the production
+verifies notarization on both bundles. The Actions workflow cannot run until the production
 environment has all Apple certificate/notary secrets, `RADIANT_REPO_TOKEN`, and
 the PortalSurfer release token for publish runs.
 
 Publishing is fail-closed to the exact `https://portalsurfer.org` origin. Immediately
 before a publish, the producer re-audits the final ZIP bytes, bundle signatures and
-team, stapling, Gatekeeper assessment, arm64 architecture, exports, and manifest
-hashes; the publish transport is injectable only in zero-network tests.
+team, stapling, notarization, arm64 architecture, exports, and manifest hashes; the
+publish transport is injectable only in zero-network tests.
 
 Production artifacts are macOS arm64, hardened-runtime Developer ID signed,
-notarized, stapled, and `spctl`-assessed. Universal2 and ad-hoc production
+notarized, stapled, and checked with `codesign -vvvv -R=notarized --check-notarization`.
+Universal2 and ad-hoc production
 artifacts are intentionally unsupported until a separate host-compatibility
 decision; the manifest records this production provenance explicitly.
 
