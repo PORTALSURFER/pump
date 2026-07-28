@@ -106,6 +106,15 @@ tmp_root="$(mktemp -d "${repo_root}/target/release-build.XXXXXX")"
 evidence_dir="${tmp_root}/notary-evidence"
 mkdir -p "${evidence_dir}"
 cleanup() {
+  if [[ -f "${original_keychains_file:-}" ]]; then
+    original_keychains=()
+    while IFS= read -r keychain; do
+      [[ -n "${keychain}" ]] && original_keychains+=("${keychain}")
+    done < "${original_keychains_file}"
+    if [[ "${#original_keychains[@]}" -gt 0 ]]; then
+      security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || true
+    fi
+  fi
   if [[ -n "${release_keychain:-}" ]]; then security delete-keychain "${release_keychain}" >/dev/null 2>&1 || true; fi
   rm -rf "${tmp_root}"
 }
@@ -122,9 +131,16 @@ decode_base64 "${APPLE_NOTARY_KEY_BASE64}" "${notary_key_path}"
 chmod 600 "${cert_path}" "${notary_key_path}"
 release_keychain="${tmp_root}/pump-release.keychain-db"
 release_keychain_password="$(uuidgen | tr -d '-')"
+original_keychains_file="${tmp_root}/original-keychains.txt"
+security list-keychains -d user | sed 's/[[:space:]]*"//g; s/"$//' > "${original_keychains_file}"
+original_keychains=()
+while IFS= read -r keychain; do
+  [[ -n "${keychain}" ]] && original_keychains+=("${keychain}")
+done < "${original_keychains_file}"
 security create-keychain -p "${release_keychain_password}" "${release_keychain}" >/dev/null
 security set-keychain-settings -lut 21600 "${release_keychain}"
 security unlock-keychain -p "${release_keychain_password}" "${release_keychain}"
+security list-keychains -d user -s "${release_keychain}" "${original_keychains[@]}" >/dev/null
 security import "${cert_path}" -P "${APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD}" -A -t cert -f pkcs12 -k "${release_keychain}" >/dev/null
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${release_keychain_password}" "${release_keychain}" >/dev/null
 codesign_identity="${APPLE_CODESIGN_IDENTITY:-}"
