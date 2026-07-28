@@ -366,6 +366,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (ce49662)
 
+- (changelog) Update changelog [skip ci] (42ddcb4)
+
 
 ### Features
 
@@ -386,6 +388,10 @@ All notable changes to this project are documented in this file.
 - (pump) Rebuild responsive Radiant editor shell (f279636)
 
 - Add host-automatable swing control (2282e19)
+
+- Redesign Pump header action bar (454defe)
+
+- Add Pump command history shortcuts (1d262bb)
 
 
 ### Other
@@ -1236,6 +1242,10 @@ Add Pump A/B sound states (e1fc475)
 
 Build target knob deck and gain reduction section (ff44770)
 
+- Merge pull request #47 from PORTALSURFER/wsvasek/opt-1124-pump-redesign-build-the-branded-header-and-global-action-bar
+
+Pump redesign: build branded header and global action bar (cbdcf43)
+
 
 ### Refactoring
 
@@ -1279,4 +1289,6 @@ Build target knob deck and gain reduction section (ff44770)
 - (state) Add malformed payload decode coverage (ebed91c)
 
 - (gui) Add non-windows dropdown-over-curve coverage (dd87705)
+
+- Cover Pump header action states (2aa67d2)
 
