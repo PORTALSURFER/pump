@@ -3,20 +3,19 @@
 
 from __future__ import annotations
 
-import argparse
 import datetime as dt
 import hashlib
 import json
 import struct
-import sys
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 MANIFEST_SCHEMA = 2
 MANIFEST_CONTENT_TYPE = "application/vnd.portalsurfer.release-manifest+json;version=2"
+PRODUCTION_ORIGIN = "https://portalsurfer.org"
 SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 TEAM_ID = re.compile(r"[A-Z0-9]{10}\Z")
@@ -201,7 +200,7 @@ def build_manifest(
     }
 
 
-def _request(url: str, *, method: str, body: Optional[bytes], headers: dict[str, str]) -> tuple[int, bytes]:
+def _request(url: str, method: str, body: Optional[bytes], headers: dict[str, str]) -> tuple[int, bytes]:
     request = Request(url, method=method, data=body, headers=headers)
     try:
         with urlopen(request) as response:
@@ -213,13 +212,26 @@ def _request(url: str, *, method: str, body: Optional[bytes], headers: dict[str,
         raise RuntimeError(f"{method} {url} failed: {error.reason}") from error
 
 
-def publish_manifest(*, endpoint: str, token: str, manifest: dict[str, Any], root: Path) -> None:
+Transport = Callable[[str, str, Optional[bytes], dict[str, str]], tuple[int, bytes]]
+
+
+def publish_manifest(
+    *,
+    endpoint: str,
+    token: str,
+    manifest: dict[str, Any],
+    root: Path,
+    transport: Optional[Transport] = None,
+) -> None:
     """Capability-check, stage four bytes, and commit one immutable manifest."""
     if not token:
         raise ValueError("PORTALSURFER_RELEASE_TOKEN is required for --publish")
+    if endpoint != PRODUCTION_ORIGIN:
+        raise ValueError(f"production publishing requires exact origin {PRODUCTION_ORIGIN}")
     validate_publish_manifest(manifest, root)
-    base = endpoint.rstrip("/")
-    status, payload = _request(f"{base}/plugins/api/v1/products/pump/releases", method="GET", body=None, headers={"Accept": "application/json"})
+    request = transport or _request
+    base = PRODUCTION_ORIGIN
+    status, payload = request(f"{base}/plugins/api/v1/products/pump/releases", "GET", None, {"Accept": "application/json"})
     if status < 200 or status >= 300:
         raise RuntimeError(f"capability check failed ({status})")
     try:
@@ -247,11 +259,11 @@ def publish_manifest(*, endpoint: str, token: str, manifest: dict[str, Any], roo
     for name, path, digest in files:
         data = path.read_bytes()
         headers = {**metadata, "Content-Length": str(len(data)), "X-PortalSurfer-Sha256": digest}
-        _request(
+        request(
             f"{base}/plugins/api/v1/products/pump/release-uploads/{manifest['build_id']}/staging/files/{name}",
-            method="PUT",
-            body=data,
-            headers=headers,
+            "PUT",
+            data,
+            headers,
         )
 
     body = canonical_json(manifest)
@@ -265,11 +277,11 @@ def publish_manifest(*, endpoint: str, token: str, manifest: dict[str, Any], roo
         "X-PortalSurfer-Release-Channel": manifest["channel"],
         "X-PortalSurfer-Released-At": manifest["released_at"],
     }
-    _request(
+    request(
         f"{base}/plugins/api/v1/products/pump/release-uploads/{manifest['build_id']}/commit",
-        method="PUT",
-        body=body,
-        headers=commit_headers,
+        "PUT",
+        body,
+        commit_headers,
     )
 
 
@@ -318,22 +330,3 @@ def validate_publish_manifest(manifest: dict[str, Any], root: Path) -> None:
     changelog = manifest["changelog"]
     if changelog.get("format") != "markdown" or changelog.get("media_type") != "text/markdown; charset=utf-8":
         raise ValueError("publish changelog metadata does not match the release contract")
-
-
-def _cli() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--endpoint", required=True)
-    args = parser.parse_args()
-    token = __import__("os").environ.get("PORTALSURFER_RELEASE_TOKEN", "")
-    publish_manifest(endpoint=args.endpoint, token=token, manifest=json.loads(args.manifest.read_text()), root=args.root)
-    return 0
-
-
-if __name__ == "__main__":
-    try:
-        raise SystemExit(_cli())
-    except (RuntimeError, ValueError) as error:
-        print(f"release-helper: {error}", file=sys.stderr)
-        raise SystemExit(1)

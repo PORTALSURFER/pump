@@ -3,7 +3,6 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
-helper="${repo_root}/scripts/release_helper.py"
 
 usage() {
   cat <<'EOF'
@@ -85,6 +84,10 @@ released_at="${released_at:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 [[ -s CHANGELOG.md ]] || { echo "CHANGELOG.md must not be empty" >&2; exit 1; }
 if [[ "${mode}" == publish && -z "${PORTALSURFER_RELEASE_TOKEN:-}" ]]; then
   echo "--publish requires PORTALSURFER_RELEASE_TOKEN (environment only)" >&2
+  exit 1
+fi
+if [[ "${mode}" == publish && "${endpoint}" != "https://portalsurfer.org" ]]; then
+  echo "production publishing requires exact origin https://portalsurfer.org" >&2
   exit 1
 fi
 if [[ ! -d "${VST3_SDK_DIR:-}" ]]; then
@@ -214,16 +217,22 @@ PY
 }
 
 audit_zip() {
-  local format="$1" archive="$2" audit_dir bundle contents
+  local format="$1" archive="$2" expected_team="$3" audit_dir bundle contents codesign_details team_id
   audit_dir="$(mktemp -d "${tmp_root}/audit.XXXXXX")"
   /usr/bin/ditto -x -k "${archive}" "${audit_dir}"
   bundle="${audit_dir}/pump.${format}"
   contents="${bundle}/Contents"
   [[ -f "${contents}/Info.plist" && -f "${contents}/PkgInfo" && -x "${contents}/MacOS/pump" ]] || { echo "${format} ZIP bundle layout is invalid" >&2; exit 1; }
   /usr/bin/plutil -lint "${contents}/Info.plist" >/dev/null
+  [[ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "${contents}/Info.plist")" == "com.portalsurfer.pump.${format}" ]] || { echo "${format} ZIP bundle identifier is invalid" >&2; exit 1; }
+  [[ "$(/usr/bin/plutil -extract CFBundlePackageType raw -o - "${contents}/Info.plist")" == "BNDL" ]] || { echo "${format} ZIP package type is invalid" >&2; exit 1; }
   codesign --verify --deep --strict "${bundle}"
   xcrun stapler validate "${bundle}" >/dev/null
   spctl --assess --type execute --verbose=2 "${bundle}" >/dev/null
+  codesign_details="$(codesign -dv --verbose=4 "${bundle}" 2>&1)"
+  printf '%s\n' "${codesign_details}" | grep -q '^Authority=Developer ID Application:' || { echo "${format} ZIP is not signed by a Developer ID Application authority" >&2; exit 1; }
+  team_id="$(printf '%s\n' "${codesign_details}" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
+  [[ -n "${team_id}" && "${team_id}" == "${expected_team}" ]] || { echo "${format} ZIP Developer ID signing team does not match manifest" >&2; exit 1; }
   file "${contents}/MacOS/pump" | grep -q arm64 || { echo "${format} ZIP binary is not arm64" >&2; exit 1; }
   if command -v lipo >/dev/null 2>&1; then [[ "$(lipo -archs "${contents}/MacOS/pump")" == arm64 ]] || { echo "${format} ZIP binary is not arm64-only" >&2; exit 1; }; fi
   if [[ "${format}" == clap ]]; then /usr/bin/nm -gU "${contents}/MacOS/pump" | grep -q _clap_entry || { echo "CLAP ZIP entrypoint missing" >&2; exit 1; }; else
@@ -239,7 +248,7 @@ clap_binary="${clap_target}/release/libpump.dylib"
 [[ -f "${clap_binary}" ]] || { echo "CLAP build did not produce ${clap_binary}" >&2; exit 1; }
 clap_bundle="${tmp_root}/pump.clap"
 build_bundle clap "${release_dir}/pump-v${version}-macos.clap.zip" "${clap_bundle}" "${clap_binary}"
-audit_zip clap "${release_dir}/pump-v${version}-macos.clap.zip"
+audit_zip clap "${release_dir}/pump-v${version}-macos.clap.zip" "${signing_team_id}"
 
 echo "[release] building VST3"
 TOYBOX_ACTIVE_ARTIFACT=vst3 VST3_SDK_DIR="${VST3_SDK_DIR}" CARGO_TARGET_DIR="${vst3_target}" cargo rustc --release --features vst3 -- -C link-arg=-Wl,-bundle
@@ -247,7 +256,7 @@ vst3_binary="${vst3_target}/release/libpump.dylib"
 [[ -f "${vst3_binary}" ]] || { echo "VST3 build did not produce ${vst3_binary}" >&2; exit 1; }
 vst3_bundle="${tmp_root}/pump.vst3"
 build_bundle vst3 "${release_dir}/pump-v${version}-macos.vst3.zip" "${vst3_bundle}" "${vst3_binary}"
-audit_zip vst3 "${release_dir}/pump-v${version}-macos.vst3.zip"
+audit_zip vst3 "${release_dir}/pump-v${version}-macos.vst3.zip" "${signing_team_id}"
 
 cp CHANGELOG.md "${release_dir}/CHANGELOG.md"
 python3 - "${release_dir}" "${version}" "${build_id}" "${channel}" "${released_at}" "${git_sha}" "${signing_team_id}" "${clap_notary_id}" "${vst3_notary_id}" <<'PY'
@@ -260,7 +269,50 @@ manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys
 PY
 
 if [[ "${mode}" == publish ]]; then
-  python3 "${helper}" --manifest "${release_dir}/release-manifest.json" --root "${release_dir}" --endpoint "${endpoint}"
+  echo "[release] final audit of exact publish bytes"
+  audit_zip clap "${release_dir}/pump-v${version}-macos.clap.zip" "${signing_team_id}"
+  audit_zip vst3 "${release_dir}/pump-v${version}-macos.vst3.zip" "${signing_team_id}"
+  python3 - "${release_dir}" "${version}" "${git_sha}" "${signing_team_id}" <<'PY'
+import json
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
+from release_helper import validate_publish_manifest
+
+root = pathlib.Path(sys.argv[1])
+version, git_sha, signing_team = sys.argv[2:]
+manifest = json.loads((root / "release-manifest.json").read_text(encoding="utf-8"))
+expected_names = {
+    "clap": f"pump-v{version}-macos.clap.zip",
+    "vst3": f"pump-v{version}-macos.vst3.zip",
+}
+actual_names = {artifact.get("format"): artifact.get("name") for artifact in manifest.get("artifacts", [])}
+if actual_names != expected_names:
+    raise ValueError("manifest artifact names do not match the exact audited ZIPs")
+if manifest.get("screenshot", {}).get("name") != "pump-default-912x684.png" or manifest.get("changelog", {}).get("name") != "CHANGELOG.md":
+    raise ValueError("manifest support-file names do not match the release bundle")
+if manifest.get("source", {}).get("git_sha") != git_sha or manifest.get("signing", {}).get("team_id") != signing_team:
+    raise ValueError("manifest provenance does not match the audited source")
+validate_publish_manifest(manifest, root)
+PY
+  python3 - "${release_dir}" "${endpoint}" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
+from release_helper import publish_manifest
+
+root = pathlib.Path(sys.argv[1])
+publish_manifest(
+    endpoint=sys.argv[2],
+    token=os.environ.get("PORTALSURFER_RELEASE_TOKEN", ""),
+    manifest=json.loads((root / "release-manifest.json").read_text(encoding="utf-8")),
+    root=root,
+)
+PY
 fi
 
 echo "[release] bundle ready: ${release_dir}"
