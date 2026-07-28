@@ -85,6 +85,8 @@ All notable changes to this project are documented in this file.
 
 - (release) Create temporary build parent (#42) (2ba8990)
 
+- (release) Verify notarized plugin bundles (#44) (9aa7f3a)
+
 
 ### CI
 
@@ -355,6 +357,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (8a1bdbc)
 
 - (changelog) Update changelog [skip ci] (aab0c73)
+
+- (changelog) Update changelog [skip ci] (742121f)
 
 
 ### Features
