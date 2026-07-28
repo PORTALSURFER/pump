@@ -33,6 +33,10 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Capture checked-out source SHA
+        id: source_sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Configure private git dependencies
         env:
           RADIANT_REPO_TOKEN: ${{ secrets.RADIANT_REPO_TOKEN }}
@@ -74,7 +78,7 @@ jobs:
       - name: Upload immutable bundle for inspection
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: pump-release-${{ inputs.channel }}-${{ github.sha }}
+          name: pump-release-${{ inputs.channel }}-${{ steps.source_sha.outputs.sha }}
           path: dist/releases/*
           if-no-files-found: error
           retention-days: 3
