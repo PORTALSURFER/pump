@@ -3,7 +3,7 @@
 use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::io::Cursor;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use toybox::clack_extensions::params::{ParamDisplayWriter, ParamInfoFlags, ParamInfoWriter};
@@ -32,6 +32,8 @@ pub(crate) use model::{
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use global_curve_slots::with_test_curve_slot_path;
+#[cfg(test)]
+pub(crate) use host_api::param_flags_for_index;
 #[cfg(feature = "vst3")]
 pub use host_api::{
     apply_normalized_param_value, clap_id_from_vst3_param_id, normalized_from_plain_value,

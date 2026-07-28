@@ -37,6 +37,7 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     payload.extend_from_slice(&(params.trigger_mode() as f32).to_le_bytes());
     payload.extend_from_slice(&params.smooth().to_le_bytes());
     payload.extend_from_slice(&(params.mode() as f32).to_le_bytes());
+    payload.extend_from_slice(&params.bypass_value().to_le_bytes());
 
     payload
 }
@@ -143,6 +144,17 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     } else {
         PROCESSING_MODE_CLASSIC
     };
+    let bypass = if version >= 12 {
+        let Some(bypass) = read_f32(&mut cursor) else {
+            return Err("invalid bypass field");
+        };
+        if !bypass.is_finite() {
+            return Err("invalid bypass field");
+        }
+        bypass
+    } else {
+        BYPASS_ACTIVE_VALUE
+    };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -156,6 +168,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_trigger_mode(trigger_mode);
     params.set_smooth(smooth);
     params.set_mode(mode as f32);
+    params.set_bypass(bypass);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
 

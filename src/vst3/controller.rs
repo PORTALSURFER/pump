@@ -1,15 +1,11 @@
 use super::*;
 pub(super) struct PumpVst3Controller {
     shared: Arc<PumpVst3Shared>,
-    component_handler: Mutex<Option<ComPtr<IComponentHandler>>>,
 }
 
 impl PumpVst3Controller {
     pub(super) fn new(shared: Arc<PumpVst3Shared>) -> Self {
-        Self {
-            shared,
-            component_handler: Mutex::new(None),
-        }
+        Self { shared }
     }
 }
 
@@ -81,6 +77,9 @@ impl IEditControllerTrait for PumpVst3Controller {
         info.defaultNormalizedValue = meta.default_normalized;
         info.unitId = 0;
         info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
+        if meta.is_bypass {
+            info.flags |= ParameterInfo_::ParameterFlags_::kIsBypass;
+        }
         kResultOk
     }
 
@@ -151,7 +150,7 @@ impl IEditControllerTrait for PumpVst3Controller {
     }
 
     unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
-        let Ok(mut component_handler) = self.component_handler.lock() else {
+        let Ok(mut component_handler) = self.shared.component_handler.lock() else {
             return kResultFalse;
         };
         if handler.is_null() {

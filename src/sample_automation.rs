@@ -145,6 +145,7 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         trigger_mode: params.trigger_mode(),
         smooth: params.smooth(),
         mode: params.mode(),
+        bypassed: params.bypassed(),
     }
 }
 
@@ -195,7 +196,7 @@ pub(crate) fn process_stereo_block(
                     .map(|(&left, &right)| (left, right))
             }),
         );
-        if input_left.abs().max(input_right.abs()) > 1.0e-5 {
+        if !telemetry.bypassed && input_left.abs().max(input_right.abs()) > 1.0e-5 {
             input_active = true;
             minimum_reduction_gain = minimum_reduction_gain.min(telemetry.reduction_gain);
         }
@@ -219,8 +220,13 @@ pub(crate) fn process_stereo_block(
         }
     }
     last_telemetry.map(|mut telemetry| {
-        telemetry.reduction_gain = minimum_reduction_gain;
-        telemetry.input_active = input_active;
+        if telemetry.bypassed {
+            telemetry.reduction_gain = 1.0;
+            telemetry.input_active = false;
+        } else {
+            telemetry.reduction_gain = minimum_reduction_gain;
+            telemetry.input_active = input_active;
+        }
         telemetry
     })
 }
@@ -299,7 +305,7 @@ pub(crate) unsafe fn process_stereo_block_raw(
                 )
             }),
         );
-        if input_left.abs().max(input_right.abs()) > 1.0e-5 {
+        if !telemetry.bypassed && input_left.abs().max(input_right.abs()) > 1.0e-5 {
             input_active = true;
             minimum_reduction_gain = minimum_reduction_gain.min(telemetry.reduction_gain);
         }
@@ -327,8 +333,13 @@ pub(crate) unsafe fn process_stereo_block_raw(
         }
     }
     last_telemetry.map(|mut telemetry| {
-        telemetry.reduction_gain = minimum_reduction_gain;
-        telemetry.input_active = input_active;
+        if telemetry.bypassed {
+            telemetry.reduction_gain = 1.0;
+            telemetry.input_active = false;
+        } else {
+            telemetry.reduction_gain = minimum_reduction_gain;
+            telemetry.input_active = input_active;
+        }
         telemetry
     })
 }
@@ -337,10 +348,11 @@ pub(crate) unsafe fn process_stereo_block_raw(
 mod tests {
     use super::*;
     use crate::curve::CURVE_TABLE_LEN;
+    use crate::incoming_waveform::IncomingWaveformWriter;
     use crate::params::{
-        PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID,
-        PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID,
-        PROCESSING_MODE_PUNCH, TRIGGER_MODE_SIDECHAIN,
+        PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID,
+        PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SYNC_DIVISION_ID,
+        PARAM_TRIGGER_MODE_ID, PROCESSING_MODE_PUNCH, TRIGGER_MODE_SIDECHAIN,
     };
 
     fn constant_curve(value: f32) -> [f32; CURVE_TABLE_LEN] {
@@ -554,6 +566,7 @@ mod tests {
         schedule.push(7, PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_SIDECHAIN as f32);
         schedule.push(7, PARAM_SMOOTH_ID, 0.75);
         schedule.push(7, PARAM_MODE_ID, PROCESSING_MODE_PUNCH as f32);
+        schedule.push(7, PARAM_BYPASS_ID, 1.0);
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
 
@@ -579,5 +592,105 @@ mod tests {
         assert_eq!(settings.trigger_mode, TRIGGER_MODE_SIDECHAIN);
         assert!((settings.smooth - 0.75).abs() < f32::EPSILON);
         assert_eq!(settings.mode, PROCESSING_MODE_PUNCH);
+        assert!(settings.bypassed);
+    }
+
+    #[test]
+    fn bypass_points_retarget_at_exact_offsets_and_block_end_starts_next_sample() {
+        let params = PumpParams::new();
+        let mut engine = PumpEngine::new(1_000.0, constant_curve(0.0));
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(4);
+        schedule.push(0, PARAM_BYPASS_ID, 1.0);
+        schedule.push(2, PARAM_BYPASS_ID, 0.0);
+        schedule.push(2, PARAM_BYPASS_ID, 1.0);
+        schedule.push(4, PARAM_BYPASS_ID, 0.0);
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+        let mut left = [1.0; 4];
+        let mut right = [1.0; 4];
+
+        process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            playing_transport(0.0),
+            None,
+            None,
+        );
+
+        assert_eq!(left, [0.2, 0.4, 0.6, 0.8]);
+        assert!(!settings.bypassed);
+        assert!(!params.bypassed());
+
+        schedule.begin_block(1);
+        schedule.prepare();
+        let mut next_left = [1.0];
+        let mut next_right = [1.0];
+        process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut next_left,
+                right: &mut next_right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            playing_transport(0.04),
+            None,
+            None,
+        );
+        assert!(
+            (next_left[0] - 0.64).abs() < 1.0e-6,
+            "block-end event must first affect the next processed sample"
+        );
+    }
+
+    #[test]
+    fn full_bypass_idles_meter_but_keeps_waveform_capture_running() {
+        let params = PumpParams::new();
+        params.set_bypass(1.0);
+        let mut engine = PumpEngine::new_with_bypass(1_000.0, constant_curve(0.0), true);
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(4);
+        let mut settings = dsp_settings_from_params(&params);
+        let mut left = [0.5, 0.25, 0.75, 0.125];
+        let original = left;
+        let mut right = left;
+        let status = crate::GuiStatus::default();
+        let mut writer = IncomingWaveformWriter::default();
+
+        let telemetry = process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            playing_transport(0.0),
+            None,
+            Some(IncomingWaveformCapture::new(
+                status.incoming_waveform_buffer(),
+                &mut writer,
+            )),
+        )
+        .expect("non-empty block should return telemetry");
+
+        assert_eq!(left, original);
+        assert_eq!(right, original);
+        assert!(telemetry.bypassed);
+        assert_eq!(telemetry.reduction_gain, 1.0);
+        assert!(!telemetry.input_active);
+        assert!(
+            status.incoming_waveform_snapshot().is_some(),
+            "full bypass must continue waveform capture"
+        );
     }
 }

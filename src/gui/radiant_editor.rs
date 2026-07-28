@@ -31,8 +31,9 @@ use radiant::widgets::{
 use toybox::clack_extensions::params::HostParams;
 use toybox::clack_plugin::prelude::HostSharedHandle;
 use toybox::clack_plugin::utils::ClapId;
-use toybox::clap::automation::{AutomationConfig, AutomationEnqueueStatus, AutomationQueue};
+use toybox::clap::automation::AutomationConfig;
 
+use crate::automation_queue::PumpAutomationQueue;
 use crate::curve::{
     cyclically_offset_editable_curve, sample_editable_curve, CurveNode, CurveSegment,
     EditableCurve, MAX_EDITABLE_NODES, MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
@@ -40,8 +41,9 @@ use crate::curve::{
 use crate::incoming_waveform::IncomingWaveformSnapshot;
 use crate::params::{
     format_plain_value_text, parse_plain_value_text, sync_division_label, PumpParams,
-    GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
-    MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
+    BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS, GLOBAL_CURVE_SLOT_COUNT,
+    MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_DEPTH_DB, MIN_FLOOR_DB,
+    MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
     PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID,
     PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID, PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS,
     TRIGGER_MODE_SIDECHAIN,
@@ -72,6 +74,29 @@ impl HostParamFlushRequester {
     /// Ask the host to collect the queued parameter events.
     fn request_flush(self) {
         self.params.request_flush(&self.host);
+    }
+}
+
+/// Format-neutral sink for one complete UI-originated host parameter edit.
+pub(crate) trait HostParamEditSink: Send + Sync {
+    /// Deliver begin/value/end on the editor's host/UI thread.
+    fn edit(&self, config: &AutomationConfig, param_id: ClapId, value: f64) -> bool;
+}
+
+struct ClapHostParamEditSink {
+    queue: Arc<PumpAutomationQueue>,
+    requester: Option<HostParamFlushRequester>,
+}
+
+impl HostParamEditSink for ClapHostParamEditSink {
+    fn edit(&self, config: &AutomationConfig, param_id: ClapId, value: f64) -> bool {
+        let complete = self.queue.push_gesture_edit(config, param_id, value);
+        if complete {
+            if let Some(requester) = self.requester {
+                requester.request_flush();
+            }
+        }
+        complete
     }
 }
 
@@ -119,6 +144,182 @@ const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
 const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
 const VALUE_LABEL_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.value.0;
+const BYPASS_CONTROL_WIDTH: f32 = 148.0;
+
+#[derive(Clone, Debug)]
+struct BypassControlWidget {
+    button: IconButtonWidget,
+    bypassed: bool,
+}
+
+impl BypassControlWidget {
+    fn new(bypassed: bool, automation_active: bool) -> Self {
+        let mut button = IconButtonWidget::new(
+            0,
+            IconName::Power.icon(),
+            WidgetSizing::fixed(Vector2::new(BYPASS_CONTROL_WIDTH, CONTROL_ROW_HEIGHT)),
+        );
+        button.common.state.selected = bypassed;
+        button.common.state.active = !bypassed;
+        button.common.state.automation_active = automation_active;
+        Self { button, bypassed }
+    }
+
+    fn state_text(&self) -> &'static str {
+        BYPASS_LABELS[usize::from(self.bypassed)]
+    }
+}
+
+impl Widget for BypassControlWidget {
+    fn common(&self) -> &WidgetCommon {
+        self.button.common()
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        self.button.common_mut()
+    }
+
+    fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        self.button.handle_input(bounds, input)
+    }
+
+    fn accepts_pointer_move(&self) -> bool {
+        true
+    }
+
+    fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
+        let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        let selected = self.bypassed;
+        let automation_active = self.button.common.state.automation_active;
+        self.button.synchronize_from_previous(&previous.button);
+        self.button.common.state.selected = selected;
+        self.button.common.state.active = !selected;
+        self.button.common.state.automation_active = automation_active;
+    }
+
+    fn capabilities(&self) -> WidgetCapabilities<'_> {
+        WidgetCapabilities::new().semantics(self)
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.button.common.id,
+            rect: bounds,
+            color: if self.bypassed {
+                theme.surface_overlay
+            } else if self.button.common.state.hovered {
+                theme.surface_raised
+            } else {
+                theme.surface_base
+            },
+        }));
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.button.common.id,
+            rect: bounds,
+            color: if self.button.common.state.focused {
+                theme.accent_warning
+            } else if self.bypassed {
+                theme.accent_mint
+            } else {
+                theme.border_emphasis
+            },
+            width: if self.bypassed { 2.0 } else { 1.0 },
+        }));
+        let icon_size = bounds.height().min(16.0);
+        self.button.icon.append_paint(
+            primitives,
+            self.button.common.id,
+            Rect::from_xy_size(
+                bounds.min.x + 10.0,
+                bounds.min.y + (bounds.height() - icon_size) * 0.5,
+                icon_size,
+                icon_size,
+            ),
+        );
+        primitives.push(PaintPrimitive::Text(PaintTextRun {
+            widget_id: self.button.common.id,
+            text: PaintText::from_static(self.state_text()),
+            rect: Rect::from_xy_size(
+                bounds.min.x + 34.0,
+                bounds.min.y,
+                (bounds.width() - 42.0).max(1.0),
+                bounds.height(),
+            ),
+            font_size: PUMP_TYPOGRAPHY.control_label.0,
+            baseline: None,
+            color: theme.text_primary,
+            align: PaintTextAlign::Center,
+            wrap: TextWrap::None,
+        }));
+        if self.bypassed {
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.button.common.id,
+                points: [
+                    Point::new(bounds.min.x + 3.0, bounds.min.y + 4.0),
+                    Point::new(bounds.min.x + 3.0, bounds.max.y - 4.0),
+                ]
+                .into(),
+                color: theme.accent_mint,
+                width: 3.0,
+            }));
+        }
+        if self.button.common.state.focused {
+            primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+                widget_id: self.button.common.id,
+                rect: Rect::from_xy_size(
+                    bounds.min.x + 3.0,
+                    bounds.min.y + 3.0,
+                    (bounds.width() - 6.0).max(1.0),
+                    (bounds.height() - 6.0).max(1.0),
+                ),
+                color: theme.accent_warning,
+                width: 1.0,
+            }));
+        }
+        if self.button.common.state.automation_active {
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.button.common.id,
+                points: [
+                    Point::new(bounds.max.x - 3.0, bounds.min.y + 4.0),
+                    Point::new(bounds.max.x - 3.0, bounds.max.y - 4.0),
+                ]
+                .into(),
+                color: theme.accent_copper,
+                width: 2.0,
+            }));
+        }
+    }
+}
+
+impl WidgetSemantics for BypassControlWidget {
+    fn automation_role(&self) -> AutomationRole {
+        AutomationRole::Button
+    }
+
+    fn automation_label(&self) -> Option<String> {
+        Some("Bypass".to_owned())
+    }
+
+    fn automation_description(&self) -> Option<String> {
+        Some("Crossfade complete Pump output to original dry unity".to_owned())
+    }
+
+    fn automation_value_text(&self) -> Option<String> {
+        Some(self.state_text().to_owned())
+    }
+
+    fn automation_checked(&self) -> Option<bool> {
+        Some(self.bypassed)
+    }
+}
 
 #[derive(Clone, Debug)]
 struct ActionIconButtonWidget {
@@ -406,9 +607,8 @@ enum NumericEntryMessage {
 struct RadiantEditorState {
     params: Arc<PumpParams>,
     status: Arc<GuiStatus>,
-    automation_queue: Arc<AutomationQueue>,
+    host_param_edit_sink: Arc<dyn HostParamEditSink>,
     automation_config: AutomationConfig,
-    host_param_requester: Option<HostParamFlushRequester>,
     #[cfg(test)]
     automation_flush_count: usize,
     active_curve_node: Option<usize>,
@@ -465,6 +665,7 @@ enum RadiantEditorMessage {
     SyncDivision(f32),
     TriggerMode(f32),
     ProcessingMode(f32),
+    ToggleBypass,
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
     NumericEntry(NumericEntryMessage),
@@ -487,6 +688,8 @@ pub(crate) struct RadiantPumpEditor {
     theme: ThemeTokens,
     paint_plan: SurfacePaintPlan,
     viewport: Vector2,
+    bypass_revision: u32,
+    bypass_automation_active: bool,
 }
 
 #[cfg(any(feature = "radiant-gui", feature = "vst3"))]
@@ -495,21 +698,38 @@ impl RadiantPumpEditor {
     pub(crate) fn new(
         params: Arc<PumpParams>,
         status: Arc<GuiStatus>,
-        automation_queue: Arc<AutomationQueue>,
+        automation_queue: Arc<PumpAutomationQueue>,
         host_param_requester: Option<HostParamFlushRequester>,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self::new_with_edit_sink(
+            params,
+            status,
+            Arc::new(ClapHostParamEditSink {
+                queue: automation_queue,
+                requester: host_param_requester,
+            }),
+            width,
+            height,
+        )
+    }
+
+    /// Build a hosted editor with a format-specific UI-thread edit sink.
+    pub(crate) fn new_with_edit_sink(
+        params: Arc<PumpParams>,
+        status: Arc<GuiStatus>,
+        host_param_edit_sink: Arc<dyn HostParamEditSink>,
         width: u32,
         height: u32,
     ) -> Self {
         let theme = pump_theme();
         let viewport = Vector2::new(width.max(1) as f32, height.max(1) as f32);
+        let bypass_revision = params.bypass_revision();
+        let bypass_automation_active = params.bypass_automation_recent();
         Self {
             runtime: EditorSurfaceRuntime::new_declarative(
-                RadiantEditorState::new(
-                    params,
-                    Arc::clone(&status),
-                    automation_queue,
-                    host_param_requester,
-                ),
+                RadiantEditorState::new(params, Arc::clone(&status), host_param_edit_sink),
                 viewport,
                 project_editor_surface,
                 reduce_editor_message,
@@ -518,6 +738,8 @@ impl RadiantPumpEditor {
             paint_plan: SurfacePaintPlan::empty(&theme),
             theme,
             viewport,
+            bypass_revision,
+            bypass_automation_active,
         }
     }
 
@@ -563,10 +785,30 @@ impl RadiantPumpEditor {
         self.status.has_host_beats_timeline()
             || self.status.is_playing()
             || self.status.gain_reduction_needs_redraw()
+            || self
+                .runtime
+                .bridge()
+                .state()
+                .params
+                .bypass_automation_recent()
     }
 
     /// Refresh and return the current backend-neutral paint plan.
     pub(crate) fn paint_plan(&mut self) -> &SurfacePaintPlan {
+        let bypass_revision = self.runtime.bridge().state().params.bypass_revision();
+        let bypass_automation_active = self
+            .runtime
+            .bridge()
+            .state()
+            .params
+            .bypass_automation_recent();
+        if bypass_revision != self.bypass_revision
+            || bypass_automation_active != self.bypass_automation_active
+        {
+            self.bypass_revision = bypass_revision;
+            self.bypass_automation_active = bypass_automation_active;
+            self.runtime.refresh();
+        }
         if self.needs_realtime_redraw() {
             self.runtime.refresh();
         }
@@ -678,7 +920,14 @@ pub(crate) fn radiant_editor_frame_for_params(
     viewport: Vector2,
 ) -> SurfaceFrame {
     EditorSurfaceRuntime::new_declarative(
-        RadiantEditorState::new(params, status, Arc::new(AutomationQueue::default()), None),
+        RadiantEditorState::new(
+            params,
+            status,
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::new(PumpAutomationQueue::default()),
+                requester: None,
+            }),
+        ),
         viewport,
         project_editor_surface,
         reduce_editor_message,
@@ -690,15 +939,13 @@ impl RadiantEditorState {
     fn new(
         params: Arc<PumpParams>,
         status: Arc<GuiStatus>,
-        automation_queue: Arc<AutomationQueue>,
-        host_param_requester: Option<HostParamFlushRequester>,
+        host_param_edit_sink: Arc<dyn HostParamEditSink>,
     ) -> Self {
         Self {
             params,
             status,
-            automation_queue,
+            host_param_edit_sink,
             automation_config: AutomationConfig::default(),
-            host_param_requester,
             #[cfg(test)]
             automation_flush_count: 0,
             active_curve_node: None,
@@ -925,31 +1172,42 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             .fill_height(),
             curve_slot_row(state),
             parameter_deck(state, params, depth, floor, output, smooth),
-            action_icon_button(
-                IconName::History,
-                "Undo",
-                RadiantEditorMessage::Undo,
-                64.0,
-                CONTROL_ROW_HEIGHT,
-            ),
-            action_icon_button(
-                IconName::ChevronRight,
-                "Redo",
-                RadiantEditorMessage::Redo,
-                64.0,
-                CONTROL_ROW_HEIGHT,
-            ),
-            toggle("Snap", state.snap_enabled)
-                .message(RadiantEditorMessage::ToggleSnap)
-                .size(86.0, CONTROL_ROW_HEIGHT),
-            text(format!(
-                "Grid {}  |  {}",
-                sync_division_label(sync),
-                build_version_label()
-            ))
-            .muted_text()
-            .height(CONTROL_ROW_HEIGHT)
-            .fill_width(),
+            row([
+                action_icon_button(
+                    IconName::History,
+                    "Undo",
+                    RadiantEditorMessage::Undo,
+                    64.0,
+                    CONTROL_ROW_HEIGHT,
+                ),
+                action_icon_button(
+                    IconName::ChevronRight,
+                    "Redo",
+                    RadiantEditorMessage::Redo,
+                    64.0,
+                    CONTROL_ROW_HEIGHT,
+                ),
+                toggle("Snap", state.snap_enabled)
+                    .message(RadiantEditorMessage::ToggleSnap)
+                    .size(86.0, CONTROL_ROW_HEIGHT),
+                text(format!(
+                    "Grid {}  |  {}",
+                    sync_division_label(sync),
+                    build_version_label()
+                ))
+                .muted_text()
+                .height(CONTROL_ROW_HEIGHT)
+                .fill_width(),
+                custom_widget_mapped(
+                    BypassControlWidget::new(params.bypassed(), params.bypass_automation_recent()),
+                    move |_: ButtonMessage| RadiantEditorMessage::ToggleBypass,
+                )
+                .width(BYPASS_CONTROL_WIDTH)
+                .height(CONTROL_ROW_HEIGHT),
+            ])
+            .spacing(PUMP_VISUAL_METRICS.space_4)
+            .fill_width()
+            .height(CONTROL_ROW_HEIGHT),
         ])
         .padding(SURFACE_PADDING)
         .spacing(SURFACE_SPACING)
@@ -1194,6 +1452,18 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             state.params.set_mode(value);
             push_radiant_param_update(state, PARAM_MODE_ID, state.params.mode() as f64);
         }
+        RadiantEditorMessage::ToggleBypass => {
+            if try_toggle_bypass(
+                state.params.as_ref(),
+                state.host_param_edit_sink.as_ref(),
+                &state.automation_config,
+            ) {
+                #[cfg(test)]
+                {
+                    state.automation_flush_count += 1;
+                }
+            }
+        }
         RadiantEditorMessage::Curve(message) => {
             state.push_history();
             reduce_curve_message(state, message)
@@ -1364,27 +1634,33 @@ fn apply_numeric_entry_value(
 /// reducer can coalesce these into one host gesture without changing the queue
 /// contract here.
 fn push_radiant_param_update(state: &mut RadiantEditorState, param_id: ClapId, value: f64) {
-    let begin = state
-        .automation_queue
-        .push_gesture_begin(&state.automation_config, param_id);
-    let value = state
-        .automation_queue
-        .push_value(&state.automation_config, param_id, value);
-    let end = state
-        .automation_queue
-        .push_gesture_end(&state.automation_config, param_id);
-    if [begin, value, end]
-        .into_iter()
-        .all(|status| status == AutomationEnqueueStatus::Enqueued)
+    if state
+        .host_param_edit_sink
+        .edit(&state.automation_config, param_id, value)
     {
         #[cfg(test)]
         {
             state.automation_flush_count += 1;
         }
-        if let Some(requester) = state.host_param_requester {
-            requester.request_flush();
-        }
     }
+}
+
+/// Ask the host to accept the next bypass value before changing shared state.
+pub(crate) fn try_toggle_bypass(
+    params: &PumpParams,
+    sink: &dyn HostParamEditSink,
+    config: &AutomationConfig,
+) -> bool {
+    let value = if params.bypassed() {
+        BYPASS_ACTIVE_VALUE
+    } else {
+        BYPASS_BYPASSED_VALUE
+    };
+    if !sink.edit(config, PARAM_BYPASS_ID, value as f64) {
+        return false;
+    }
+    params.set_bypass(value);
+    true
 }
 
 fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMessage) {
@@ -3638,13 +3914,16 @@ mod tests {
     use radiant::widgets::PointerModifiers;
     use toybox::clack_plugin::events::io::EventBuffer;
     use toybox::clack_plugin::events::spaces::CoreEventSpace;
+    use toybox::clap::automation::{AutomationDropPolicy, AutomationQueueConfig};
 
     fn editor_state(params: Arc<PumpParams>) -> RadiantEditorState {
         RadiantEditorState::new(
             params,
             Arc::new(GuiStatus::default()),
-            Arc::new(AutomationQueue::default()),
-            None,
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::new(PumpAutomationQueue::default()),
+                requester: None,
+            }),
         )
     }
 
@@ -3725,6 +4004,97 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bypass_control_supports_pointer_keyboard_and_explicit_semantics() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, BYPASS_CONTROL_WIDTH, CONTROL_ROW_HEIGHT);
+        let mut active = BypassControlWidget::new(false, false);
+        assert_eq!(active.automation_label().as_deref(), Some("Bypass"));
+        assert_eq!(active.automation_value_text().as_deref(), Some("ACTIVE"));
+        assert_eq!(active.automation_checked(), Some(false));
+
+        assert!(active
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: Point::new(8.0, 8.0),
+                    button: PointerButton::Primary,
+                    modifiers: Default::default(),
+                },
+            )
+            .is_none());
+        assert!(active
+            .handle_input(
+                bounds,
+                WidgetInput::PointerRelease {
+                    position: Point::new(8.0, 8.0),
+                    button: PointerButton::Primary,
+                    modifiers: Default::default(),
+                },
+            )
+            .is_some());
+
+        for key in [WidgetKey::Enter, WidgetKey::Space] {
+            let mut keyboard = BypassControlWidget::new(false, false);
+            let _ = keyboard.handle_input(bounds, WidgetInput::FocusChanged(true));
+            assert!(keyboard
+                .handle_input(bounds, WidgetInput::KeyPress(key))
+                .is_some());
+        }
+
+        let bypassed = BypassControlWidget::new(true, true);
+        assert_eq!(
+            bypassed.automation_value_text().as_deref(),
+            Some("BYPASSED")
+        );
+        assert_eq!(bypassed.automation_checked(), Some(true));
+        assert!(bypassed.common().state.selected);
+        assert!(bypassed.common().state.automation_active);
+    }
+
+    #[test]
+    fn bypass_control_paints_non_color_selected_focus_and_automation_cues() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, BYPASS_CONTROL_WIDTH, CONTROL_ROW_HEIGHT);
+        let mut widget = BypassControlWidget::new(true, true);
+        widget.common_mut().state.focused = true;
+        let mut primitives = Vec::new();
+        widget.append_paint(
+            &mut primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &pump_theme(),
+        );
+
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::Text(text) if text.text.as_str() == "BYPASSED"
+            )
+        }));
+        let vertical_markers = primitives
+            .iter()
+            .filter(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::StrokePolyline(marker)
+                        if marker.points.len() == 2
+                            && (marker.points[0].x - marker.points[1].x).abs() < f32::EPSILON
+                )
+            })
+            .count();
+        assert_eq!(
+            vertical_markers, 2,
+            "selected and automation states need independent structural markers"
+        );
+        assert!(
+            primitives
+                .iter()
+                .filter(|primitive| matches!(primitive, PaintPrimitive::StrokeRect(_)))
+                .count()
+                >= 2,
+            "focused state needs a second structural outline"
+        );
     }
 
     #[test]
@@ -3855,12 +4225,14 @@ mod tests {
     #[test]
     fn radiant_editor_reduces_slider_messages_to_params() {
         let params = Arc::new(PumpParams::new());
-        let queue = Arc::new(AutomationQueue::default());
+        let queue = Arc::new(PumpAutomationQueue::default());
         let mut state = RadiantEditorState::new(
             Arc::clone(&params),
             Arc::new(GuiStatus::default()),
-            Arc::clone(&queue),
-            None,
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            }),
         );
 
         reduce_editor_message(&mut state, RadiantEditorMessage::Mix(0.25));
@@ -3907,6 +4279,109 @@ mod tests {
                 PARAM_MODE_ID,
             ]
         );
+    }
+
+    #[test]
+    fn bypass_reducer_emits_complete_clap_gesture_and_stays_out_of_undo_history() {
+        let params = Arc::new(PumpParams::new());
+        let queue = Arc::new(PumpAutomationQueue::default());
+        let mut state = RadiantEditorState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            }),
+        );
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::ToggleBypass);
+        assert!(params.bypassed());
+        assert!(state.undo_history.is_empty());
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert!(params.bypassed(), "undo must never alter host bypass");
+
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        let stats = queue.drain_to_output(&mut output, &mut scratch);
+        assert_eq!(stats.attempted, 3);
+        let value = (0..buffer.len()).find_map(|index| {
+            match buffer.get(index as u32)?.as_core_event()? {
+                CoreEventSpace::ParamValue(value) => Some((value.param_id(), value.value())),
+                _ => None,
+            }
+        });
+        assert_eq!(value, Some((Some(PARAM_BYPASS_ID), 1.0)));
+    }
+
+    #[test]
+    fn bypass_reducer_keeps_state_active_when_clap_gesture_cannot_fit() {
+        let params = Arc::new(PumpParams::new());
+        let queue = Arc::new(PumpAutomationQueue::with_config(
+            AutomationQueueConfig::new(3, AutomationDropPolicy::DropNewest),
+        ));
+        let config = AutomationConfig::default();
+        assert_eq!(
+            queue.push_value(&config, PARAM_MIX_ID, 0.25),
+            toybox::clap::automation::AutomationEnqueueStatus::Enqueued
+        );
+        let mut state = RadiantEditorState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            }),
+        );
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::ToggleBypass);
+
+        assert!(!params.bypassed());
+        assert_eq!(state.automation_flush_count, 0);
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::with_capacity(3);
+        let stats = queue.drain_to_output(&mut output, &mut scratch);
+        assert_eq!(stats.attempted, 1);
+        assert_eq!(buffer.len(), 1);
+    }
+
+    #[test]
+    fn hosted_editor_reprojects_host_bypass_and_recent_automation_state() {
+        let params = Arc::new(PumpParams::new());
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        let active_plan = editor.paint_plan().clone();
+        assert!(active_plan.primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::Text(text) if text.text.as_str() == "ACTIVE"
+            )
+        }));
+
+        crate::params::apply_param_event(params.as_ref(), PARAM_BYPASS_ID, 1.0);
+        let bypassed_plan = editor.paint_plan();
+        assert!(bypassed_plan.primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::Text(text) if text.text.as_str() == "BYPASSED"
+            )
+        }));
+        assert!(bypassed_plan.primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(marker)
+                    if marker.points.len() == 2
+                        && (marker.points[0].x - marker.points[1].x).abs() < f32::EPSILON
+                        && marker.width == 2.0
+            )
+        }));
     }
 
     #[test]
@@ -6568,7 +7043,7 @@ mod tests {
         let mut editor = RadiantPumpEditor::new(
             params,
             Arc::clone(&status),
-            Arc::new(AutomationQueue::default()),
+            Arc::new(PumpAutomationQueue::default()),
             None,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
@@ -6627,7 +7102,7 @@ mod tests {
         let mut editor = RadiantPumpEditor::new(
             Arc::clone(&params),
             Arc::clone(&status),
-            Arc::new(AutomationQueue::default()),
+            Arc::new(PumpAutomationQueue::default()),
             None,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,

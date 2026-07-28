@@ -401,7 +401,9 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             runtime.set_sample_rate(sample_rate.into(), self.shared.params.as_ref());
         }
         if pending.processing_reset {
-            runtime.engine.reset();
+            runtime
+                .engine
+                .reset_with_bypass(self.shared.params.bypassed());
         }
         if pending.state_restored {
             runtime
@@ -633,7 +635,7 @@ impl IProcessContextRequirementsTrait for PumpVst3Processor {
 #[cfg(test)]
 mod parameter_automation_tests {
     use super::*;
-    use crate::params::PARAM_SYNC_DIVISION_NUM;
+    use crate::params::{PARAM_BYPASS_NUM, PARAM_SYNC_DIVISION_NUM};
 
     #[test]
     fn vst3_points_share_offset_clamping_ordering_and_step_conversion() {
@@ -658,6 +660,12 @@ mod parameter_automation_tests {
             99,
             to_normalized(PARAM_MIX_NUM, 0.8),
         );
+        schedule_vst3_param_point(
+            &mut schedule,
+            PARAM_BYPASS_NUM,
+            3,
+            to_normalized(PARAM_BYPASS_NUM, 1.0),
+        );
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
 
@@ -666,6 +674,8 @@ mod parameter_automation_tests {
         assert!((params.mix() - 1.0).abs() < f32::EPSILON);
         schedule.apply_through(4, &params, &mut settings);
         assert!((params.mix() - 0.4).abs() < 1.0e-6);
+        assert!(params.bypassed());
+        assert!(settings.bypassed);
         schedule.apply_remaining(&params, &mut settings);
         assert!((params.mix() - 0.8).abs() < 1.0e-6);
     }

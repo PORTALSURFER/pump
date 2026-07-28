@@ -170,7 +170,11 @@ impl<'a> PumpAudioProcessor<'a> {
 
         Ok(Self {
             shared,
-            engine: PumpEngine::new(audio_config.sample_rate as f32, curve),
+            engine: PumpEngine::new_with_bypass(
+                audio_config.sample_rate as f32,
+                curve,
+                shared.params.bypassed(),
+            ),
             last_curve_revision: shared.params.curve_revision(),
             scratch_left,
             scratch_right,
@@ -394,7 +398,7 @@ impl PumpAudioProcessor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{PARAM_MIX_ID, TRIGGER_MODE_SIDECHAIN};
+    use crate::params::{PARAM_BYPASS_ID, PARAM_MIX_ID, TRIGGER_MODE_SIDECHAIN};
     use crate::test_alloc::assert_no_alloc;
     use toybox::clack_plugin::events::event_types::ParamValueEvent;
     use toybox::clack_plugin::events::io::{OutputEventBuffer, TryPushError};
@@ -407,7 +411,7 @@ mod tests {
         PumpShared {
             params: Arc::new(PumpParams::new()),
             status: Arc::new(GuiStatus::default()),
-            automation_queue: Arc::new(AutomationQueue::default()),
+            automation_queue: Arc::new(PumpAutomationQueue::default()),
         }
     }
 
@@ -501,6 +505,40 @@ mod tests {
         for (left, right) in left_output.iter().zip(right_output) {
             assert!((right + 2.0 * left).abs() < 1.0e-6);
         }
+    }
+
+    #[test]
+    fn maximum_block_with_sample_dense_bypass_retargets_without_allocations_or_locks() {
+        const FRAMES: usize = 512;
+        let shared = shared();
+        let mut processor = processor(&shared, FRAMES as u32);
+        processor.param_schedule.begin_block(FRAMES);
+        for frame in 0..FRAMES {
+            assert!(processor.param_schedule.push_bounded(
+                frame as i64,
+                PARAM_BYPASS_ID,
+                (frame & 1) as f32,
+            ));
+        }
+        processor.param_schedule.prepare();
+        let mut settings = dsp_settings_from_params(shared.params.as_ref());
+        let left_input = [0.25; FRAMES];
+        let right_input = [-0.5; FRAMES];
+        let mut left_output = [0.0; FRAMES];
+        let mut right_output = [0.0; FRAMES];
+
+        assert_no_alloc(|| {
+            processor.process_stereo_pair(
+                ChannelPair::InputOutput(&left_input, &mut left_output),
+                ChannelPair::InputOutput(&right_input, &mut right_output),
+                &mut settings,
+                TransportState::default(),
+                false,
+            );
+        });
+
+        assert!(left_output.iter().all(|sample| sample.is_finite()));
+        assert!(right_output.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]

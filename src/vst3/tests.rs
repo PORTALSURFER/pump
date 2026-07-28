@@ -1,6 +1,55 @@
 use super::*;
 use std::mem;
 use std::ptr;
+use std::sync::Mutex as StdMutex;
+
+#[derive(Clone, Debug, PartialEq)]
+enum RecordedEditCall {
+    Begin(ParamID),
+    Perform(ParamID, ParamValue),
+    End(ParamID),
+}
+
+struct RecordingComponentHandler {
+    calls: Arc<StdMutex<Vec<RecordedEditCall>>>,
+    begin_result: tresult,
+    perform_result: tresult,
+    end_result: tresult,
+}
+
+impl Class for RecordingComponentHandler {
+    type Interfaces = (IComponentHandler,);
+}
+
+impl IComponentHandlerTrait for RecordingComponentHandler {
+    unsafe fn beginEdit(&self, id: ParamID) -> tresult {
+        self.calls
+            .lock()
+            .expect("recording handler lock")
+            .push(RecordedEditCall::Begin(id));
+        self.begin_result
+    }
+
+    unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
+        self.calls
+            .lock()
+            .expect("recording handler lock")
+            .push(RecordedEditCall::Perform(id, value));
+        self.perform_result
+    }
+
+    unsafe fn endEdit(&self, id: ParamID) -> tresult {
+        self.calls
+            .lock()
+            .expect("recording handler lock")
+            .push(RecordedEditCall::End(id));
+        self.end_result
+    }
+
+    unsafe fn restartComponent(&self, _flags: i32) -> tresult {
+        kResultOk
+    }
+}
 
 struct StereoProcessFixture {
     process_data: ProcessData,
@@ -63,7 +112,200 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 9);
+    assert_eq!(count, 10);
+}
+
+#[test]
+fn controller_marks_only_appended_bypass_as_stepped_host_bypass() {
+    let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
+    let mut info: ParameterInfo = unsafe { mem::zeroed() };
+    assert_eq!(
+        unsafe { controller.getParameterInfo(9, &mut info) },
+        kResultOk
+    );
+    assert_eq!(info.id, crate::params::PARAM_BYPASS_NUM);
+    assert_eq!(info.stepCount, 1);
+    assert_eq!(info.defaultNormalizedValue, 0.0);
+    assert_ne!(
+        info.flags & ParameterInfo_::ParameterFlags_::kCanAutomate,
+        0
+    );
+    assert_ne!(info.flags & ParameterInfo_::ParameterFlags_::kIsBypass, 0);
+
+    let mut preceding: ParameterInfo = unsafe { mem::zeroed() };
+    assert_eq!(
+        unsafe { controller.getParameterInfo(8, &mut preceding) },
+        kResultOk
+    );
+    assert_eq!(preceding.id, crate::params::PARAM_MODE_NUM);
+    assert_eq!(
+        preceding.flags & ParameterInfo_::ParameterFlags_::kIsBypass,
+        0
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_delivers_begin_value_end_on_component_handler() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+    assert!(crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM),
+            RecordedEditCall::Perform(crate::params::PARAM_BYPASS_NUM, 1.0),
+            RecordedEditCall::End(crate::params::PARAM_BYPASS_NUM),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_keeps_bypass_state_when_component_handler_is_missing() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(!crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(!shared.params.bypassed());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_keeps_bypass_state_when_component_handler_rejects_edit() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultFalse,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(!crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(!shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM),
+            RecordedEditCall::Perform(crate::params::PARAM_BYPASS_NUM, 1.0),
+            RecordedEditCall::End(crate::params::PARAM_BYPASS_NUM),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_short_circuits_when_component_handler_rejects_begin() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultFalse,
+        perform_result: kResultOk,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(!crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(!shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM)]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_commits_accepted_value_when_component_handler_rejects_end() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultFalse,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM),
+            RecordedEditCall::Perform(crate::params::PARAM_BYPASS_NUM, 1.0),
+            RecordedEditCall::End(crate::params::PARAM_BYPASS_NUM),
+        ]
+    );
 }
 
 #[test]

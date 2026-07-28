@@ -82,6 +82,8 @@ if [[ "${want_screenshots}" == "1" ]]; then
     target/ui-screenshots/pump/pump-default-912x684-dpi-1_25.png
     target/ui-screenshots/pump/pump-components-states-720x360-1x.png
     target/ui-screenshots/pump/pump-components-states-720x360-2x.png
+    target/ui-screenshots/pump/pump-bypass-active-912x684.png
+    target/ui-screenshots/pump/pump-bypass-bypassed-912x684.png
   )
   for capture in "${required_captures[@]}"; do
     if [[ ! -f "${capture}" ]]; then

@@ -2,6 +2,7 @@
 
 use std::{fs, path::PathBuf, sync::Arc};
 
+use crate::automation_queue::PumpAutomationQueue;
 use image::{ColorType, ImageFormat};
 use radiant::{
     gui::{
@@ -19,7 +20,6 @@ use radiant::{
         WidgetState,
     },
 };
-use toybox::clap::automation::AutomationQueue;
 
 use super::visual_system::{pump_meter_colors, pump_theme, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS};
 use super::{
@@ -42,6 +42,16 @@ fn screenshot_root() -> PathBuf {
 }
 
 fn render_case(name: &str, width: u32, height: u32, dpi: DpiScale) -> (SurfacePaintPlan, Vec<u8>) {
+    render_case_with_bypass(name, width, height, dpi, false)
+}
+
+fn render_case_with_bypass(
+    name: &str,
+    width: u32,
+    height: u32,
+    dpi: DpiScale,
+    bypassed: bool,
+) -> (SurfacePaintPlan, Vec<u8>) {
     let store_path = std::env::temp_dir().join(format!(
         "pump-opt1122-screenshot-slots-{}-{}.bin",
         std::process::id(),
@@ -49,13 +59,14 @@ fn render_case(name: &str, width: u32, height: u32, dpi: DpiScale) -> (SurfacePa
     ));
     let (plan, pixels) = with_test_curve_slot_path(store_path.clone(), || {
         let params = Arc::new(PumpParams::new());
+        params.set_bypass(f32::from(bypassed));
         for (index, seed) in quick_slot_seeds().iter().take(6).enumerate() {
             assert!(params.set_global_curve_slot_curve(index, &seed.curve));
         }
         let mut editor = RadiantPumpEditor::new(
             params,
             Arc::new(GuiStatus::default()),
-            Arc::new(AutomationQueue::default()),
+            Arc::new(PumpAutomationQueue::default()),
             None,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
@@ -679,6 +690,36 @@ fn pump_editor_screenshots_cover_supported_sizes_and_fractional_scale() {
     );
     assert_layout_contract(&fractional_plan, WINDOW_WIDTH, WINDOW_HEIGHT);
     assert!(!fractional_pixels.is_empty());
+}
+
+#[test]
+fn pump_editor_screenshots_capture_explicit_active_and_bypassed_states() {
+    let (active, _) = render_case_with_bypass(
+        "pump-bypass-active-912x684",
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        DpiScale::ONE,
+        false,
+    );
+    let (bypassed, _) = render_case_with_bypass(
+        "pump-bypass-bypassed-912x684",
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        DpiScale::ONE,
+        true,
+    );
+    assert!(active.primitives.iter().any(|primitive| {
+        matches!(
+            primitive,
+            PaintPrimitive::Text(text) if text.text.as_str() == "ACTIVE"
+        )
+    }));
+    assert!(bypassed.primitives.iter().any(|primitive| {
+        matches!(
+            primitive,
+            PaintPrimitive::Text(text) if text.text.as_str() == "BYPASSED"
+        )
+    }));
 }
 
 #[test]

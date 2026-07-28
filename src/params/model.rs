@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 11;
+pub(crate) const STATE_VERSION: u32 = 12;
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
@@ -27,6 +27,8 @@ pub const PARAM_TRIGGER_MODE_NUM: u32 = 7;
 pub const PARAM_SMOOTH_NUM: u32 = 8;
 /// Host-visible numeric parameter id for the processing mode.
 pub const PARAM_MODE_NUM: u32 = 9;
+/// Host-visible numeric parameter id for click-safe host bypass.
+pub const PARAM_BYPASS_NUM: u32 = 10;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
@@ -46,6 +48,17 @@ pub const PARAM_TRIGGER_MODE_ID: ClapId = ClapId::new(PARAM_TRIGGER_MODE_NUM);
 pub const PARAM_SMOOTH_ID: ClapId = ClapId::new(PARAM_SMOOTH_NUM);
 /// Parameter id for the processing mode.
 pub const PARAM_MODE_ID: ClapId = ClapId::new(PARAM_MODE_NUM);
+/// Parameter id for click-safe host bypass.
+pub const PARAM_BYPASS_ID: ClapId = ClapId::new(PARAM_BYPASS_NUM);
+
+/// Plain host value for active processing.
+pub const BYPASS_ACTIVE_VALUE: f32 = 0.0;
+/// Plain host value for bypassed processing.
+pub const BYPASS_BYPASSED_VALUE: f32 = 1.0;
+/// Human-readable bypass labels.
+pub const BYPASS_LABELS: [&str; 2] = ["ACTIVE", "BYPASSED"];
+/// Duration of the GUI's recent host-automation cue.
+pub const BYPASS_AUTOMATION_CUE_MICROS: u64 = 250_000;
 
 /// Host-synchronised curve triggering.
 pub const TRIGGER_MODE_HOST: usize = 0;
@@ -392,6 +405,9 @@ pub struct PumpParams {
     pub(super) trigger_mode: AtomicU32,
     pub(super) smooth: AtomicF32,
     pub(super) mode: AtomicU32,
+    pub(super) bypass: AtomicBool,
+    pub(super) bypass_revision: AtomicU32,
+    pub(super) bypass_last_automation_micros: AtomicU64,
     pub(super) editable_curve: RwLock<EditableCurve>,
     pub(super) curve: [AtomicF32; CURVE_TABLE_LEN],
     pub(super) curve_revision: AtomicU32,

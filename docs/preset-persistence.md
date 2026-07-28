@@ -5,6 +5,17 @@ rename, full-bank replacement, legacy preset quick-slot updates, and selected
 index changes are staged in a cloned bank. Pump writes that candidate bank with
 the atomic temporary-file replacement path before changing runtime state.
 
+## Host bypass is project state, not preset state
+
+The host-visible `Bypass` parameter is excluded from `PumpPreset`, the
+persisted preset bank, preset dirty comparisons, editor undo/redo history, and
+every preset load/save operation. Loading or saving a Pump preset therefore
+never changes whether the plug-in is active or bypassed.
+
+Bypass is stored only in the host project-state payload (v12 and newer).
+Project states from v2 through v11 migrate to `ACTIVE`, keeping host bypass
+automation and session restoration authoritative during preset auditioning.
+
 If directory creation, temporary-file writing, or final rename fails, Pump:
 
 - returns `PresetMutationError::PersistenceFailed` to the caller;

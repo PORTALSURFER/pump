@@ -4,6 +4,8 @@ pub const MAX_SYNC_DIVISION: f32 = (SYNC_DIVISIONS.len() - 1) as f32;
 
 const AUTO: u32 = ParamInfoFlags::IS_AUTOMATABLE.bits();
 const AUTO_ENUM: u32 = AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags::IS_ENUM.bits();
+const AUTO_BYPASS: u32 =
+    AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags::IS_BYPASS.bits();
 
 #[derive(Copy, Clone)]
 struct ParamDef {
@@ -39,7 +41,11 @@ impl ParamDef {
             builder = builder.enumerated();
         }
 
-        builder.build()
+        let mut spec = builder.build();
+        if flags.contains(ParamInfoFlags::IS_BYPASS) {
+            spec.flags |= ParamInfoFlags::IS_BYPASS;
+        }
+        spec
     }
 }
 
@@ -58,9 +64,11 @@ pub struct Vst3ParamInfo {
     pub step_count: i32,
     /// Default value in normalized `[0.0, 1.0]` space.
     pub default_normalized: f64,
+    /// Whether the VST3 host should treat this parameter as its bypass control.
+    pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 9] = [
+const PARAM_DEFS: [ParamDef; 10] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -196,6 +204,21 @@ const PARAM_DEFS: [ParamDef; 9] = [
         default_value: PROCESSING_MODE_CLASSIC as f64,
         flags: AUTO_ENUM,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_BYPASS_NUM,
+        id: PARAM_BYPASS_ID,
+        name: "Bypass",
+        #[cfg(feature = "vst3")]
+        short_name: "Bypass",
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Pump",
+        min_value: BYPASS_ACTIVE_VALUE as f64,
+        max_value: BYPASS_BYPASSED_VALUE as f64,
+        default_value: BYPASS_ACTIVE_VALUE as f64,
+        flags: AUTO_BYPASS,
+    },
 ];
 
 #[cfg(feature = "vst3")]
@@ -248,7 +271,7 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
     let plain = normalized_to_plain(normalized, def.min_value, def.max_value);
     if matches!(
         param_id,
-        PARAM_SYNC_DIVISION_ID | PARAM_TRIGGER_MODE_ID | PARAM_MODE_ID
+        PARAM_SYNC_DIVISION_ID | PARAM_TRIGGER_MODE_ID | PARAM_MODE_ID | PARAM_BYPASS_ID
     ) {
         return Some(plain.round());
     }
@@ -273,12 +296,21 @@ pub fn vst3_param_info_for_index(index: i32) -> Option<Vst3ParamInfo> {
         units: def.units,
         step_count: vst3_step_count(def),
         default_normalized: normalized_from_plain_value(def.id, def.default_value)?,
+        is_bypass: ParamInfoFlags::from_bits_truncate(def.flags)
+            .contains(ParamInfoFlags::IS_BYPASS),
     })
 }
 
 /// Return the number of host-visible scalar parameters.
 pub fn param_count() -> u32 {
     PARAM_DEFS.len() as u32
+}
+
+#[cfg(test)]
+pub(crate) fn param_flags_for_index(index: usize) -> Option<ParamInfoFlags> {
+    PARAM_DEFS
+        .get(index)
+        .map(|def| ParamInfoFlags::from_bits_truncate(def.flags))
 }
 
 /// Write parameter metadata for a host parameter index.
@@ -301,6 +333,7 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_TRIGGER_MODE_ID => Some(params.trigger_mode() as f64),
         PARAM_SMOOTH_ID => Some(params.smooth() as f64),
         PARAM_MODE_ID => Some(params.mode() as f64),
+        PARAM_BYPASS_ID => Some(params.bypass_value() as f64),
         _ => None,
     }
 }
@@ -319,6 +352,7 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         PARAM_TRIGGER_MODE_ID => params.set_trigger_mode(value as f32),
         PARAM_SMOOTH_ID => params.set_smooth(value as f32),
         PARAM_MODE_ID => params.set_mode(value as f32),
+        PARAM_BYPASS_ID => params.set_bypass_from_host(value as f32),
         _ => return false,
     }
     true
@@ -397,6 +431,9 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
         PARAM_MODE_ID => PROCESSING_MODE_LABELS
             .get(clamp_processing_mode(value as f32))
             .map(|label| (*label).to_string()),
+        PARAM_BYPASS_ID => BYPASS_LABELS
+            .get(value.round().clamp(0.0, 1.0) as usize)
+            .map(|label| (*label).to_string()),
         _ => None,
     }
 }
@@ -458,6 +495,18 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
                     raw.parse::<f64>()
                         .ok()
                         .map(|value| clamp_processing_mode(value as f32) as f64)
+                })
+        }
+        PARAM_BYPASS_ID => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            BYPASS_LABELS
+                .iter()
+                .position(|label| label.to_ascii_lowercase() == normalized)
+                .map(|index| index as f64)
+                .or_else(|| {
+                    raw.parse::<f64>()
+                        .ok()
+                        .map(|value| value.round().clamp(0.0, 1.0))
                 })
         }
         _ => None,

@@ -1,4 +1,40 @@
 use super::*;
+
+pub(super) struct Vst3HostParamEditSink {
+    pub(super) shared: Arc<PumpVst3Shared>,
+}
+
+impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
+    fn edit(
+        &self,
+        config: &toybox::clap::automation::AutomationConfig,
+        param_id: toybox::clack_plugin::utils::ClapId,
+        value: f64,
+    ) -> bool {
+        if !config.is_enabled(param_id) {
+            return false;
+        }
+        let Some(normalized) = normalized_from_plain_value(param_id, value) else {
+            return false;
+        };
+        let Ok(handler) = self.shared.component_handler.lock() else {
+            return false;
+        };
+        let Some(handler) = handler.as_ref() else {
+            return false;
+        };
+        let id = param_id.get();
+        unsafe {
+            if handler.beginEdit(id) != kResultOk {
+                return false;
+            }
+            let performed = handler.performEdit(id, normalized) == kResultOk;
+            let _ended = handler.endEdit(id);
+            performed
+        }
+    }
+}
+
 pub(super) struct PumpVst3GuiAdapter {
     radiant_gui: toybox::radiant_gui::RadiantHostedGui,
 }
@@ -13,11 +49,12 @@ pub(super) struct ShortcutModifiers {
 
 impl PumpVst3GuiAdapter {
     pub(super) fn new(shared: Arc<PumpVst3Shared>) -> Self {
-        let editor = crate::gui::RadiantPumpEditor::new(
+        let editor = crate::gui::RadiantPumpEditor::new_with_edit_sink(
             Arc::clone(&shared.params),
             Arc::clone(&shared.status),
-            Arc::clone(&shared.automation_queue),
-            None,
+            Arc::new(Vst3HostParamEditSink {
+                shared: Arc::clone(&shared),
+            }),
             crate::gui::WINDOW_WIDTH,
             crate::gui::WINDOW_HEIGHT,
         );

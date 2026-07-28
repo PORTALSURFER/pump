@@ -72,6 +72,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         };
         let transport = TransportState {
             tempo_bpm: 128.0,
@@ -95,6 +96,7 @@ mod tests {
             trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
             mode: crate::params::PROCESSING_MODE_CLASSIC,
+            bypassed: false,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
