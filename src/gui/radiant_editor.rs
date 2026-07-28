@@ -44,7 +44,7 @@ use crate::params::{
     BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS, GLOBAL_CURVE_SLOT_COUNT,
     MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_DEPTH_DB, MIN_FLOOR_DB,
     MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID,
-    PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID,
+    PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SWING_ID,
     PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID, PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS,
     TRIGGER_MODE_SIDECHAIN,
 };
@@ -53,7 +53,7 @@ use crate::GuiStatus;
 use super::visual_system::{pump_meter_colors, pump_theme, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS};
 #[cfg(test)]
 use super::WINDOW_HEIGHT;
-use super::{build_version_label, snap_curve_time_to_beat_grid, WINDOW_WIDTH};
+use super::{build_version_label, snap_curve_time_to_beat_grid_with_swing, WINDOW_WIDTH};
 
 /// Main-thread CLAP parameter flush callback retained by the hosted editor.
 #[derive(Clone, Copy)]
@@ -477,6 +477,7 @@ impl ActiveCurveNodeDrag {
         modifiers: CurvePointDragModifiers,
         sync_division: usize,
         curve_width: f32,
+        swing: f32,
         current: CurveNode,
     ) -> CurveNode {
         self.last_pointer_x = target.x;
@@ -495,7 +496,12 @@ impl ActiveCurveNodeDrag {
                 .clamp(0.0, 1.0),
         };
         if modifiers.command_held && self.vertical_time_anchor.is_none() && !suppress_command_snap {
-            effective.x = snap_curve_time_to_beat_grid(sync_division, curve_width, effective.x);
+            effective.x = snap_curve_time_to_beat_grid_with_swing(
+                sync_division,
+                curve_width,
+                effective.x,
+                swing,
+            );
         }
         effective
     }
@@ -529,6 +535,7 @@ enum NumericEntryTarget {
     Phase,
     OutputGain,
     Smooth,
+    Swing,
 }
 
 impl NumericEntryTarget {
@@ -540,6 +547,7 @@ impl NumericEntryTarget {
             Self::Phase => PARAM_PHASE_OFFSET_ID,
             Self::OutputGain => PARAM_OUTPUT_GAIN_ID,
             Self::Smooth => PARAM_SMOOTH_ID,
+            Self::Swing => PARAM_SWING_ID,
         }
     }
 
@@ -551,6 +559,7 @@ impl NumericEntryTarget {
             Self::Phase => "Phase",
             Self::OutputGain => "Output",
             Self::Smooth => "Smooth",
+            Self::Swing => "Swing",
         }
     }
 
@@ -562,6 +571,7 @@ impl NumericEntryTarget {
             Self::Phase => "numeric-entry-phase",
             Self::OutputGain => "numeric-entry-output",
             Self::Smooth => "numeric-entry-smooth",
+            Self::Swing => "numeric-entry-swing",
         }
     }
 
@@ -573,6 +583,7 @@ impl NumericEntryTarget {
             Self::Phase => params.phase_offset() as f64,
             Self::OutputGain => params.output_gain_db() as f64,
             Self::Smooth => params.smooth() as f64,
+            Self::Swing => params.swing() as f64,
         }
     }
 }
@@ -635,6 +646,7 @@ struct RadiantEditorState {
 struct RadiantHistorySnapshot {
     mix: f32,
     smooth: f32,
+    swing: f32,
     depth_db: f32,
     floor_db: f32,
     phase_offset: f32,
@@ -662,6 +674,7 @@ enum RadiantEditorMessage {
     Phase(f32),
     OutputGain(f32),
     Smooth(f32),
+    Swing(f32),
     SyncDivision(f32),
     TriggerMode(f32),
     ProcessingMode(f32),
@@ -973,6 +986,7 @@ impl RadiantEditorState {
         RadiantHistorySnapshot {
             mix: self.params.mix(),
             smooth: self.params.smooth(),
+            swing: self.params.swing(),
             depth_db: self.params.depth_db(),
             floor_db: self.params.floor_db(),
             phase_offset: self.params.phase_offset(),
@@ -994,6 +1008,7 @@ impl RadiantEditorState {
     fn restore(&self, snapshot: &RadiantHistorySnapshot) {
         self.params.set_mix(snapshot.mix);
         self.params.set_smooth(snapshot.smooth);
+        self.params.set_swing(snapshot.swing);
         self.params.set_depth_db(snapshot.depth_db);
         self.params.set_floor_db(snapshot.floor_db);
         self.params.set_phase_offset(snapshot.phase_offset);
@@ -1028,6 +1043,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         .unwrap_or_else(|| params.editable_curve_snapshot());
     let output = params.output_gain_db();
     let smooth = params.smooth();
+    let swing = params.swing();
     let depth = params.depth_db();
     let floor = params.floor_db();
     let sync = params.sync_division();
@@ -1051,35 +1067,62 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             RadiantEditorMessage::PresetSelect(index),
         );
     }
+    let sync_control = enum_control_row(
+        "Sync",
+        sync_division_label(sync).to_string(),
+        normalize_sync_division(sync),
+        RadiantEditorMessage::SyncDivision,
+    );
+    let swing_control = slider_control_row(
+        "Swing",
+        value_label_node(
+            NumericEntryTarget::Swing,
+            format!("{:.0}%", swing * 100.0),
+            state.numeric_entry.as_ref(),
+        ),
+        swing,
+        RadiantEditorMessage::Swing,
+    );
+    let trigger_control = enum_control_row(
+        "Trigger",
+        if state.status.sidechain_available() {
+            TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
+        } else if params.trigger_mode() == TRIGGER_MODE_SIDECHAIN {
+            "Sidechain (unavailable)".to_string()
+        } else {
+            TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
+        },
+        params.trigger_mode() as f32,
+        RadiantEditorMessage::TriggerMode,
+    );
+    let mode_control = enum_control_row(
+        "Mode",
+        PROCESSING_MODE_LABELS[params.mode()].to_string(),
+        params.mode() as f32,
+        RadiantEditorMessage::ProcessingMode,
+    );
+    // Keep the full-width labels and value cells readable at the minimum host
+    // size by placing the four timing controls in a compact 2x2 deck beside
+    // the preset selector instead of forcing them into one overflowing row.
+    let timing_controls = column([
+        row([sync_control, swing_control])
+            .spacing(PUMP_VISUAL_METRICS.space_4)
+            .fill_width()
+            .height(PRESET_TIMING_HEIGHT * 0.5),
+        row([trigger_control, mode_control])
+            .spacing(PUMP_VISUAL_METRICS.space_4)
+            .fill_width()
+            .height(PRESET_TIMING_HEIGHT * 0.5),
+    ])
+    .spacing(PUMP_VISUAL_METRICS.space_4)
+    .fill_width()
+    .height(PRESET_TIMING_HEIGHT);
     let timing_strip = row([
         preset_dropdown
             .build()
             .width(150.0)
             .height(PRESET_TIMING_HEIGHT),
-        enum_control_row(
-            "Sync",
-            sync_division_label(sync).to_string(),
-            normalize_sync_division(sync),
-            RadiantEditorMessage::SyncDivision,
-        ),
-        enum_control_row(
-            "Trigger",
-            if state.status.sidechain_available() {
-                TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
-            } else if params.trigger_mode() == TRIGGER_MODE_SIDECHAIN {
-                "Sidechain (unavailable)".to_string()
-            } else {
-                TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
-            },
-            params.trigger_mode() as f32,
-            RadiantEditorMessage::TriggerMode,
-        ),
-        enum_control_row(
-            "Mode",
-            PROCESSING_MODE_LABELS[params.mode()].to_string(),
-            params.mode() as f32,
-            RadiantEditorMessage::ProcessingMode,
-        ),
+        timing_controls,
     ])
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
@@ -1161,6 +1204,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 )
                 .with_incoming_waveform(state.status.incoming_waveform_snapshot())
                 .with_sync_division(sync)
+                .with_swing(swing)
                 .with_gain_mapping(depth, floor)
                 .with_playhead_phase(playhead_phase),
                 RadiantEditorMessage::Curve,
@@ -1432,6 +1476,11 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             state.params.set_smooth(value);
             push_radiant_param_update(state, PARAM_SMOOTH_ID, value as f64);
         }
+        RadiantEditorMessage::Swing(value) => {
+            state.push_history();
+            state.params.set_swing(value);
+            push_radiant_param_update(state, PARAM_SWING_ID, value as f64);
+        }
         RadiantEditorMessage::SyncDivision(value) => {
             state.push_history();
             let value = (value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round();
@@ -1622,6 +1671,7 @@ fn apply_numeric_entry_value(
         NumericEntryTarget::Phase => state.params.set_phase_offset(value as f32),
         NumericEntryTarget::OutputGain => state.params.set_output_gain_db(value as f32),
         NumericEntryTarget::Smooth => state.params.set_smooth(value as f32),
+        NumericEntryTarget::Swing => state.params.set_swing(value as f32),
     }
 
     push_radiant_param_update(state, target.param_id(), value);
@@ -1806,6 +1856,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                     },
                     state.params.sync_division(),
                     curve_width_from_push_through_threshold_x(push_through_threshold_x),
+                    state.params.swing(),
                     current,
                 );
                 curve_with_dragged_node(drag, target, push_through_threshold_x)
@@ -1813,10 +1864,11 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 let mut curve = current_curve;
                 let mut target = node;
                 if command_held {
-                    target.x = snap_curve_time_to_beat_grid(
+                    target.x = snap_curve_time_to_beat_grid_with_swing(
                         state.params.sync_division(),
                         curve_width_from_push_through_threshold_x(push_through_threshold_x),
                         target.x,
+                        state.params.swing(),
                     );
                 }
                 update_curve_node(&mut curve, index, target);
@@ -1879,6 +1931,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                     },
                     state.params.sync_division(),
                     curve_width_from_push_through_threshold_x(push_through_threshold_x),
+                    state.params.swing(),
                     current,
                 );
                 curve_with_dragged_node(drag, target, push_through_threshold_x)
@@ -1886,10 +1939,11 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 let mut curve = current_curve;
                 let mut target = node;
                 if command_held {
-                    target.x = snap_curve_time_to_beat_grid(
+                    target.x = snap_curve_time_to_beat_grid_with_swing(
                         state.params.sync_division(),
                         curve_width_from_push_through_threshold_x(push_through_threshold_x),
                         target.x,
+                        state.params.swing(),
                     );
                 }
                 update_curve_node(&mut curve, index, target);
@@ -3003,6 +3057,7 @@ struct CurvePreviewWidget {
     playhead_phase: Option<f32>,
     incoming_waveform: Option<IncomingWaveformSnapshot>,
     sync_division: usize,
+    swing: f32,
     depth_db: f32,
     floor_db: f32,
 }
@@ -3039,6 +3094,7 @@ impl CurvePreviewWidget {
             playhead_phase: None,
             incoming_waveform: None,
             sync_division: crate::params::DEFAULT_SYNC_DIVISION_INDEX,
+            swing: crate::params::DEFAULT_SWING,
             depth_db: crate::params::DEFAULT_DEPTH_DB,
             floor_db: crate::params::DEFAULT_FLOOR_DB,
         }
@@ -3079,6 +3135,11 @@ impl CurvePreviewWidget {
 
     fn with_sync_division(mut self, sync_division: usize) -> Self {
         self.sync_division = sync_division;
+        self
+    }
+
+    fn with_swing(mut self, swing: f32) -> Self {
+        self.swing = swing.clamp(0.0, 1.0);
         self
     }
 
@@ -3288,6 +3349,7 @@ impl CurvePreviewWidget {
             (grid.major.as_slice(), theme.grid_strong),
         ] {
             for position in positions {
+                let position = crate::dsp::swing_warp_phase(*position, self.swing);
                 let x = curve_bounds.min.x + (curve_bounds.width().max(1.0) - 1.0) * position;
                 primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
                     widget_id: self.common.id,
@@ -3674,10 +3736,11 @@ impl Widget for CurvePreviewWidget {
                                 .map(|node| CurvePreviewMessage::InsertNode {
                                     node: if command_held {
                                         CurveNode {
-                                            x: snap_curve_time_to_beat_grid(
+                                            x: snap_curve_time_to_beat_grid_with_swing(
                                                 self.sync_division,
                                                 Self::curve_bounds(bounds).width(),
                                                 node.x,
+                                                self.swing,
                                             ),
                                             ..node
                                         }
@@ -6226,7 +6289,8 @@ mod tests {
     fn curve_preview_widget_command_insert_snaps_time_and_preserves_gain() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
-            .with_sync_division(6);
+            .with_sync_division(6)
+            .with_swing(1.0);
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
         let raw = CurveNode { x: 0.34, y: 0.08 };
         let position = CurvePreviewWidget::curve_point(bounds, raw);
@@ -6256,7 +6320,9 @@ mod tests {
             );
         };
         let width = CurvePreviewWidget::curve_bounds(bounds).width();
-        assert!((node.x - snap_curve_time_to_beat_grid(6, width, raw.x)).abs() < 1.0e-6);
+        assert!(
+            (node.x - snap_curve_time_to_beat_grid_with_swing(6, width, raw.x, 1.0)).abs() < 1.0e-6
+        );
         assert!((node.y - raw.y).abs() < 1.0e-2);
     }
 
@@ -6264,6 +6330,7 @@ mod tests {
     fn radiant_editor_command_press_and_release_update_point_snap_mid_drag() {
         let params = Arc::new(PumpParams::new());
         params.set_sync_division(6.0);
+        params.set_swing(1.0);
         let curve = EditableCurve {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.8 },
@@ -6310,7 +6377,8 @@ mod tests {
             false,
         )
         .with_command_hover_held(true)
-        .with_sync_division(6);
+        .with_sync_division(6)
+        .with_swing(1.0);
         let snapped_message = snapped_widget
             .handle_input(bounds, WidgetInput::PointerMove { position })
             .and_then(|output| output.typed_copied::<CurvePreviewMessage>())
@@ -6319,7 +6387,10 @@ mod tests {
 
         let width = CurvePreviewWidget::curve_bounds(bounds).width();
         let snapped = params.editable_curve_snapshot().nodes[1];
-        assert!((snapped.x - snap_curve_time_to_beat_grid(6, width, raw.x)).abs() < 1.0e-6);
+        assert!(
+            (snapped.x - snap_curve_time_to_beat_grid_with_swing(6, width, raw.x, 1.0)).abs()
+                < 1.0e-6
+        );
 
         reduce_curve_message(
             &mut state,
@@ -6348,6 +6419,61 @@ mod tests {
         let continuous = params.editable_curve_snapshot().nodes[1];
         assert!((continuous.x - raw.x).abs() < 1.0e-2);
         assert!((continuous.y - snapped.y).abs() < 1.0e-2);
+    }
+
+    #[test]
+    fn radiant_editor_command_release_uses_swung_snap() {
+        let params = Arc::new(PumpParams::new());
+        params.set_sync_division(6.0);
+        params.set_swing(1.0);
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.25, y: 0.4 },
+                CurveNode { x: 0.75, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 1,
+                pointer: curve.nodes[1],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+
+        let raw = CurveNode { x: 0.34, y: 0.7 };
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::ReleaseNode {
+                index: 1,
+                node: raw,
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+                shift_held: false,
+                option_held: false,
+                command_held: true,
+            },
+        );
+
+        let width =
+            curve_width_from_push_through_threshold_x(test_curve_push_through_threshold_x());
+        let released = params.editable_curve_snapshot().nodes[1];
+        assert!(
+            (released.x - snap_curve_time_to_beat_grid_with_swing(6, width, raw.x, 1.0)).abs()
+                < 1.0e-6,
+            "released {}, expected {} width {}",
+            released.x,
+            snap_curve_time_to_beat_grid_with_swing(6, width, raw.x, 1.0),
+            width
+        );
     }
 
     #[test]

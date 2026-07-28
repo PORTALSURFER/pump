@@ -115,6 +115,44 @@ pub(crate) fn snap_curve_time_to_beat_grid(sync_division: usize, width: f32, tim
         .unwrap_or(time)
 }
 
+/// Snap a curve time to the displayed beat grid, applying the same phase warp
+/// as the swung transport and grid markers.
+///
+/// Keep the unswung path delegated to the legacy helper so Swing = 0 remains
+/// bit-for-bit identical. Endpoints stay fixed while interior grid candidates
+/// are warped into their displayed positions before choosing the nearest one.
+pub(crate) fn snap_curve_time_to_beat_grid_with_swing(
+    sync_division: usize,
+    width: f32,
+    time: f32,
+    swing: f32,
+) -> f32 {
+    if swing <= 0.0 {
+        return snap_curve_time_to_beat_grid(sync_division, width, time);
+    }
+
+    let time = time.clamp(0.0, 1.0);
+    let grid = curve_beat_grid(sync_division, width);
+    grid.minor
+        .into_iter()
+        .chain(grid.major)
+        .chain([0.0, 1.0])
+        .map(|candidate| {
+            if candidate <= 0.0 || candidate >= 1.0 {
+                candidate
+            } else {
+                crate::dsp::swing_warp_phase(candidate, swing)
+            }
+        })
+        .min_by(|left, right| {
+            (time - *left)
+                .abs()
+                .total_cmp(&(time - *right).abs())
+                .then_with(|| left.total_cmp(right))
+        })
+        .unwrap_or(time)
+}
+
 fn enforce_curve_endpoints(curve: &mut EditableCurve) {
     if curve.nodes.len() < 2 {
         return;
@@ -246,6 +284,29 @@ mod tests {
                 width: 1440,
                 height: 1080
             }
+        );
+    }
+
+    #[test]
+    fn swung_snap_preserves_zero_identity_and_warps_midpoint() {
+        let width = 396.0;
+        for time in [0.0, 0.34, 0.5, 0.9, 1.0] {
+            assert_eq!(
+                snap_curve_time_to_beat_grid_with_swing(6, width, time, 0.0),
+                snap_curve_time_to_beat_grid(6, width, time)
+            );
+        }
+        assert_eq!(
+            snap_curve_time_to_beat_grid_with_swing(6, width, 0.375, 1.0),
+            0.375
+        );
+        assert_eq!(
+            snap_curve_time_to_beat_grid_with_swing(6, width, 0.0, 1.0),
+            0.0
+        );
+        assert_eq!(
+            snap_curve_time_to_beat_grid_with_swing(6, width, 1.0, 1.0),
+            1.0
         );
     }
 }

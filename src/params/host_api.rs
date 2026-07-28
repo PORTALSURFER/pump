@@ -68,7 +68,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 10] = [
+const PARAM_DEFS: [ParamDef; 11] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -219,6 +219,21 @@ const PARAM_DEFS: [ParamDef; 10] = [
         default_value: BYPASS_ACTIVE_VALUE as f64,
         flags: AUTO_BYPASS,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_SWING_NUM,
+        id: PARAM_SWING_ID,
+        name: "Swing",
+        #[cfg(feature = "vst3")]
+        short_name: "Swing",
+        #[cfg(feature = "vst3")]
+        units: "%",
+        module: "Pump",
+        min_value: MIN_SWING as f64,
+        max_value: MAX_SWING as f64,
+        default_value: DEFAULT_SWING as f64,
+        flags: AUTO,
+    },
 ];
 
 #[cfg(feature = "vst3")]
@@ -334,6 +349,7 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_SMOOTH_ID => Some(params.smooth() as f64),
         PARAM_MODE_ID => Some(params.mode() as f64),
         PARAM_BYPASS_ID => Some(params.bypass_value() as f64),
+        PARAM_SWING_ID => Some(params.swing() as f64),
         _ => None,
     }
 }
@@ -353,6 +369,7 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         PARAM_SMOOTH_ID => params.set_smooth(value as f32),
         PARAM_MODE_ID => params.set_mode(value as f32),
         PARAM_BYPASS_ID => params.set_bypass_from_host(value as f32),
+        PARAM_SWING_ID => params.set_swing(value as f32),
         _ => return false,
     }
     true
@@ -428,6 +445,7 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
             .get(value.round().clamp(0.0, 1.0) as usize)
             .map(|label| (*label).to_string()),
         PARAM_SMOOTH_ID => Some(format!("{:.0}%", (value * 100.0).clamp(0.0, 100.0))),
+        PARAM_SWING_ID => Some(format!("{:.0}%", (value * 100.0).clamp(0.0, 100.0))),
         PARAM_MODE_ID => PROCESSING_MODE_LABELS
             .get(clamp_processing_mode(value as f32))
             .map(|label| (*label).to_string()),
@@ -484,6 +502,11 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
             let stripped = raw.trim_end_matches('%').trim();
             let value: f64 = stripped.parse().ok()?;
             Some((value / 100.0).clamp(MIN_SMOOTH as f64, MAX_SMOOTH as f64))
+        }
+        PARAM_SWING_ID => {
+            let stripped = raw.trim_end_matches('%').trim();
+            let value: f64 = stripped.parse().ok()?;
+            Some((value / 100.0).clamp(MIN_SWING as f64, MAX_SWING as f64))
         }
         PARAM_MODE_ID => {
             let normalized = raw.trim().to_ascii_lowercase();

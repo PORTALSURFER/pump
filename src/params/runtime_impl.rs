@@ -14,6 +14,7 @@ impl PumpParams {
             trigger_mode: AtomicU32::new(DEFAULT_TRIGGER_MODE as u32),
             smooth: AtomicF32::new(DEFAULT_SMOOTH),
             mode: AtomicU32::new(PROCESSING_MODE_CLASSIC as u32),
+            swing: AtomicF32::new(DEFAULT_SWING),
             bypass: AtomicBool::new(false),
             bypass_revision: AtomicU32::new(1),
             bypass_last_automation_micros: AtomicU64::new(0),
@@ -86,6 +87,13 @@ impl PumpParams {
     /// Get the selected processing mode, falling back to Classic for unknown values.
     pub fn mode(&self) -> usize {
         clamp_processing_mode(self.mode.load(Ordering::Relaxed) as f32)
+    }
+
+    /// Get alternating-subdivision swing amount.
+    pub fn swing(&self) -> f32 {
+        self.swing
+            .load(Ordering::Relaxed)
+            .clamp(MIN_SWING, MAX_SWING)
     }
 
     /// Return whether complete Pump output is currently bypassed.
@@ -197,6 +205,17 @@ impl PumpParams {
             .store(clamp_processing_mode(value) as u32, Ordering::Relaxed);
     }
 
+    /// Set alternating-subdivision swing amount.
+    pub fn set_swing(&self, value: f32) {
+        let value = if value.is_finite() {
+            value
+        } else {
+            DEFAULT_SWING
+        };
+        self.swing
+            .store(value.clamp(MIN_SWING, MAX_SWING), Ordering::Relaxed);
+    }
+
     /// Set bypass from its stepped plain host value.
     pub fn set_bypass(&self, value: f32) {
         let bypassed = value.is_finite() && value.round() >= BYPASS_BYPASSED_VALUE;
@@ -296,6 +315,7 @@ impl PumpParams {
             trigger_mode: self.trigger_mode(),
             smooth: self.smooth(),
             mode: self.mode(),
+            swing: self.swing(),
             editable_curve: self.editable_curve_snapshot(),
             quick_slots: self.selected_quick_slots_snapshot(),
         }
@@ -358,6 +378,11 @@ impl PumpParams {
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
             preset.trigger_mode = preset.trigger_mode.min(TRIGGER_MODE_SIDECHAIN);
             preset.mode = clamp_processing_mode(preset.mode as f32);
+            preset.swing = if preset.swing.is_finite() {
+                preset.swing.clamp(MIN_SWING, MAX_SWING)
+            } else {
+                DEFAULT_SWING
+            };
             preset.smooth = if preset.smooth.is_finite() {
                 preset.smooth.clamp(MIN_SMOOTH, MAX_SMOOTH)
             } else {
@@ -393,6 +418,7 @@ impl PumpParams {
         self.set_trigger_mode(preset.trigger_mode as f32);
         self.set_smooth(preset.smooth);
         self.set_mode(preset.mode as f32);
+        self.set_swing(preset.swing);
         self.set_editable_curve_preserving_phase(&preset.editable_curve);
     }
 
@@ -642,6 +668,7 @@ impl PumpParams {
                 existing.trigger_mode = snapshot.trigger_mode;
                 existing.smooth = snapshot.smooth;
                 existing.mode = snapshot.mode;
+                existing.swing = snapshot.swing;
                 existing.editable_curve = snapshot.editable_curve;
                 existing.quick_slots = snapshot.quick_slots;
             }
@@ -688,6 +715,7 @@ impl PumpParams {
             || current.trigger_mode != selected.trigger_mode
             || !float_near_eq(current.smooth, selected.smooth)
             || current.mode != selected.mode
+            || !float_near_eq(current.swing, selected.swing)
             || !curve_near_eq(&current.editable_curve, &selected.editable_curve)
     }
 

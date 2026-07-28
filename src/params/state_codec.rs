@@ -38,6 +38,7 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     payload.extend_from_slice(&params.smooth().to_le_bytes());
     payload.extend_from_slice(&(params.mode() as f32).to_le_bytes());
     payload.extend_from_slice(&params.bypass_value().to_le_bytes());
+    payload.extend_from_slice(&params.swing().to_le_bytes());
 
     payload
 }
@@ -114,6 +115,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 trigger_mode: DEFAULT_TRIGGER_MODE,
                 smooth: DEFAULT_SMOOTH,
                 mode: PROCESSING_MODE_CLASSIC,
+                swing: DEFAULT_SWING,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -155,6 +157,14 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     } else {
         BYPASS_ACTIVE_VALUE
     };
+    let swing = if version >= 13 {
+        let Some(swing) = read_f32(&mut cursor) else {
+            return Err("invalid swing field");
+        };
+        swing
+    } else {
+        DEFAULT_SWING
+    };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -169,6 +179,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_smooth(smooth);
     params.set_mode(mode as f32);
     params.set_bypass(bypass);
+    params.set_swing(swing);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
 
@@ -195,6 +206,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.smooth.to_le_bytes());
     payload.extend_from_slice(&(clamp_processing_mode(preset.mode as f32) as u32).to_le_bytes());
     payload.push(u8::from(preset.is_favorite));
+    payload.extend_from_slice(&preset.swing.to_le_bytes());
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -381,6 +393,11 @@ fn decode_preset_bank(
         } else {
             false
         };
+        let swing = if version >= 13 {
+            read_f32(cursor).ok_or("invalid preset swing")?
+        } else {
+            DEFAULT_SWING
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -395,6 +412,7 @@ fn decode_preset_bank(
             trigger_mode: trigger_mode.min(TRIGGER_MODE_SIDECHAIN),
             smooth,
             mode,
+            swing,
             editable_curve: editable_curve.normalized(),
             quick_slots,
         });
@@ -472,6 +490,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     params.set_trigger_mode(DEFAULT_TRIGGER_MODE as f32);
     params.set_smooth(DEFAULT_SMOOTH);
     params.set_mode(PROCESSING_MODE_CLASSIC as f32);
+    params.set_swing(DEFAULT_SWING);
     params.set_curve(&curve);
     params.set_preset_bank_without_persistence(PumpPresetBank {
         selected: 0,
@@ -489,6 +508,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             trigger_mode: DEFAULT_TRIGGER_MODE,
             smooth: DEFAULT_SMOOTH,
             mode: PROCESSING_MODE_CLASSIC,
+            swing: DEFAULT_SWING,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],

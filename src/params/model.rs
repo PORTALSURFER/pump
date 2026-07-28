@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 12;
+pub(crate) const STATE_VERSION: u32 = 13;
 
 /// Host-visible numeric parameter id for dry/wet blend.
 pub const PARAM_MIX_NUM: u32 = 1;
@@ -29,6 +29,8 @@ pub const PARAM_SMOOTH_NUM: u32 = 8;
 pub const PARAM_MODE_NUM: u32 = 9;
 /// Host-visible numeric parameter id for click-safe host bypass.
 pub const PARAM_BYPASS_NUM: u32 = 10;
+/// Host-visible numeric parameter id for alternating-subdivision swing.
+pub const PARAM_SWING_NUM: u32 = 11;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
@@ -50,6 +52,8 @@ pub const PARAM_SMOOTH_ID: ClapId = ClapId::new(PARAM_SMOOTH_NUM);
 pub const PARAM_MODE_ID: ClapId = ClapId::new(PARAM_MODE_NUM);
 /// Parameter id for click-safe host bypass.
 pub const PARAM_BYPASS_ID: ClapId = ClapId::new(PARAM_BYPASS_NUM);
+/// Parameter id for alternating-subdivision swing.
+pub const PARAM_SWING_ID: ClapId = ClapId::new(PARAM_SWING_NUM);
 
 /// Plain host value for active processing.
 pub const BYPASS_ACTIVE_VALUE: f32 = 0.0;
@@ -106,6 +110,8 @@ pub const DEFAULT_OUTPUT_GAIN_DB: f32 = 0.0;
 pub const DEFAULT_TRIGGER_MODE: usize = TRIGGER_MODE_HOST;
 /// Default evaluated gain smoothing amount.
 pub const DEFAULT_SMOOTH: f32 = 0.0;
+/// Default swing amount (straight timing).
+pub const DEFAULT_SWING: f32 = 0.0;
 /// Default sync division index (`1/4`).
 pub const DEFAULT_SYNC_DIVISION_INDEX: usize = 4;
 /// Maximum number of stored user presets.
@@ -143,6 +149,10 @@ pub const MAX_OUTPUT_GAIN_DB: f32 = 12.0;
 pub const MAX_SMOOTH: f32 = 1.0;
 /// Minimum evaluated gain smoothing amount.
 pub const MIN_SMOOTH: f32 = 0.0;
+/// Minimum swing amount.
+pub const MIN_SWING: f32 = 0.0;
+/// Maximum swing amount. At 100%, a cycle midpoint lands at 2/3 of the cycle.
+pub const MAX_SWING: f32 = 1.0;
 
 /// One named beat division option.
 #[derive(Debug, Copy, Clone)]
@@ -272,6 +282,8 @@ pub struct PumpPreset {
     pub smooth: f32,
     /// Processing mode.
     pub mode: usize,
+    /// Alternating-subdivision swing amount in `[0, 1]`.
+    pub swing: f32,
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
     /// Overwriteable quick-slot curves shown below the editor for this preset.
@@ -339,6 +351,7 @@ impl PumpPresetBank {
                 trigger_mode: DEFAULT_TRIGGER_MODE,
                 smooth: DEFAULT_SMOOTH,
                 mode: PROCESSING_MODE_CLASSIC,
+                swing: DEFAULT_SWING,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -405,6 +418,7 @@ pub struct PumpParams {
     pub(super) trigger_mode: AtomicU32,
     pub(super) smooth: AtomicF32,
     pub(super) mode: AtomicU32,
+    pub(super) swing: AtomicF32,
     pub(super) bypass: AtomicBool,
     pub(super) bypass_revision: AtomicU32,
     pub(super) bypass_last_automation_micros: AtomicU64,

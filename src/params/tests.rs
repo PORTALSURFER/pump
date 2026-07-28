@@ -3,14 +3,14 @@ use super::{
     sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
     SavePresetOutcome, DEFAULT_FLOOR_DB, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DEPTH_ID,
     PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID,
-    PROCESSING_MODE_PUNCH, TRIGGER_MODE_SIDECHAIN,
+    PARAM_SWING_ID, PROCESSING_MODE_PUNCH, TRIGGER_MODE_SIDECHAIN,
 };
 #[cfg(feature = "vst3")]
 use super::{
     clap_id_from_vst3_param_id, format_plain_value_text, parse_plain_value_text,
     vst3_param_info_for_index, PARAM_MIX_NUM, PARAM_MODE_NUM, PARAM_OUTPUT_GAIN_NUM,
-    PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM, PARAM_SYNC_DIVISION_ID,
-    PARAM_SYNC_DIVISION_NUM,
+    PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM, PARAM_SWING_NUM,
+    PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
 };
 use crate::curve::{
     cyclically_offset_editable_curve, sample_editable_curve, CurveNode, CurveSegment,
@@ -70,7 +70,7 @@ fn sync_division_clamping_is_bounded() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 10);
+    assert_eq!(super::param_count(), 11);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -148,8 +148,24 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
 }
 
 #[test]
+fn swing_is_a_stable_percent_parameter_with_straight_default() {
+    let params = PumpParams::new();
+    assert_eq!(super::get_param_value(&params, PARAM_SWING_ID), Some(0.0));
+    super::apply_param_event(&params, PARAM_SWING_ID, 0.75);
+    assert!((params.swing() - 0.75).abs() < f32::EPSILON);
+    assert_eq!(
+        super::format_plain_value_text(PARAM_SWING_ID, 0.75),
+        Some("75%".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_SWING_ID, "75%"),
+        Some(0.75)
+    );
+}
+
+#[test]
 fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
-    assert_eq!(super::param_count(), 10);
+    assert_eq!(super::param_count(), 11);
     let flags = super::param_flags_for_index(9).expect("bypass metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -171,6 +187,7 @@ fn state_roundtrip_preserves_values() {
     params.set_phase_offset(0.42);
     params.set_output_gain_db(-3.0);
     params.set_smooth(0.67);
+    params.set_swing(0.42);
     params.set_sync_division(6.0);
     params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
     params.set_mode(PROCESSING_MODE_PUNCH as f32);
@@ -204,11 +221,13 @@ fn state_roundtrip_preserves_values() {
     assert!((restored.phase_offset() - 0.42).abs() < 1.0e-6);
     assert!((restored.output_gain_db() + 3.0).abs() < 1.0e-6);
     assert!((restored.smooth() - 0.67).abs() < 1.0e-6);
+    assert!((restored.swing() - 0.42).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 6);
     assert_eq!(restored.trigger_mode(), TRIGGER_MODE_SIDECHAIN);
     assert_eq!(restored.mode(), PROCESSING_MODE_PUNCH);
     assert!(restored.bypassed());
     assert!((restored.preset_bank_snapshot().presets[0].smooth - 0.67).abs() < 1.0e-6);
+    assert!((restored.preset_bank_snapshot().presets[0].swing - 0.42).abs() < 1.0e-6);
     assert_eq!(
         restored.preset_bank_snapshot().presets[0].mode,
         PROCESSING_MODE_PUNCH
@@ -250,7 +269,7 @@ fn unsupported_processing_mode_falls_back_to_classic() {
         let params = PumpParams::new();
         params.set_mode(PROCESSING_MODE_PUNCH as f32);
         let mut payload = encode_state_payload(&params);
-        let mode_offset = payload.len() - 8;
+        let mode_offset = payload.len() - 12;
         payload[mode_offset..mode_offset + 4].copy_from_slice(&unsupported.to_le_bytes());
 
         let restored = PumpParams::new();
@@ -758,6 +777,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     trigger_mode: 0,
                     smooth: 0.0,
                     mode: super::PROCESSING_MODE_CLASSIC,
+                    swing: super::DEFAULT_SWING,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -775,6 +795,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     trigger_mode: 0,
                     smooth: 0.0,
                     mode: super::PROCESSING_MODE_CLASSIC,
+                    swing: super::DEFAULT_SWING,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -904,6 +925,10 @@ fn vst3_mapping_resolves_to_shared_clap_ids() {
         clap_id_from_vst3_param_id(PARAM_SMOOTH_NUM),
         Some(PARAM_SMOOTH_ID)
     );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_SWING_NUM),
+        Some(PARAM_SWING_ID)
+    );
     assert_eq!(clap_id_from_vst3_param_id(999), None);
 }
 
@@ -927,6 +952,9 @@ fn vst3_info_and_text_conversions_share_param_rules() {
     assert_eq!(bypass_info.step_count, 1);
     assert_eq!(bypass_info.default_normalized, 0.0);
     assert!(bypass_info.is_bypass);
+    let swing_info = vst3_param_info_for_index(10).expect("swing info should exist");
+    assert_eq!(swing_info.id, PARAM_SWING_NUM);
+    assert_eq!(swing_info.units, "%");
     assert_eq!(smooth_info.title, "Smooth");
     assert_eq!(smooth_info.units, "%");
 
