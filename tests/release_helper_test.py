@@ -120,6 +120,18 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertLess(script.index(register), script.index('codesign_identity='))
         self.assertLess(script.index(restore), script.index('security delete-keychain'))
 
+    def test_release_notarization_checks_cover_live_and_extracted_bundles(self):
+        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
+        check = 'codesign -vvvv -R=notarized --check-notarization'
+        self.assertEqual(script.count(check), 2)
+        self.assertNotIn("spctl", script)
+        live = script.index(check)
+        extracted = script.index(check, live + 1)
+        self.assertLess(script.index('xcrun stapler validate "${bundle_dir}"'), live)
+        self.assertLess(script.index('xcrun stapler validate "${bundle}"'), extracted)
+        self.assertLess(live, script.index('local team_id', live))
+        self.assertLess(extracted, script.index('codesign_details=', extracted))
+
     def test_publish_rejects_tampered_final_zip_before_transport(self):
         transport = FakeTransport()
         with tempfile.TemporaryDirectory() as directory:
@@ -152,6 +164,8 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertEqual(requests, [])
 
     def test_zip_audit_runs_argument_safe_mac_checks_in_order(self):
+        helper_source = (Path(__file__).parents[1] / "scripts" / "release_helper.py").read_text(encoding="utf-8")
+        self.assertNotIn("spctl", helper_source)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             archive = root / "pump-v0.2.0-macos.clap.zip"
@@ -183,7 +197,8 @@ class ReleaseHelperTests(unittest.TestCase):
 
             with mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
                 release_helper._audit_zip(archive, "clap", "TEAM123456", cwd=root)
-            self.assertEqual([call[0] for call in calls], ["/usr/bin/ditto", "/usr/bin/plutil", "/usr/bin/plutil", "/usr/bin/plutil", "codesign", "codesign", "xcrun", "spctl", "lipo", "/usr/bin/nm"])
+            self.assertEqual([call[0] for call in calls], ["/usr/bin/ditto", "/usr/bin/plutil", "/usr/bin/plutil", "/usr/bin/plutil", "codesign", "codesign", "xcrun", "codesign", "lipo", "/usr/bin/nm"])
+            self.assertEqual(calls[7][1:4], ("-vvvv", "-R=notarized", "--check-notarization"))
 
     def test_zip_audit_rejects_wrong_team_before_stapler(self):
         with tempfile.TemporaryDirectory() as directory:
