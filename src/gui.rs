@@ -10,6 +10,8 @@ use crate::curve::{CurveNode, EditableCurve};
 ))]
 mod radiant_editor;
 
+pub(crate) mod visual_system;
+
 #[cfg(all(target_os = "macos", feature = "screenshot-test", test))]
 mod screenshot_tests;
 

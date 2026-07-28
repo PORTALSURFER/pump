@@ -45,6 +45,7 @@ use crate::params::{
 };
 use crate::GuiStatus;
 
+use super::visual_system::{pump_meter_colors, pump_theme, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS};
 #[cfg(test)]
 use super::WINDOW_HEIGHT;
 use super::{build_version_label, snap_curve_time_to_beat_grid, WINDOW_WIDTH};
@@ -74,25 +75,23 @@ impl HostParamFlushRequester {
 const BUILD_LABEL_HEIGHT: f32 = 54.0;
 const PRESET_TIMING_HEIGHT: f32 = 72.0;
 const CURVE_PREVIEW_HEIGHT: f32 = 180.0;
-const PARAMETER_DECK_HEIGHT: f32 = 96.0;
+const PARAMETER_DECK_HEIGHT: f32 = PUMP_VISUAL_METRICS.deck_height;
 const GAIN_REDUCTION_METER_WIDTH: f32 = 34.0;
 const GAIN_REDUCTION_METER_BAR_WIDTH: f32 = 8.0;
 const CURVE_SLOT_ROW_HEIGHT: f32 = 75.0;
-const CURVE_SLOT_SPACING: f32 = 4.0;
+const CURVE_SLOT_SPACING: f32 = PUMP_VISUAL_METRICS.space_4;
 const CURVE_SLOT_VISIBLE_COUNT: usize = 6;
 const CURVE_SLOT_NAV_WIDTH: f32 = 20.0;
-const CURVE_SLOT_CORAL: Rgba8 = Rgba8::new(255, 128, 128, 255);
-const CURVE_SLOT_CORAL_SOFT: Rgba8 = Rgba8::new(255, 128, 128, 96);
 // Six slots remain inside the minimum supported host width; larger hosts keep the same deck.
 const CURVE_SLOT_WIDTH: f32 = 100.0;
-const CONTROL_ROW_HEIGHT: f32 = 16.0;
+const CONTROL_ROW_HEIGHT: f32 = PUMP_VISUAL_METRICS.label_line;
 // Timing and parameter labels are intentionally wider than the compact legacy
 // shell so the longest supported values ("Trigger", "Classic", and +0.0 dB)
 // retain their full glyph bounds at the minimum host size.
 const CONTROL_LABEL_WIDTH: f32 = 84.0;
 const CONTROL_VALUE_WIDTH: f32 = 78.0;
-const SURFACE_PADDING: f32 = 12.0;
-const SURFACE_SPACING: f32 = 1.0;
+const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
+const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.divider;
 const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_FILL_TOP_ALPHA: u8 = 96;
 const CURVE_FILL_BOTTOM_ALPHA: u8 = 12;
@@ -112,11 +111,11 @@ const CURVE_PLAYHEAD_STROKE_COLOR: Rgba8 = Rgba8::new(255, 196, 232, 255);
 const CURVE_SEGMENT_MOVE_COLOR: Rgba8 = Rgba8::new(96, 176, 255, 255);
 const CURVE_REFERENCE_GUTTER_WIDTH: f32 = 52.0;
 const CURVE_REFERENCE_LABEL_HEIGHT: f32 = 12.0;
-const CURVE_REFERENCE_FONT_SIZE: f32 = 9.0;
+const CURVE_REFERENCE_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.meta.0;
 const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
 const CURVE_SLOT_MARGIN: f32 = 3.0;
 const VALUE_ENTRY_MAX_CHARS: usize = 16;
-const VALUE_LABEL_FONT_SIZE: f32 = 12.0;
+const VALUE_LABEL_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.value.0;
 
 fn curve_reference_gutter_width(preview_width: f32) -> f32 {
     CURVE_REFERENCE_GUTTER_WIDTH.min((preview_width - 1.0).max(0.0))
@@ -416,7 +415,7 @@ impl RadiantPumpEditor {
         width: u32,
         height: u32,
     ) -> Self {
-        let theme = ThemeTokens::default();
+        let theme = pump_theme();
         let viewport = Vector2::new(width.max(1) as f32, height.max(1) as f32);
         Self {
             runtime: EditorSurfaceRuntime::new_declarative(
@@ -599,7 +598,7 @@ pub(crate) fn radiant_editor_frame_for_params(
         project_editor_surface,
         reduce_editor_message,
     )
-    .frame(&ThemeTokens::default())
+    .frame(&pump_theme())
 }
 
 impl RadiantEditorState {
@@ -750,7 +749,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             RadiantEditorMessage::ProcessingMode,
         ),
     ])
-    .spacing(4.0)
+    .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
     .height(PRESET_TIMING_HEIGHT);
     Arc::new(
@@ -816,7 +815,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             )
             .fill_width()
             .fill_height()])
-            .spacing(4.0)
+            .spacing(PUMP_VISUAL_METRICS.space_4)
             .fill_width()
             .fill_height(),
             curve_slot_row(state),
@@ -914,7 +913,7 @@ fn parameter_deck(
         .width(GAIN_REDUCTION_METER_WIDTH)
         .height(PARAMETER_DECK_HEIGHT),
     ])
-    .spacing(8.0)
+    .spacing(PUMP_VISUAL_METRICS.gap)
     .fill_width()
     .height(PARAMETER_DECK_HEIGHT)
 }
@@ -935,7 +934,7 @@ fn control_column(
             .fill_height(),
         value_label_node(target, value_label, active_entry),
     ])
-    .spacing(4.0)
+    .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
     .height(PARAMETER_DECK_HEIGHT)
 }
@@ -973,7 +972,7 @@ fn slider_control_row(
             .height(CONTROL_ROW_HEIGHT),
         value_label,
     ])
-    .spacing(8.0)
+    .spacing(PUMP_VISUAL_METRICS.gap)
     .fill_width()
     .height(CONTROL_ROW_HEIGHT)
 }
@@ -2259,7 +2258,7 @@ impl Widget for CurveSlotWidget {
         let fill = if self.deviated {
             theme.accent_danger
         } else if pressed {
-            CURVE_SLOT_CORAL_SOFT
+            theme.accent_copper.with_alpha(96)
         } else if self.loaded {
             theme.surface_raised
         } else if hovered {
@@ -2270,12 +2269,12 @@ impl Widget for CurveSlotWidget {
         let outline = if self.deviated {
             theme.accent_danger
         } else if self.loaded || hovered || pressed {
-            CURVE_SLOT_CORAL
+            theme.accent_copper
         } else {
             theme.border
         };
         let curve_color = if self.deviated || self.curve.is_some() {
-            CURVE_SLOT_CORAL
+            theme.accent_copper
         } else {
             theme.text_muted
         };
@@ -2294,7 +2293,7 @@ impl Widget for CurveSlotWidget {
             primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
                 widget_id: self.common.id,
                 rect: bounds.inset(2.0, 2.0, 2.0, 2.0),
-                color: CURVE_SLOT_CORAL,
+                color: theme.accent_copper,
                 width: 1.0,
             }));
         }
@@ -2316,7 +2315,7 @@ impl Widget for CurveSlotWidget {
                     Point::new(center.x - 2.0, center.y),
                     Point::new(center.x + 2.0, center.y),
                 ]),
-                color: CURVE_SLOT_CORAL,
+                color: theme.accent_copper,
                 width: 1.0,
             }));
             primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
@@ -2325,7 +2324,7 @@ impl Widget for CurveSlotWidget {
                     Point::new(center.x, center.y - 2.0),
                     Point::new(center.x, center.y + 2.0),
                 ]),
-                color: CURVE_SLOT_CORAL,
+                color: theme.accent_copper,
                 width: 1.0,
             }));
         }
@@ -2435,7 +2434,7 @@ impl Widget for CurveSlotNavigationWidget {
         theme: &ThemeTokens,
     ) {
         let fill = if self.common.state.pressed {
-            CURVE_SLOT_CORAL_SOFT
+            theme.accent_copper.with_alpha(96)
         } else if self.common.state.hovered || self.common.state.focused {
             theme.bg_secondary
         } else {
@@ -2445,7 +2444,7 @@ impl Widget for CurveSlotNavigationWidget {
             || self.common.state.focused
             || self.common.state.pressed
         {
-            CURVE_SLOT_CORAL
+            theme.accent_copper
         } else {
             theme.border
         };
@@ -2474,7 +2473,7 @@ impl Widget for CurveSlotNavigationWidget {
                 Point::new(tip_x, center.y),
                 Point::new(base_x, center.y + 5.0),
             ]),
-            color: CURVE_SLOT_CORAL,
+            color: theme.accent_copper,
             width: 1.5,
         }));
     }
@@ -2514,8 +2513,9 @@ impl Widget for GainReductionMeterWidget {
         primitives: &mut Vec<PaintPrimitive>,
         bounds: Rect,
         _layout: &LayoutOutput,
-        theme: &ThemeTokens,
+        _theme: &ThemeTokens,
     ) {
+        let meter_colors = pump_meter_colors();
         let title_height = 14.0;
         let value_height = 14.0;
         let bar_top = bounds.min.y + title_height;
@@ -2527,11 +2527,16 @@ impl Widget for GainReductionMeterWidget {
             GAIN_REDUCTION_METER_BAR_WIDTH,
             bar_height,
         );
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.common.id,
+            rect: bar,
+            color: meter_colors.track,
+        }));
         primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
             widget_id: self.common.id,
             rect: bar,
-            color: theme.border_emphasis,
-            width: 1.0,
+            color: meter_colors.border,
+            width: PUMP_VISUAL_METRICS.border,
         }));
         let fraction = crate::gui_status::gain_reduction_meter_fraction(self.reduction_db);
         let fill_height = (bar.height() - 2.0).max(0.0) * fraction;
@@ -2544,7 +2549,11 @@ impl Widget for GainReductionMeterWidget {
                     (bar.width() - 2.0).max(0.0),
                     fill_height,
                 ),
-                color: theme.accent_warning,
+                color: if fraction >= 0.75 {
+                    meter_colors.hot
+                } else {
+                    meter_colors.nominal
+                },
             }));
         }
         for step in 1..3 {
@@ -2555,8 +2564,8 @@ impl Widget for GainReductionMeterWidget {
                     Point::new(bar.min.x - 2.0, y),
                     Point::new(bar.max.x + 2.0, y),
                 ]),
-                color: theme.border_emphasis,
-                width: 1.0,
+                color: meter_colors.border,
+                width: PUMP_VISUAL_METRICS.divider,
             }));
         }
         for (text_value, rect) in [
@@ -2578,9 +2587,9 @@ impl Widget for GainReductionMeterWidget {
                 widget_id: self.common.id,
                 text: PaintText::from(text_value),
                 rect,
-                font_size: 9.0,
+                font_size: PUMP_TYPOGRAPHY.meta.0,
                 baseline: None,
-                color: theme.text_muted,
+                color: meter_colors.text,
                 align: PaintTextAlign::Center,
                 wrap: TextWrap::None,
             }));
@@ -6217,8 +6226,9 @@ mod tests {
             &LayoutOutput::default(),
             &theme,
         );
+        let meter_colors = pump_meter_colors();
         assert!(!unity_primitives.iter().any(|primitive| {
-            matches!(primitive, PaintPrimitive::FillRect(fill) if fill.color == theme.accent_warning)
+            matches!(primitive, PaintPrimitive::FillRect(fill) if fill.color == meter_colors.nominal)
         }));
 
         let reduction_db = crate::gui_status::GAIN_REDUCTION_METER_MAX_DB * 0.5;
@@ -6232,7 +6242,7 @@ mod tests {
         let fill = reduced_primitives
             .iter()
             .find_map(|primitive| match primitive {
-                PaintPrimitive::FillRect(fill) if fill.color == theme.accent_warning => Some(fill),
+                PaintPrimitive::FillRect(fill) if fill.color == meter_colors.nominal => Some(fill),
                 _ => None,
             })
             .expect("reduction should paint one meter fill");

@@ -73,12 +73,20 @@ if [[ "${want_screenshots}" == "1" ]]; then
   rm -rf target/ui-screenshots
   mkdir -p target/ui-screenshots
 
-  cargo test -r --features screenshot-test \
-    gui::screenshot_tests::pump_editor_screenshots_cover_supported_sizes_and_fractional_scale \
-    -- --nocapture
+  cargo test -r --features screenshot-test gui::screenshot_tests -- --nocapture
 
-  if ! compgen -G "target/ui-screenshots/pump/pump-*.png" >/dev/null; then
-    echo "[ci] screenshot-test feature is enabled but no Pump Radiant screenshots were produced under target/ui-screenshots/pump" >&2
-    exit 1
-  fi
+  required_captures=(
+    target/ui-screenshots/pump/pump-min-720x540.png
+    target/ui-screenshots/pump/pump-default-912x684.png
+    target/ui-screenshots/pump/pump-max-1440x1080.png
+    target/ui-screenshots/pump/pump-default-912x684-dpi-1_25.png
+    target/ui-screenshots/pump/pump-components-states-720x360-1x.png
+    target/ui-screenshots/pump/pump-components-states-720x360-2x.png
+  )
+  for capture in "${required_captures[@]}"; do
+    if [[ ! -f "${capture}" ]]; then
+      echo "[ci] required Pump screenshot was not produced: ${capture}" >&2
+      exit 1
+    fi
+  done
 fi
