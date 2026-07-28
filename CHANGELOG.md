@@ -77,6 +77,12 @@ All notable changes to this project are documented in this file.
 
 - Fix preserve Option empty canvas no-op (1ab9c98)
 
+- Align swing editor phase and legacy migration (2392027)
+
+- Align command snap with swing grid (302295a)
+
+- Fit swing controls at minimum editor size (b291c87)
+
 
 ### CI
 
@@ -338,6 +344,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (a2993c8)
 
+- (changelog) Update changelog [skip ci] (788182e)
+
 
 ### Features
 
@@ -356,6 +364,8 @@ All notable changes to this project are documented in this file.
 - Define Pump processing modes and add Mode selector (#35) (d3fc439)
 
 - (pump) Rebuild responsive Radiant editor shell (f279636)
+
+- Add host-automatable swing control (2282e19)
 
 
 ### Other
@@ -1169,6 +1179,10 @@ OPT-1121 Define the Pump dark coral visual system (d667b42)
 - Merge pull request #38 from PORTALSURFER/wsvasek/opt-1135-pump-redesign-add-a-click-safe-host-bypass-control
 
 OPT-1135 Add click-safe host bypass control (2bbf7ae)
+
+- Merge pull request #39 from PORTALSURFER/wsvasek/opt-1129-pump-redesign-add-a-host-automatable-swing-control
+
+feat: add host-automatable swing control (ab07edf)
 
 
 ### Refactoring
