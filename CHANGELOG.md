@@ -89,6 +89,8 @@ All notable changes to this project are documented in this file.
 
 - (release) Label artifact with checkout source (#45) (75ab159)
 
+- Keep release builds lockfile-stable (#49) (9af7160)
+
 
 ### CI
 
@@ -371,6 +373,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (76c2243)
 
 - (changelog) Update changelog [skip ci] (2e7a9d0)
+
+- (changelog) Update changelog [skip ci] (704373e)
 
 
 ### Features
