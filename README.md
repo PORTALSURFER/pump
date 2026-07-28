@@ -21,6 +21,38 @@ VST3_SDK_DIR=/mnt/e/lib/vst3sdk cargo build --features vst3
 VST3_SDK_DIR=/mnt/e/lib/vst3sdk cargo test --features vst3
 ```
 
+## Production releases
+
+The same producer is used locally and by the manual `Pump release` Actions
+workflow. On a clean macOS arm64 checkout, with `VST3_SDK_DIR` set to the pinned
+Steinberg SDK and the Apple Developer ID/notarization credentials configured,
+run:
+
+```bash
+bash scripts/release.sh --package-only --channel stable
+```
+
+This creates `dist/releases/pump-v<version>-<12-char HEAD>/` containing only the
+two host-installable ZIP bundles, `pump-default-912x684.png`, `CHANGELOG.md`, and
+`release-manifest.json` schema 2. Add `--publish` and set
+`PORTALSURFER_RELEASE_TOKEN` in the environment to capability-check and publish
+the immutable bundle. The token is never accepted as a command-line argument.
+
+`--package-only` is still a production release: it signs, notarizes, staples, and
+assesses both bundles. The Actions workflow cannot run until the production
+environment has all Apple certificate/notary secrets, `RADIANT_REPO_TOKEN`, and
+the PortalSurfer release token for publish runs.
+
+Publishing is fail-closed to the exact `https://portalsurfer.org` origin. Immediately
+before a publish, the producer re-audits the final ZIP bytes, bundle signatures and
+team, stapling, Gatekeeper assessment, arm64 architecture, exports, and manifest
+hashes; the publish transport is injectable only in zero-network tests.
+
+Production artifacts are macOS arm64, hardened-runtime Developer ID signed,
+notarized, stapled, and `spctl`-assessed. Universal2 and ad-hoc production
+artifacts are intentionally unsupported until a separate host-compatibility
+decision; the manifest records this production provenance explicitly.
+
 ## Core idea
 
 Edit a node-based spline curve that defines gain over one sync cycle.
