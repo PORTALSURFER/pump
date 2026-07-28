@@ -348,6 +348,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (d348da9)
 
+- (changelog) Update changelog [skip ci] (53c9ac0)
+
 
 ### Features
 
@@ -1195,6 +1197,16 @@ feat: add host-automatable swing control (ab07edf)
 - Merge pull request #40 from PORTALSURFER/codex/plugin-release-producer
 
 Add production Pump release producer (411d96c)
+
+- Add Pump A/B sound states (87ad5a1)
+
+- Retarget A/B curves at automation boundaries (336444a)
+
+- Cover interior A/B automation retargeting (7cebf1b)
+
+- Merge pull request #41 from PORTALSURFER/wsvasek/opt-1123-pump-redesign-add-ab-state-comparison-and-copy
+
+Add Pump A/B sound states (e1fc475)
 
 
 ### Refactoring
