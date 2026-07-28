@@ -260,7 +260,7 @@ audit_zip() {
 clap_target="${tmp_root}/clap-target"
 vst3_target="${tmp_root}/vst3-target"
 echo "[release] building CLAP"
-TOYBOX_ACTIVE_ARTIFACT=clap CARGO_TARGET_DIR="${clap_target}" cargo build --release
+TOYBOX_ACTIVE_ARTIFACT=clap CARGO_TARGET_DIR="${clap_target}" cargo build --locked --release
 clap_binary="${clap_target}/release/libpump.dylib"
 [[ -f "${clap_binary}" ]] || { echo "CLAP build did not produce ${clap_binary}" >&2; exit 1; }
 clap_bundle="${tmp_root}/pump.clap"
@@ -268,7 +268,7 @@ build_bundle clap "${release_dir}/pump-v${version}-macos.clap.zip" "${clap_bundl
 audit_zip clap "${release_dir}/pump-v${version}-macos.clap.zip" "${signing_team_id}"
 
 echo "[release] building VST3"
-TOYBOX_ACTIVE_ARTIFACT=vst3 VST3_SDK_DIR="${VST3_SDK_DIR}" CARGO_TARGET_DIR="${vst3_target}" cargo rustc --release --features vst3 -- -C link-arg=-Wl,-bundle
+TOYBOX_ACTIVE_ARTIFACT=vst3 VST3_SDK_DIR="${VST3_SDK_DIR}" CARGO_TARGET_DIR="${vst3_target}" cargo rustc --locked --release --features vst3 -- -C link-arg=-Wl,-bundle
 vst3_binary="${vst3_target}/release/libpump.dylib"
 [[ -f "${vst3_binary}" ]] || { echo "VST3 build did not produce ${vst3_binary}" >&2; exit 1; }
 vst3_bundle="${tmp_root}/pump.vst3"

@@ -12,8 +12,8 @@ Usage:
 Runs the same checks locally that CI enforces:
   - scripts/policy-check.sh (if present)
   - cargo fmt --check
-  - cargo clippy -D warnings
-  - cargo test
+  - cargo clippy --locked -D warnings
+  - cargo test --locked
   - optional UI screenshot test (when supported)
 
 Options:
@@ -57,11 +57,11 @@ fi
 
 cargo fmt --all -- --check
 if [[ ${#features[@]} -gt 0 ]]; then
-  cargo clippy --all-targets "${features[@]}" -- -D warnings
-  cargo test --all "${features[@]}"
+  cargo clippy --locked --all-targets "${features[@]}" -- -D warnings
+  cargo test --locked --all "${features[@]}"
 else
-  cargo clippy --all-targets -- -D warnings
-  cargo test --all
+  cargo clippy --locked --all-targets -- -D warnings
+  cargo test --locked --all
 fi
 
 if [[ "${want_screenshots}" == "1" ]]; then
@@ -73,7 +73,7 @@ if [[ "${want_screenshots}" == "1" ]]; then
   rm -rf target/ui-screenshots
   mkdir -p target/ui-screenshots
 
-  cargo test -r --features screenshot-test gui::screenshot_tests -- --nocapture
+  cargo test --locked -r --features screenshot-test gui::screenshot_tests -- --nocapture
 
   required_captures=(
     target/ui-screenshots/pump/pump-min-720x540.png
