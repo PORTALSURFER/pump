@@ -1067,45 +1067,62 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             RadiantEditorMessage::PresetSelect(index),
         );
     }
+    let sync_control = enum_control_row(
+        "Sync",
+        sync_division_label(sync).to_string(),
+        normalize_sync_division(sync),
+        RadiantEditorMessage::SyncDivision,
+    );
+    let swing_control = slider_control_row(
+        "Swing",
+        value_label_node(
+            NumericEntryTarget::Swing,
+            format!("{:.0}%", swing * 100.0),
+            state.numeric_entry.as_ref(),
+        ),
+        swing,
+        RadiantEditorMessage::Swing,
+    );
+    let trigger_control = enum_control_row(
+        "Trigger",
+        if state.status.sidechain_available() {
+            TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
+        } else if params.trigger_mode() == TRIGGER_MODE_SIDECHAIN {
+            "Sidechain (unavailable)".to_string()
+        } else {
+            TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
+        },
+        params.trigger_mode() as f32,
+        RadiantEditorMessage::TriggerMode,
+    );
+    let mode_control = enum_control_row(
+        "Mode",
+        PROCESSING_MODE_LABELS[params.mode()].to_string(),
+        params.mode() as f32,
+        RadiantEditorMessage::ProcessingMode,
+    );
+    // Keep the full-width labels and value cells readable at the minimum host
+    // size by placing the four timing controls in a compact 2x2 deck beside
+    // the preset selector instead of forcing them into one overflowing row.
+    let timing_controls = column([
+        row([sync_control, swing_control])
+            .spacing(PUMP_VISUAL_METRICS.space_4)
+            .fill_width()
+            .height(PRESET_TIMING_HEIGHT * 0.5),
+        row([trigger_control, mode_control])
+            .spacing(PUMP_VISUAL_METRICS.space_4)
+            .fill_width()
+            .height(PRESET_TIMING_HEIGHT * 0.5),
+    ])
+    .spacing(PUMP_VISUAL_METRICS.space_4)
+    .fill_width()
+    .height(PRESET_TIMING_HEIGHT);
     let timing_strip = row([
         preset_dropdown
             .build()
             .width(150.0)
             .height(PRESET_TIMING_HEIGHT),
-        enum_control_row(
-            "Sync",
-            sync_division_label(sync).to_string(),
-            normalize_sync_division(sync),
-            RadiantEditorMessage::SyncDivision,
-        ),
-        slider_control_row(
-            "Swing",
-            value_label_node(
-                NumericEntryTarget::Swing,
-                format!("{:.0}%", swing * 100.0),
-                state.numeric_entry.as_ref(),
-            ),
-            swing,
-            RadiantEditorMessage::Swing,
-        ),
-        enum_control_row(
-            "Trigger",
-            if state.status.sidechain_available() {
-                TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
-            } else if params.trigger_mode() == TRIGGER_MODE_SIDECHAIN {
-                "Sidechain (unavailable)".to_string()
-            } else {
-                TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
-            },
-            params.trigger_mode() as f32,
-            RadiantEditorMessage::TriggerMode,
-        ),
-        enum_control_row(
-            "Mode",
-            PROCESSING_MODE_LABELS[params.mode()].to_string(),
-            params.mode() as f32,
-            RadiantEditorMessage::ProcessingMode,
-        ),
+        timing_controls,
     ])
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
