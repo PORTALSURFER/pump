@@ -2,6 +2,7 @@
 
 use std::{fs, path::PathBuf, sync::Arc};
 
+use crate::automation_queue::PumpAutomationQueue;
 use image::{ColorType, ImageFormat};
 use radiant::{
     gui::{
@@ -19,7 +20,6 @@ use radiant::{
         WidgetState,
     },
 };
-use toybox::clap::automation::AutomationQueue;
 
 use super::visual_system::{pump_meter_colors, pump_theme, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS};
 use super::{
@@ -66,7 +66,7 @@ fn render_case_with_bypass(
         let mut editor = RadiantPumpEditor::new(
             params,
             Arc::new(GuiStatus::default()),
-            Arc::new(AutomationQueue::default()),
+            Arc::new(PumpAutomationQueue::default()),
             None,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,

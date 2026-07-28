@@ -31,8 +31,9 @@ use radiant::widgets::{
 use toybox::clack_extensions::params::HostParams;
 use toybox::clack_plugin::prelude::HostSharedHandle;
 use toybox::clack_plugin::utils::ClapId;
-use toybox::clap::automation::{AutomationConfig, AutomationEnqueueStatus, AutomationQueue};
+use toybox::clap::automation::AutomationConfig;
 
+use crate::automation_queue::PumpAutomationQueue;
 use crate::curve::{
     cyclically_offset_editable_curve, sample_editable_curve, CurveNode, CurveSegment,
     EditableCurve, MAX_EDITABLE_NODES, MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
@@ -83,18 +84,13 @@ pub(crate) trait HostParamEditSink: Send + Sync {
 }
 
 struct ClapHostParamEditSink {
-    queue: Arc<AutomationQueue>,
+    queue: Arc<PumpAutomationQueue>,
     requester: Option<HostParamFlushRequester>,
 }
 
 impl HostParamEditSink for ClapHostParamEditSink {
     fn edit(&self, config: &AutomationConfig, param_id: ClapId, value: f64) -> bool {
-        let begin = self.queue.push_gesture_begin(config, param_id);
-        let value = self.queue.push_value(config, param_id, value);
-        let end = self.queue.push_gesture_end(config, param_id);
-        let complete = [begin, value, end]
-            .into_iter()
-            .all(|status| status == AutomationEnqueueStatus::Enqueued);
+        let complete = self.queue.push_gesture_edit(config, param_id, value);
         if complete {
             if let Some(requester) = self.requester {
                 requester.request_flush();
@@ -702,7 +698,7 @@ impl RadiantPumpEditor {
     pub(crate) fn new(
         params: Arc<PumpParams>,
         status: Arc<GuiStatus>,
-        automation_queue: Arc<AutomationQueue>,
+        automation_queue: Arc<PumpAutomationQueue>,
         host_param_requester: Option<HostParamFlushRequester>,
         width: u32,
         height: u32,
@@ -928,7 +924,7 @@ pub(crate) fn radiant_editor_frame_for_params(
             params,
             status,
             Arc::new(ClapHostParamEditSink {
-                queue: Arc::new(AutomationQueue::default()),
+                queue: Arc::new(PumpAutomationQueue::default()),
                 requester: None,
             }),
         ),
@@ -1457,13 +1453,16 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             push_radiant_param_update(state, PARAM_MODE_ID, state.params.mode() as f64);
         }
         RadiantEditorMessage::ToggleBypass => {
-            let value = if state.params.bypassed() {
-                BYPASS_ACTIVE_VALUE
-            } else {
-                BYPASS_BYPASSED_VALUE
-            };
-            state.params.set_bypass(value);
-            push_radiant_param_update(state, PARAM_BYPASS_ID, value as f64);
+            if try_toggle_bypass(
+                state.params.as_ref(),
+                state.host_param_edit_sink.as_ref(),
+                &state.automation_config,
+            ) {
+                #[cfg(test)]
+                {
+                    state.automation_flush_count += 1;
+                }
+            }
         }
         RadiantEditorMessage::Curve(message) => {
             state.push_history();
@@ -1644,6 +1643,24 @@ fn push_radiant_param_update(state: &mut RadiantEditorState, param_id: ClapId, v
             state.automation_flush_count += 1;
         }
     }
+}
+
+/// Ask the host to accept the next bypass value before changing shared state.
+pub(crate) fn try_toggle_bypass(
+    params: &PumpParams,
+    sink: &dyn HostParamEditSink,
+    config: &AutomationConfig,
+) -> bool {
+    let value = if params.bypassed() {
+        BYPASS_ACTIVE_VALUE
+    } else {
+        BYPASS_BYPASSED_VALUE
+    };
+    if !sink.edit(config, PARAM_BYPASS_ID, value as f64) {
+        return false;
+    }
+    params.set_bypass(value);
+    true
 }
 
 fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMessage) {
@@ -3897,13 +3914,14 @@ mod tests {
     use radiant::widgets::PointerModifiers;
     use toybox::clack_plugin::events::io::EventBuffer;
     use toybox::clack_plugin::events::spaces::CoreEventSpace;
+    use toybox::clap::automation::{AutomationDropPolicy, AutomationQueueConfig};
 
     fn editor_state(params: Arc<PumpParams>) -> RadiantEditorState {
         RadiantEditorState::new(
             params,
             Arc::new(GuiStatus::default()),
             Arc::new(ClapHostParamEditSink {
-                queue: Arc::new(AutomationQueue::default()),
+                queue: Arc::new(PumpAutomationQueue::default()),
                 requester: None,
             }),
         )
@@ -4207,7 +4225,7 @@ mod tests {
     #[test]
     fn radiant_editor_reduces_slider_messages_to_params() {
         let params = Arc::new(PumpParams::new());
-        let queue = Arc::new(AutomationQueue::default());
+        let queue = Arc::new(PumpAutomationQueue::default());
         let mut state = RadiantEditorState::new(
             Arc::clone(&params),
             Arc::new(GuiStatus::default()),
@@ -4266,7 +4284,7 @@ mod tests {
     #[test]
     fn bypass_reducer_emits_complete_clap_gesture_and_stays_out_of_undo_history() {
         let params = Arc::new(PumpParams::new());
-        let queue = Arc::new(AutomationQueue::default());
+        let queue = Arc::new(PumpAutomationQueue::default());
         let mut state = RadiantEditorState::new(
             Arc::clone(&params),
             Arc::new(GuiStatus::default()),
@@ -4297,12 +4315,44 @@ mod tests {
     }
 
     #[test]
+    fn bypass_reducer_keeps_state_active_when_clap_gesture_cannot_fit() {
+        let params = Arc::new(PumpParams::new());
+        let queue = Arc::new(PumpAutomationQueue::with_config(
+            AutomationQueueConfig::new(3, AutomationDropPolicy::DropNewest),
+        ));
+        let config = AutomationConfig::default();
+        assert_eq!(
+            queue.push_value(&config, PARAM_MIX_ID, 0.25),
+            toybox::clap::automation::AutomationEnqueueStatus::Enqueued
+        );
+        let mut state = RadiantEditorState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            }),
+        );
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::ToggleBypass);
+
+        assert!(!params.bypassed());
+        assert_eq!(state.automation_flush_count, 0);
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::with_capacity(3);
+        let stats = queue.drain_to_output(&mut output, &mut scratch);
+        assert_eq!(stats.attempted, 1);
+        assert_eq!(buffer.len(), 1);
+    }
+
+    #[test]
     fn hosted_editor_reprojects_host_bypass_and_recent_automation_state() {
         let params = Arc::new(PumpParams::new());
         let mut editor = RadiantPumpEditor::new(
             Arc::clone(&params),
             Arc::new(GuiStatus::default()),
-            Arc::new(AutomationQueue::default()),
+            Arc::new(PumpAutomationQueue::default()),
             None,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
@@ -6993,7 +7043,7 @@ mod tests {
         let mut editor = RadiantPumpEditor::new(
             params,
             Arc::clone(&status),
-            Arc::new(AutomationQueue::default()),
+            Arc::new(PumpAutomationQueue::default()),
             None,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
@@ -7052,7 +7102,7 @@ mod tests {
         let mut editor = RadiantPumpEditor::new(
             Arc::clone(&params),
             Arc::clone(&status),
-            Arc::new(AutomationQueue::default()),
+            Arc::new(PumpAutomationQueue::default()),
             None,
             WINDOW_WIDTH,
             WINDOW_HEIGHT,

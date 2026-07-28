@@ -15,6 +15,8 @@ pub(crate) mod visual_system;
 #[cfg(all(target_os = "macos", feature = "screenshot-test", test))]
 mod screenshot_tests;
 
+#[cfg(all(target_os = "macos", feature = "vst3", test))]
+pub(crate) use radiant_editor::try_toggle_bypass;
 #[cfg(all(target_os = "macos", any(feature = "radiant-gui", feature = "vst3")))]
 #[cfg(feature = "vst3")]
 pub(crate) use radiant_editor::HostParamEditSink;

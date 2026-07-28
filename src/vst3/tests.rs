@@ -12,6 +12,9 @@ enum RecordedEditCall {
 
 struct RecordingComponentHandler {
     calls: Arc<StdMutex<Vec<RecordedEditCall>>>,
+    begin_result: tresult,
+    perform_result: tresult,
+    end_result: tresult,
 }
 
 impl Class for RecordingComponentHandler {
@@ -24,7 +27,7 @@ impl IComponentHandlerTrait for RecordingComponentHandler {
             .lock()
             .expect("recording handler lock")
             .push(RecordedEditCall::Begin(id));
-        kResultOk
+        self.begin_result
     }
 
     unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
@@ -32,7 +35,7 @@ impl IComponentHandlerTrait for RecordingComponentHandler {
             .lock()
             .expect("recording handler lock")
             .push(RecordedEditCall::Perform(id, value));
-        kResultOk
+        self.perform_result
     }
 
     unsafe fn endEdit(&self, id: ParamID) -> tresult {
@@ -40,7 +43,7 @@ impl IComponentHandlerTrait for RecordingComponentHandler {
             .lock()
             .expect("recording handler lock")
             .push(RecordedEditCall::End(id));
-        kResultOk
+        self.end_result
     }
 
     unsafe fn restartComponent(&self, _flags: i32) -> tresult {
@@ -149,6 +152,9 @@ fn vst3_ui_sink_delivers_begin_value_end_on_component_handler() {
     let calls = Arc::new(StdMutex::new(Vec::new()));
     let handler = ComWrapper::new(RecordingComponentHandler {
         calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultOk,
     })
     .to_com_ptr::<IComponentHandler>()
     .expect("component handler interface");
@@ -157,13 +163,141 @@ fn vst3_ui_sink_delivers_begin_value_end_on_component_handler() {
         kResultOk
     );
 
-    let sink = gui_adapter::Vst3HostParamEditSink { shared };
-    assert!(crate::gui::HostParamEditSink::edit(
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+    assert!(crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
         &sink,
         &toybox::clap::automation::AutomationConfig::default(),
-        crate::params::PARAM_BYPASS_ID,
-        1.0,
     ));
+    assert!(shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM),
+            RecordedEditCall::Perform(crate::params::PARAM_BYPASS_NUM, 1.0),
+            RecordedEditCall::End(crate::params::PARAM_BYPASS_NUM),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_keeps_bypass_state_when_component_handler_is_missing() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(!crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(!shared.params.bypassed());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_keeps_bypass_state_when_component_handler_rejects_edit() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultFalse,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(!crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(!shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM),
+            RecordedEditCall::Perform(crate::params::PARAM_BYPASS_NUM, 1.0),
+            RecordedEditCall::End(crate::params::PARAM_BYPASS_NUM),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_short_circuits_when_component_handler_rejects_begin() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultFalse,
+        perform_result: kResultOk,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(!crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(!shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM)]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_commits_accepted_value_when_component_handler_rejects_end() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultFalse,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(shared.params.bypassed());
     assert_eq!(
         *calls.lock().expect("recorded calls lock"),
         vec![

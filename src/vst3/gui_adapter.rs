@@ -25,10 +25,12 @@ impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
         };
         let id = param_id.get();
         unsafe {
-            let began = handler.beginEdit(id) == kResultOk;
+            if handler.beginEdit(id) != kResultOk {
+                return false;
+            }
             let performed = handler.performEdit(id, normalized) == kResultOk;
-            let ended = handler.endEdit(id) == kResultOk;
-            began && performed && ended
+            let _ended = handler.endEdit(id);
+            performed
         }
     }
 }

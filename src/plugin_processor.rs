@@ -411,7 +411,7 @@ mod tests {
         PumpShared {
             params: Arc::new(PumpParams::new()),
             status: Arc::new(GuiStatus::default()),
-            automation_queue: Arc::new(AutomationQueue::default()),
+            automation_queue: Arc::new(PumpAutomationQueue::default()),
         }
     }
 

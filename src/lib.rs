@@ -14,13 +14,14 @@ use toybox::clack_plugin;
 use toybox::clack_plugin::events::spaces::CoreEventSpace;
 use toybox::clack_plugin::prelude::*;
 use toybox::clack_plugin::stream::{InputStream, OutputStream};
-use toybox::clap::automation::{AutomationEvent, AutomationQueue};
+use toybox::clap::automation::AutomationEvent;
 use toybox::clap::prelude::apply_param_events;
 use toybox::clap::process::{min_len, split_channel};
 use toybox::clap::state::{read_versioned_payload, write_versioned_payload};
 use toybox::clap::transport::transport_state_from_transport;
 use toybox::dsp::{AtomicF32, TransportState};
 
+use crate::automation_queue::PumpAutomationQueue;
 use crate::dsp::{DspSettings, PumpEngine};
 #[cfg(all(target_os = "macos", feature = "radiant-gui"))]
 use crate::gui::HostParamFlushRequester;
@@ -40,6 +41,7 @@ use crate::sample_automation::{
 };
 use crate::time_utils::monotonic_micros;
 
+mod automation_queue;
 #[cfg(test)]
 mod build_support;
 mod curve;
@@ -162,7 +164,7 @@ impl DefaultPluginFactory for PumpPlugin {
         Ok(PumpShared {
             params: Arc::new(PumpParams::new()),
             status: Arc::new(GuiStatus::default()),
-            automation_queue: Arc::new(AutomationQueue::default()),
+            automation_queue: Arc::new(PumpAutomationQueue::default()),
         })
     }
 
@@ -204,7 +206,7 @@ pub struct PumpShared {
     /// Real-time telemetry exposed to GUI.
     pub status: Arc<GuiStatus>,
     /// Pending GUI automation events destined for the host.
-    pub automation_queue: Arc<AutomationQueue>,
+    pub automation_queue: Arc<PumpAutomationQueue>,
 }
 
 impl PluginShared<'_> for PumpShared {}
