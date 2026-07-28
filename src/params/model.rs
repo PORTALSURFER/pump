@@ -97,10 +97,12 @@ pub const PARAM_SYNC_DIVISION_NUM: u32 = 5;
 /// Host-visible numeric parameter id for the minimum wet gain floor.
 pub const PARAM_FLOOR_NUM: u32 = 6;
 /// Host-visible numeric parameter id for the curve trigger source.
+#[allow(dead_code)]
 pub const PARAM_TRIGGER_MODE_NUM: u32 = 7;
 /// Host-visible numeric parameter id for evaluated gain smoothing.
 pub const PARAM_SMOOTH_NUM: u32 = 8;
 /// Host-visible numeric parameter id for the processing mode.
+#[allow(dead_code)]
 pub const PARAM_MODE_NUM: u32 = 9;
 /// Host-visible numeric parameter id for click-safe host bypass.
 pub const PARAM_BYPASS_NUM: u32 = 10;
@@ -122,10 +124,12 @@ pub const PARAM_SYNC_DIVISION_ID: ClapId = ClapId::new(PARAM_SYNC_DIVISION_NUM);
 /// Parameter id for the minimum wet gain floor.
 pub const PARAM_FLOOR_ID: ClapId = ClapId::new(PARAM_FLOOR_NUM);
 /// Parameter id for the curve trigger source.
+#[allow(dead_code)]
 pub const PARAM_TRIGGER_MODE_ID: ClapId = ClapId::new(PARAM_TRIGGER_MODE_NUM);
 /// Parameter id for evaluated gain smoothing.
 pub const PARAM_SMOOTH_ID: ClapId = ClapId::new(PARAM_SMOOTH_NUM);
 /// Parameter id for the processing mode.
+#[allow(dead_code)]
 pub const PARAM_MODE_ID: ClapId = ClapId::new(PARAM_MODE_NUM);
 /// Parameter id for click-safe host bypass.
 pub const PARAM_BYPASS_ID: ClapId = ClapId::new(PARAM_BYPASS_NUM);
@@ -144,31 +148,32 @@ pub const BYPASS_LABELS: [&str; 2] = ["ACTIVE", "BYPASSED"];
 pub const BYPASS_AUTOMATION_CUE_MICROS: u64 = 250_000;
 
 /// Host-synchronised curve triggering.
+#[allow(dead_code)]
 pub const TRIGGER_MODE_HOST: usize = 0;
-/// External sidechain transient triggering.
+/// Historical external-trigger value retained only for state compatibility.
+#[allow(dead_code)]
 pub const TRIGGER_MODE_SIDECHAIN: usize = 1;
-/// Human-readable trigger-source labels.
-pub const TRIGGER_MODE_LABELS: [&str; 2] = ["Host", "Sidechain"];
+/// Human-readable trigger-source labels retained for historical state values.
+#[allow(dead_code)]
+pub const TRIGGER_MODE_LABELS: [&str; 2] = ["Host", "Host"];
 
-/// The current Pump processing mode.
-///
-/// Classic is the unchanged Pump algorithm. Punch keeps the same curve and
-/// timing but applies half of the selected attenuation depth, preserving more
-/// transient energy while retaining the user's curve shape.
+/// Historical processing-mode values. Pump now always uses Classic.
 pub const PROCESSING_MODE_CLASSIC: usize = 0;
+#[allow(dead_code)]
 pub const PROCESSING_MODE_PUNCH: usize = 1;
-pub const PROCESSING_MODE_LABELS: [&str; 2] = ["Classic", "Punch"];
+#[allow(dead_code)]
+pub const PROCESSING_MODE_LABELS: [&str; 2] = ["Classic", "Classic"];
 
-/// Clamp an untrusted processing-mode value to a supported mode.
+/// Map historical processing-mode values to the sole supported mode.
 pub fn clamp_processing_mode(value: f32) -> usize {
-    if !value.is_finite() {
-        return PROCESSING_MODE_CLASSIC;
-    }
-    if value == PROCESSING_MODE_PUNCH as f32 {
-        PROCESSING_MODE_PUNCH
-    } else {
-        PROCESSING_MODE_CLASSIC
-    }
+    let _ = value;
+    PROCESSING_MODE_CLASSIC
+}
+
+/// Map historical trigger-source values to the sole supported host-clock mode.
+pub fn clamp_trigger_mode(value: f32) -> usize {
+    let _ = value;
+    TRIGGER_MODE_HOST
 }
 
 /// Default dry/wet blend.

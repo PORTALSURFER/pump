@@ -769,7 +769,7 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
             PaintPrimitive::StrokeRect(stroke) => Some(stroke.rect),
             PaintPrimitive::Text(text) => {
                 labels.push(text.text.as_str());
-                if matches!(text.text.as_str(), "Sync" | "Trigger" | "Mode") {
+                if text.text.as_str() == "Sync" {
                     timing_label_widths.push(text.rect.width());
                 }
                 Some(text.rect)
@@ -844,7 +844,7 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
         "quick-shape carousel must paint seeded curves instead of flat empty tiles"
     );
     for label in [
-        "PUMP", "Sync", "Trigger", "Mode", "DEPTH", "FLOOR", "OFFSET", "SMOOTH", "MIX", "OUTPUT",
+        "PUMP", "Sync", "DEPTH", "FLOOR", "OFFSET", "SMOOTH", "MIX", "OUTPUT",
     ] {
         assert!(labels.contains(&label), "missing editor label {label:?}");
     }

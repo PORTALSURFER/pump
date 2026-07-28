@@ -68,7 +68,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 12] = [
+const PARAM_DEFS: [ParamDef; 10] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -161,21 +161,6 @@ const PARAM_DEFS: [ParamDef; 12] = [
     },
     ParamDef {
         #[cfg(feature = "vst3")]
-        vst3_id: PARAM_TRIGGER_MODE_NUM,
-        id: PARAM_TRIGGER_MODE_ID,
-        name: "Trigger",
-        #[cfg(feature = "vst3")]
-        short_name: "Trigger",
-        #[cfg(feature = "vst3")]
-        units: "",
-        module: "Pump",
-        min_value: TRIGGER_MODE_HOST as f64,
-        max_value: TRIGGER_MODE_SIDECHAIN as f64,
-        default_value: DEFAULT_TRIGGER_MODE as f64,
-        flags: AUTO_ENUM,
-    },
-    ParamDef {
-        #[cfg(feature = "vst3")]
         vst3_id: PARAM_SMOOTH_NUM,
         id: PARAM_SMOOTH_ID,
         name: "Smooth",
@@ -188,21 +173,6 @@ const PARAM_DEFS: [ParamDef; 12] = [
         max_value: MAX_SMOOTH as f64,
         default_value: DEFAULT_SMOOTH as f64,
         flags: AUTO,
-    },
-    ParamDef {
-        #[cfg(feature = "vst3")]
-        vst3_id: PARAM_MODE_NUM,
-        id: PARAM_MODE_ID,
-        name: "Mode",
-        #[cfg(feature = "vst3")]
-        short_name: "Mode",
-        #[cfg(feature = "vst3")]
-        units: "",
-        module: "Pump",
-        min_value: PROCESSING_MODE_CLASSIC as f64,
-        max_value: PROCESSING_MODE_PUNCH as f64,
-        default_value: PROCESSING_MODE_CLASSIC as f64,
-        flags: AUTO_ENUM,
     },
     ParamDef {
         #[cfg(feature = "vst3")]
@@ -301,11 +271,7 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
     let plain = normalized_to_plain(normalized, def.min_value, def.max_value);
     if matches!(
         param_id,
-        PARAM_SYNC_DIVISION_ID
-            | PARAM_TRIGGER_MODE_ID
-            | PARAM_MODE_ID
-            | PARAM_BYPASS_ID
-            | PARAM_SOUND_ID
+        PARAM_SYNC_DIVISION_ID | PARAM_BYPASS_ID | PARAM_SOUND_ID
     ) {
         return Some(plain.round());
     }
@@ -364,9 +330,7 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_PHASE_OFFSET_ID => Some(params.phase_offset() as f64),
         PARAM_OUTPUT_GAIN_ID => Some(params.output_gain_db() as f64),
         PARAM_SYNC_DIVISION_ID => Some(params.sync_division() as f64),
-        PARAM_TRIGGER_MODE_ID => Some(params.trigger_mode() as f64),
         PARAM_SMOOTH_ID => Some(params.smooth() as f64),
-        PARAM_MODE_ID => Some(params.mode() as f64),
         PARAM_BYPASS_ID => Some(params.bypass_value() as f64),
         PARAM_SWING_ID => Some(params.swing() as f64),
         PARAM_SOUND_ID => Some(params.active_sound().index() as f64),
@@ -385,9 +349,7 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         PARAM_PHASE_OFFSET_ID => params.set_phase_offset(value as f32),
         PARAM_OUTPUT_GAIN_ID => params.set_output_gain_db(value as f32),
         PARAM_SYNC_DIVISION_ID => params.set_sync_division(value as f32),
-        PARAM_TRIGGER_MODE_ID => params.set_trigger_mode(value as f32),
         PARAM_SMOOTH_ID => params.set_smooth(value as f32),
-        PARAM_MODE_ID => params.set_mode(value as f32),
         PARAM_BYPASS_ID => params.set_bypass_from_host(value as f32),
         PARAM_SWING_ID => params.set_swing(value as f32),
         PARAM_SOUND_ID => {
@@ -472,14 +434,8 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
         PARAM_SYNC_DIVISION_ID => {
             Some(sync_division_label(clamp_sync_division(value as f32)).to_string())
         }
-        PARAM_TRIGGER_MODE_ID => TRIGGER_MODE_LABELS
-            .get(value.round().clamp(0.0, 1.0) as usize)
-            .map(|label| (*label).to_string()),
         PARAM_SMOOTH_ID => Some(format!("{:.0}%", (value * 100.0).clamp(0.0, 100.0))),
         PARAM_SWING_ID => Some(format!("{:.0}%", (value * 100.0).clamp(0.0, 100.0))),
-        PARAM_MODE_ID => PROCESSING_MODE_LABELS
-            .get(clamp_processing_mode(value as f32))
-            .map(|label| (*label).to_string()),
         PARAM_BYPASS_ID => BYPASS_LABELS
             .get(value.round().clamp(0.0, 1.0) as usize)
             .map(|label| (*label).to_string()),
@@ -530,13 +486,6 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
             Some(value.clamp(MIN_OUTPUT_GAIN_DB as f64, MAX_OUTPUT_GAIN_DB as f64))
         }
         PARAM_SYNC_DIVISION_ID => sync_division_index_from_text(raw).map(|index| index as f64),
-        PARAM_TRIGGER_MODE_ID => {
-            let normalized = raw.trim().to_ascii_lowercase();
-            TRIGGER_MODE_LABELS
-                .iter()
-                .position(|label| label.to_ascii_lowercase() == normalized)
-                .map(|index| index as f64)
-        }
         PARAM_SMOOTH_ID => {
             let stripped = raw.trim_end_matches('%').trim();
             let value: f64 = stripped.parse().ok()?;
@@ -546,18 +495,6 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
             let stripped = raw.trim_end_matches('%').trim();
             let value: f64 = stripped.parse().ok()?;
             Some((value / 100.0).clamp(MIN_SWING as f64, MAX_SWING as f64))
-        }
-        PARAM_MODE_ID => {
-            let normalized = raw.trim().to_ascii_lowercase();
-            PROCESSING_MODE_LABELS
-                .iter()
-                .position(|label| label.to_ascii_lowercase() == normalized)
-                .map(|index| index as f64)
-                .or_else(|| {
-                    raw.parse::<f64>()
-                        .ok()
-                        .map(|value| clamp_processing_mode(value as f32) as f64)
-                })
         }
         PARAM_BYPASS_ID => {
             let normalized = raw.trim().to_ascii_lowercase();

@@ -78,7 +78,12 @@ fn first_preset_quick_slot_count_offset(payload: &[u8]) -> usize {
 fn skip_encoded_curve(payload: &[u8], mut offset: usize, with_phase_metadata: bool) -> usize {
     let node_count = read_u32(payload, offset) as usize;
     offset += 4 + node_count * 8 + node_count.saturating_sub(1) * 4;
-    if with_phase_metadata && read_u32(payload, offset) == u32::from_le_bytes(*b"PHAS") {
+    if with_phase_metadata
+        && payload
+            .get(offset..offset.saturating_add(4))
+            .is_some_and(|bytes| bytes.len() == 4)
+        && read_u32(payload, offset) == u32::from_le_bytes(*b"PHAS")
+    {
         offset += 8;
         let source_node_count = read_u32(payload, offset) as usize;
         offset += 4 + source_node_count * 8 + source_node_count.saturating_sub(1) * 4;
@@ -126,6 +131,32 @@ fn v14_extension_start(payload: &[u8]) -> usize {
         offset += 4 + 4 + 4 + 1 + 4;
     }
     offset + 20
+}
+
+fn first_preset_trigger_and_mode_offsets(payload: &[u8]) -> (usize, usize) {
+    let mut offset = first_preset_start(payload);
+    let name_len = read_u32(payload, offset) as usize;
+    offset += 4 + name_len + 6 * 4 + 1;
+    offset = skip_encoded_curve(payload, offset, true);
+    let quick_slot_count = read_u32(payload, offset) as usize;
+    offset += 4;
+    for _ in 0..quick_slot_count {
+        offset = skip_encoded_curve(payload, offset, true);
+    }
+    (offset, offset + 8)
+}
+
+fn sound_state_offsets(payload: &[u8], start: usize) -> (usize, usize, usize) {
+    let trigger = start + 24;
+    let mode = start + 32;
+    let mut offset = start + 40;
+    offset = skip_encoded_curve(payload, offset, true);
+    let quick_slot_count = read_u32(payload, offset) as usize;
+    offset += 4;
+    for _ in 0..quick_slot_count {
+        offset = skip_encoded_curve(payload, offset, true);
+    }
+    (trigger, mode, offset)
 }
 
 fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
@@ -210,7 +241,7 @@ fn sample_params() -> PumpParams {
 }
 
 #[test]
-fn decode_v7_state_migrates_trigger_mode_to_host() {
+fn decode_v7_state_defaults_trigger_mode_to_host() {
     let params = sample_params();
     params.set_trigger_mode(super::TRIGGER_MODE_SIDECHAIN as f32);
     let payload = payload_for_state_version(&params, 7);
@@ -222,6 +253,64 @@ fn decode_v7_state_migrates_trigger_mode_to_host() {
         restored.preset_bank_snapshot().presets[0].trigger_mode,
         super::DEFAULT_TRIGGER_MODE
     );
+}
+
+#[test]
+fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
+    let source = sample_params();
+    let mut payload = encode_state_payload(&source);
+    let extension_start = v14_extension_start(&payload);
+    write_f32(
+        &mut payload,
+        extension_start - 20,
+        super::TRIGGER_MODE_SIDECHAIN as f32,
+    );
+    write_f32(
+        &mut payload,
+        extension_start - 12,
+        super::PROCESSING_MODE_PUNCH as f32,
+    );
+    let (preset_trigger, preset_mode) = first_preset_trigger_and_mode_offsets(&payload);
+    write_u32(
+        &mut payload,
+        preset_trigger,
+        super::TRIGGER_MODE_SIDECHAIN as u32,
+    );
+    write_u32(
+        &mut payload,
+        preset_mode,
+        super::PROCESSING_MODE_PUNCH as u32,
+    );
+    let (a_trigger, a_mode, a_end) = sound_state_offsets(&payload, extension_start + 4);
+    let b_start = a_end;
+    let (b_trigger, b_mode, b_end) = sound_state_offsets(&payload, b_start);
+    assert_eq!(a_end, b_start);
+    assert_eq!(b_end, payload.len());
+    write_u32(
+        &mut payload,
+        a_trigger,
+        super::TRIGGER_MODE_SIDECHAIN as u32,
+    );
+    write_u32(&mut payload, a_mode, super::PROCESSING_MODE_PUNCH as u32);
+    write_u32(
+        &mut payload,
+        b_trigger,
+        super::TRIGGER_MODE_SIDECHAIN as u32,
+    );
+    write_u32(&mut payload, b_mode, super::PROCESSING_MODE_PUNCH as u32);
+
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("current state should decode");
+    assert_eq!(restored.trigger_mode(), super::TRIGGER_MODE_HOST);
+    assert_eq!(restored.mode(), super::PROCESSING_MODE_CLASSIC);
+    let preset = &restored.preset_bank_snapshot().presets[0];
+    assert_eq!(preset.trigger_mode, super::TRIGGER_MODE_HOST);
+    assert_eq!(preset.mode, super::PROCESSING_MODE_CLASSIC);
+    for side in [super::SoundSide::A, super::SoundSide::B] {
+        let state = restored.sound_state_snapshot(side);
+        assert_eq!(state.trigger_mode, super::TRIGGER_MODE_HOST);
+        assert_eq!(state.mode, super::PROCESSING_MODE_CLASSIC);
+    }
 }
 
 #[test]
@@ -267,18 +356,18 @@ fn decode_v12_preserves_controls_and_defaults_swing() {
     let restored = PumpParams::new();
     decode_state_payload(&restored, &payload).expect("v12 state should decode");
 
-    assert_eq!(restored.trigger_mode(), super::TRIGGER_MODE_SIDECHAIN);
+    assert_eq!(restored.trigger_mode(), super::TRIGGER_MODE_HOST);
     assert!((restored.smooth() - 0.67).abs() < 1.0e-6);
-    assert_eq!(restored.mode(), super::PROCESSING_MODE_PUNCH);
+    assert_eq!(restored.mode(), super::PROCESSING_MODE_CLASSIC);
     assert!(restored.bypassed());
     assert_eq!(restored.swing(), super::DEFAULT_SWING);
 
     let bank = restored.preset_bank_snapshot();
     assert!(!bank.presets.is_empty());
     for preset in bank.presets {
-        assert_eq!(preset.trigger_mode, super::TRIGGER_MODE_SIDECHAIN);
+        assert_eq!(preset.trigger_mode, super::TRIGGER_MODE_HOST);
         assert!((preset.smooth - 0.67).abs() < 1.0e-6);
-        assert_eq!(preset.mode, super::PROCESSING_MODE_PUNCH);
+        assert_eq!(preset.mode, super::PROCESSING_MODE_CLASSIC);
         assert_eq!(preset.swing, super::DEFAULT_SWING);
     }
 }

@@ -109,8 +109,9 @@ impl PumpParams {
 
     /// Get the selected curve trigger source.
     pub fn trigger_mode(&self) -> usize {
-        (self.realtime_trigger_mode[self.realtime_index()].load(Ordering::Relaxed) as usize)
-            .min(TRIGGER_MODE_SIDECHAIN)
+        clamp_trigger_mode(
+            self.realtime_trigger_mode[self.realtime_index()].load(Ordering::Relaxed) as f32,
+        )
     }
 
     /// Get evaluated wet-gain smoothing amount.
@@ -118,7 +119,7 @@ impl PumpParams {
         self.realtime_smooth[self.realtime_index()].load(Ordering::Relaxed)
     }
 
-    /// Get the selected processing mode, falling back to Classic for unknown values.
+    /// Get the sole supported processing mode, mapping historical values to Classic.
     pub fn mode(&self) -> usize {
         clamp_processing_mode(
             self.realtime_mode[self.realtime_index()].load(Ordering::Relaxed) as f32,
@@ -224,10 +225,7 @@ impl PumpParams {
 
     /// Set the curve trigger source from a scalar host value.
     pub fn set_trigger_mode(&self, value: f32) {
-        let value = value
-            .round()
-            .clamp(TRIGGER_MODE_HOST as f32, TRIGGER_MODE_SIDECHAIN as f32)
-            as u32;
+        let value = clamp_trigger_mode(value) as u32;
         self.trigger_mode.store(value, Ordering::Relaxed);
         self.realtime_trigger_mode[self.realtime_index()].store(value, Ordering::Relaxed);
         self.mark_active_sound_dirty();
@@ -246,7 +244,7 @@ impl PumpParams {
         self.mark_active_sound_dirty();
     }
 
-    /// Set the processing mode, falling back to Classic for unknown values.
+    /// Set the processing mode, mapping historical values to Classic.
     pub fn set_mode(&self, value: f32) {
         let value = clamp_processing_mode(value) as u32;
         self.mode.store(value, Ordering::Relaxed);
@@ -642,12 +640,12 @@ impl PumpParams {
         );
         if index == active_index {
             self.trigger_mode.store(
-                state.trigger_mode.min(TRIGGER_MODE_SIDECHAIN) as u32,
+                clamp_trigger_mode(state.trigger_mode as f32) as u32,
                 Ordering::Relaxed,
             );
         }
         self.realtime_trigger_mode[index].store(
-            state.trigger_mode.min(TRIGGER_MODE_SIDECHAIN) as u32,
+            clamp_trigger_mode(state.trigger_mode as f32) as u32,
             Ordering::Relaxed,
         );
         if index == active_index {
@@ -789,7 +787,7 @@ impl PumpParams {
                 DEFAULT_FLOOR_DB
             };
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
-            preset.trigger_mode = preset.trigger_mode.min(TRIGGER_MODE_SIDECHAIN);
+            preset.trigger_mode = clamp_trigger_mode(preset.trigger_mode as f32);
             preset.mode = clamp_processing_mode(preset.mode as f32);
             preset.swing = if preset.swing.is_finite() {
                 preset.swing.clamp(MIN_SWING, MAX_SWING)

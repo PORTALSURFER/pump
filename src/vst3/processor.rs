@@ -6,7 +6,6 @@
 
 use super::*;
 use crate::incoming_waveform::IncomingWaveformCapture;
-use crate::sample_automation::RawSidechainBlock;
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,7 +67,6 @@ pub(super) struct PumpVst3Processor {
     shared: Arc<PumpVst3Shared>,
     pub(super) runtime: RealtimeRuntime,
     pub(super) runtime_handoff: RuntimeHandoff,
-    sidechain_bus_active: AtomicBool,
 }
 
 impl PumpVst3Processor {
@@ -76,7 +74,6 @@ impl PumpVst3Processor {
         Self {
             runtime: RealtimeRuntime::new(PumpVst3Runtime::new(shared.params.as_ref())),
             runtime_handoff: RuntimeHandoff::new(),
-            sidechain_bus_active: AtomicBool::new(false),
             shared,
         }
     }
@@ -118,7 +115,7 @@ impl IComponentTrait for PumpVst3Processor {
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
         match media_type as MediaTypes {
             MediaTypes_::kAudio => match dir as BusDirections {
-                BusDirections_::kInput => 2,
+                BusDirections_::kInput => 1,
                 BusDirections_::kOutput => 1,
                 _ => 0,
             },
@@ -147,7 +144,6 @@ impl IComponentTrait for PumpVst3Processor {
                 BusTypes_::kMain as BusType,
                 BusInfo_::BusFlags_::kDefaultActive as u32,
             ),
-            BusDirections_::kInput if index == 1 => ("Sidechain", BusTypes_::kAux as BusType, 0),
             BusDirections_::kOutput if index == 0 => (
                 "Output",
                 BusTypes_::kMain as BusType,
@@ -180,18 +176,13 @@ impl IComponentTrait for PumpVst3Processor {
         media_type: MediaType,
         dir: BusDirection,
         index: i32,
-        state: TBool,
+        _state: TBool,
     ) -> tresult {
         if media_type as MediaTypes != MediaTypes_::kAudio {
             return kInvalidArgument;
         }
         match dir as BusDirections {
-            BusDirections_::kInput if (0..2).contains(&index) => {
-                if index == 1 {
-                    self.sidechain_bus_active
-                        .store(state != 0, Ordering::Release);
-                }
-            }
+            BusDirections_::kInput if index == 0 => {}
             BusDirections_::kOutput if index == 0 => {}
             _ => return kInvalidArgument,
         }
@@ -305,16 +296,13 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
         if data.is_null() {
-            self.shared.status.set_sidechain_available(false);
             return kInvalidArgument;
         }
 
         let process_data = unsafe { &*data };
-        let sidechain_bus_active = self.sidechain_bus_active.load(Ordering::Acquire);
         let frame_count = process_data.numSamples.max(0) as usize;
         let Some(mut runtime) = self.runtime.try_acquire() else {
             self.shared.status.mark_gain_reduction_inactive();
-            self.shared.status.set_sidechain_available(false);
             apply_vst3_param_points_immediately(process_data, self.shared.params.as_ref());
             self.shared
                 .status
@@ -328,9 +316,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             {
                 return kInvalidArgument;
             }
-            let Some((buffers, _sidechain)) =
-                (unsafe { raw_stereo_f32_buffers(process_data, sidechain_bus_active) })
-            else {
+            let Some(buffers) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
                 return unsafe { silence_valid_stereo_output(process_data) };
             };
             unsafe { buffers.silence() };
@@ -346,7 +332,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         // range or sample format to validate after consuming parameter changes.
         if process_data.numOutputs == 0 {
             self.shared.status.mark_gain_reduction_inactive();
-            self.shared.status.set_sidechain_available(false);
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -363,7 +348,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
         {
             self.shared.status.mark_gain_reduction_inactive();
-            self.shared.status.set_sidechain_available(false);
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -376,11 +360,8 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             return kInvalidArgument;
         }
 
-        let Some((buffers, sidechain)) =
-            (unsafe { raw_stereo_f32_buffers(process_data, sidechain_bus_active) })
-        else {
+        let Some(buffers) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
             self.shared.status.mark_gain_reduction_inactive();
-            self.shared.status.set_sidechain_available(false);
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -392,9 +373,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             );
             return unsafe { silence_valid_stereo_output(process_data) };
         };
-        self.shared
-            .status
-            .set_sidechain_available(sidechain.is_some());
 
         let pending = self.runtime_handoff.take_pending();
         if let Some(sample_rate) = pending.sample_rate {
@@ -445,7 +423,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 &mut settings,
                 &mut runtime.last_curve_revision,
                 transport,
-                sidechain,
                 Some(IncomingWaveformCapture::new(
                     self.shared.status.incoming_waveform_buffer(),
                     &mut runtime.waveform_writer,
@@ -482,11 +459,8 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
 /// Validate a VST3 stereo f32 block while retaining raw pointers so exact
 /// in-place input/output channel aliases never become overlapping Rust slices.
-unsafe fn raw_stereo_f32_buffers(
-    data: &ProcessData,
-    sidechain_bus_active: bool,
-) -> Option<(RawStereoBlock, Option<RawSidechainBlock>)> {
-    if !(data.numInputs == 1 || data.numInputs == 2)
+unsafe fn raw_stereo_f32_buffers(data: &ProcessData) -> Option<RawStereoBlock> {
+    if data.numInputs != 1
         || data.numOutputs != 1
         || data.inputs.is_null()
         || data.outputs.is_null()
@@ -520,27 +494,7 @@ unsafe fn raw_stereo_f32_buffers(
         output_left: output_channels[0],
         output_right: output_channels[1],
     };
-    let sidechain = if sidechain_bus_active && data.numInputs == 2 {
-        let sidechain_bus = unsafe { &*data.inputs.add(1) };
-        if sidechain_bus.numChannels == 2 && !sidechain_bus.__field0.channelBuffers32.is_null() {
-            let sidechain_channels =
-                unsafe { slice::from_raw_parts(sidechain_bus.__field0.channelBuffers32, 2) };
-            if sidechain_channels.iter().all(|channel| !channel.is_null()) {
-                Some(RawSidechainBlock {
-                    input_left: sidechain_channels[0],
-                    input_right: sidechain_channels[1],
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    Some((main, sidechain))
+    Some(main)
 }
 
 fn prepare_vst3_param_schedule(

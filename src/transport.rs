@@ -78,9 +78,7 @@ mod tests {
             phase_offset: 0.2,
             output_gain_db: 0.0,
             beats_per_cycle: 4.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
             swing: 0.0,
             bypassed: false,
         };
@@ -103,9 +101,7 @@ mod tests {
             phase_offset: 0.2,
             output_gain_db: 0.0,
             beats_per_cycle: 4.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
             swing: 1.0,
             bypassed: false,
         };
@@ -131,9 +127,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
             swing: 0.0,
             bypassed: false,
         };

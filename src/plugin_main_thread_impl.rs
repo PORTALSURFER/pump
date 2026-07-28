@@ -9,12 +9,8 @@ use super::*;
 impl<'a> PluginMainThread<'a, PumpShared> for PumpMainThread<'a> {}
 
 impl PluginAudioPortsImpl for PumpMainThread<'_> {
-    fn count(&mut self, is_input: bool) -> u32 {
-        if is_input {
-            2
-        } else {
-            1
-        }
+    fn count(&mut self, _is_input: bool) -> u32 {
+        1
     }
 
     fn get(&mut self, index: u32, is_input: bool, writer: &mut AudioPortInfoWriter) {
@@ -24,14 +20,6 @@ impl PluginAudioPortsImpl for PumpMainThread<'_> {
                 name: b"main",
                 channel_count: 2,
                 flags: AudioPortFlags::IS_MAIN,
-                port_type: Some(AudioPortType::STEREO),
-                in_place_pair: None,
-            }),
-            (true, 1) => writer.set(&AudioPortInfo {
-                id: ClapId::new(1),
-                name: b"sidechain",
-                channel_count: 2,
-                flags: AudioPortFlags::empty(),
                 port_type: Some(AudioPortType::STEREO),
                 in_place_pair: None,
             }),

@@ -420,7 +420,7 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             phase_offset,
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
-            trigger_mode: trigger_mode.min(TRIGGER_MODE_SIDECHAIN),
+            trigger_mode: clamp_trigger_mode(trigger_mode as f32),
             smooth,
             mode,
             swing,
@@ -556,6 +556,17 @@ mod tests {
         node_count_offset + 4 + curve_bytes
     }
 
+    fn trigger_and_mode_offsets(payload: &[u8]) -> (usize, usize) {
+        let mut offset = quick_slot_count_offset(payload);
+        let quick_slot_count = payload_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_slot_count {
+            let node_count = payload_u32(payload, offset) as usize;
+            offset += 4 + node_count * 8 + node_count.saturating_sub(1) * 4;
+        }
+        (offset, offset + 8)
+    }
+
     fn encoded_single_preset_bank() -> Vec<u8> {
         encode_preset_bank_payload(&PumpPresetBank {
             selected: 0,
@@ -644,9 +655,9 @@ mod tests {
                     phase_offset: 0.13,
                     output_gain_db: -1.5,
                     sync_division: 3,
-                    trigger_mode: TRIGGER_MODE_SIDECHAIN,
+                    trigger_mode: TRIGGER_MODE_HOST,
                     smooth: 0.58,
-                    mode: PROCESSING_MODE_PUNCH,
+                    mode: PROCESSING_MODE_CLASSIC,
                     swing: DEFAULT_SWING,
                     editable_curve: EditableCurve {
                         nodes: vec![
@@ -672,6 +683,22 @@ mod tests {
         let loaded = decode_preset_bank_payload(&payload).expect("preset store decode should pass");
         assert_eq!(loaded, bank);
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn persisted_preset_store_maps_legacy_sidechain_and_punch_to_supported_values() {
+        let path = temp_path("legacy-modes");
+        let mut payload = encoded_single_preset_bank();
+        let (trigger_offset, mode_offset) = trigger_and_mode_offsets(&payload);
+        write_payload_u32(&mut payload, trigger_offset, TRIGGER_MODE_SIDECHAIN as u32);
+        write_payload_u32(&mut payload, mode_offset, PROCESSING_MODE_PUNCH as u32);
+        fs::write(&path, payload).expect("legacy preset fixture should be writable");
+
+        let payload = fs::read(&path).expect("legacy preset fixture should be readable");
+        let bank = decode_preset_bank_payload(&payload).expect("legacy preset should decode");
+        assert_eq!(bank.presets[0].trigger_mode, TRIGGER_MODE_HOST);
+        assert_eq!(bank.presets[0].mode, PROCESSING_MODE_CLASSIC);
         let _ = fs::remove_file(path);
     }
 

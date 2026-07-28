@@ -1,7 +1,5 @@
 use super::*;
 use crate::incoming_waveform::{IncomingWaveformCapture, IncomingWaveformWriter};
-use crate::sample_automation::SidechainBlockSlices;
-use toybox::clack_plugin::process::audio::PortPair;
 
 const CLAP_PARAM_EVENTS_PER_FRAME: usize = 4;
 const CLAP_BUFFER_ALLOCATION_ERROR: &str = "Unable to preallocate CLAP realtime processing buffers";
@@ -18,10 +16,6 @@ pub struct PumpAudioProcessor<'a> {
     scratch_left: Vec<f32>,
     /// Temporary right-channel storage for non-inplace paths.
     scratch_right: Vec<f32>,
-    /// Preallocated sidechain input storage for CLAP's optional input-only bus.
-    scratch_sidechain_left: Vec<f32>,
-    /// Preallocated sidechain input storage for CLAP's optional input-only bus.
-    scratch_sidechain_right: Vec<f32>,
     /// Scratch vector for draining queued automation events.
     automation_drain: Vec<AutomationEvent>,
     /// Reused sample-offset parameter schedule for the current block.
@@ -49,7 +43,6 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         let frame_count = audio.frames_count() as usize;
         if frame_count > self.scratch_left.len() {
             self.shared.status.mark_gain_reduction_inactive();
-            self.shared.status.set_sidechain_available(false);
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -90,13 +83,6 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             ),
         );
 
-        let sidechain_present = audio
-            .port_pair(1)
-            .map(|mut pair| self.copy_sidechain_pair(&mut pair))
-            .unwrap_or(false);
-        self.shared
-            .status
-            .set_sidechain_available(sidechain_present);
         let (source_present, source_processed) = audio
             .port_pair(0)
             .and_then(|mut port_pair| {
@@ -106,13 +92,8 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
                 let right_pair = iter.next()?;
                 let source_present =
                     channel_pair_has_input(&left_pair) && channel_pair_has_input(&right_pair);
-                let source_processed = self.process_stereo_pair(
-                    left_pair,
-                    right_pair,
-                    &mut settings,
-                    transport,
-                    sidechain_present,
-                );
+                let source_processed =
+                    self.process_stereo_pair(left_pair, right_pair, &mut settings, transport);
                 Some((source_present, source_processed))
             })
             .unwrap_or((false, false));
@@ -158,8 +139,6 @@ impl<'a> PumpAudioProcessor<'a> {
         let max_frames = audio_config.max_frames_count as usize;
         let scratch_left = try_zeroed_vec(max_frames)?;
         let scratch_right = try_zeroed_vec(max_frames)?;
-        let scratch_sidechain_left = try_zeroed_vec(max_frames)?;
-        let scratch_sidechain_right = try_zeroed_vec(max_frames)?;
         let mut automation_drain = Vec::new();
         automation_drain
             .try_reserve_exact(shared.automation_queue.config().max_events)
@@ -178,8 +157,6 @@ impl<'a> PumpAudioProcessor<'a> {
             last_curve_revision: shared.params.curve_revision(),
             scratch_left,
             scratch_right,
-            scratch_sidechain_left,
-            scratch_sidechain_right,
             automation_drain,
             param_schedule,
             waveform_writer: IncomingWaveformWriter::default(),
@@ -263,7 +240,6 @@ impl PumpAudioProcessor<'_> {
         right_pair: ChannelPair<'_, f32>,
         settings: &mut DspSettings,
         transport: TransportState,
-        sidechain_present: bool,
     ) -> bool {
         let (left_input, left_output, left_in_place) = split_channel(left_pair);
         let (right_input, right_output, right_in_place) = split_channel(right_pair);
@@ -314,10 +290,6 @@ impl PumpAudioProcessor<'_> {
             };
         }
 
-        let sidechain = sidechain_present.then_some(SidechainBlockSlices {
-            left: &self.scratch_sidechain_left[..frames],
-            right: &self.scratch_sidechain_right[..frames],
-        });
         let telemetry = process_stereo_block(
             &mut self.engine,
             crate::sample_automation::StereoBlockSlices {
@@ -329,7 +301,6 @@ impl PumpAudioProcessor<'_> {
             settings,
             &mut self.last_curve_revision,
             transport,
-            sidechain,
             Some(IncomingWaveformCapture::new(
                 self.shared.status.incoming_waveform_buffer(),
                 &mut self.waveform_writer,
@@ -361,45 +332,12 @@ impl PumpAudioProcessor<'_> {
         }
         true
     }
-
-    fn copy_sidechain_pair(&mut self, pair: &mut PortPair<'_>) -> bool {
-        let Ok(channels) = pair.channels() else {
-            return false;
-        };
-        let Some(mut channels) = channels.into_f32() else {
-            return false;
-        };
-        let mut iter = channels.iter_mut();
-        let Some(left_pair) = iter.next() else {
-            return false;
-        };
-        let Some(right_pair) = iter.next() else {
-            return false;
-        };
-        let Some(left) = left_pair.input() else {
-            return false;
-        };
-        let Some(right) = right_pair.input() else {
-            return false;
-        };
-        let frames = left
-            .len()
-            .min(right.len())
-            .min(self.scratch_sidechain_left.len())
-            .min(self.scratch_sidechain_right.len());
-        if frames == 0 {
-            return false;
-        }
-        self.scratch_sidechain_left[..frames].copy_from_slice(&left[..frames]);
-        self.scratch_sidechain_right[..frames].copy_from_slice(&right[..frames]);
-        true
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{PARAM_BYPASS_ID, PARAM_MIX_ID, TRIGGER_MODE_SIDECHAIN};
+    use crate::params::{PARAM_BYPASS_ID, PARAM_MIX_ID};
     use crate::test_alloc::assert_no_alloc;
     use toybox::clack_plugin::events::event_types::ParamValueEvent;
     use toybox::clack_plugin::events::io::{OutputEventBuffer, TryPushError};
@@ -497,7 +435,6 @@ mod tests {
                 ChannelPair::InputOutput(&right_input, &mut right_output),
                 &mut settings,
                 TransportState::default(),
-                false,
             );
         });
 
@@ -534,40 +471,11 @@ mod tests {
                 ChannelPair::InputOutput(&right_input, &mut right_output),
                 &mut settings,
                 TransportState::default(),
-                false,
             );
         });
 
         assert!(left_output.iter().all(|sample| sample.is_finite()));
         assert!(right_output.iter().all(|sample| sample.is_finite()));
-    }
-
-    #[test]
-    fn sidechain_processing_uses_preallocated_audio_thread_storage() {
-        const FRAMES: usize = 128;
-        let shared = shared();
-        shared
-            .params
-            .set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
-        let mut processor = processor(&shared, FRAMES as u32);
-        processor.param_schedule.begin_block(FRAMES);
-        processor.scratch_sidechain_right[0] = 0.5;
-        let mut settings = dsp_settings_from_params(shared.params.as_ref());
-        let mut left = [1.0; FRAMES];
-        let mut right = [1.0; FRAMES];
-
-        assert_no_alloc(|| {
-            assert!(processor.process_stereo_pair(
-                ChannelPair::InPlace(&mut left),
-                ChannelPair::InPlace(&mut right),
-                &mut settings,
-                TransportState::default(),
-                true,
-            ));
-        });
-
-        assert!(left.iter().all(|sample| sample.is_finite()));
-        assert!(right.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]
@@ -586,7 +494,6 @@ mod tests {
             ChannelPair::InPlace(&mut right),
             &mut settings,
             TransportState::default(),
-            false,
         );
 
         assert!(left.iter().all(|sample| sample.is_finite()));
@@ -628,7 +535,6 @@ mod tests {
                 ChannelPair::InPlace(&mut right),
                 &mut settings,
                 TransportState::default(),
-                false,
             ));
         });
 

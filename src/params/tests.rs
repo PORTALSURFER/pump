@@ -1,17 +1,17 @@
 #[cfg(feature = "vst3")]
 use super::{
     apply_normalized_param_value, clap_id_from_vst3_param_id, format_plain_value_text,
-    parse_plain_value_text, vst3_param_info_for_index, PARAM_MIX_NUM, PARAM_MODE_NUM,
-    PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM,
-    PARAM_SOUND_ID, PARAM_SOUND_NUM, PARAM_SWING_NUM, PARAM_SYNC_DIVISION_ID,
-    PARAM_SYNC_DIVISION_NUM,
+    parse_plain_value_text, vst3_param_info_for_index, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM,
+    PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM, PARAM_SOUND_ID,
+    PARAM_SOUND_NUM, PARAM_SWING_NUM, PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
 };
 use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
     sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
     SavePresetOutcome, DEFAULT_FLOOR_DB, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DEPTH_ID,
     PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID,
-    PARAM_SWING_ID, PROCESSING_MODE_PUNCH, TRIGGER_MODE_SIDECHAIN,
+    PARAM_SWING_ID, PROCESSING_MODE_CLASSIC, PROCESSING_MODE_PUNCH, TRIGGER_MODE_HOST,
+    TRIGGER_MODE_SIDECHAIN,
 };
 use crate::curve::{
     cyclically_offset_editable_curve, editable_curve_to_table, sample_editable_curve, CurveNode,
@@ -71,7 +71,7 @@ fn sync_division_clamping_is_bounded() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 12);
+    assert_eq!(super::param_count(), 10);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -105,7 +105,7 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     );
     assert_eq!(super::get_param_value(&params, PARAM_MIX_ID), Some(1.0));
     assert_eq!(super::get_param_value(&params, PARAM_SMOOTH_ID), Some(0.0));
-    assert_eq!(super::get_param_value(&params, PARAM_MODE_ID), Some(0.0));
+    assert_eq!(super::get_param_value(&params, PARAM_MODE_ID), None);
     assert_eq!(
         super::get_param_value(&params, super::PARAM_BYPASS_ID),
         Some(0.0)
@@ -121,14 +121,14 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
         Some(0.67)
     );
     super::apply_param_event(&params, PARAM_MODE_ID, PROCESSING_MODE_PUNCH as f32);
-    assert_eq!(params.mode(), PROCESSING_MODE_PUNCH);
+    assert_eq!(params.mode(), PROCESSING_MODE_CLASSIC);
     assert_eq!(
-        super::format_plain_value_text(PARAM_MODE_ID, PROCESSING_MODE_PUNCH as f64),
-        Some("Punch".into())
+        super::format_plain_value_text(PARAM_MODE_ID, PROCESSING_MODE_CLASSIC as f64),
+        None
     );
     assert_eq!(
         super::parse_plain_value_text(PARAM_MODE_ID, "classic"),
-        Some(0.0)
+        None
     );
     assert_eq!(
         super::get_param_value(&params, PARAM_OUTPUT_GAIN_ID),
@@ -294,8 +294,8 @@ fn editor_closed_host_switch_preserves_active_side_curve_during_scalar_save() {
 
 #[test]
 fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
-    assert_eq!(super::param_count(), 12);
-    let flags = super::param_flags_for_index(9).expect("bypass metadata should exist");
+    assert_eq!(super::param_count(), 10);
+    let flags = super::param_flags_for_index(7).expect("bypass metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
     assert!(flags.contains(ParamInfoFlags::IS_BYPASS));
@@ -352,14 +352,14 @@ fn state_roundtrip_preserves_values() {
     assert!((restored.smooth() - 0.67).abs() < 1.0e-6);
     assert!((restored.swing() - 0.42).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 6);
-    assert_eq!(restored.trigger_mode(), TRIGGER_MODE_SIDECHAIN);
-    assert_eq!(restored.mode(), PROCESSING_MODE_PUNCH);
+    assert_eq!(restored.trigger_mode(), TRIGGER_MODE_HOST);
+    assert_eq!(restored.mode(), PROCESSING_MODE_CLASSIC);
     assert!(restored.bypassed());
     assert!((restored.preset_bank_snapshot().presets[0].smooth - 0.67).abs() < 1.0e-6);
     assert!((restored.preset_bank_snapshot().presets[0].swing - 0.42).abs() < 1.0e-6);
     assert_eq!(
         restored.preset_bank_snapshot().presets[0].mode,
-        PROCESSING_MODE_PUNCH
+        PROCESSING_MODE_CLASSIC
     );
     let editable = restored.editable_curve_snapshot();
     assert_eq!(editable.nodes.len(), 3);
@@ -393,7 +393,7 @@ fn bypass_is_top_level_state_but_never_part_of_preset_load_or_save() {
 }
 
 #[test]
-fn unsupported_processing_mode_falls_back_to_classic() {
+fn legacy_processing_mode_maps_to_classic() {
     for unsupported in [99.0_f32, 0.6_f32] {
         let params = PumpParams::new();
         params.set_mode(PROCESSING_MODE_PUNCH as f32);
@@ -908,7 +908,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     phase_offset: 0.33,
                     output_gain_db: -1.0,
                     sync_division: 2,
-                    trigger_mode: 0,
+                    trigger_mode: super::TRIGGER_MODE_HOST,
                     smooth: 0.0,
                     mode: super::PROCESSING_MODE_CLASSIC,
                     swing: super::DEFAULT_SWING,
@@ -926,7 +926,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     phase_offset: 0.55,
                     output_gain_db: -2.0,
                     sync_division: 4,
-                    trigger_mode: 0,
+                    trigger_mode: super::TRIGGER_MODE_HOST,
                     smooth: 0.0,
                     mode: super::PROCESSING_MODE_CLASSIC,
                     swing: super::DEFAULT_SWING,
@@ -1081,21 +1081,19 @@ fn vst3_info_and_text_conversions_share_param_rules() {
     let division_info = vst3_param_info_for_index(3).expect("division info should exist");
     assert_eq!(division_info.id, PARAM_SYNC_DIVISION_NUM);
     assert_eq!(division_info.step_count, MAX_SYNC_DIVISION as i32);
-    let smooth_info = vst3_param_info_for_index(7).expect("smooth info should exist");
+    let smooth_info = vst3_param_info_for_index(6).expect("smooth info should exist");
     assert_eq!(smooth_info.id, PARAM_SMOOTH_NUM);
-    let mode_info = vst3_param_info_for_index(8).expect("mode info should exist");
-    assert_eq!(mode_info.id, PARAM_MODE_NUM);
-    let bypass_info = vst3_param_info_for_index(9).expect("bypass info should exist");
+    let bypass_info = vst3_param_info_for_index(7).expect("bypass info should exist");
     assert_eq!(bypass_info.id, super::PARAM_BYPASS_NUM);
     assert_eq!(bypass_info.step_count, 1);
     assert_eq!(bypass_info.default_normalized, 0.0);
     assert!(bypass_info.is_bypass);
-    let swing_info = vst3_param_info_for_index(10).expect("swing info should exist");
+    let swing_info = vst3_param_info_for_index(8).expect("swing info should exist");
     assert_eq!(swing_info.id, PARAM_SWING_NUM);
     assert_eq!(swing_info.units, "%");
     assert_eq!(smooth_info.title, "Smooth");
     assert_eq!(smooth_info.units, "%");
-    let sound_info = vst3_param_info_for_index(11).expect("sound info should exist");
+    let sound_info = vst3_param_info_for_index(9).expect("sound info should exist");
     assert_eq!(sound_info.id, PARAM_SOUND_NUM);
     assert_eq!(sound_info.step_count, 1);
     assert_eq!(sound_info.default_normalized, 0.0);

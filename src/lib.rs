@@ -1,4 +1,4 @@
-//! Pump: node-based beat-synced gain shaping for sidechain-style ducking.
+//! Pump: node-based beat-synced gain shaping.
 
 #![warn(missing_docs)]
 

@@ -113,7 +113,7 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 12);
+    assert_eq!(count, 10);
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn controller_marks_only_appended_bypass_as_stepped_host_bypass() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let mut info: ParameterInfo = unsafe { mem::zeroed() };
     assert_eq!(
-        unsafe { controller.getParameterInfo(9, &mut info) },
+        unsafe { controller.getParameterInfo(7, &mut info) },
         kResultOk
     );
     assert_eq!(info.id, crate::params::PARAM_BYPASS_NUM);
@@ -135,10 +135,10 @@ fn controller_marks_only_appended_bypass_as_stepped_host_bypass() {
 
     let mut preceding: ParameterInfo = unsafe { mem::zeroed() };
     assert_eq!(
-        unsafe { controller.getParameterInfo(8, &mut preceding) },
+        unsafe { controller.getParameterInfo(6, &mut preceding) },
         kResultOk
     );
-    assert_eq!(preceding.id, crate::params::PARAM_MODE_NUM);
+    assert_eq!(preceding.id, crate::params::PARAM_SMOOTH_NUM);
     assert_eq!(
         preceding.flags & ParameterInfo_::ParameterFlags_::kIsBypass,
         0
@@ -347,7 +347,7 @@ fn vst3_ui_sink_commits_accepted_value_when_component_handler_rejects_end() {
 }
 
 #[test]
-fn processor_declares_optional_stereo_sidechain_bus() {
+fn processor_declares_single_stereo_main_bus() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
 
     assert_eq!(
@@ -357,7 +357,7 @@ fn processor_declares_optional_stereo_sidechain_bus() {
                 BusDirections_::kInput as BusDirection,
             )
         },
-        2
+        1
     );
     assert_eq!(
         unsafe {
@@ -369,26 +369,10 @@ fn processor_declares_optional_stereo_sidechain_bus() {
         1
     );
 
-    let mut sidechain_info: BusInfo = unsafe { mem::zeroed() };
-    assert_eq!(
-        unsafe {
-            processor.getBusInfo(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-                1,
-                &mut sidechain_info,
-            )
-        },
-        kResultOk
-    );
-    assert_eq!(sidechain_info.channelCount, 2);
-    assert_eq!(sidechain_info.busType, BusTypes_::kAux as BusType);
-    assert_eq!(sidechain_info.flags, 0);
-
     let mut arrangement = SpeakerArrangement::default();
     assert_eq!(
         unsafe {
-            processor.getBusArrangement(BusDirections_::kInput as BusDirection, 1, &mut arrangement)
+            processor.getBusArrangement(BusDirections_::kInput as BusDirection, 0, &mut arrangement)
         },
         kResultOk
     );
@@ -396,107 +380,8 @@ fn processor_declares_optional_stereo_sidechain_bus() {
 }
 
 #[test]
-fn processor_keeps_main_audio_when_optional_sidechain_bus_is_inactive() {
-    let shared = Arc::new(PumpVst3Shared::new());
-    let processor = PumpVst3Processor::new(Arc::clone(&shared));
-    let mut fixture = stereo_process_fixture(32, 9.0);
-    fixture
-        ._input_buses
-        .push(unsafe { mem::zeroed::<AudioBusBuffers>() });
-    fixture.process_data.numInputs = 2;
-    fixture.process_data.inputs = fixture._input_buses.as_mut_ptr();
-
-    assert_eq!(
-        unsafe { processor.process(&mut fixture.process_data) },
-        process_ok()
-    );
-    assert!(!shared.status.sidechain_available());
-    assert!(fixture.output_left.iter().any(|sample| *sample != 9.0));
-    assert!(fixture.output_right.iter().any(|sample| *sample != 9.0));
-}
-
-#[test]
-fn processor_honors_optional_sidechain_bus_activation_state() {
-    let shared = Arc::new(PumpVst3Shared::new());
-    shared
-        .params
-        .set_trigger_mode(crate::params::TRIGGER_MODE_SIDECHAIN as f32);
-    let processor = PumpVst3Processor::new(Arc::clone(&shared));
-    let mut fixture = stereo_process_fixture(32, 9.0);
-    let mut sidechain_left = vec![0.0; 32];
-    let mut sidechain_right = vec![0.0; 32];
-    sidechain_right[0] = 0.5;
-    let mut sidechain_channel_buffers =
-        vec![sidechain_left.as_mut_ptr(), sidechain_right.as_mut_ptr()];
-    fixture._input_buses.push(AudioBusBuffers {
-        numChannels: 2,
-        silenceFlags: 0,
-        __field0: AudioBusBuffers__type0 {
-            channelBuffers32: sidechain_channel_buffers.as_mut_ptr(),
-        },
-    });
-    fixture.process_data.numInputs = 2;
-    fixture.process_data.inputs = fixture._input_buses.as_mut_ptr();
-
-    assert_eq!(
-        unsafe {
-            processor.activateBus(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-                0,
-                1,
-            )
-        },
-        kResultOk
-    );
-    assert_eq!(
-        unsafe {
-            processor.activateBus(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kOutput as BusDirection,
-                0,
-                1,
-            )
-        },
-        kResultOk
-    );
-    assert_eq!(
-        unsafe {
-            processor.activateBus(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-                1,
-                1,
-            )
-        },
-        kResultOk
-    );
-    assert_eq!(
-        unsafe { processor.process(&mut fixture.process_data) },
-        process_ok()
-    );
-    assert!(shared.status.sidechain_available());
-
-    assert_eq!(
-        unsafe {
-            processor.activateBus(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-                1,
-                0,
-            )
-        },
-        kResultOk
-    );
-    assert_eq!(
-        unsafe { processor.process(&mut fixture.process_data) },
-        process_ok()
-    );
-    assert!(!shared.status.sidechain_available());
-}
-
-#[test]
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn controller_creates_editor_view_for_host_editor_request() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let view = unsafe { controller.createView(ViewType::kEditor) };

@@ -45,9 +45,8 @@ use crate::params::{
     DEFAULT_DEPTH_DB, DEFAULT_FLOOR_DB, DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_PHASE_OFFSET,
     DEFAULT_SMOOTH, GLOBAL_CURVE_SLOT_COUNT, MAX_DEPTH_DB, MAX_FLOOR_DB, MAX_OUTPUT_GAIN_DB,
     MAX_SYNC_DIVISION, MIN_DEPTH_DB, MIN_FLOOR_DB, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID,
-    PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID,
-    PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID,
-    PARAM_TRIGGER_MODE_ID, PROCESSING_MODE_LABELS, TRIGGER_MODE_LABELS, TRIGGER_MODE_SIDECHAIN,
+    PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
+    PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID,
 };
 use crate::GuiStatus;
 
@@ -154,8 +153,7 @@ const CURVE_SLOT_NAV_WIDTH: f32 = 20.0;
 const CURVE_SLOT_WIDTH: f32 = 100.0;
 const CONTROL_ROW_HEIGHT: f32 = PUMP_VISUAL_METRICS.label_line;
 // Timing and parameter labels are intentionally wider than the compact legacy
-// shell so the longest supported values ("Trigger", "Classic", and +0.0 dB)
-// retain their full glyph bounds at the minimum host size.
+// shell so supported values retain their full glyph bounds at the minimum host size.
 const CONTROL_LABEL_WIDTH: f32 = 84.0;
 const CONTROL_VALUE_WIDTH: f32 = 78.0;
 const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
@@ -768,8 +766,6 @@ enum RadiantEditorMessage {
     },
     Swing(f32),
     SyncDivision(f32),
-    TriggerMode(f32),
-    ProcessingMode(f32),
     SelectSound(SoundSide),
     CopyActiveSound,
     ToggleBypass,
@@ -1237,37 +1233,12 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         swing,
         RadiantEditorMessage::Swing,
     );
-    let trigger_control = enum_control_row(
-        "Trigger",
-        if state.status.sidechain_available() {
-            TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
-        } else if params.trigger_mode() == TRIGGER_MODE_SIDECHAIN {
-            "Sidechain (unavailable)".to_string()
-        } else {
-            TRIGGER_MODE_LABELS[params.trigger_mode()].to_string()
-        },
-        params.trigger_mode() as f32,
-        RadiantEditorMessage::TriggerMode,
-    );
-    let mode_control = enum_control_row(
-        "Mode",
-        PROCESSING_MODE_LABELS[params.mode()].to_string(),
-        params.mode() as f32,
-        RadiantEditorMessage::ProcessingMode,
-    );
     // Keep the full-width labels and value cells readable at the minimum host
-    // size by placing the four timing controls in a compact 2x2 deck beside
-    // the preset selector instead of forcing them into one overflowing row.
-    let timing_controls = column([
-        row([sync_control, swing_control])
-            .spacing(PUMP_VISUAL_METRICS.space_4)
-            .fill_width()
-            .height(PRESET_TIMING_HEIGHT * 0.5),
-        row([trigger_control, mode_control])
-            .spacing(PUMP_VISUAL_METRICS.space_4)
-            .fill_width()
-            .height(PRESET_TIMING_HEIGHT * 0.5),
-    ])
+    // size with the remaining sync controls beside the preset selector.
+    let timing_controls = column([row([sync_control, swing_control])
+        .spacing(PUMP_VISUAL_METRICS.space_4)
+        .fill_width()
+        .height(PRESET_TIMING_HEIGHT)])
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .fill_width()
     .height(PRESET_TIMING_HEIGHT);
@@ -1800,20 +1771,6 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
             let value = (value.clamp(0.0, 1.0) * MAX_SYNC_DIVISION).round();
             state.params.set_sync_division(value);
             push_radiant_param_update(state, PARAM_SYNC_DIVISION_ID, value as f64);
-        }
-        RadiantEditorMessage::TriggerMode(value) => {
-            state.push_history();
-            let mode = value.round().clamp(0.0, TRIGGER_MODE_SIDECHAIN as f32) as usize;
-            if mode == TRIGGER_MODE_SIDECHAIN && !state.status.sidechain_available() {
-                return;
-            }
-            state.params.set_trigger_mode(mode as f32);
-            push_radiant_param_update(state, PARAM_TRIGGER_MODE_ID, mode as f64);
-        }
-        RadiantEditorMessage::ProcessingMode(value) => {
-            state.push_history();
-            state.params.set_mode(value);
-            push_radiant_param_update(state, PARAM_MODE_ID, state.params.mode() as f64);
         }
         RadiantEditorMessage::SelectSound(side) => {
             if state.params.active_sound() != side {
@@ -4357,7 +4314,6 @@ fn point_to_segment_distance_squared(point: Point, a: Point, b: Point) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::PROCESSING_MODE_PUNCH;
     #[cfg(feature = "vst3")]
     use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
@@ -4819,23 +4775,17 @@ mod tests {
             );
         }
         reduce_editor_message(&mut state, RadiantEditorMessage::SyncDivision(1.0));
-        reduce_editor_message(&mut state, RadiantEditorMessage::TriggerMode(0.0));
-        reduce_editor_message(
-            &mut state,
-            RadiantEditorMessage::ProcessingMode(PROCESSING_MODE_PUNCH as f32),
-        );
 
         assert!((params.mix() - 0.25).abs() < f32::EPSILON);
         assert!((params.phase_offset() - 0.5).abs() < f32::EPSILON);
         assert!((params.output_gain_db() + 6.0).abs() < f32::EPSILON);
         assert_eq!(params.sync_division(), MAX_SYNC_DIVISION as usize);
-        assert_eq!(params.mode(), PROCESSING_MODE_PUNCH);
 
         let mut buffer = EventBuffer::new();
         let mut output = buffer.as_output();
         let mut scratch = Vec::new();
         let stats = queue.drain_to_output(&mut output, &mut scratch);
-        assert_eq!(stats.attempted, 27);
+        assert_eq!(stats.attempted, 21);
         let value_ids: Vec<_> = (0..buffer.len())
             .filter_map(|index| match buffer.get(index as u32)?.as_core_event()? {
                 CoreEventSpace::ParamValue(value) => value.param_id(),
@@ -4852,8 +4802,6 @@ mod tests {
                 PARAM_OUTPUT_GAIN_ID,
                 PARAM_SMOOTH_ID,
                 PARAM_SYNC_DIVISION_ID,
-                PARAM_TRIGGER_MODE_ID,
-                PARAM_MODE_ID,
             ]
         );
     }
@@ -4966,14 +4914,11 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let mut state = editor_state(Arc::clone(&params));
 
-        reduce_editor_message(
-            &mut state,
-            RadiantEditorMessage::ProcessingMode(PROCESSING_MODE_PUNCH as f32),
-        );
+        reduce_editor_message(&mut state, RadiantEditorMessage::Swing(0.5));
         assert_eq!(state.automation_flush_count, 1);
 
-        state.automation_config.disable_param(PARAM_MODE_ID);
-        reduce_editor_message(&mut state, RadiantEditorMessage::ProcessingMode(0.0));
+        state.automation_config.disable_param(PARAM_SWING_ID);
+        reduce_editor_message(&mut state, RadiantEditorMessage::Swing(0.0));
         assert_eq!(
             state.automation_flush_count, 1,
             "a disabled batch must not request a host flush"

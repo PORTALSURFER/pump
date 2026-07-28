@@ -18,12 +18,8 @@ pub struct DspSettings {
     pub output_gain_db: f32,
     /// Length of one modulation cycle in beats.
     pub beats_per_cycle: f32,
-    /// Curve trigger source (`0` host transport, `1` external sidechain).
-    pub trigger_mode: usize,
     /// Evaluated wet-gain smoothing amount in `[0, 1]`.
     pub smooth: f32,
-    /// Processing mode (`Classic` or `Punch`).
-    pub mode: usize,
     /// Alternating-subdivision swing amount in `[0, 1]`.
     pub swing: f32,
     /// Whether complete Pump output should crossfade to original dry unity.
@@ -35,63 +31,6 @@ pub const BYPASS_RAMP_SECONDS: f32 = 0.005;
 
 /// Maximum one-pole time constant at 100% Smooth.
 pub const MAX_SMOOTH_TIME_SECONDS: f32 = 0.1;
-
-/// Sidechain trigger detector policy.
-///
-/// The detector uses the larger absolute sample of the two sidechain channels.
-/// A trigger is a rising crossing of `TRIGGER_ATTACK_THRESHOLD`; the signal
-/// must subsequently fall below `TRIGGER_RELEASE_THRESHOLD` before another
-/// trigger can be accepted. A 10 ms refractory period rejects chatter while
-/// retaining the low-to-high crossing requirement. Missing or silent sidechain
-/// input produces no trigger and lets the engine fall back to host timing.
-pub const TRIGGER_ATTACK_THRESHOLD: f32 = 0.25;
-pub const TRIGGER_RELEASE_THRESHOLD: f32 = 0.125;
-pub const TRIGGER_REFRACTORY_MS: f32 = 10.0;
-
-/// Allocation-free, sample-stable sidechain transient detector.
-#[derive(Debug, Clone)]
-pub struct SidechainTriggerDetector {
-    armed: bool,
-    refractory_samples: usize,
-    refractory_remaining: usize,
-}
-
-impl SidechainTriggerDetector {
-    /// Create a detector for a sample rate.
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            armed: true,
-            refractory_samples: ((TRIGGER_REFRACTORY_MS / 1000.0) * sample_rate.max(1.0))
-                .round()
-                .max(1.0) as usize,
-            refractory_remaining: 0,
-        }
-    }
-
-    /// Re-arm the detector after the trigger source becomes discontinuous.
-    pub fn reset(&mut self) {
-        self.armed = true;
-        self.refractory_remaining = 0;
-    }
-
-    /// Process one stereo sidechain sample and report a newly accepted trigger.
-    pub fn process(&mut self, left: f32, right: f32) -> bool {
-        let level = left.abs().max(right.abs());
-        let level = if level.is_finite() { level } else { 0.0 };
-        if self.refractory_remaining > 0 {
-            self.refractory_remaining -= 1;
-        }
-        if level <= TRIGGER_RELEASE_THRESHOLD {
-            self.armed = true;
-        }
-        if self.armed && self.refractory_remaining == 0 && level >= TRIGGER_ATTACK_THRESHOLD {
-            self.armed = false;
-            self.refractory_remaining = self.refractory_samples;
-            return true;
-        }
-        false
-    }
-}
 
 /// Information exposed to GUI for metering/visualization.
 #[derive(Debug, Copy, Clone)]
@@ -172,17 +111,11 @@ pub struct PumpEngine {
     phase_offset: OnePole,
     swing: OnePole,
     output_gain_db: OnePole,
-    mode_blend: OnePole,
     wet_gain_smoother: GainSmoother,
     curve_current: [f32; CURVE_TABLE_LEN],
     curve_pending: [f32; CURVE_TABLE_LEN],
     morph_remaining: usize,
     morph_total: usize,
-    sidechain_detector: SidechainTriggerDetector,
-    sidechain_phase: f32,
-    sidechain_running: bool,
-    sidechain_mode: bool,
-    sidechain_bus_present: bool,
     bypass: ClickSafeBypass,
 }
 
@@ -208,17 +141,11 @@ impl PumpEngine {
             phase_offset: OnePole::new(0.0, sample_rate, 0.01),
             swing: OnePole::new(0.0, sample_rate, 0.01),
             output_gain_db: OnePole::new(0.0, sample_rate, 0.01),
-            mode_blend: OnePole::new(0.0, sample_rate, 0.01),
             wet_gain_smoother: GainSmoother::new(1.0),
             curve_current: curve,
             curve_pending: curve,
             morph_remaining: 0,
             morph_total: 64,
-            sidechain_detector: SidechainTriggerDetector::new(sample_rate),
-            sidechain_phase: 0.0,
-            sidechain_running: false,
-            sidechain_mode: false,
-            sidechain_bus_present: false,
             bypass: ClickSafeBypass::new(sample_rate, bypassed),
         };
         engine.reset_with_bypass(bypassed);
@@ -241,12 +168,6 @@ impl PumpEngine {
     /// Reset DSP history and snap bypass to restored activation state.
     pub fn reset_with_bypass(&mut self, bypassed: bool) {
         self.wet_gain_smoother.reset(1.0);
-        self.mode_blend.reset(0.0);
-        self.sidechain_detector.reset();
-        self.sidechain_phase = 0.0;
-        self.sidechain_running = false;
-        self.sidechain_mode = false;
-        self.sidechain_bus_present = false;
         self.bypass.reset(bypassed);
     }
 
@@ -257,31 +178,10 @@ impl PumpEngine {
         right: &mut f32,
         settings: DspSettings,
         transport: TransportState,
-        sidechain: Option<(f32, f32)>,
     ) -> DspTelemetry {
         let dry_left = *left;
         let dry_right = *right;
         let frame = self.clock.tick(resolve_effective_transport(transport));
-
-        let sidechain_mode = settings.trigger_mode == crate::params::TRIGGER_MODE_SIDECHAIN;
-        let sidechain_bus_present = sidechain.is_some();
-        if sidechain_mode != self.sidechain_mode
-            || (sidechain_mode && sidechain_bus_present != self.sidechain_bus_present)
-        {
-            // A mode or bus transition is a discontinuity in the trigger
-            // source. Do not resume an old event after a host reroute or an
-            // automation change; wait for the next deterministic trigger.
-            self.sidechain_detector.reset();
-            self.sidechain_phase = 0.0;
-            self.sidechain_running = false;
-        }
-        self.sidechain_mode = sidechain_mode;
-        if sidechain_mode {
-            self.sidechain_bus_present = sidechain_bus_present;
-        }
-        let sidechain_active = sidechain_mode && sidechain_bus_present;
-        let sidechain_trigger = sidechain_active
-            && sidechain.is_some_and(|(left, right)| self.sidechain_detector.process(left, right));
 
         let mix = self.mix.next(settings.mix.clamp(0.0, 1.0));
         let depth_target = if settings.depth_db.is_finite() {
@@ -308,43 +208,18 @@ impl PumpEngine {
             .output_gain_db
             .next(settings.output_gain_db.clamp(-60.0, 24.0));
 
-        let raw_phase = if sidechain_active {
-            if sidechain_trigger {
-                self.sidechain_phase = 0.0;
-                self.sidechain_running = true;
-            }
-            let phase = self.sidechain_phase.rem_euclid(1.0);
-            if self.sidechain_running {
-                let beat_increment = transport.tempo_bpm.clamp(20.0, 320.0)
-                    / (self.clock_sample_rate() * 60.0 * settings.beats_per_cycle.max(1.0e-4));
-                self.sidechain_phase = (self.sidechain_phase + beat_increment).rem_euclid(1.0);
-            }
-            phase
-        } else {
-            frame.phase_for_cycle(settings.beats_per_cycle, 0.0)
-        };
         // Keep the zero-swing path byte-for-byte compatible with the legacy
         // phase calculation. Non-zero swing warps the cyclic phase first and
         // then applies phase offset as a pure cyclic translation.
         let phase = if swing <= 0.0 {
-            if sidechain_active {
-                (raw_phase + phase_offset).rem_euclid(1.0)
-            } else {
-                frame.phase_for_cycle(settings.beats_per_cycle, phase_offset)
-            }
+            frame.phase_for_cycle(settings.beats_per_cycle, phase_offset)
         } else {
-            (swing_warp_phase(raw_phase, swing) + phase_offset).rem_euclid(1.0)
+            (swing_warp_phase(frame.phase_for_cycle(settings.beats_per_cycle, 0.0), swing)
+                + phase_offset)
+                .rem_euclid(1.0)
         };
         let shape = self.sample_active_curve(phase);
-        let mode_target = if settings.mode == crate::params::PROCESSING_MODE_PUNCH {
-            1.0
-        } else {
-            0.0
-        };
-        let mode_mix = self.mode_blend.next(mode_target);
-        let classic_wet_gain = curve_value_to_gain(shape, depth_db, floor_db);
-        let punch_wet_gain = curve_value_to_gain(shape, depth_db * 0.5, floor_db);
-        let wet_gain = lerp(classic_wet_gain, punch_wet_gain, mode_mix);
+        let wet_gain = curve_value_to_gain(shape, depth_db, floor_db);
         let smooth = if settings.smooth.is_finite() {
             settings.smooth.clamp(0.0, 1.0)
         } else {
@@ -378,13 +253,6 @@ impl PumpEngine {
             input_active: false,
             bypassed: self.bypass.fully_bypassed(),
         }
-    }
-
-    fn clock_sample_rate(&self) -> f32 {
-        // The clock intentionally keeps its sample-rate field private. The
-        // sidechain phase increment is derived from the same sample-rate
-        // contract and is stored by the engine for sample-stable operation.
-        self.sample_rate
     }
 
     fn sample_active_curve(&mut self, phase: f32) -> f32 {
@@ -561,10 +429,6 @@ impl OnePole {
         }
     }
 
-    fn reset(&mut self, value: f32) {
-        self.value = value;
-    }
-
     fn next(&mut self, target: f32) -> f32 {
         self.value = target + self.coeff * (self.value - target);
         self.value
@@ -577,10 +441,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        curve_value_to_gain, db_to_linear, DspSettings, PumpEngine, SidechainTriggerDetector,
-        TRIGGER_ATTACK_THRESHOLD, TRIGGER_RELEASE_THRESHOLD,
-    };
+    use super::{curve_value_to_gain, db_to_linear, DspSettings, PumpEngine};
     use crate::curve::{default_editable_curve, editable_curve_to_table};
     use toybox::dsp::TransportState;
 
@@ -596,9 +457,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
             swing: 0.0,
             bypassed: false,
         };
@@ -615,7 +474,6 @@ mod tests {
                     is_playing: true,
                     song_pos_beats: None,
                 },
-                None,
             );
             assert!(telemetry.gain.is_finite());
             assert!(telemetry.phase.is_finite());
@@ -625,52 +483,28 @@ mod tests {
     }
 
     #[test]
-    fn classic_mode_matches_the_existing_curve_gain_and_punch_is_distinct() {
+    fn classic_curve_gain_mapping_is_preserved() {
         let transport = TransportState {
             tempo_bpm: 120.0,
             is_playing: true,
             song_pos_beats: Some(0.0),
         };
-        let classic = DspSettings {
+        let settings = DspSettings {
             mix: 1.0,
             depth_db: 120.0,
             floor_db: -60.0,
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
             swing: 0.0,
             bypassed: false,
-        };
-        let punch = DspSettings {
-            mode: crate::params::PROCESSING_MODE_PUNCH,
-            ..classic
         };
         let mut engine = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
         let mut left = 1.0;
         let mut right = 1.0;
-        engine.process_sample(&mut left, &mut right, classic, transport, None);
+        engine.process_sample(&mut left, &mut right, settings, transport);
         assert!((left - curve_value_to_gain(0.25, 120.0, -60.0)).abs() < 1.0e-6);
-
-        let mut first_punch = 1.0;
-        for sample in 0..4_000 {
-            left = 1.0;
-            right = 1.0;
-            engine.process_sample(&mut left, &mut right, punch, transport, None);
-            if sample == 0 {
-                first_punch = left;
-            }
-        }
-        assert!(
-            first_punch < 0.3,
-            "mode changes must ramp from Classic safely"
-        );
-        assert!(
-            (left - 0.5).abs() < 0.01,
-            "Punch should halve attenuation depth"
-        );
     }
 
     #[test]
@@ -687,9 +521,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
             swing: 0.0,
             bypassed,
         }
@@ -718,7 +550,6 @@ mod tests {
                     &mut right,
                     bypass_test_settings(true),
                     bypass_test_transport(),
-                    None,
                 );
                 if sample + 1 < ramp_samples {
                     penultimate = left;
@@ -741,7 +572,6 @@ mod tests {
                 &mut right,
                 bypass_test_settings(true),
                 bypass_test_transport(),
-                None,
             );
             assert_eq!(left.to_bits(), dry.to_bits());
             assert_eq!(right.to_bits(), (-dry).to_bits());
@@ -759,7 +589,6 @@ mod tests {
                 &mut right,
                 bypass_test_settings(bypassed),
                 bypass_test_transport(),
-                None,
             );
             left
         };
@@ -786,14 +615,12 @@ mod tests {
                 &mut active_right,
                 bypass_test_settings(false),
                 bypass_test_transport(),
-                None,
             );
             let bypass_telemetry = bypassed.process_sample(
                 &mut bypass_left,
                 &mut bypass_right,
                 bypass_test_settings(true),
                 bypass_test_transport(),
-                None,
             );
             assert_eq!(bypass_left.to_bits(), dry.to_bits());
             assert!(bypass_telemetry.bypassed);
@@ -813,9 +640,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
             swing: 0.0,
             bypassed: false,
         };
@@ -824,11 +649,11 @@ mod tests {
             is_playing: true,
             song_pos_beats: Some(0.0),
         };
-        let mut telemetry = engine.process_sample(&mut left, &mut right, settings, transport, None);
+        let mut telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
         for _ in 0..8_000 {
             left = 1.0;
             right = 1.0;
-            telemetry = engine.process_sample(&mut left, &mut right, settings, transport, None);
+            telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
         }
         assert!((telemetry.reduction_gain - 0.5).abs() < 1.0e-6);
         assert!(
@@ -848,9 +673,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
             swing: 0.0,
             bypassed: false,
         };
@@ -868,7 +691,6 @@ mod tests {
                     is_playing: false,
                     song_pos_beats: None,
                 },
-                None,
             );
             min_gain = min_gain.min(telemetry.gain);
             left = 1.0;
@@ -897,9 +719,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: amount,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
             swing: 0.0,
             bypassed: false,
         }
@@ -919,13 +739,8 @@ mod tests {
         let settings = smoothing_settings(0.0);
         let mut left = 1.0;
         let mut right = 1.0;
-        let telemetry = engine.process_sample(
-            &mut left,
-            &mut right,
-            settings,
-            smoothing_transport(120.0),
-            None,
-        );
+        let telemetry =
+            engine.process_sample(&mut left, &mut right, settings, smoothing_transport(120.0));
 
         assert_eq!(left, 0.0);
         assert_eq!(right, 0.0);
@@ -941,7 +756,7 @@ mod tests {
         for _ in 0..8 {
             let mut left = 1.0;
             let mut right = 1.0;
-            engine.process_sample(&mut left, &mut right, settings, transport, None);
+            engine.process_sample(&mut left, &mut right, settings, transport);
             values.push(left);
         }
 
@@ -955,7 +770,7 @@ mod tests {
         for _ in 0..48_000 {
             let mut left = 1.0;
             let mut right = 1.0;
-            engine.process_sample(&mut left, &mut right, settings, transport, None);
+            engine.process_sample(&mut left, &mut right, settings, transport);
             values.push(left);
         }
         assert!(values.last().copied().unwrap_or(1.0) < 0.001);
@@ -971,14 +786,12 @@ mod tests {
             &mut 1.0,
             smoothing_settings(0.0001),
             smoothing_transport(120.0),
-            None,
         );
         let near_zero = engine.process_sample(
             &mut 1.0,
             &mut 1.0,
             smoothing_settings(0.00001),
             smoothing_transport(120.0),
-            None,
         );
         assert!(near_zero.gain < previous.gain);
         assert!(near_zero.gain.is_finite());
@@ -988,29 +801,17 @@ mod tests {
             &mut 1.0,
             smoothing_settings(1.0),
             smoothing_transport(60.0),
-            None,
         );
         let seek_transport = TransportState {
             tempo_bpm: 240.0,
             is_playing: true,
             song_pos_beats: Some(0.37),
         };
-        let after_seek = engine.process_sample(
-            &mut 1.0,
-            &mut 1.0,
-            smoothing_settings(1.0),
-            seek_transport,
-            None,
-        );
+        let after_seek =
+            engine.process_sample(&mut 1.0, &mut 1.0, smoothing_settings(1.0), seek_transport);
         let mut unsmoothed_reference = PumpEngine::new(48_000.0, ramp);
         let unsmoothed_target = unsmoothed_reference
-            .process_sample(
-                &mut 1.0,
-                &mut 1.0,
-                smoothing_settings(0.0),
-                seek_transport,
-                None,
-            )
+            .process_sample(&mut 1.0, &mut 1.0, smoothing_settings(0.0), seek_transport)
             .gain;
         assert!(after_seek.gain > before_seek.gain);
         assert!(after_seek.gain < unsmoothed_target);
@@ -1018,13 +819,8 @@ mod tests {
 
         let mut converged = after_seek.gain;
         for _ in 0..48_000 {
-            let telemetry = engine.process_sample(
-                &mut 1.0,
-                &mut 1.0,
-                smoothing_settings(1.0),
-                seek_transport,
-                None,
-            );
+            let telemetry =
+                engine.process_sample(&mut 1.0, &mut 1.0, smoothing_settings(1.0), seek_transport);
             converged = telemetry.gain;
         }
         assert!((converged - unsmoothed_target).abs() < 0.001);
@@ -1040,25 +836,15 @@ mod tests {
         for _ in 0..4_410 {
             let mut input = 1.0;
             let mut right = 1.0;
-            let telemetry = at_44k.process_sample(
-                &mut input,
-                &mut right,
-                settings,
-                smoothing_transport(60.0),
-                None,
-            );
+            let telemetry =
+                at_44k.process_sample(&mut input, &mut right, settings, smoothing_transport(60.0));
             output_44k = telemetry.gain;
         }
         for _ in 0..4_800 {
             let mut input = 1.0;
             let mut right = 1.0;
-            let telemetry = at_48k.process_sample(
-                &mut input,
-                &mut right,
-                settings,
-                smoothing_transport(240.0),
-                None,
-            );
+            let telemetry =
+                at_48k.process_sample(&mut input, &mut right, settings, smoothing_transport(240.0));
             output_48k = telemetry.gain;
         }
         assert!((output_44k - output_48k).abs() < 0.01);
@@ -1072,144 +858,13 @@ mod tests {
         for _ in 0..2_000 {
             let mut left = 1.0;
             let mut right = 1.0;
-            engine.process_sample(&mut left, &mut right, settings, transport, None);
+            engine.process_sample(&mut left, &mut right, settings, transport);
         }
         engine.reset();
         let mut left = 1.0;
         let mut right = 1.0;
-        engine.process_sample(&mut left, &mut right, settings, transport, None);
+        engine.process_sample(&mut left, &mut right, settings, transport);
         assert!(left > 0.9, "reset must clear the previous smoothed gain");
-    }
-
-    #[test]
-    fn sidechain_detector_uses_stereo_hysteresis_and_refractory() {
-        let mut detector = SidechainTriggerDetector::new(1_000.0);
-
-        assert!(!detector.process(TRIGGER_ATTACK_THRESHOLD - 0.01, 0.0));
-        assert!(detector.process(0.0, TRIGGER_ATTACK_THRESHOLD));
-
-        // A sustained high signal cannot retrigger after the refractory window:
-        // it must first cross the release threshold.
-        for _ in 0..32 {
-            assert!(!detector.process(0.8, 0.1));
-        }
-        assert!(!detector.process(TRIGGER_RELEASE_THRESHOLD, 0.0));
-        assert!(detector.process(0.0, TRIGGER_ATTACK_THRESHOLD + 0.01));
-        assert!(!detector.process(f32::NAN, f32::INFINITY));
-    }
-
-    #[test]
-    fn sidechain_trigger_restarts_at_a_sample_stable_phase() {
-        let mut engine = PumpEngine::new(100.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
-        let settings = DspSettings {
-            mix: 1.0,
-            depth_db: 120.0,
-            floor_db: -60.0,
-            phase_offset: 0.0,
-            output_gain_db: 0.0,
-            beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
-            smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
-            swing: 0.0,
-            bypassed: false,
-        };
-        let transport = TransportState {
-            tempo_bpm: 120.0,
-            is_playing: true,
-            song_pos_beats: Some(0.5),
-        };
-        let mut left = 1.0;
-        let mut right = 1.0;
-
-        let before_trigger =
-            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.0, 0.0)));
-        let trigger =
-            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.0, 0.5)));
-        let following =
-            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.0, 0.5)));
-
-        assert_eq!(before_trigger.phase, 0.0);
-        assert_eq!(trigger.phase, 0.0);
-        assert!((following.phase - 0.02).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn sidechain_mode_falls_back_to_host_phase_when_bus_is_missing() {
-        let mut engine = PumpEngine::new(48_000.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
-        let settings = DspSettings {
-            mix: 1.0,
-            depth_db: 120.0,
-            floor_db: -60.0,
-            phase_offset: 0.0,
-            output_gain_db: 0.0,
-            beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
-            smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
-            swing: 0.0,
-            bypassed: false,
-        };
-        let transport = TransportState {
-            tempo_bpm: 120.0,
-            is_playing: true,
-            song_pos_beats: Some(0.5),
-        };
-        let mut left = 1.0;
-        let mut right = 1.0;
-
-        let telemetry = engine.process_sample(&mut left, &mut right, settings, transport, None);
-
-        assert!((telemetry.phase - 0.5).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn sidechain_mode_restarts_after_bus_reconnect_instead_of_resuming_old_phase() {
-        let mut engine = PumpEngine::new(100.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
-        let settings = DspSettings {
-            mix: 1.0,
-            depth_db: 120.0,
-            floor_db: -60.0,
-            phase_offset: 0.0,
-            output_gain_db: 0.0,
-            beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_SIDECHAIN,
-            smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
-            swing: 0.0,
-            bypassed: false,
-        };
-        let transport = TransportState {
-            tempo_bpm: 120.0,
-            is_playing: false,
-            song_pos_beats: Some(0.75),
-        };
-        let mut left = 1.0;
-        let mut right = 1.0;
-
-        let trigger =
-            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.5, 0.0)));
-        assert_eq!(trigger.phase, 0.0);
-
-        let running =
-            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.5, 0.0)));
-        assert!((running.phase - 0.02).abs() < 1.0e-6);
-
-        let fallback = engine.process_sample(&mut left, &mut right, settings, transport, None);
-        assert!((fallback.phase - 0.75).abs() < 1.0e-6);
-
-        let reconnected =
-            engine.process_sample(&mut left, &mut right, settings, transport, Some((0.5, 0.0)));
-        assert_eq!(reconnected.phase, 0.0);
-    }
-
-    #[test]
-    fn silent_sidechain_does_not_trigger() {
-        let mut detector = SidechainTriggerDetector::new(48_000.0);
-        for _ in 0..128 {
-            assert!(!detector.process(0.0, 0.0));
-        }
-        assert!(!detector.process(f32::NAN, f32::NAN));
     }
 
     #[test]
