@@ -120,6 +120,25 @@ class ReleaseHelperTests(unittest.TestCase):
         temp_creation = 'tmp_root="$(mktemp -d "${repo_root}/target/release-build.XXXXXX")"'
         self.assertLess(script.index(parent_creation), script.index(temp_creation))
 
+    def test_release_and_ci_cargo_invocations_are_lockfile_stable(self):
+        root = Path(__file__).parents[1]
+        for name in ("scripts/release.sh", "scripts/ci.sh"):
+            with self.subTest(script=name):
+                lines = (root / name).read_text(encoding="utf-8").splitlines()
+                cargo_lines = [
+                    line
+                    for line in lines
+                    if any(
+                        f"cargo {command}" in line
+                        for command in ("clippy", "test", "build", "rustc")
+                    )
+                ]
+                self.assertTrue(cargo_lines)
+                self.assertTrue(
+                    all("--locked" in line for line in cargo_lines),
+                    f"every Cargo invocation in {name} must use --locked",
+                )
+
     def test_release_keychain_is_registered_and_restored(self):
         script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
         capture = "security list-keychains -d user | sed 's/[[:space:]]*\"//g; s/\"$//' > \"${original_keychains_file}\""
