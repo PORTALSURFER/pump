@@ -53,7 +53,7 @@ use crate::GuiStatus;
 use super::visual_system::{pump_meter_colors, pump_theme, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS};
 #[cfg(test)]
 use super::WINDOW_HEIGHT;
-use super::{build_version_label, snap_curve_time_to_beat_grid, WINDOW_WIDTH};
+use super::{build_version_label, snap_curve_time_to_beat_grid_with_swing, WINDOW_WIDTH};
 
 /// Main-thread CLAP parameter flush callback retained by the hosted editor.
 #[derive(Clone, Copy)]
@@ -477,6 +477,7 @@ impl ActiveCurveNodeDrag {
         modifiers: CurvePointDragModifiers,
         sync_division: usize,
         curve_width: f32,
+        swing: f32,
         current: CurveNode,
     ) -> CurveNode {
         self.last_pointer_x = target.x;
@@ -495,7 +496,12 @@ impl ActiveCurveNodeDrag {
                 .clamp(0.0, 1.0),
         };
         if modifiers.command_held && self.vertical_time_anchor.is_none() && !suppress_command_snap {
-            effective.x = snap_curve_time_to_beat_grid(sync_division, curve_width, effective.x);
+            effective.x = snap_curve_time_to_beat_grid_with_swing(
+                sync_division,
+                curve_width,
+                effective.x,
+                swing,
+            );
         }
         effective
     }
@@ -1833,6 +1839,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                     },
                     state.params.sync_division(),
                     curve_width_from_push_through_threshold_x(push_through_threshold_x),
+                    state.params.swing(),
                     current,
                 );
                 curve_with_dragged_node(drag, target, push_through_threshold_x)
@@ -1840,10 +1847,11 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 let mut curve = current_curve;
                 let mut target = node;
                 if command_held {
-                    target.x = snap_curve_time_to_beat_grid(
+                    target.x = snap_curve_time_to_beat_grid_with_swing(
                         state.params.sync_division(),
                         curve_width_from_push_through_threshold_x(push_through_threshold_x),
                         target.x,
+                        state.params.swing(),
                     );
                 }
                 update_curve_node(&mut curve, index, target);
@@ -1906,6 +1914,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                     },
                     state.params.sync_division(),
                     curve_width_from_push_through_threshold_x(push_through_threshold_x),
+                    state.params.swing(),
                     current,
                 );
                 curve_with_dragged_node(drag, target, push_through_threshold_x)
@@ -1913,10 +1922,11 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 let mut curve = current_curve;
                 let mut target = node;
                 if command_held {
-                    target.x = snap_curve_time_to_beat_grid(
+                    target.x = snap_curve_time_to_beat_grid_with_swing(
                         state.params.sync_division(),
                         curve_width_from_push_through_threshold_x(push_through_threshold_x),
                         target.x,
+                        state.params.swing(),
                     );
                 }
                 update_curve_node(&mut curve, index, target);
@@ -3709,10 +3719,11 @@ impl Widget for CurvePreviewWidget {
                                 .map(|node| CurvePreviewMessage::InsertNode {
                                     node: if command_held {
                                         CurveNode {
-                                            x: snap_curve_time_to_beat_grid(
+                                            x: snap_curve_time_to_beat_grid_with_swing(
                                                 self.sync_division,
                                                 Self::curve_bounds(bounds).width(),
                                                 node.x,
+                                                self.swing,
                                             ),
                                             ..node
                                         }
@@ -6261,7 +6272,8 @@ mod tests {
     fn curve_preview_widget_command_insert_snaps_time_and_preserves_gain() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
-            .with_sync_division(6);
+            .with_sync_division(6)
+            .with_swing(1.0);
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
         let raw = CurveNode { x: 0.34, y: 0.08 };
         let position = CurvePreviewWidget::curve_point(bounds, raw);
@@ -6291,7 +6303,9 @@ mod tests {
             );
         };
         let width = CurvePreviewWidget::curve_bounds(bounds).width();
-        assert!((node.x - snap_curve_time_to_beat_grid(6, width, raw.x)).abs() < 1.0e-6);
+        assert!(
+            (node.x - snap_curve_time_to_beat_grid_with_swing(6, width, raw.x, 1.0)).abs() < 1.0e-6
+        );
         assert!((node.y - raw.y).abs() < 1.0e-2);
     }
 
@@ -6299,6 +6313,7 @@ mod tests {
     fn radiant_editor_command_press_and_release_update_point_snap_mid_drag() {
         let params = Arc::new(PumpParams::new());
         params.set_sync_division(6.0);
+        params.set_swing(1.0);
         let curve = EditableCurve {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.8 },
@@ -6345,7 +6360,8 @@ mod tests {
             false,
         )
         .with_command_hover_held(true)
-        .with_sync_division(6);
+        .with_sync_division(6)
+        .with_swing(1.0);
         let snapped_message = snapped_widget
             .handle_input(bounds, WidgetInput::PointerMove { position })
             .and_then(|output| output.typed_copied::<CurvePreviewMessage>())
@@ -6354,7 +6370,10 @@ mod tests {
 
         let width = CurvePreviewWidget::curve_bounds(bounds).width();
         let snapped = params.editable_curve_snapshot().nodes[1];
-        assert!((snapped.x - snap_curve_time_to_beat_grid(6, width, raw.x)).abs() < 1.0e-6);
+        assert!(
+            (snapped.x - snap_curve_time_to_beat_grid_with_swing(6, width, raw.x, 1.0)).abs()
+                < 1.0e-6
+        );
 
         reduce_curve_message(
             &mut state,
@@ -6383,6 +6402,61 @@ mod tests {
         let continuous = params.editable_curve_snapshot().nodes[1];
         assert!((continuous.x - raw.x).abs() < 1.0e-2);
         assert!((continuous.y - snapped.y).abs() < 1.0e-2);
+    }
+
+    #[test]
+    fn radiant_editor_command_release_uses_swung_snap() {
+        let params = Arc::new(PumpParams::new());
+        params.set_sync_division(6.0);
+        params.set_swing(1.0);
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.25, y: 0.4 },
+                CurveNode { x: 0.75, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 1,
+                pointer: curve.nodes[1],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+
+        let raw = CurveNode { x: 0.34, y: 0.7 };
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::ReleaseNode {
+                index: 1,
+                node: raw,
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+                shift_held: false,
+                option_held: false,
+                command_held: true,
+            },
+        );
+
+        let width =
+            curve_width_from_push_through_threshold_x(test_curve_push_through_threshold_x());
+        let released = params.editable_curve_snapshot().nodes[1];
+        assert!(
+            (released.x - snap_curve_time_to_beat_grid_with_swing(6, width, raw.x, 1.0)).abs()
+                < 1.0e-6,
+            "released {}, expected {} width {}",
+            released.x,
+            snap_curve_time_to_beat_grid_with_swing(6, width, raw.x, 1.0),
+            width
+        );
     }
 
     #[test]
