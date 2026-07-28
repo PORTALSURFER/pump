@@ -106,6 +106,20 @@ class ReleaseHelperTests(unittest.TestCase):
         temp_creation = 'tmp_root="$(mktemp -d "${repo_root}/target/release-build.XXXXXX")"'
         self.assertLess(script.index(parent_creation), script.index(temp_creation))
 
+    def test_release_keychain_is_registered_and_restored(self):
+        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
+        capture = "security list-keychains -d user | sed 's/[[:space:]]*\"//g; s/\"$//' > \"${original_keychains_file}\""
+        register = 'security list-keychains -d user -s "${release_keychain}" "${original_keychains[@]}" >/dev/null'
+        restore = 'security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || true'
+        self.assertIn(capture, script)
+        self.assertIn(register, script)
+        self.assertIn(restore, script)
+        self.assertLess(script.index(capture), script.index('security create-keychain'))
+        self.assertLess(script.index('security create-keychain'), script.index(register))
+        self.assertLess(script.index(register), script.index('security import'))
+        self.assertLess(script.index(register), script.index('codesign_identity='))
+        self.assertLess(script.index(restore), script.index('security delete-keychain'))
+
     def test_publish_rejects_tampered_final_zip_before_transport(self):
         transport = FakeTransport()
         with tempfile.TemporaryDirectory() as directory:
