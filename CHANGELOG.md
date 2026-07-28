@@ -368,6 +368,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (42ddcb4)
 
+- (changelog) Update changelog [skip ci] (76c2243)
+
 
 ### Features
 
@@ -392,6 +394,8 @@ All notable changes to this project are documented in this file.
 - Redesign Pump header action bar (454defe)
 
 - Add Pump command history shortcuts (1d262bb)
+
+- Simplify Pump to clock-synced curve shaping (10a033c)
 
 
 ### Other
