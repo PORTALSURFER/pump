@@ -370,6 +370,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (76c2243)
 
+- (changelog) Update changelog [skip ci] (2e7a9d0)
+
 
 ### Features
 
@@ -396,6 +398,8 @@ All notable changes to this project are documented in this file.
 - Add Pump command history shortcuts (1d262bb)
 
 - Simplify Pump to clock-synced curve shaping (10a033c)
+
+- Add free timing editor workflow (#48) (3958f4a)
 
 
 ### Other
