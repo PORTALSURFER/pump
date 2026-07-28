@@ -336,6 +336,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (d5076b5)
 
+- (changelog) Update changelog [skip ci] (a2993c8)
+
 
 ### Features
 
@@ -1159,6 +1161,14 @@ OPT-1122 Rebuild responsive Radiant editor layout shell (0985c1c)
 - Merge pull request #37 from PORTALSURFER/wsvasek/opt-1121-pump-redesign-define-the-dark-coral-visual-system-and-shared
 
 OPT-1121 Define the Pump dark coral visual system (d667b42)
+
+- Add click-safe host bypass control (28f477f)
+
+- Make bypass host edits transactional (02954be)
+
+- Merge pull request #38 from PORTALSURFER/wsvasek/opt-1135-pump-redesign-add-a-click-safe-host-bypass-control
+
+OPT-1135 Add click-safe host bypass control (2bbf7ae)
 
 
 ### Refactoring
