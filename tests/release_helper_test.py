@@ -100,6 +100,12 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertNotIn("publish_manifest", publish_block)
         self.assertNotIn("final audit of exact publish bytes", publish_block)
 
+    def test_release_build_temp_parent_is_created_before_mktemp(self):
+        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
+        parent_creation = 'mkdir -p "${repo_root}/target"'
+        temp_creation = 'tmp_root="$(mktemp -d "${repo_root}/target/release-build.XXXXXX")"'
+        self.assertLess(script.index(parent_creation), script.index(temp_creation))
+
     def test_publish_rejects_tampered_final_zip_before_transport(self):
         transport = FakeTransport()
         with tempfile.TemporaryDirectory() as directory:

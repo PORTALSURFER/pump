@@ -101,6 +101,7 @@ done
 release_dir="${repo_root}/dist/releases/${build_id}"
 rm -rf "${release_dir}"
 mkdir -p "${release_dir}"
+mkdir -p "${repo_root}/target"
 tmp_root="$(mktemp -d "${repo_root}/target/release-build.XXXXXX")"
 evidence_dir="${tmp_root}/notary-evidence"
 mkdir -p "${evidence_dir}"
