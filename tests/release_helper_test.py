@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import release_helper
 
 
-def png(width=912, height=684):
+def png(width=720, height=540):
     def chunk(kind, payload):
         import zlib
         return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
@@ -54,7 +54,7 @@ class ReleaseHelperTests(unittest.TestCase):
     def test_manifest_and_png_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            screenshot = root / "pump-default-912x684.png"
+            screenshot = root / "pump-default-720x540.png"
             screenshot.write_bytes(png())
             clap, vst3, changelog = (root / name for name in ("clap.zip", "vst3.zip", "CHANGELOG.md"))
             clap.write_bytes(b"clap")
@@ -63,7 +63,7 @@ class ReleaseHelperTests(unittest.TestCase):
             manifest = release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-abcdef012345", channel="stable", released_at="2026-07-28T00:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id="TEAM123456", notary_submissions={"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"})
             self.assertEqual(manifest["schema_version"], 2)
             self.assertEqual(manifest["source"]["dirty"], False)
-            self.assertEqual((manifest["screenshot"]["logical_width"], manifest["screenshot"]["logical_height"]), (912, 684))
+            self.assertEqual((manifest["screenshot"]["logical_width"], manifest["screenshot"]["logical_height"]), (720, 540))
             self.assertEqual(json.loads(release_helper.canonical_json(manifest)), manifest)
 
     def test_capability_refusal_makes_zero_puts(self):
@@ -85,7 +85,7 @@ class ReleaseHelperTests(unittest.TestCase):
             files = []
             for name, body in (("a.zip", b"a"), ("b.zip", b"b"), ("shot.png", png()), ("CHANGELOG.md", b"c")):
                 (root / name).write_bytes(body); files.append((name, root / name, release_helper.file_digest(root / name)[0]))
-            manifest = {"schema_version": 2, "product": "pump", "build_id": "pump-v0.2.0-test", "source": {"repository": "PORTALSURFER/pump", "git_sha": "a" * 40, "dirty": False}, "distribution": "production", "signing": {"identity_class": "Developer ID Application", "notarized": True, "stapled": True, "team_id": "TEAM123456", "notary_submissions": {"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"}}, "version": "0.2.0", "channel": "stable", "released_at": "2026-07-28T00:00:00Z", "artifacts": [{"format": "clap", "platform": "macos", "architectures": ["arm64"], "name": "a.zip", "sha256": files[0][2], "size_bytes": (root / "a.zip").stat().st_size, "media_type": "application/zip"}, {"format": "vst3", "platform": "macos", "architectures": ["arm64"], "name": "b.zip", "sha256": files[1][2], "size_bytes": (root / "b.zip").stat().st_size, "media_type": "application/zip"}], "screenshot": {"role": "default-ui", "name": "shot.png", "media_type": "image/png", "width": 912, "height": 684, "logical_width": 912, "logical_height": 684, "dpi_scale": 1.0, "source_git_sha": "a" * 40, "sha256": files[2][2], "size_bytes": (root / "shot.png").stat().st_size}, "changelog": {"name": "CHANGELOG.md", "format": "markdown", "media_type": "text/markdown; charset=utf-8", "sha256": files[3][2], "size_bytes": (root / "CHANGELOG.md").stat().st_size}}
+            manifest = {"schema_version": 2, "product": "pump", "build_id": "pump-v0.2.0-test", "source": {"repository": "PORTALSURFER/pump", "git_sha": "a" * 40, "dirty": False}, "distribution": "production", "signing": {"identity_class": "Developer ID Application", "notarized": True, "stapled": True, "team_id": "TEAM123456", "notary_submissions": {"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"}}, "version": "0.2.0", "channel": "stable", "released_at": "2026-07-28T00:00:00Z", "artifacts": [{"format": "clap", "platform": "macos", "architectures": ["arm64"], "name": "a.zip", "sha256": files[0][2], "size_bytes": (root / "a.zip").stat().st_size, "media_type": "application/zip"}, {"format": "vst3", "platform": "macos", "architectures": ["arm64"], "name": "b.zip", "sha256": files[1][2], "size_bytes": (root / "b.zip").stat().st_size, "media_type": "application/zip"}], "screenshot": {"role": "default-ui", "name": "shot.png", "media_type": "image/png", "width": 720, "height": 540, "logical_width": 720, "logical_height": 540, "dpi_scale": 1.0, "source_git_sha": "a" * 40, "sha256": files[2][2], "size_bytes": (root / "shot.png").stat().st_size}, "changelog": {"name": "CHANGELOG.md", "format": "markdown", "media_type": "text/markdown; charset=utf-8", "sha256": files[3][2], "size_bytes": (root / "CHANGELOG.md").stat().st_size}}
             release_helper._publish_validated_manifest(endpoint=release_helper.PRODUCTION_ORIGIN, token="secret", manifest=manifest, root=root, transport=transport)
         self.assertEqual(len(transport.calls), 6)
         self.assertEqual(transport.calls[-1][3]["Content-Type"], release_helper.MANIFEST_CONTENT_TYPE)
@@ -165,7 +165,7 @@ class ReleaseHelperTests(unittest.TestCase):
     def test_public_wrapper_rejects_raw_zip_without_request(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            screenshot = root / "pump-default-912x684.png"; screenshot.write_bytes(png())
+            screenshot = root / "pump-default-720x540.png"; screenshot.write_bytes(png())
             clap = root / "pump-v0.2.0-macos.clap.zip"; clap.write_bytes(b"raw unsigned bytes")
             vst3 = root / "pump-v0.2.0-macos.vst3.zip"; vst3.write_bytes(b"raw unsigned bytes")
             changelog = root / "CHANGELOG.md"; changelog.write_text("release\n", encoding="utf-8")

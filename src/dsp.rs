@@ -22,6 +22,10 @@ pub struct DspSettings {
     pub smooth: f32,
     /// Alternating-subdivision swing amount in `[0, 1]`.
     pub swing: f32,
+    /// Timing source: synchronized divisions or a free-running rate.
+    pub timing_mode: usize,
+    /// Canonical free-running timing rate in hertz.
+    pub free_rate_hz: f32,
     /// Whether complete Pump output should crossfade to original dry unity.
     pub bypassed: bool,
 }
@@ -117,6 +121,8 @@ pub struct PumpEngine {
     morph_remaining: usize,
     morph_total: usize,
     bypass: ClickSafeBypass,
+    free_phase: f64,
+    free_phase_active: bool,
 }
 
 impl PumpEngine {
@@ -147,6 +153,8 @@ impl PumpEngine {
             morph_remaining: 0,
             morph_total: 64,
             bypass: ClickSafeBypass::new(sample_rate, bypassed),
+            free_phase: 0.0,
+            free_phase_active: false,
         };
         engine.reset_with_bypass(bypassed);
         engine
@@ -169,6 +177,8 @@ impl PumpEngine {
     pub fn reset_with_bypass(&mut self, bypassed: bool) {
         self.wet_gain_smoother.reset(1.0);
         self.bypass.reset(bypassed);
+        self.free_phase = 0.0;
+        self.free_phase_active = false;
     }
 
     /// Process one sample pair in-place and return telemetry for the last sample.
@@ -211,9 +221,20 @@ impl PumpEngine {
         // Keep the zero-swing path byte-for-byte compatible with the legacy
         // phase calculation. Non-zero swing warps the cyclic phase first and
         // then applies phase offset as a pure cyclic translation.
-        let phase = if swing <= 0.0 {
+        let phase = if settings.timing_mode == crate::params::TIMING_MODE_FREE {
+            if !self.free_phase_active {
+                self.free_phase = 0.0;
+                self.free_phase_active = true;
+            }
+            let phase = (self.free_phase as f32 + phase_offset).rem_euclid(1.0);
+            let rate = crate::params::clamp_free_rate_hz(settings.free_rate_hz) as f64;
+            self.free_phase = (self.free_phase + rate / self.sample_rate as f64).fract();
+            phase
+        } else if swing <= 0.0 {
+            self.free_phase_active = false;
             frame.phase_for_cycle(settings.beats_per_cycle, phase_offset)
         } else {
+            self.free_phase_active = false;
             (swing_warp_phase(frame.phase_for_cycle(settings.beats_per_cycle, 0.0), swing)
                 + phase_offset)
                 .rem_euclid(1.0)
@@ -459,6 +480,8 @@ mod tests {
             beats_per_cycle: 1.0,
             smooth: 0.0,
             swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
         };
 
@@ -498,6 +521,8 @@ mod tests {
             beats_per_cycle: 1.0,
             smooth: 0.0,
             swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
         };
         let mut engine = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
@@ -523,6 +548,8 @@ mod tests {
             beats_per_cycle: 1.0,
             smooth: 0.0,
             swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed,
         }
     }
@@ -642,6 +669,8 @@ mod tests {
             beats_per_cycle: 1.0,
             smooth: 0.0,
             swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
         };
         let transport = TransportState {
@@ -675,6 +704,8 @@ mod tests {
             beats_per_cycle: 1.0,
             smooth: 0.0,
             swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
         };
 
@@ -701,6 +732,96 @@ mod tests {
     }
 
     #[test]
+    fn free_phase_uses_sample_rate_not_host_tempo_or_song_position() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: crate::params::TIMING_MODE_FREE,
+            free_rate_hz: 10.0,
+            bypassed: false,
+        };
+        let mut first = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
+        let mut second = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
+        for index in 0..8 {
+            let mut first_left = 1.0;
+            let mut first_right = 1.0;
+            let mut second_left = 1.0;
+            let mut second_right = 1.0;
+            let first_phase = first
+                .process_sample(
+                    &mut first_left,
+                    &mut first_right,
+                    settings,
+                    TransportState {
+                        tempo_bpm: 40.0,
+                        is_playing: true,
+                        song_pos_beats: Some(12.0 + index as f64),
+                    },
+                )
+                .phase;
+            let second_phase = second
+                .process_sample(
+                    &mut second_left,
+                    &mut second_right,
+                    settings,
+                    TransportState {
+                        tempo_bpm: 300.0,
+                        is_playing: false,
+                        song_pos_beats: Some(-44.0),
+                    },
+                )
+                .phase;
+            assert!((first_phase - second_phase).abs() < 1.0e-7);
+            assert!((first_phase - index as f32 * 0.01).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn switching_out_of_free_timing_resets_phase_for_next_free_run() {
+        let free = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: crate::params::TIMING_MODE_FREE,
+            free_rate_hz: 10.0,
+            bypassed: false,
+        };
+        let sync = DspSettings {
+            timing_mode: crate::params::TIMING_MODE_SYNC,
+            ..free
+        };
+        let mut engine = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
+        let mut left = 1.0;
+        let mut right = 1.0;
+        engine.process_sample(&mut left, &mut right, free, TransportState::default());
+        engine.process_sample(&mut left, &mut right, free, TransportState::default());
+        engine.process_sample(
+            &mut left,
+            &mut right,
+            sync,
+            TransportState {
+                tempo_bpm: 120.0,
+                is_playing: true,
+                song_pos_beats: Some(0.5),
+            },
+        );
+        let telemetry =
+            engine.process_sample(&mut left, &mut right, free, TransportState::default());
+        assert!(telemetry.phase.abs() < 1.0e-7);
+    }
+
+    #[test]
     fn depth_and_floor_mapping_covers_shallow_deep_and_finite_floor() {
         assert_eq!(curve_value_to_gain(0.25, 120.0, -60.0), 0.25);
         assert!((curve_value_to_gain(0.25, 60.0, -60.0) - 0.5).abs() < 1.0e-6);
@@ -721,6 +842,8 @@ mod tests {
             beats_per_cycle: 1.0,
             smooth: amount,
             swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
         }
     }

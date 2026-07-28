@@ -33,7 +33,7 @@ bash scripts/release.sh --package-only --channel stable
 ```
 
 This creates `dist/releases/pump-v<version>-<12-char HEAD>/` containing only the
-two host-installable ZIP bundles, `pump-default-912x684.png`, `CHANGELOG.md`, and
+two host-installable ZIP bundles, `pump-default-720x540.png`, `CHANGELOG.md`, and
 `release-manifest.json` schema 2. Add `--publish` and set
 `PORTALSURFER_RELEASE_TOKEN` in the environment to capability-check and publish
 the immutable bundle. The token is never accepted as a command-line argument.
@@ -91,13 +91,20 @@ mapping and compatibility behavior.
 
 ## Timing behavior
 
-Pump follows the host beat timeline when available. If the host does not expose
-song-position data, the transport clock free-runs so the curve remains audible.
+Pump has two timing sources:
+
+- **Sync** follows the host beat timeline and the selected Sync division (for
+  example, 1/4 or 1/8). Host tempo and song position therefore determine the
+  modulation phase when that timeline is available.
+- **Free** runs continuously at the selected Free Rate in hertz. It is
+  independent of host tempo and song position, so it remains continuous even
+  when the host transport is stopped or does not provide beat-position data.
 
 ## Notes
 
-- The modulation phase follows host beat position when the host exposes a beat timeline.
-- When beat timeline data is unavailable, phase falls back to transport-driven free running so curve modulation remains audible.
+- Sync modulation uses host beat position when the host exposes a beat timeline.
+- Free modulation always uses its continuous rate; it does not fall back to or
+  depend on host tempo or song position.
 - Curve state is persisted in plugin state payloads.
 
 ## Transport Indicator

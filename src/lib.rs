@@ -32,8 +32,9 @@ use crate::gui::{
     WINDOW_WIDTH,
 };
 use crate::params::{
-    apply_param_event, decode_state_payload, encode_state_payload, get_param_value, param_count,
-    text_to_value, value_to_text, write_param_info, PumpParams,
+    apply_clap_param_event, clap_value_from_plain_value, decode_state_payload,
+    encode_state_payload, get_param_value, param_count, plain_value_from_clap_value, text_to_value,
+    value_to_text, write_param_info, PumpParams,
 };
 use crate::plugin_metadata::{PLUGIN_ID, PLUGIN_NAME, VENDOR_NAME};
 use crate::sample_automation::{

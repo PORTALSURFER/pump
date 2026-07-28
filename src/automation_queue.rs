@@ -10,6 +10,8 @@ use toybox::clap::automation::{
     AutomationEvent, AutomationQueue, AutomationQueueConfig,
 };
 
+use crate::params::clap_value_from_plain_value;
+
 /// Bounded GUI automation queue with atomic three-event gesture admission.
 ///
 /// Producers serialize through `gate`, allowing a complete begin/value/end edit
@@ -51,7 +53,11 @@ impl PumpAutomationQueue {
         let Ok(_gate) = self.gate.lock() else {
             return AutomationEnqueueStatus::QueuePoisoned;
         };
-        let status = self.queue.push_value(config, param_id, value);
+        let status = self.queue.push_value(
+            config,
+            param_id,
+            clap_value_from_plain_value(param_id, value),
+        );
         if status == AutomationEnqueueStatus::Enqueued {
             self.record_enqueued(1);
         }
@@ -79,7 +85,11 @@ impl PumpAutomationQueue {
 
         let statuses = [
             self.queue.push_gesture_begin(config, param_id),
-            self.queue.push_value(config, param_id, value),
+            self.queue.push_value(
+                config,
+                param_id,
+                clap_value_from_plain_value(param_id, value),
+            ),
             self.queue.push_gesture_end(config, param_id),
         ];
         let complete = statuses
@@ -141,7 +151,11 @@ impl PumpAutomationQueue {
         {
             return false;
         }
-        let status = self.queue.push_value(config, param_id, value);
+        let status = self.queue.push_value(
+            config,
+            param_id,
+            clap_value_from_plain_value(param_id, value),
+        );
         if status != AutomationEnqueueStatus::Enqueued {
             return false;
         }

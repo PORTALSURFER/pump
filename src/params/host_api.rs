@@ -27,9 +27,18 @@ struct ParamDef {
 impl ParamDef {
     fn to_spec(self) -> ParamSpec<'static> {
         let flags = ParamInfoFlags::from_bits_truncate(self.flags);
+        let (min_value, max_value, default_value) = if self.id == PARAM_FREE_RATE_ID {
+            (
+                0.0,
+                1.0,
+                normalized_from_plain_value(self.id, self.default_value).unwrap_or(0.0),
+            )
+        } else {
+            (self.min_value, self.max_value, self.default_value)
+        };
         let mut builder = ParamBuilder::new(self.id, self.name.as_bytes(), self.module.as_bytes())
-            .range(self.min_value, self.max_value)
-            .default(self.default_value);
+            .range(min_value, max_value)
+            .default(default_value);
 
         if flags.contains(ParamInfoFlags::IS_AUTOMATABLE) {
             builder = builder.automatable();
@@ -68,7 +77,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 10] = [
+const PARAM_DEFS: [ParamDef; 12] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -219,9 +228,38 @@ const PARAM_DEFS: [ParamDef; 10] = [
         default_value: SoundSide::A.index() as f64,
         flags: AUTO_ENUM,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_TIMING_MODE_NUM,
+        id: PARAM_TIMING_MODE_ID,
+        name: "Timing Mode",
+        #[cfg(feature = "vst3")]
+        short_name: "Timing",
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Pump",
+        min_value: TIMING_MODE_SYNC as f64,
+        max_value: TIMING_MODE_FREE as f64,
+        default_value: DEFAULT_TIMING_MODE as f64,
+        flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FREE_RATE_NUM,
+        id: PARAM_FREE_RATE_ID,
+        name: "Free Rate",
+        #[cfg(feature = "vst3")]
+        short_name: "Rate",
+        #[cfg(feature = "vst3")]
+        units: "Hz",
+        module: "Pump",
+        min_value: MIN_FREE_RATE_HZ as f64,
+        max_value: MAX_FREE_RATE_HZ as f64,
+        default_value: DEFAULT_FREE_RATE_HZ as f64,
+        flags: AUTO,
+    },
 ];
 
-#[cfg(feature = "vst3")]
 fn param_def_for_id(param_id: ClapId) -> Option<ParamDef> {
     PARAM_DEFS.iter().copied().find(|def| def.id == param_id)
 }
@@ -243,7 +281,6 @@ fn vst3_step_count(def: ParamDef) -> i32 {
     }
 }
 
-#[cfg(feature = "vst3")]
 fn plain_to_normalized(plain: f64, min: f64, max: f64) -> f64 {
     let span = max - min;
     if span.abs() <= f64::EPSILON {
@@ -252,26 +289,47 @@ fn plain_to_normalized(plain: f64, min: f64, max: f64) -> f64 {
     ((plain - min) / span).clamp(0.0, 1.0)
 }
 
-#[cfg(feature = "vst3")]
+fn free_rate_to_normalized(plain: f64) -> f64 {
+    let min = (MIN_FREE_RATE_HZ as f64).ln();
+    let max = (MAX_FREE_RATE_HZ as f64).ln();
+    ((plain
+        .clamp(MIN_FREE_RATE_HZ as f64, MAX_FREE_RATE_HZ as f64)
+        .ln()
+        - min)
+        / (max - min))
+        .clamp(0.0, 1.0)
+}
+
+fn normalized_to_free_rate(normalized: f64) -> f64 {
+    let min = (MIN_FREE_RATE_HZ as f64).ln();
+    let max = (MAX_FREE_RATE_HZ as f64).ln();
+    (min + normalized.clamp(0.0, 1.0) * (max - min)).exp()
+}
+
 fn normalized_to_plain(normalized: f64, min: f64, max: f64) -> f64 {
     min + normalized.clamp(0.0, 1.0) * (max - min)
 }
 
 /// Convert a parameter plain value to normalized host value.
-#[cfg(feature = "vst3")]
 pub fn normalized_from_plain_value(param_id: ClapId, plain: f64) -> Option<f64> {
     let def = param_def_for_id(param_id)?;
+    if param_id == PARAM_FREE_RATE_ID {
+        return Some(free_rate_to_normalized(plain));
+    }
     Some(plain_to_normalized(plain, def.min_value, def.max_value))
 }
 
 /// Convert a parameter normalized host value to plain value.
-#[cfg(feature = "vst3")]
 pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<f64> {
     let def = param_def_for_id(param_id)?;
-    let plain = normalized_to_plain(normalized, def.min_value, def.max_value);
+    let plain = if param_id == PARAM_FREE_RATE_ID {
+        normalized_to_free_rate(normalized)
+    } else {
+        normalized_to_plain(normalized, def.min_value, def.max_value)
+    };
     if matches!(
         param_id,
-        PARAM_SYNC_DIVISION_ID | PARAM_BYPASS_ID | PARAM_SOUND_ID
+        PARAM_SYNC_DIVISION_ID | PARAM_BYPASS_ID | PARAM_SOUND_ID | PARAM_TIMING_MODE_ID
     ) {
         return Some(plain.round());
     }
@@ -334,6 +392,8 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_BYPASS_ID => Some(params.bypass_value() as f64),
         PARAM_SWING_ID => Some(params.swing() as f64),
         PARAM_SOUND_ID => Some(params.active_sound().index() as f64),
+        PARAM_TIMING_MODE_ID => Some(params.timing_mode() as f64),
+        PARAM_FREE_RATE_ID => Some(params.free_rate_hz() as f64),
         _ => None,
     }
 }
@@ -363,6 +423,8 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
             // thread so A/B snapshots never take an audio-thread lock.
             params.request_active_sound_from_host(side);
         }
+        PARAM_TIMING_MODE_ID => params.set_timing_mode(value as f32),
+        PARAM_FREE_RATE_ID => params.set_free_rate_hz(value as f32),
         _ => return false,
     }
     true
@@ -381,6 +443,36 @@ pub fn apply_normalized_param_value(
         return false;
     };
     apply_plain_param_value(params, param_id, plain)
+}
+
+/// Convert a plain value into the normalized value used at the CLAP boundary.
+pub fn clap_value_from_plain_value(param_id: ClapId, plain: f64) -> f64 {
+    if param_id == PARAM_FREE_RATE_ID {
+        normalized_from_plain_value(param_id, plain).unwrap_or(0.0)
+    } else {
+        plain
+    }
+}
+
+/// Convert a normalized CLAP value into the plain value used internally.
+pub fn plain_value_from_clap_value(param_id: ClapId, value: f64) -> f64 {
+    if param_id == PARAM_FREE_RATE_ID {
+        // CLAP hosts should honor the encoded [0, 1] metadata range. Keep
+        // accepting an out-of-range plain Hz value for compatibility with
+        // hosts that persisted the original raw Free Rate representation.
+        if value.is_finite() && !(0.0..=1.0).contains(&value) {
+            return clamp_free_rate_hz(value as f32) as f64;
+        }
+        plain_from_normalized_value(param_id, value).unwrap_or(MIN_FREE_RATE_HZ as f64)
+    } else {
+        value
+    }
+}
+
+/// Apply one normalized CLAP parameter event into shared parameter state.
+pub fn apply_clap_param_event(params: &PumpParams, param_id: ClapId, value: f32) {
+    let plain = plain_value_from_clap_value(param_id, value as f64);
+    let _applied = apply_plain_param_value(params, param_id, plain);
 }
 
 /// Format a host-visible parameter value for display.
@@ -447,6 +539,10 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
             }
             .to_string(),
         ),
+        PARAM_TIMING_MODE_ID => TIMING_MODE_LABELS
+            .get(clamp_timing_mode(value as f32))
+            .map(|label| (*label).to_string()),
+        PARAM_FREE_RATE_ID => Some(format_free_rate(value as f32)),
         _ => None,
     }
 }
@@ -516,8 +612,59 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
                 _ => None,
             }
         }
+        PARAM_TIMING_MODE_ID => TIMING_MODE_LABELS
+            .iter()
+            .position(|label| label.eq_ignore_ascii_case(raw.trim()))
+            .map(|index| index as f64)
+            .or_else(|| {
+                raw.parse::<f64>()
+                    .ok()
+                    .map(|value| clamp_timing_mode(value as f32) as f64)
+            }),
+        PARAM_FREE_RATE_ID => parse_free_rate(raw).map(|value| value as f64),
         _ => None,
     }
+}
+
+fn format_free_rate(value: f32) -> String {
+    let hz = clamp_free_rate_hz(value);
+    if hz >= 1_000.0 {
+        format!("{} kHz", hz / 1_000.0)
+    } else if hz >= 1.0 {
+        format!("{} Hz", hz)
+    } else {
+        let seconds = 1.0 / hz;
+        if seconds >= 1.0 {
+            format!("{} s", seconds)
+        } else {
+            format!("{} ms", seconds * 1_000.0)
+        }
+    }
+}
+
+fn parse_free_rate(raw: &str) -> Option<f32> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    let (number, multiplier, reciprocal) = if let Some(value) = normalized.strip_suffix("khz") {
+        (value.trim(), 1_000.0, false)
+    } else if let Some(value) = normalized.strip_suffix("hz") {
+        (value.trim(), 1.0, false)
+    } else if let Some(value) = normalized.strip_suffix("ms") {
+        (value.trim(), 1_000.0, true)
+    } else if let Some(value) = normalized.strip_suffix('s') {
+        (value.trim(), 1.0, true)
+    } else {
+        (normalized.as_str(), 1.0, false)
+    };
+    let number = number.parse::<f32>().ok()?;
+    if reciprocal && number <= 0.0 {
+        return None;
+    }
+    let value = if reciprocal {
+        multiplier / number
+    } else {
+        number * multiplier
+    };
+    Some(clamp_free_rate_hz(value))
 }
 
 /// Apply one host automation event value into shared parameter state.

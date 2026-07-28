@@ -80,6 +80,8 @@ mod tests {
             beats_per_cycle: 4.0,
             smooth: 0.0,
             swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
         };
         let transport = TransportState {
@@ -103,6 +105,8 @@ mod tests {
             beats_per_cycle: 4.0,
             smooth: 0.0,
             swing: 1.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
         };
         let transport = TransportState {
@@ -129,6 +133,8 @@ mod tests {
             beats_per_cycle: 1.0,
             smooth: 0.0,
             swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
         };
         let transport = TransportState {

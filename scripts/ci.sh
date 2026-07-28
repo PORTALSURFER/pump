@@ -77,22 +77,22 @@ if [[ "${want_screenshots}" == "1" ]]; then
 
   required_captures=(
     target/ui-screenshots/pump/pump-min-720x540.png
-    target/ui-screenshots/pump/pump-default-912x684.png
+    target/ui-screenshots/pump/pump-default-720x540.png
     target/ui-screenshots/pump/pump-max-1440x1080.png
-    target/ui-screenshots/pump/pump-default-912x684-dpi-1_25.png
+    target/ui-screenshots/pump/pump-default-720x540-dpi-1_25.png
     target/ui-screenshots/pump/pump-components-states-720x360-1x.png
     target/ui-screenshots/pump/pump-components-states-720x360-2x.png
-    target/ui-screenshots/pump/pump-bypass-active-912x684.png
-    target/ui-screenshots/pump/pump-bypass-bypassed-912x684.png
-    target/ui-screenshots/pump/pump-header-normal-912x684.png
-    target/ui-screenshots/pump/pump-header-hovered-912x684.png
-    target/ui-screenshots/pump/pump-header-copy-hovered-912x684.png
-    target/ui-screenshots/pump/pump-header-a-hovered-912x684.png
-    target/ui-screenshots/pump/pump-header-b-hovered-912x684.png
-    target/ui-screenshots/pump/pump-header-pressed-912x684.png
-    target/ui-screenshots/pump/pump-header-disabled-912x684.png
-    target/ui-screenshots/pump/pump-header-a-active-912x684.png
-    target/ui-screenshots/pump/pump-header-b-active-912x684.png
+    target/ui-screenshots/pump/pump-bypass-active-720x540.png
+    target/ui-screenshots/pump/pump-bypass-bypassed-720x540.png
+    target/ui-screenshots/pump/pump-header-normal-720x540.png
+    target/ui-screenshots/pump/pump-header-hovered-720x540.png
+    target/ui-screenshots/pump/pump-header-copy-hovered-720x540.png
+    target/ui-screenshots/pump/pump-header-a-hovered-720x540.png
+    target/ui-screenshots/pump/pump-header-b-hovered-720x540.png
+    target/ui-screenshots/pump/pump-header-pressed-720x540.png
+    target/ui-screenshots/pump/pump-header-disabled-720x540.png
+    target/ui-screenshots/pump/pump-header-a-active-720x540.png
+    target/ui-screenshots/pump/pump-header-b-active-720x540.png
   )
   for capture in "${required_captures[@]}"; do
     if [[ ! -f "${capture}" ]]; then

@@ -195,7 +195,8 @@ impl IComponentTrait for PumpVst3Processor {
     }
 
     unsafe fn setState(&self, state: *mut IBStream) -> tresult {
-        let payload = unsafe { read_versioned_payload(state, STATE_MAGIC, &[STATE_VERSION]) };
+        let payload =
+            unsafe { read_versioned_payload(state, STATE_MAGIC, ACCEPTED_STATE_VERSIONS) };
         let Ok(payload) = payload else {
             return kInvalidArgument;
         };
