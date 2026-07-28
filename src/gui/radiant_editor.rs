@@ -24,9 +24,9 @@ use radiant::runtime::{
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
-    ButtonMessage, FocusBehavior, IconButtonWidget, PointerButton, TextWrap, Widget,
-    WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput, WidgetSemantics,
-    WidgetSizing,
+    ButtonMessage, FocusBehavior, IconButtonWidget, PointerButton, PointerModifiers, TextWrap,
+    Widget, WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput,
+    WidgetSemantics, WidgetSizing,
 };
 use toybox::clack_extensions::params::HostParams;
 use toybox::clack_plugin::prelude::HostSharedHandle;
@@ -874,6 +874,32 @@ impl RadiantPumpEditor {
         self.runtime.dispatch_event(Event::character(ch)).is_some()
     }
 
+    /// Dispatch a command-modified undo or redo shortcut from the host.
+    pub(crate) fn dispatch_shortcut(
+        &mut self,
+        character: char,
+        modifiers: PointerModifiers,
+    ) -> bool {
+        if !modifiers.command || modifiers.alt || !character.eq_ignore_ascii_case(&'z') {
+            return false;
+        }
+
+        let state = self.runtime.bridge().state();
+        let message = if modifiers.shift {
+            if state.redo_history.is_empty() {
+                return false;
+            }
+            RadiantEditorMessage::Redo
+        } else {
+            if state.undo_history.is_empty() {
+                return false;
+            }
+            RadiantEditorMessage::Undo
+        };
+        self.runtime.dispatch_message(message);
+        true
+    }
+
     /// Cancel active numeric value entry, if any.
     pub(crate) fn cancel_numeric_entry(&mut self) -> bool {
         if self.runtime.bridge().state().numeric_entry.is_none() {
@@ -1018,6 +1044,10 @@ impl toybox::radiant_gui::RadiantEditor for RadiantPumpEditor {
 
     fn dispatch_character(&mut self, character: char) -> bool {
         Self::dispatch_character(self, character)
+    }
+
+    fn dispatch_shortcut(&mut self, character: char, modifiers: PointerModifiers) -> bool {
+        Self::dispatch_shortcut(self, character, modifiers)
     }
 
     fn cancel_text_entry(&mut self) -> bool {
@@ -4382,6 +4412,64 @@ mod tests {
         assert_eq!(params.active_sound(), SoundSide::A);
         reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
         assert_eq!(params.active_sound(), SoundSide::B);
+    }
+
+    #[test]
+    fn command_undo_redo_shortcuts_follow_history_availability() {
+        let params = Arc::new(PumpParams::new());
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        let command = PointerModifiers {
+            command: true,
+            ..PointerModifiers::default()
+        };
+
+        assert!(!editor.dispatch_shortcut('z', command));
+        assert!(!editor.dispatch_shortcut('z', PointerModifiers::default()));
+        assert!(!editor.dispatch_shortcut(
+            'z',
+            PointerModifiers {
+                command: true,
+                alt: true,
+                ..PointerModifiers::default()
+            }
+        ));
+        assert!(!editor.dispatch_shortcut('x', command));
+
+        let initial_swing = params.swing();
+        editor
+            .runtime
+            .dispatch_message(RadiantEditorMessage::Swing(0.25));
+        assert_ne!(params.swing(), initial_swing);
+        assert!(editor.dispatch_shortcut('Z', command));
+        assert_eq!(params.swing(), initial_swing);
+        assert!(editor.runtime.bridge().state().undo_history.is_empty());
+        assert_eq!(editor.runtime.bridge().state().redo_history.len(), 1);
+
+        assert!(!editor.dispatch_shortcut(
+            'z',
+            PointerModifiers {
+                command: true,
+                ..PointerModifiers::default()
+            }
+        ));
+        assert!(editor.dispatch_shortcut(
+            'z',
+            PointerModifiers {
+                command: true,
+                shift: true,
+                ..PointerModifiers::default()
+            }
+        ));
+        assert_eq!(params.swing(), 0.25);
+        assert_eq!(editor.runtime.bridge().state().undo_history.len(), 1);
+        assert!(editor.runtime.bridge().state().redo_history.is_empty());
     }
 
     #[test]
