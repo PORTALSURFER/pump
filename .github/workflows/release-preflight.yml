@@ -33,7 +33,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run release helper tests
-        run: python3 tests/release_helper_test.py
+        run: PYTHONDONTWRITEBYTECODE=1 python3 tests/release_helper_test.py
 
       - name: Configure private git dependencies
         env:
