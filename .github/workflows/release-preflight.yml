@@ -9,6 +9,8 @@ on:
       - scripts/release_helper.py
       - tests/release_helper_test.py
       - .github/workflows/release-preflight.yml
+      - .github/workflows/release.yml
+      - .github/workflows/nightly.yml
   workflow_dispatch:
 
 permissions:
@@ -29,6 +31,9 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+
+      - name: Run release helper tests
+        run: python3 tests/release_helper_test.py
 
       - name: Configure private git dependencies
         env:

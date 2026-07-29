@@ -38,6 +38,115 @@ class FakeTransport:
 
 
 class ReleaseHelperTests(unittest.TestCase):
+    def test_nightly_scheduler_contract(self):
+        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "nightly.yml").read_text(encoding="utf-8")
+        self.assertIn('cron: "0 20 * * *"', workflow)
+        self.assertIn('timezone: "Europe/Amsterdam"', workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("type: boolean", workflow)
+        self.assertIn("actions: write", workflow)
+        self.assertNotIn("PORTALSURFER_RELEASE_TOKEN", workflow)
+        self.assertNotIn("RADIANT_REPO_TOKEN", workflow)
+        self.assertNotIn("APPLE_", workflow)
+        self.assertNotIn("git ls-remote", workflow)
+        self.assertNotIn("PORTALSURFER_RELEASES_URL", workflow)
+        self.assertNotIn("curl --fail --silent --show-error --location --max-time", workflow)
+        self.assertNotIn("jq", workflow)
+        self.assertNotIn("latest_nightly_sha", workflow)
+        self.assertIn("actions/workflows/release.yml/dispatches", workflow)
+        self.assertIn('\\"channel\\":\\"nightly\\"', workflow)
+        self.assertIn('\\"publish\\":\\"true\\"', workflow)
+        self.assertIn('\\"only_if_changed\\":\\"${only_if_changed}\\"', workflow)
+
+    def test_nightly_release_decision_behavior(self):
+        sha_a = "a" * 40
+        sha_b = "b" * 40
+        document = {
+            "releases": [
+                {"channel": "stable", "released_at": "2026-07-29T23:00:00+02:00", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_b}},
+                {"channel": "nightly", "released_at": "2026-07-29T20:00:00+02:00", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_a}},
+                {"channel": "nightly", "released_at": "2026-07-29T18:30:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_b}},
+            ]
+        }
+        self.assertFalse(release_helper.should_release(source_sha=sha_b, document=document))
+        self.assertTrue(release_helper.should_release(source_sha=sha_a, document=document))
+        self.assertEqual(release_helper.latest_release_source_sha(document, channel="nightly"), sha_b)
+        self.assertIsNone(release_helper.latest_release_source_sha({"releases": []}, channel="nightly"))
+        self.assertTrue(release_helper.should_release(source_sha=sha_a, document={"releases": []}))
+
+    def test_release_decision_preserves_requested_channel(self):
+        sha_a = "a" * 40
+        sha_b = "b" * 40
+        document = {
+            "releases": [
+                {"channel": "stable", "released_at": "2026-07-29T20:00:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_a}},
+                {"channel": "rc", "released_at": "2026-07-29T20:00:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_b}},
+            ]
+        }
+        self.assertFalse(release_helper.should_release(source_sha=sha_a, document=document, channel="stable"))
+        self.assertTrue(release_helper.should_release(source_sha=sha_b, document=document, channel="stable"))
+        self.assertFalse(release_helper.should_release(source_sha=sha_b, document=document, channel="rc"))
+        self.assertTrue(release_helper.should_release(source_sha=sha_a, document=document, channel="rc"))
+
+    def test_release_decision_uses_parsed_timezone_aware_timestamp(self):
+        sha_old = "a" * 40
+        sha_new = "b" * 40
+        document = {
+            "releases": [
+                {"channel": "nightly", "released_at": "2026-07-29T20:00:00+02:00", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_old}},
+                {"channel": "nightly", "released_at": "2026-07-29T18:30:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_new}},
+            ]
+        }
+        self.assertEqual(release_helper.latest_release_source_sha(document, channel="nightly"), sha_new)
+        malformed = {"releases": [{"channel": "nightly", "released_at": "2026-07-29T20:00:00", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_old}}]}
+        with self.assertRaisesRegex(ValueError, "timezone"):
+            release_helper.latest_release_source_sha(malformed, channel="nightly")
+
+    def test_release_decision_rejects_malformed_history(self):
+        sha = "a" * 40
+        bad_documents = [
+            None,
+            {"releases": "not-an-array"},
+            {"releases": [None]},
+            {"releases": [{"channel": "nightly", "released_at": "2026-07-29T20:00:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": "bad"}}]},
+            {"releases": [{"channel": "nightly", "released_at": "not-a-date", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha}}]},
+            {"releases": [{"channel": "nightly", "released_at": "2026-07-29T20:00:00Z", "source": {"repository": "other/repo", "git_sha": sha}}]},
+        ]
+        for document in bad_documents:
+            with self.subTest(document=document), self.assertRaises(ValueError):
+                release_helper.should_release(source_sha=sha, document=document)
+
+    def test_release_decision_bypass_does_not_require_or_query_history(self):
+        with mock.patch.object(release_helper, "latest_release_source_sha", side_effect=AssertionError("history queried")):
+            self.assertTrue(release_helper.should_release(source_sha="a" * 40, only_if_changed=False))
+
+    def test_release_workflow_gate_and_downstream_contract(self):
+        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("only_if_changed:", workflow)
+        checkout = workflow.index("- name: Checkout exact main source")
+        capture = workflow.index("- name: Capture checked-out source SHA")
+        gate = workflow.index("- name: Check release source freshness")
+        credentials = workflow.index("- name: Configure private git dependencies")
+        self.assertLess(checkout, capture)
+        self.assertLess(capture, gate)
+        self.assertLess(gate, credentials)
+        self.assertIn("RELEASES_URL: https://portalsurfer.org/plugins/api/v1/products/pump/releases", workflow)
+        self.assertIn("release_helper.should_release", workflow)
+        self.assertIn("RELEASE_CHANNEL: ${{ inputs.channel }}", workflow)
+        gate_block = workflow[gate:credentials]
+        self.assertIn("source_sha, releases_path, output_path, channel = sys.argv[1:]", gate_block)
+        self.assertIn("channel=channel", gate_block)
+        self.assertNotIn('channel="nightly"', gate_block)
+        self.assertIn("if: steps.gate.outputs.should_release == 'true'", workflow)
+        self.assertEqual(workflow.count("if: steps.gate.outputs.should_release == 'true'"), 5)
+        self.assertIn("group: pump-release-${{ inputs.channel }}", workflow)
+
+    def test_release_preflight_covers_workflow_and_helper_changes(self):
+        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release-preflight.yml").read_text(encoding="utf-8")
+        for path in (".github/workflows/release.yml", ".github/workflows/nightly.yml", "scripts/release_helper.py", "tests/release_helper_test.py"):
+            self.assertIn(path, workflow)
+        self.assertIn("python3 tests/release_helper_test.py", workflow)
+
     def test_release_workflow_artifact_uses_checked_out_source_sha(self):
         workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         checkout = workflow.index("- name: Checkout exact main source")

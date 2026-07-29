@@ -25,6 +25,64 @@ SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 TEAM_ID = re.compile(r"[A-Z0-9]{10}\Z")
 NOTARY_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\Z")
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\Z")
+GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
+
+
+def latest_release_source_sha(document: Any, *, channel: str) -> Optional[str]:
+    """Return the newest validated source SHA for ``channel``.
+
+    The releases endpoint is an external release decision input, so malformed
+    matching records fail closed instead of being silently ignored.  Selection
+    uses parsed timezone-aware RFC3339 timestamps rather than response order.
+    """
+    if channel not in {"stable", "rc", "nightly"}:
+        raise ValueError(f"invalid release channel: {channel}")
+    if not isinstance(document, dict) or not isinstance(document.get("releases"), list):
+        raise ValueError("release history must contain a releases array")
+
+    latest: tuple[dt.datetime, str] | None = None
+    for release in document["releases"]:
+        if not isinstance(release, dict):
+            raise ValueError("release history contains a non-object release")
+        release_channel = release.get("channel")
+        if not isinstance(release_channel, str):
+            raise ValueError("release history contains a release without a channel")
+        if release_channel != channel:
+            continue
+        released_at = release.get("released_at")
+        if not isinstance(released_at, str):
+            raise ValueError("matching release is missing released_at")
+        try:
+            parsed = dt.datetime.fromisoformat(released_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("matching release released_at must be RFC3339") from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("matching release released_at must include a timezone")
+        source = release.get("source")
+        if not isinstance(source, dict) or source.get("repository") != "PORTALSURFER/pump":
+            raise ValueError("matching release source repository is invalid")
+        source_sha = source.get("git_sha")
+        if not isinstance(source_sha, str) or not GIT_SHA.fullmatch(source_sha):
+            raise ValueError("matching release source git_sha is invalid")
+        candidate = (parsed, source_sha)
+        if latest is None or candidate[0] > latest[0]:
+            latest = candidate
+    return latest[1] if latest is not None else None
+
+
+def should_release(*, source_sha: str, document: Any = None, channel: str = "nightly", only_if_changed: bool = True) -> bool:
+    """Decide whether a release workflow should perform production work.
+
+    The bypass path intentionally does not inspect ``document``; ordinary
+    stable/RC/manual releases therefore preserve their existing behavior and
+    make zero public API requests.
+    """
+    if not isinstance(source_sha, str) or not GIT_SHA.fullmatch(source_sha):
+        raise ValueError("checked-out source SHA is invalid")
+    if not only_if_changed:
+        return True
+    latest = latest_release_source_sha(document, channel=channel)
+    return latest is None or latest != source_sha
 
 
 def validate_release_fields(version: str, released_at: str, names: list[str], hashes: list[str], sizes: list[int]) -> None:
