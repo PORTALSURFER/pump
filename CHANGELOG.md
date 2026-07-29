@@ -398,6 +398,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (a7f1ec7)
 
+- (changelog) Update changelog [skip ci] (2fa9b9b)
+
 
 ### Features
 
@@ -1281,6 +1283,8 @@ Build target knob deck and gain reduction section (ff44770)
 Pump redesign: build branded header and global action bar (cbdcf43)
 
 - Add Pump hotkey help button (#55) (39a7cf0)
+
+- Remap Pump undo and redo hotkeys (#56) (937cf05)
 
 
 ### Refactoring
