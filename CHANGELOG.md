@@ -95,6 +95,8 @@ All notable changes to this project are documented in this file.
 
 - Prevent release bytecode drift (#51) (1dbeada)
 
+- Accept signed clap resource metadata (#52) (ac41d32)
+
 
 ### CI
 
@@ -383,6 +385,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (ba4b607)
 
 - (changelog) Update changelog [skip ci] (17089b6)
+
+- (changelog) Update changelog [skip ci] (655be22)
 
 
 ### Features
