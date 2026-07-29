@@ -97,6 +97,8 @@ All notable changes to this project are documented in this file.
 
 - Accept signed clap resource metadata (#52) (ac41d32)
 
+- Audit signed vst3 resource metadata (#54) (de0c518)
+
 
 ### CI
 
@@ -391,6 +393,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (655be22)
 
 - (changelog) Update changelog [skip ci] (fc63a2d)
+
+- (changelog) Update changelog [skip ci] (f152c6a)
 
 
 ### Features
