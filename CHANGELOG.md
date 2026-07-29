@@ -93,6 +93,8 @@ All notable changes to this project are documented in this file.
 
 - Report release source drift (#50) (6200fdb)
 
+- Prevent release bytecode drift (#51) (1dbeada)
+
 
 ### CI
 
@@ -379,6 +381,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (704373e)
 
 - (changelog) Update changelog [skip ci] (ba4b607)
+
+- (changelog) Update changelog [skip ci] (17089b6)
 
 
 ### Features
