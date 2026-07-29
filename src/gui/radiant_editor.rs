@@ -25,9 +25,9 @@ use radiant::runtime::{
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
-    ButtonMessage, ButtonWidget, FocusBehavior, IconButtonWidget, PointerButton, PointerModifiers,
-    TextWrap, Widget, WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput,
-    WidgetSemantics, WidgetSizing,
+    ButtonMessage, ButtonWidget, FocusBehavior, IconButtonWidget, PointerButton, TextWrap, Widget,
+    WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput, WidgetSemantics,
+    WidgetSizing,
 };
 use toybox::clack_extensions::params::HostParams;
 use toybox::clack_plugin::prelude::HostSharedHandle;
@@ -652,8 +652,8 @@ impl Widget for HotkeyHelpWidget {
         }));
 
         const ROWS: [(&str, &str); 10] = [
-            ("Cmd + Z", "Undo"),
-            ("Cmd + Shift + Z", "Redo"),
+            ("u", "Undo"),
+            ("U", "Redo"),
             ("Shift + drag node", "Lock gain"),
             ("Shift + Option + drag node", "Lock time"),
             ("Cmd + drag node", "Snap to beat grid"),
@@ -1304,33 +1304,25 @@ impl RadiantPumpEditor {
 
     /// Route a focused text character into the Radiant runtime.
     pub(crate) fn dispatch_character(&mut self, ch: char) -> bool {
-        self.runtime.dispatch_event(Event::character(ch)).is_some()
-    }
-
-    /// Dispatch a command-modified undo or redo shortcut from the host.
-    pub(crate) fn dispatch_shortcut(
-        &mut self,
-        character: char,
-        modifiers: PointerModifiers,
-    ) -> bool {
-        if !modifiers.command || modifiers.alt || !character.eq_ignore_ascii_case(&'z') {
-            return false;
+        // Vim-style history shortcuts are only active when no numeric editor
+        // owns text input. While an entry is focused, the character must keep
+        // flowing through Radiant so normal editing semantics remain intact.
+        if self.runtime.bridge().state().numeric_entry.is_none() {
+            let message = match ch {
+                'u' if !self.runtime.bridge().state().undo_history.is_empty() => {
+                    Some(RadiantEditorMessage::Undo)
+                }
+                'U' if !self.runtime.bridge().state().redo_history.is_empty() => {
+                    Some(RadiantEditorMessage::Redo)
+                }
+                _ => None,
+            };
+            if let Some(message) = message {
+                self.runtime.dispatch_message(message);
+                return true;
+            }
         }
-
-        let state = self.runtime.bridge().state();
-        let message = if modifiers.shift {
-            if state.redo_history.is_empty() {
-                return false;
-            }
-            RadiantEditorMessage::Redo
-        } else {
-            if state.undo_history.is_empty() {
-                return false;
-            }
-            RadiantEditorMessage::Undo
-        };
-        self.runtime.dispatch_message(message);
-        true
+        self.runtime.dispatch_event(Event::character(ch)).is_some()
     }
 
     /// Cancel active numeric value entry, if any.
@@ -1490,10 +1482,6 @@ impl toybox::radiant_gui::RadiantEditor for RadiantPumpEditor {
 
     fn dispatch_character(&mut self, character: char) -> bool {
         Self::dispatch_character(self, character)
-    }
-
-    fn dispatch_shortcut(&mut self, character: char, modifiers: PointerModifiers) -> bool {
-        Self::dispatch_shortcut(self, character, modifiers)
     }
 
     fn cancel_text_entry(&mut self) -> bool {
@@ -5081,7 +5069,7 @@ mod tests {
     }
 
     #[test]
-    fn command_undo_redo_shortcuts_follow_history_availability() {
+    fn vim_undo_redo_shortcuts_follow_history_availability() {
         let params = Arc::new(PumpParams::new());
         let mut editor = RadiantPumpEditor::new(
             Arc::clone(&params),
@@ -5091,22 +5079,9 @@ mod tests {
             WINDOW_WIDTH,
             WINDOW_HEIGHT,
         );
-        let command = PointerModifiers {
-            command: true,
-            ..PointerModifiers::default()
-        };
 
-        assert!(!editor.dispatch_shortcut('z', command));
-        assert!(!editor.dispatch_shortcut('z', PointerModifiers::default()));
-        assert!(!editor.dispatch_shortcut(
-            'z',
-            PointerModifiers {
-                command: true,
-                alt: true,
-                ..PointerModifiers::default()
-            }
-        ));
-        assert!(!editor.dispatch_shortcut('x', command));
+        assert!(!editor.dispatch_character('u'));
+        assert!(!editor.dispatch_character('U'));
 
         let initial_swing = params.swing();
         editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
@@ -5124,29 +5099,57 @@ mod tests {
             message: KnobMessage::GestureEnded { value: 0.25 },
         });
         assert_ne!(params.swing(), initial_swing);
-        assert!(editor.dispatch_shortcut('Z', command));
+        assert!(editor.dispatch_character('u'));
         assert_eq!(params.swing(), initial_swing);
         assert!(editor.runtime.bridge().state().undo_history.is_empty());
         assert_eq!(editor.runtime.bridge().state().redo_history.len(), 1);
 
-        assert!(!editor.dispatch_shortcut(
-            'z',
-            PointerModifiers {
-                command: true,
-                ..PointerModifiers::default()
-            }
-        ));
-        assert!(editor.dispatch_shortcut(
-            'z',
-            PointerModifiers {
-                command: true,
-                shift: true,
-                ..PointerModifiers::default()
-            }
-        ));
+        assert!(!editor.dispatch_character('u'));
+        assert!(editor.dispatch_character('U'));
         assert_eq!(params.swing(), 0.25);
         assert_eq!(editor.runtime.bridge().state().undo_history.len(), 1);
         assert!(editor.runtime.bridge().state().redo_history.is_empty());
+    }
+
+    #[test]
+    fn vim_shortcuts_do_not_intercept_numeric_entry() {
+        let params = Arc::new(PumpParams::new());
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        let initial_swing = params.swing();
+        editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
+            target: NumericEntryTarget::Swing,
+            message: KnobMessage::GestureStarted {
+                value: initial_swing,
+            },
+        });
+        editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
+            target: NumericEntryTarget::Swing,
+            message: KnobMessage::ValueChanged { value: 0.25 },
+        });
+        editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
+            target: NumericEntryTarget::Swing,
+            message: KnobMessage::GestureEnded { value: 0.25 },
+        });
+
+        assert_eq!(editor.runtime.bridge().state().undo_history.len(), 1);
+        editor
+            .runtime
+            .dispatch_message(RadiantEditorMessage::NumericEntry(
+                NumericEntryMessage::Begin {
+                    target: NumericEntryTarget::Swing,
+                },
+            ));
+        assert!(editor.runtime.bridge().state().numeric_entry.is_some());
+        assert!(!editor.dispatch_character('u'));
+        assert_eq!(params.swing(), 0.25);
+        assert_eq!(editor.runtime.bridge().state().undo_history.len(), 1);
     }
 
     #[test]
@@ -9338,8 +9341,8 @@ mod tests {
         );
         for label in [
             "PUMP HOTKEYS",
-            "Cmd + Z",
-            "Cmd + Shift + Z",
+            "u",
+            "U",
             "Shift + drag node",
             "Shift + Option + drag node",
             "Cmd + drag node",
