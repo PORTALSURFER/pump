@@ -232,6 +232,7 @@ class ReleaseHelperTests(unittest.TestCase):
                     binary.parent.mkdir(parents=True)
                     (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
                     (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
+                    (binary.parent.parent / "CodeResources").write_text("signed resources", encoding="utf-8")
                     binary.write_bytes(b"arm64")
                     os.chmod(binary, 0o755)
                     return subprocess.CompletedProcess(args, 0, "", "")
@@ -251,6 +252,48 @@ class ReleaseHelperTests(unittest.TestCase):
                 release_helper._audit_zip(archive, "clap", "TEAM123456", cwd=root)
             self.assertEqual([call[0] for call in calls], ["/usr/bin/ditto", "/usr/bin/plutil", "/usr/bin/plutil", "/usr/bin/plutil", "codesign", "codesign", "xcrun", "codesign", "lipo", "/usr/bin/nm"])
             self.assertEqual(calls[7][1:4], ("-vvvv", "-R=notarized", "--check-notarization"))
+
+    def test_zip_audit_rejects_direct_code_resources_for_vst3(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "pump-v0.2.0-macos.vst3.zip"
+            archive.write_bytes(b"placeholder")
+
+            def run(args, *, cwd, capture_output=False):
+                if args[0] == "/usr/bin/ditto":
+                    extracted = Path(args[-1])
+                    binary = extracted / "pump.vst3" / "Contents" / "MacOS" / "pump"
+                    binary.parent.mkdir(parents=True)
+                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
+                    (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
+                    (binary.parent.parent / "CodeResources").write_text("signed resources", encoding="utf-8")
+                    binary.write_bytes(b"arm64")
+                    os.chmod(binary, 0o755)
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with self.assertRaisesRegex(ValueError, r"vst3 ZIP contains unexpected topology: pump\.vst3/Contents/CodeResources"), mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
+                release_helper._audit_zip(archive, "vst3", "TEAM123456", cwd=root)
+
+    def test_zip_audit_rejects_clap_code_resources_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "pump-v0.2.0-macos.clap.zip"
+            archive.write_bytes(b"placeholder")
+
+            def run(args, *, cwd, capture_output=False):
+                if args[0] == "/usr/bin/ditto":
+                    extracted = Path(args[-1])
+                    binary = extracted / "pump.clap" / "Contents" / "MacOS" / "pump"
+                    binary.parent.mkdir(parents=True)
+                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
+                    (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
+                    (binary.parent.parent / "CodeResources").mkdir()
+                    binary.write_bytes(b"arm64")
+                    os.chmod(binary, 0o755)
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with self.assertRaisesRegex(ValueError, r"clap ZIP Contents/CodeResources must be a regular file"), mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
+                release_helper._audit_zip(archive, "clap", "TEAM123456", cwd=root)
 
     def test_zip_audit_rejects_wrong_team_before_stapler(self):
         with tempfile.TemporaryDirectory() as directory:
