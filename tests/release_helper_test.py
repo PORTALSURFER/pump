@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -138,6 +139,24 @@ class ReleaseHelperTests(unittest.TestCase):
                     all("--locked" in line for line in cargo_lines),
                     f"every Cargo invocation in {name} must use --locked",
                 )
+
+    def test_release_script_disables_python_bytecode_output(self):
+        root = Path(__file__).parents[1]
+        script = (root / "scripts" / "release.sh").read_text(encoding="utf-8")
+        self.assertIn("export PYTHONDONTWRITEBYTECODE=1", script)
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            shutil.copy2(root / "scripts" / "release_helper.py", temporary / "release_helper.py")
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(temporary)
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            subprocess.run(
+                [sys.executable, "-c", "import release_helper"],
+                cwd=temporary,
+                env=environment,
+                check=True,
+            )
+            self.assertFalse(list(temporary.rglob("*.pyc")))
 
     def test_release_keychain_is_registered_and_restored(self):
         script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
