@@ -90,6 +90,7 @@ class ReleaseHelperTests(unittest.TestCase):
         preflight = script[script.index('if [[ "${mode}" == preflight ]]; then'):script.index('else', script.index('if [[ "${mode}" == preflight ]]; then'))]
         self.assertNotIn("APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64", preflight)
         self.assertIn("require_production=False", script)
+        self.assertLess(script.index("printf 'preflight CodeResources\\n'"), script.index('codesign --force --deep --sign - "${bundle_dir}"'))
 
     def test_capability_refusal_makes_zero_puts(self):
         transport = FakeTransport(manifest_schema_versions=(1,))
@@ -277,7 +278,7 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertEqual([call[0] for call in calls], ["/usr/bin/ditto", "/usr/bin/plutil", "/usr/bin/plutil", "/usr/bin/plutil", "codesign", "codesign", "xcrun", "codesign", "lipo", "/usr/bin/nm"])
             self.assertEqual(calls[7][1:4], ("-vvvv", "-R=notarized", "--check-notarization"))
 
-    def test_zip_audit_rejects_direct_code_resources_for_vst3(self):
+    def test_zip_audit_accepts_direct_code_resources_for_vst3(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             archive = root / "pump-v0.2.0-macos.vst3.zip"
@@ -293,10 +294,70 @@ class ReleaseHelperTests(unittest.TestCase):
                     (binary.parent.parent / "CodeResources").write_text("signed resources", encoding="utf-8")
                     binary.write_bytes(b"arm64")
                     os.chmod(binary, 0o755)
+                if args[0] == "/usr/bin/plutil" and "CFBundleIdentifier" in args:
+                    return subprocess.CompletedProcess(args, 0, "com.portalsurfer.pump.vst3\n", "")
+                if args[0] == "/usr/bin/plutil" and "CFBundlePackageType" in args:
+                    return subprocess.CompletedProcess(args, 0, "BNDL\n", "")
+                if args[0] == "codesign" and args[1] == "-dv":
+                    return subprocess.CompletedProcess(args, 0, "", "Authority=Developer ID Application: PORTALSURFER\nTeamIdentifier=TEAM123456\n")
+                if args[0] == "lipo":
+                    return subprocess.CompletedProcess(args, 0, "arm64\n", "")
+                if args[0] == "/usr/bin/nm":
+                    return subprocess.CompletedProcess(args, 0, "_GetPluginFactory\n_bundleEntry\n_bundleExit\n", "")
                 return subprocess.CompletedProcess(args, 0, "", "")
 
-            with self.assertRaisesRegex(ValueError, r"vst3 ZIP contains unexpected topology: pump\.vst3/Contents/CodeResources"), mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
+            with mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
                 release_helper._audit_zip(archive, "vst3", "TEAM123456", cwd=root)
+
+    def test_preflight_zip_audit_accepts_direct_code_resources_for_vst3(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "pump-v0.2.0-macos.vst3.zip"
+            archive.write_bytes(b"placeholder")
+
+            def run(args, *, cwd, capture_output=False):
+                if args[0] == "/usr/bin/ditto":
+                    extracted = Path(args[-1])
+                    binary = extracted / "pump.vst3" / "Contents" / "MacOS" / "pump"
+                    binary.parent.mkdir(parents=True)
+                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
+                    (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
+                    (binary.parent.parent / "CodeResources").write_text("preflight signed resources", encoding="utf-8")
+                    binary.write_bytes(b"arm64")
+                    os.chmod(binary, 0o755)
+                if args[0] == "/usr/bin/plutil" and "CFBundleIdentifier" in args:
+                    return subprocess.CompletedProcess(args, 0, "com.portalsurfer.pump.vst3\n", "")
+                if args[0] == "/usr/bin/plutil" and "CFBundlePackageType" in args:
+                    return subprocess.CompletedProcess(args, 0, "BNDL\n", "")
+                if args[0] == "lipo":
+                    return subprocess.CompletedProcess(args, 0, "arm64\n", "")
+                if args[0] == "/usr/bin/nm":
+                    return subprocess.CompletedProcess(args, 0, "_GetPluginFactory\n_bundleEntry\n_bundleExit\n", "")
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
+                release_helper._audit_zip(archive, "vst3", "", cwd=root, require_production=False)
+
+    def test_zip_audit_rejects_vst3_code_resources_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "pump-v0.2.0-macos.vst3.zip"
+            archive.write_bytes(b"placeholder")
+
+            def run(args, *, cwd, capture_output=False):
+                if args[0] == "/usr/bin/ditto":
+                    extracted = Path(args[-1])
+                    binary = extracted / "pump.vst3" / "Contents" / "MacOS" / "pump"
+                    binary.parent.mkdir(parents=True)
+                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
+                    (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
+                    (binary.parent.parent / "CodeResources").mkdir()
+                    binary.write_bytes(b"arm64")
+                    os.chmod(binary, 0o755)
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            with self.assertRaisesRegex(ValueError, r"vst3 ZIP Contents/CodeResources must be a regular file"), mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
+                release_helper._audit_zip(archive, "vst3", "", cwd=root, require_production=False)
 
     def test_zip_audit_rejects_clap_code_resources_directory(self):
         with tempfile.TemporaryDirectory() as directory:

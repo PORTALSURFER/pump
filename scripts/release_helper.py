@@ -352,12 +352,10 @@ def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path, r
             contents / "MacOS",
             contents / "MacOS" / "pump",
         }
-        allowed = required | {contents / "_CodeSignature", contents / "_CodeSignature" / "CodeResources"}
-        if format_name == "clap":
-            allowed.add(contents / "CodeResources")
-            code_resources = contents / "CodeResources"
-            if code_resources.exists() and (code_resources.is_symlink() or not code_resources.is_file()):
-                raise ValueError(f"{format_name} ZIP Contents/CodeResources must be a regular file")
+        allowed = required | {contents / "CodeResources", contents / "_CodeSignature", contents / "_CodeSignature" / "CodeResources"}
+        code_resources = contents / "CodeResources"
+        if code_resources.exists() and (code_resources.is_symlink() or not code_resources.is_file()):
+            raise ValueError(f"{format_name} ZIP Contents/CodeResources must be a regular file")
         if not bundle.is_dir() or not contents.is_dir():
             raise ValueError(f"{format_name} ZIP bundle layout is invalid")
         for current, directories, files in os.walk(extracted, followlinks=False):
