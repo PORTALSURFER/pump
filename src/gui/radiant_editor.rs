@@ -11,8 +11,8 @@ use radiant::gui::visualization::{
 use radiant::layout::{CrossAlign, LayoutOutput, MainAlign};
 use radiant::prelude::{
     column, custom_widget, custom_widget_mapped, dismissible_overlay, dropdown_menu_overlay_below,
-    dropdown_trigger, knob, row, spacer, text, toggle, DropdownOption, IntoView, KnobMessage,
-    TextAlign, TextColorRole, ViewNode,
+    dropdown_trigger, knob, row, spacer, stack, text, toggle, DropdownOption, IntoView,
+    KnobMessage, TextAlign, TextColorRole, ViewNode,
 };
 #[cfg(test)]
 use radiant::runtime::SurfaceFrame;
@@ -385,6 +385,110 @@ struct SoundSwitchButtonWidget {
     button: ButtonWidget,
 }
 
+/// Compact question-mark control that opens the editor's hotkey reference.
+#[derive(Clone, Debug)]
+struct HotkeyHelpButtonWidget {
+    button: ButtonWidget,
+}
+
+impl HotkeyHelpButtonWidget {
+    fn new() -> Self {
+        Self {
+            button: ButtonWidget::new(
+                0,
+                "?",
+                WidgetSizing::fixed(Vector2::new(
+                    PUMP_VISUAL_METRICS.icon_hit,
+                    BUILD_LABEL_HEIGHT,
+                )),
+            )
+            .with_hover_chrome_only(),
+        }
+    }
+}
+
+impl Widget for HotkeyHelpButtonWidget {
+    fn common(&self) -> &WidgetCommon {
+        self.button.common()
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        self.button.common_mut()
+    }
+
+    fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        self.button
+            .handle_input(bounds, input)
+            .map(WidgetOutput::typed)
+    }
+
+    fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
+        let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        self.button.synchronize_from_previous(&previous.button);
+    }
+
+    fn capabilities(&self) -> WidgetCapabilities<'_> {
+        WidgetCapabilities::new().semantics(self)
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        let fill = if self.button.common.state.pressed {
+            theme.accent_copper.with_alpha(96)
+        } else if self.button.common.state.hovered {
+            theme.surface_raised
+        } else {
+            theme.surface_base
+        };
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.button.common.id,
+            rect: bounds,
+            color: fill,
+        }));
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.button.common.id,
+            rect: bounds,
+            color: if self.button.common.state.focused {
+                theme.accent_warning
+            } else {
+                theme.border_emphasis
+            },
+            width: 1.0,
+        }));
+        primitives.push(PaintPrimitive::Text(PaintTextRun {
+            widget_id: self.button.common.id,
+            text: PaintText::from_static("?"),
+            rect: bounds,
+            font_size: PUMP_TYPOGRAPHY.body.0,
+            baseline: None,
+            color: theme.text_primary,
+            align: PaintTextAlign::Center,
+            wrap: TextWrap::None,
+        }));
+    }
+}
+
+impl WidgetSemantics for HotkeyHelpButtonWidget {
+    fn automation_role(&self) -> AutomationRole {
+        AutomationRole::Button
+    }
+
+    fn automation_label(&self) -> Option<String> {
+        Some("Show hotkeys".to_owned())
+    }
+
+    fn automation_description(&self) -> Option<String> {
+        Some("Open the Pump hotkey reference".to_owned())
+    }
+}
+
 impl SoundSwitchButtonWidget {
     fn new() -> Self {
         Self {
@@ -472,6 +576,137 @@ impl WidgetSemantics for SoundSwitchButtonWidget {
 struct MetadataTextWidget {
     common: WidgetCommon,
     text: PaintText,
+}
+
+const HOTKEY_HELP_WIDTH: f32 = 360.0;
+const HOTKEY_HELP_HEIGHT: f32 = 320.0;
+
+/// Compact, non-interactive key reference shown over the editor surface.
+#[derive(Clone)]
+struct HotkeyHelpWidget {
+    common: WidgetCommon,
+}
+
+impl HotkeyHelpWidget {
+    fn new() -> Self {
+        Self {
+            common: WidgetCommon::fixed(0, HOTKEY_HELP_WIDTH, HOTKEY_HELP_HEIGHT)
+                .without_default_chrome(),
+        }
+    }
+}
+
+impl Widget for HotkeyHelpWidget {
+    fn common(&self) -> &WidgetCommon {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        &mut self.common
+    }
+
+    fn handle_input(&mut self, _bounds: Rect, _input: WidgetInput) -> Option<WidgetOutput> {
+        None
+    }
+
+    fn capabilities(&self) -> WidgetCapabilities<'_> {
+        WidgetCapabilities::new().semantics(self)
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        let panel = bounds.inset(1.0, 1.0, 1.0, 1.0);
+        primitives.push(PaintPrimitive::FillPath(PaintFillPath::new(
+            self.common.id,
+            PaintPath::from(rounded_rect_commands(panel, 8.0)),
+            PaintBrush::solid(theme.surface_overlay),
+        )));
+        primitives.push(PaintPrimitive::FillPath(
+            PaintFillPath::new(
+                self.common.id,
+                rounded_ring_path(bounds.inset(0.75, 0.75, 0.75, 0.75), 8.0, 1.25),
+                PaintBrush::solid(theme.border_emphasis),
+            )
+            .fill_rule(PaintFillRule::EvenOdd),
+        ));
+
+        primitives.push(PaintPrimitive::Text(PaintTextRun {
+            widget_id: self.common.id,
+            text: PaintText::from_static("PUMP HOTKEYS"),
+            rect: Rect::from_xy_size(
+                bounds.min.x + 16.0,
+                bounds.min.y + 12.0,
+                bounds.width() - 32.0,
+                20.0,
+            ),
+            font_size: PUMP_TYPOGRAPHY.body.0,
+            baseline: None,
+            color: theme.accent_copper,
+            align: PaintTextAlign::Left,
+            wrap: TextWrap::None,
+        }));
+
+        const ROWS: [(&str, &str); 10] = [
+            ("Cmd + Z", "Undo"),
+            ("Cmd + Shift + Z", "Redo"),
+            ("Shift + drag node", "Lock gain"),
+            ("Shift + Option + drag node", "Lock time"),
+            ("Cmd + drag node", "Snap to beat grid"),
+            ("Shift + drag canvas", "Marquee select nodes"),
+            ("Option + drag segment", "Adjust segment tension"),
+            ("Cmd + drag segment", "Move segment"),
+            ("Cmd + Shift + drag canvas", "Offset the curve"),
+            (
+                "Cmd + Shift + Option + drag canvas",
+                "Quantize curve offset",
+            ),
+        ];
+        let key_width = 208.0;
+        let row_top = bounds.min.y + 42.0;
+        for (index, (key, description)) in ROWS.into_iter().enumerate() {
+            let y = row_top + index as f32 * 24.0;
+            primitives.push(PaintPrimitive::Text(PaintTextRun {
+                widget_id: self.common.id,
+                text: PaintText::from_static(key),
+                rect: Rect::from_xy_size(bounds.min.x + 16.0, y, key_width, 20.0),
+                font_size: PUMP_TYPOGRAPHY.control_label.0,
+                baseline: None,
+                color: theme.text_primary,
+                align: PaintTextAlign::Left,
+                wrap: TextWrap::None,
+            }));
+            primitives.push(PaintPrimitive::Text(PaintTextRun {
+                widget_id: self.common.id,
+                text: PaintText::from_static(description),
+                rect: Rect::from_xy_size(
+                    bounds.min.x + 16.0 + key_width,
+                    y,
+                    bounds.width() - key_width - 32.0,
+                    20.0,
+                ),
+                font_size: PUMP_TYPOGRAPHY.control_label.0,
+                baseline: None,
+                color: theme.text_muted,
+                align: PaintTextAlign::Left,
+                wrap: TextWrap::None,
+            }));
+        }
+    }
+}
+
+impl WidgetSemantics for HotkeyHelpWidget {
+    fn automation_role(&self) -> AutomationRole {
+        AutomationRole::Text
+    }
+
+    fn automation_label(&self) -> Option<String> {
+        Some("Pump hotkeys".to_owned())
+    }
 }
 
 impl MetadataTextWidget {
@@ -932,6 +1167,7 @@ struct RadiantEditorState {
     numeric_entry: Option<NumericEntryState>,
     active_knob_gesture: Option<NumericEntryTarget>,
     timing_dropdown_open: bool,
+    hotkey_help_open: bool,
     free_rate_unit: FreeRateUnit,
     ab_confirmation: Option<String>,
     undo_history: Vec<RadiantHistorySnapshot>,
@@ -960,6 +1196,7 @@ enum RadiantEditorMessage {
     Redo,
     ToggleTimingMode,
     ToggleTimingDropdown,
+    ToggleHotkeyHelp,
     Knob {
         target: NumericEntryTarget,
         message: KnobMessage,
@@ -1318,6 +1555,7 @@ impl RadiantEditorState {
             numeric_entry: None,
             active_knob_gesture: None,
             timing_dropdown_open: false,
+            hotkey_help_open: false,
             free_rate_unit: FreeRateUnit::Hertz,
             ab_confirmation: None,
             undo_history: Vec::new(),
@@ -1531,7 +1769,13 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     ])
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .height(BUILD_LABEL_HEIGHT);
-    let header_actions = row([history_actions, ab_actions])
+    let hotkey_help_action =
+        custom_widget_mapped(HotkeyHelpButtonWidget::new(), move |_: ButtonMessage| {
+            RadiantEditorMessage::ToggleHotkeyHelp
+        })
+        .size(PUMP_VISUAL_METRICS.icon_hit, BUILD_LABEL_HEIGHT)
+        .tooltip("Show hotkeys");
+    let header_actions = row([history_actions, ab_actions, hotkey_help_action])
         .spacing(PUMP_VISUAL_METRICS.gap)
         .fill_width()
         .height(BUILD_LABEL_HEIGHT);
@@ -1651,10 +1895,38 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             ),
             RadiantEditorMessage::ToggleTimingDropdown,
         )
+    } else if state.hotkey_help_open {
+        dismissible_overlay(
+            base,
+            hotkey_help_overlay(),
+            RadiantEditorMessage::ToggleHotkeyHelp,
+        )
     } else {
-        base
+        // Keep the base content under a stable stack root whether a transient
+        // overlay is open or not. This preserves widget identities (and focus)
+        // when the help panel is toggled.
+        stack([base]).fill()
     };
     Arc::new(surface.into_surface())
+}
+
+fn hotkey_help_overlay() -> ViewNode<RadiantEditorMessage> {
+    column([
+        spacer()
+            .height(SURFACE_PADDING + BUILD_LABEL_HEIGHT + SURFACE_SPACING)
+            .fill_width(),
+        row([
+            spacer().fill_width(),
+            custom_widget(HotkeyHelpWidget::new(), |_| None)
+                .width(HOTKEY_HELP_WIDTH)
+                .height(HOTKEY_HELP_HEIGHT),
+            spacer().width(SURFACE_PADDING),
+        ])
+        .fill_width()
+        .height(HOTKEY_HELP_HEIGHT),
+        spacer().fill_height(),
+    ])
+    .fill()
 }
 
 fn parameter_deck(
@@ -1965,6 +2237,12 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
         }
         RadiantEditorMessage::ToggleTimingDropdown => {
             state.timing_dropdown_open = !state.timing_dropdown_open;
+        }
+        RadiantEditorMessage::ToggleHotkeyHelp => {
+            state.hotkey_help_open = !state.hotkey_help_open;
+            if state.hotkey_help_open {
+                state.timing_dropdown_open = false;
+            }
         }
         RadiantEditorMessage::Knob { target, message } => {
             reduce_knob_message(state, target, message);
@@ -4869,6 +5147,150 @@ mod tests {
         assert_eq!(params.swing(), 0.25);
         assert_eq!(editor.runtime.bridge().state().undo_history.len(), 1);
         assert!(editor.runtime.bridge().state().redo_history.is_empty());
+    }
+
+    #[test]
+    fn hotkey_help_button_is_accessible_and_activates() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, PUMP_VISUAL_METRICS.icon_hit, BUILD_LABEL_HEIGHT);
+        let mut widget = HotkeyHelpButtonWidget::new();
+        let semantics = widget.automation_semantics();
+        assert_eq!(semantics.role, AutomationRole::Button);
+        assert_eq!(semantics.label.as_deref(), Some("Show hotkeys"));
+        assert_eq!(
+            semantics.description.as_deref(),
+            Some("Open the Pump hotkey reference")
+        );
+        assert!(semantics.focusable);
+
+        let mut primitives = Vec::new();
+        widget.append_paint(
+            &mut primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &ThemeTokens::default(),
+        );
+        assert!(primitives.iter().any(|primitive| matches!(
+            primitive,
+            PaintPrimitive::Text(text) if text.text.as_str() == "?"
+        )));
+
+        widget.handle_input(bounds, WidgetInput::FocusChanged(true));
+        for key in [WidgetKey::Enter, WidgetKey::Space] {
+            let output = widget
+                .handle_input(bounds, WidgetInput::KeyPress(key))
+                .unwrap_or_else(|| panic!("help button should activate from {key:?}"));
+            assert_eq!(
+                output.typed_copied::<ButtonMessage>(),
+                Some(ButtonMessage::Activate)
+            );
+        }
+    }
+
+    #[test]
+    fn hotkey_help_message_toggles_overlay_state() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(params);
+        assert!(!state.hotkey_help_open);
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::ToggleHotkeyHelp);
+        assert!(state.hotkey_help_open);
+        reduce_editor_message(&mut state, RadiantEditorMessage::ToggleHotkeyHelp);
+        assert!(!state.hotkey_help_open);
+    }
+
+    #[test]
+    fn hotkey_help_activation_does_not_press_copy_action() {
+        fn find_widget<'a>(
+            node: &'a radiant::runtime::DevtoolsNodeSnapshot,
+            label: &str,
+        ) -> Option<&'a radiant::runtime::DevtoolsNodeSnapshot> {
+            if node
+                .widget
+                .as_ref()
+                .and_then(|widget| widget.semantics.label.as_deref())
+                == Some(label)
+            {
+                return Some(node);
+            }
+            node.children
+                .iter()
+                .find_map(|child| find_widget(child, label))
+        }
+
+        let params = Arc::new(PumpParams::new());
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        let initial_snapshot = editor.runtime.devtools_snapshot();
+        let help = find_widget(&initial_snapshot.root, "Show hotkeys")
+            .expect("help button should be projected");
+        let initial_copy = find_widget(&initial_snapshot.root, "Copy A to B")
+            .expect("initial copy action should be projected");
+        assert_ne!(help.node_id, initial_copy.node_id);
+        let bounds = help.bounds.expect("help button should have bounds");
+        let center = Point::new(
+            (bounds.min.x + bounds.max.x) * 0.5,
+            (bounds.min.y + bounds.max.y) * 0.5,
+        );
+        editor.dispatch_event(radiant::runtime::Event::pointer_press(
+            center,
+            PointerButton::Primary,
+            PointerModifiers::default(),
+        ));
+        editor.dispatch_event(radiant::runtime::Event::pointer_release(
+            center,
+            PointerButton::Primary,
+            PointerModifiers::default(),
+        ));
+
+        assert!(editor.runtime.bridge().state().hotkey_help_open);
+        let open_snapshot = editor.runtime.devtools_snapshot();
+        let open_help = find_widget(&open_snapshot.root, "Show hotkeys")
+            .expect("help button should remain projected");
+        assert_eq!(open_help.node_id, help.node_id);
+        let copy = find_widget(&open_snapshot.root, "Copy A to B")
+            .expect("copy action should be projected");
+        let state = copy
+            .widget
+            .as_ref()
+            .expect("copy action should expose widget state")
+            .state;
+        assert!(
+            !state.pressed,
+            "copy action must not inherit help button press"
+        );
+        assert!(
+            !state.hovered,
+            "copy action must not inherit help button hover"
+        );
+        assert!(
+            !state.focused,
+            "copy action must not inherit help button focus"
+        );
+    }
+
+    #[test]
+    fn hotkey_help_widget_exports_nonfocusable_text_semantics() {
+        let widget = HotkeyHelpWidget::new();
+        let semantics = widget.automation_semantics();
+        assert_eq!(semantics.role, AutomationRole::Text);
+        assert_eq!(semantics.label.as_deref(), Some("Pump hotkeys"));
+        assert!(!semantics.focusable);
+
+        let capabilities = widget.capabilities();
+        assert!(capabilities.has_semantics());
+        assert_eq!(
+            capabilities
+                .semantics
+                .expect("hotkey helper should export semantics")
+                .automation_role(),
+            AutomationRole::Text
+        );
     }
 
     #[test]
@@ -8799,6 +9221,12 @@ mod tests {
         assert_eq!(pump_labels.len(), 1, "header should paint one wordmark");
         assert_eq!(pump_labels[0].align, PaintTextAlign::Right);
         assert!(
+            frame.paint_plan.primitives.iter().any(
+                |primitive| matches!(primitive, PaintPrimitive::Text(text) if text.text == "?")
+            ),
+            "header should paint the clickable hotkey help control"
+        );
+        assert!(
             frame
                 .paint_plan
                 .primitives
@@ -8896,6 +9324,39 @@ mod tests {
             !state.timing_dropdown_open,
             "selecting an option should close the menu"
         );
+    }
+
+    #[test]
+    fn hotkey_help_overlay_paints_documented_shortcuts() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(params);
+        state.hotkey_help_open = true;
+
+        let frame = project_editor_surface(&mut state).frame_at_size(
+            Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+            &pump_theme(),
+        );
+        for label in [
+            "PUMP HOTKEYS",
+            "Cmd + Z",
+            "Cmd + Shift + Z",
+            "Shift + drag node",
+            "Shift + Option + drag node",
+            "Cmd + drag node",
+            "Shift + drag canvas",
+            "Option + drag segment",
+            "Cmd + drag segment",
+            "Cmd + Shift + drag canvas",
+            "Cmd + Shift + Option + drag canvas",
+        ] {
+            assert!(
+                frame.paint_plan.primitives.iter().any(|primitive| matches!(
+                    primitive,
+                    PaintPrimitive::Text(text) if text.text.as_str() == label
+                )),
+                "hotkey help must paint {label}"
+            );
+        }
     }
 
     #[test]
