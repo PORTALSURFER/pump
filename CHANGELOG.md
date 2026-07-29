@@ -91,6 +91,8 @@ All notable changes to this project are documented in this file.
 
 - Keep release builds lockfile-stable (#49) (9af7160)
 
+- Report release source drift (#50) (6200fdb)
+
 
 ### CI
 
@@ -375,6 +377,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (2e7a9d0)
 
 - (changelog) Update changelog [skip ci] (704373e)
+
+- (changelog) Update changelog [skip ci] (ba4b607)
 
 
 ### Features
