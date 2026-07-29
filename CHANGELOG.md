@@ -396,6 +396,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (f152c6a)
 
+- (changelog) Update changelog [skip ci] (a7f1ec7)
+
 
 ### Features
 
@@ -1277,6 +1279,8 @@ Build target knob deck and gain reduction section (ff44770)
 - Merge pull request #47 from PORTALSURFER/wsvasek/opt-1124-pump-redesign-build-the-branded-header-and-global-action-bar
 
 Pump redesign: build branded header and global action bar (cbdcf43)
+
+- Add Pump hotkey help button (#55) (39a7cf0)
 
 
 ### Refactoring
