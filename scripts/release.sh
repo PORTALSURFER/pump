@@ -7,7 +7,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 usage() {
   cat <<'EOF'
-Usage: scripts/release.sh (--package-only | --publish) [options]
+Usage: scripts/release.sh (--package-only | --publish | --preflight) [options]
 
 Options:
   --channel stable|rc|nightly  Release channel (default: stable)
@@ -17,9 +17,11 @@ Options:
   --endpoint URL               PortalSurfer origin (default: https://portalsurfer.org)
   --source-ref REF             Require a non-detached checkout of REF
 
-Both modes produce production bundles. Apple signing/notarization credentials are
-read only from the environment (the GitHub workflow supplies the same secrets used
-by Wavecrate): APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64,
+Package-only and publish produce production bundles. Preflight uses an ad-hoc
+signature and never contacts Apple or the PortalSurfer release API. Production
+Apple signing/notarization credentials are read only from the environment (the
+GitHub workflow supplies the same secrets used by Wavecrate):
+APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64,
 APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD, APPLE_NOTARY_KEY_BASE64,
 APPLE_NOTARY_KEY_ID, and APPLE_NOTARY_ISSUER_ID.
 EOF
@@ -34,8 +36,8 @@ endpoint="https://portalsurfer.org"
 source_ref=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --package-only|--publish)
-      [[ -z "${mode}" ]] || { echo "choose only one of --package-only or --publish" >&2; exit 2; }
+    --package-only|--publish|--preflight)
+      [[ -z "${mode}" ]] || { echo "choose only one of --package-only, --publish, or --preflight" >&2; exit 2; }
       mode="${1#--}"; shift ;;
     --channel) channel="${2:?missing channel}"; shift 2 ;;
     --version) requested_version="${2:?missing version}"; shift 2 ;;
@@ -76,9 +78,11 @@ fi
 version="${requested_version:-${version}}"
 git_sha="$(git rev-parse HEAD)"
 [[ "${git_sha}" =~ ^[0-9a-f]{40}$ ]] || { echo "could not resolve an exact source SHA" >&2; exit 1; }
-git fetch origin main --quiet
-canonical_main="$(git rev-parse refs/remotes/origin/main 2>/dev/null || true)"
-[[ -n "${canonical_main}" && "${git_sha}" == "${canonical_main}" ]] || { echo "production release source must equal origin/main (${canonical_main:-unavailable})" >&2; exit 1; }
+if [[ "${mode}" != preflight ]]; then
+  git fetch origin main --quiet
+  canonical_main="$(git rev-parse refs/remotes/origin/main 2>/dev/null || true)"
+  [[ -n "${canonical_main}" && "${git_sha}" == "${canonical_main}" ]] || { echo "production release source must equal origin/main (${canonical_main:-unavailable})" >&2; exit 1; }
+fi
 build_id="${build_id:-pump-v${version}-${git_sha:0:12}}"
 [[ "${build_id}" =~ ^[a-z0-9][a-z0-9._-]{1,127}$ ]] || { echo "invalid build id" >&2; exit 2; }
 released_at="${released_at:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
@@ -95,9 +99,11 @@ if [[ ! -d "${VST3_SDK_DIR:-}" ]]; then
   echo "VST3_SDK_DIR must point to the VST3 SDK checkout" >&2
   exit 1
 fi
-for required in APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64 APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD APPLE_NOTARY_KEY_BASE64 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
-  [[ -n "${!required:-}" ]] || { echo "missing required Apple production credential: ${required}" >&2; exit 1; }
-done
+if [[ "${mode}" != preflight ]]; then
+  for required in APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64 APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD APPLE_NOTARY_KEY_BASE64 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
+    [[ -n "${!required:-}" ]] || { echo "missing required Apple production credential: ${required}" >&2; exit 1; }
+  done
+fi
 
 release_dir="${repo_root}/dist/releases/${build_id}"
 rm -rf "${release_dir}"
@@ -121,37 +127,40 @@ cleanup() {
 }
 trap cleanup EXIT
 
-decode_base64() {
-  if printf '%s' "$1" | base64 --decode > "$2" 2>/dev/null; then return 0; fi
-  printf '%s' "$1" | base64 -D > "$2"
-}
-cert_path="${tmp_root}/developer-id-application.p12"
-notary_key_path="${tmp_root}/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-decode_base64 "${APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64}" "${cert_path}"
-decode_base64 "${APPLE_NOTARY_KEY_BASE64}" "${notary_key_path}"
-chmod 600 "${cert_path}" "${notary_key_path}"
-release_keychain="${tmp_root}/pump-release.keychain-db"
-release_keychain_password="$(uuidgen | tr -d '-')"
-original_keychains_file="${tmp_root}/original-keychains.txt"
-security list-keychains -d user | sed 's/[[:space:]]*"//g; s/"$//' > "${original_keychains_file}"
-original_keychains=()
-while IFS= read -r keychain; do
-  [[ -n "${keychain}" ]] && original_keychains+=("${keychain}")
-done < "${original_keychains_file}"
-security create-keychain -p "${release_keychain_password}" "${release_keychain}" >/dev/null
-security set-keychain-settings -lut 21600 "${release_keychain}"
-security unlock-keychain -p "${release_keychain_password}" "${release_keychain}"
-security list-keychains -d user -s "${release_keychain}" "${original_keychains[@]}" >/dev/null
-security import "${cert_path}" -P "${APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD}" -A -t cert -f pkcs12 -k "${release_keychain}" >/dev/null
-security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${release_keychain_password}" "${release_keychain}" >/dev/null
-codesign_identity="${APPLE_CODESIGN_IDENTITY:-}"
-if [[ -z "${codesign_identity}" ]]; then
-  codesign_identity="$(security find-identity -v -p codesigning "${release_keychain}" | sed -n 's/.*"\(Developer ID Application:.*\)".*/\1/p' | head -n 1)"
-fi
-[[ "${codesign_identity}" == Developer\ ID\ Application:* ]] || { echo "no Developer ID Application identity found" >&2; exit 1; }
 signing_team_id=""
 clap_notary_id=""
 vst3_notary_id=""
+if [[ "${mode}" != preflight ]]; then
+  decode_base64() {
+    if printf '%s' "$1" | base64 --decode > "$2" 2>/dev/null; then return 0; fi
+    printf '%s' "$1" | base64 -D > "$2"
+  }
+  cert_path="${tmp_root}/developer-id-application.p12"
+  notary_key_path="${tmp_root}/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+  decode_base64 "${APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64}" "${cert_path}"
+  decode_base64 "${APPLE_NOTARY_KEY_BASE64}" "${notary_key_path}"
+  chmod 600 "${cert_path}" "${notary_key_path}"
+  release_keychain="${tmp_root}/pump-release.keychain-db"
+  release_keychain_password="$(uuidgen | tr -d '-')"
+  original_keychains_file="${tmp_root}/original-keychains.txt"
+  security list-keychains -d user | sed 's/[[:space:]]*"//g; s/"$//' > "${original_keychains_file}"
+  original_keychains=()
+  while IFS= read -r keychain; do
+    [[ -n "${keychain}" ]] && original_keychains+=("${keychain}")
+  done < "${original_keychains_file}"
+  security create-keychain -p "${release_keychain_password}" "${release_keychain}" >/dev/null
+  security set-keychain-settings -lut 21600 "${release_keychain}"
+  security unlock-keychain -p "${release_keychain_password}" "${release_keychain}"
+  security list-keychains -d user -s "${release_keychain}" "${original_keychains[@]}" >/dev/null
+  security import "${cert_path}" -P "${APPLE_DEVELOPER_ID_APPLICATION_CERT_PASSWORD}" -A -t cert -f pkcs12 -k "${release_keychain}" >/dev/null
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${release_keychain_password}" "${release_keychain}" >/dev/null
+  codesign_identity="${APPLE_CODESIGN_IDENTITY:-}"
+  if [[ -z "${codesign_identity}" ]]; then
+    codesign_identity="$(security find-identity -v -p codesigning "${release_keychain}" | sed -n 's/.*"\(Developer ID Application:.*\)".*/\1/p' | head -n 1)"
+  fi
+  [[ "${codesign_identity}" == Developer\ ID\ Application:* ]] || { echo "no Developer ID Application identity found" >&2; exit 1; }
+fi
+if [[ "${mode}" == preflight ]]; then codesign_identity="-"; fi
 
 echo "[release] rendering Pump screenshots"
 rm -rf target/ui-screenshots
@@ -180,19 +189,23 @@ build_bundle() {
 EOF
   printf 'BNDL????' > "${contents}/PkgInfo"
   /usr/bin/plutil -lint "${contents}/Info.plist" >/dev/null
-  codesign --force --deep --timestamp --options runtime --keychain "${release_keychain}" --sign "${codesign_identity}" "${bundle_dir}" >/dev/null
-  codesign --verify --deep --strict "${bundle_dir}"
-  local notarize_zip="${tmp_root}/notary-${format}.zip"
-  /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${bundle_dir}" "${notarize_zip}"
-  local notary_json="${tmp_root}/notary-${format}.json"
-  xcrun notarytool submit "${notarize_zip}" --key "${notary_key_path}" --key-id "${APPLE_NOTARY_KEY_ID}" --issuer "${APPLE_NOTARY_ISSUER_ID}" --wait --output-format json >"${notary_json}"
-  local notary_status notary_id
-  notary_status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status", ""))' "${notary_json}")"
-  notary_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id", ""))' "${notary_json}")"
-  [[ "${notary_status}" == Accepted && -n "${notary_id}" ]] || { echo "notarization was not accepted for ${format}" >&2; cat "${notary_json}" >&2; exit 1; }
-  local notary_log="${evidence_dir}/notary-${format}-${notary_id}.json"
-  xcrun notarytool log "${notary_id}" --key "${notary_key_path}" --key-id "${APPLE_NOTARY_KEY_ID}" --issuer "${APPLE_NOTARY_ISSUER_ID}" --output-format json >"${notary_log}"
-  python3 - "${notary_log}" "${format}" <<'PY'
+  if [[ "${mode}" == preflight ]]; then
+    codesign --force --deep --sign - "${bundle_dir}" >/dev/null
+    codesign --verify --deep --strict "${bundle_dir}"
+  else
+    codesign --force --deep --timestamp --options runtime --keychain "${release_keychain}" --sign "${codesign_identity}" "${bundle_dir}" >/dev/null
+    codesign --verify --deep --strict "${bundle_dir}"
+    local notarize_zip="${tmp_root}/notary-${format}.zip"
+    /usr/bin/ditto -c -k --sequesterRsrc --keepParent "${bundle_dir}" "${notarize_zip}"
+    local notary_json="${tmp_root}/notary-${format}.json"
+    xcrun notarytool submit "${notarize_zip}" --key "${notary_key_path}" --key-id "${APPLE_NOTARY_KEY_ID}" --issuer "${APPLE_NOTARY_ISSUER_ID}" --wait --output-format json >"${notary_json}"
+    local notary_status notary_id
+    notary_status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status", ""))' "${notary_json}")"
+    notary_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id", ""))' "${notary_json}")"
+    [[ "${notary_status}" == Accepted && -n "${notary_id}" ]] || { echo "notarization was not accepted for ${format}" >&2; cat "${notary_json}" >&2; exit 1; }
+    local notary_log="${evidence_dir}/notary-${format}-${notary_id}.json"
+    xcrun notarytool log "${notary_id}" --key "${notary_key_path}" --key-id "${APPLE_NOTARY_KEY_ID}" --issuer "${APPLE_NOTARY_ISSUER_ID}" --output-format json >"${notary_log}"
+    python3 - "${notary_log}" "${format}" <<'PY'
 import json
 import sys
 
@@ -212,14 +225,15 @@ if errors:
         print(f"[release] notarization error ({format_name}): {message}", file=sys.stderr)
     raise SystemExit(1)
 PY
-  if [[ "${format}" == clap ]]; then clap_notary_id="${notary_id}"; else vst3_notary_id="${notary_id}"; fi
-  xcrun stapler staple "${bundle_dir}" >/dev/null
-  xcrun stapler validate "${bundle_dir}" >/dev/null
-  codesign -vvvv -R=notarized --check-notarization "${bundle_dir}" >/dev/null
-  local team_id
-  team_id="$(codesign -dv --verbose=4 "${bundle_dir}" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
-  [[ -n "${team_id}" ]] || { echo "could not capture Developer ID team identifier" >&2; exit 1; }
-  if [[ -z "${signing_team_id}" ]]; then signing_team_id="${team_id}"; elif [[ "${signing_team_id}" != "${team_id}" ]]; then echo "bundle signing team identifiers differ" >&2; exit 1; fi
+    if [[ "${format}" == clap ]]; then clap_notary_id="${notary_id}"; else vst3_notary_id="${notary_id}"; fi
+    xcrun stapler staple "${bundle_dir}" >/dev/null
+    xcrun stapler validate "${bundle_dir}" >/dev/null
+    codesign -vvvv -R=notarized --check-notarization "${bundle_dir}" >/dev/null
+    local team_id
+    team_id="$(codesign -dv --verbose=4 "${bundle_dir}" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
+    [[ -n "${team_id}" ]] || { echo "could not capture Developer ID team identifier" >&2; exit 1; }
+    if [[ -z "${signing_team_id}" ]]; then signing_team_id="${team_id}"; elif [[ "${signing_team_id}" != "${team_id}" ]]; then echo "bundle signing team identifiers differ" >&2; exit 1; fi
+  fi
   file "${contents}/MacOS/pump" | grep -q 'arm64' || { echo "${format} binary is not arm64" >&2; exit 1; }
   if command -v lipo >/dev/null 2>&1; then
     [[ "$(lipo -archs "${contents}/MacOS/pump")" == "arm64" ]] || { echo "${format} binary must contain only arm64" >&2; exit 1; }
@@ -236,6 +250,18 @@ PY
 
 audit_zip() {
   local format="$1" archive="$2" expected_team="$3" audit_dir bundle contents codesign_details team_id
+  if [[ "${mode}" == preflight ]]; then
+    python3 - "${archive}" "${format}" <<'PY'
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
+from release_helper import _audit_zip
+
+_audit_zip(pathlib.Path(sys.argv[1]), sys.argv[2], "", cwd=pathlib.Path.cwd(), require_production=False)
+PY
+    return
+  fi
   audit_dir="$(mktemp -d "${tmp_root}/audit.XXXXXX")"
   /usr/bin/ditto -x -k "${archive}" "${audit_dir}"
   bundle="${audit_dir}/pump.${format}"
@@ -277,7 +303,19 @@ build_bundle vst3 "${release_dir}/pump-v${version}-macos.vst3.zip" "${vst3_bundl
 audit_zip vst3 "${release_dir}/pump-v${version}-macos.vst3.zip" "${signing_team_id}"
 
 cp CHANGELOG.md "${release_dir}/CHANGELOG.md"
-python3 - "${release_dir}" "${version}" "${build_id}" "${channel}" "${released_at}" "${git_sha}" "${signing_team_id}" "${clap_notary_id}" "${vst3_notary_id}" <<'PY'
+if [[ "${mode}" == preflight ]]; then
+  python3 - "${release_dir}" "${version}" "${build_id}" "${channel}" "${released_at}" "${git_sha}" <<'PY'
+import pathlib
+import sys
+sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
+from release_helper import build_manifest, canonical_json, validate_preflight_manifest
+root = pathlib.Path(sys.argv[1])
+manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys.argv[4], released_at=sys.argv[5], git_sha=sys.argv[6], clap=root / f"pump-v{sys.argv[2]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[2]}-macos.vst3.zip", screenshot=root / "pump-default-720x540.png", changelog=root / "CHANGELOG.md", distribution="preflight", signing_identity_class="ad hoc", notarized=False, stapled=False)
+(root / "release-manifest.json").write_bytes(canonical_json(manifest))
+validate_preflight_manifest(manifest, root)
+PY
+else
+  python3 - "${release_dir}" "${version}" "${build_id}" "${channel}" "${released_at}" "${git_sha}" "${signing_team_id}" "${clap_notary_id}" "${vst3_notary_id}" <<'PY'
 import json, pathlib, sys
 sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
 from release_helper import build_manifest, canonical_json
@@ -285,6 +323,7 @@ root = pathlib.Path(sys.argv[1])
 manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys.argv[4], released_at=sys.argv[5], git_sha=sys.argv[6], clap=root / f"pump-v{sys.argv[2]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[2]}-macos.vst3.zip", screenshot=root / "pump-default-720x540.png", changelog=root / "CHANGELOG.md", distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id=sys.argv[7], notary_submissions={"clap": sys.argv[8], "vst3": sys.argv[9]})
 (root / "release-manifest.json").write_bytes(canonical_json(manifest))
 PY
+fi
 
 if [[ "${mode}" == publish ]]; then
   python3 - "${release_dir}" "${endpoint}" <<'PY'

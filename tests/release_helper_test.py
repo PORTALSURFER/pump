@@ -67,6 +67,30 @@ class ReleaseHelperTests(unittest.TestCase):
             self.assertEqual((manifest["screenshot"]["logical_width"], manifest["screenshot"]["logical_height"]), (720, 540))
             self.assertEqual(json.loads(release_helper.canonical_json(manifest)), manifest)
 
+    def test_preflight_manifest_uses_ad_hoc_non_notarized_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            screenshot = root / "pump-default-720x540.png"
+            screenshot.write_bytes(png())
+            clap, vst3, changelog = (root / name for name in ("pump-v0.2.0-macos.clap.zip", "pump-v0.2.0-macos.vst3.zip", "CHANGELOG.md"))
+            clap.write_bytes(b"clap")
+            vst3.write_bytes(b"vst3")
+            changelog.write_text("# Release\n", encoding="utf-8")
+            manifest = release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-abcdef012345", channel="stable", released_at="2026-07-29T00:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="preflight", signing_identity_class="ad hoc", notarized=False, stapled=False)
+            release_helper.validate_preflight_manifest(manifest, root)
+            self.assertEqual(manifest["signing"], {"identity_class": "ad hoc", "notarized": False, "stapled": False, "team_id": "", "notary_submissions": {}})
+            with self.assertRaisesRegex(ValueError, "production Developer ID notarized"):
+                release_helper.validate_publish_manifest(manifest, root)
+
+    def test_release_preflight_cli_contract_is_credential_free(self):
+        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
+        self.assertIn("--preflight", script)
+        self.assertIn('codesign --force --deep --sign - "${bundle_dir}"', script)
+        self.assertIn('validate_preflight_manifest', script)
+        preflight = script[script.index('if [[ "${mode}" == preflight ]]; then'):script.index('else', script.index('if [[ "${mode}" == preflight ]]; then'))]
+        self.assertNotIn("APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64", preflight)
+        self.assertIn("require_production=False", script)
+
     def test_capability_refusal_makes_zero_puts(self):
         transport = FakeTransport(manifest_schema_versions=(1,))
         with tempfile.TemporaryDirectory() as directory:
