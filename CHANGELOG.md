@@ -400,6 +400,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (2fa9b9b)
 
+- (changelog) Update changelog [skip ci] (44bb4a3)
+
 
 ### Features
 
@@ -1285,6 +1287,12 @@ Pump redesign: build branded header and global action bar (cbdcf43)
 - Add Pump hotkey help button (#55) (39a7cf0)
 
 - Remap Pump undo and redo hotkeys (#56) (937cf05)
+
+- Schedule guarded Pump nightly releases (#57)
+
+* Schedule guarded Pump nightly releases
+
+* Keep release preflight checkout clean (b8c4c59)
 
 
 ### Refactoring
