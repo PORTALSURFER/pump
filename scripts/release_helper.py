@@ -141,10 +141,12 @@ def build_manifest(
 ) -> dict[str, Any]:
     if channel not in {"stable", "rc", "nightly"}:
         raise ValueError(f"invalid channel: {channel}")
-    if distribution != "production":
+    if distribution not in {"production", "preflight"}:
         raise ValueError(f"invalid distribution: {distribution}")
     if distribution == "production" and (signing_identity_class != "Developer ID Application" or not notarized or not stapled or not isinstance(signing_team_id, str) or not TEAM_ID.fullmatch(signing_team_id) or set(notary_submissions or {}) != {"clap", "vst3"} or any(not isinstance(notary_id, str) or not NOTARY_ID.fullmatch(notary_id) for notary_id in (notary_submissions or {}).values())):
         raise ValueError("production manifests require Developer ID signing and a stapled notarization")
+    if distribution == "preflight" and (signing_identity_class != "ad hoc" or notarized or stapled or signing_team_id or notary_submissions):
+        raise ValueError("preflight manifests require ad hoc, non-notarized provenance")
     screenshot_info = validate_png(screenshot)
     artifacts = []
     for fmt, path in (("clap", clap), ("vst3", vst3)):
@@ -332,7 +334,7 @@ def _assert_no_symlinks(path: Path) -> None:
         raise ValueError(f"release ZIP contains an unexpected symlink: {path.name}")
 
 
-def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path) -> None:
+def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path, require_production: bool = True) -> None:
     if platform.system() != "Darwin":
         raise ValueError("production ZIP audits require macOS")
     if path.is_symlink() or not path.is_file():
@@ -378,15 +380,16 @@ def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path) -
         if package_type != "BNDL":
             raise ValueError(f"{format_name} ZIP package type is invalid")
         _run_checked(("codesign", "--verify", "--deep", "--strict", str(bundle)), cwd=cwd)
-        details = _run_checked(("codesign", "-dv", "--verbose=4", str(bundle)), cwd=cwd, capture_output=True)
-        signing_details = f"{details.stdout}\n{details.stderr}"
-        if not any(line.startswith("Authority=Developer ID Application:") for line in signing_details.splitlines()):
-            raise ValueError(f"{format_name} ZIP is not signed by a Developer ID Application authority")
-        team_ids = [line.removeprefix("TeamIdentifier=") for line in signing_details.splitlines() if line.startswith("TeamIdentifier=")]
-        if team_ids != [expected_team]:
-            raise ValueError(f"{format_name} ZIP Developer ID signing team does not match manifest")
-        _run_checked(("xcrun", "stapler", "validate", str(bundle)), cwd=cwd)
-        _run_checked(("codesign", "-vvvv", "-R=notarized", "--check-notarization", str(bundle)), cwd=cwd)
+        if require_production:
+            details = _run_checked(("codesign", "-dv", "--verbose=4", str(bundle)), cwd=cwd, capture_output=True)
+            signing_details = f"{details.stdout}\n{details.stderr}"
+            if not any(line.startswith("Authority=Developer ID Application:") for line in signing_details.splitlines()):
+                raise ValueError(f"{format_name} ZIP is not signed by a Developer ID Application authority")
+            team_ids = [line.removeprefix("TeamIdentifier=") for line in signing_details.splitlines() if line.startswith("TeamIdentifier=")]
+            if team_ids != [expected_team]:
+                raise ValueError(f"{format_name} ZIP Developer ID signing team does not match manifest")
+            _run_checked(("xcrun", "stapler", "validate", str(bundle)), cwd=cwd)
+            _run_checked(("codesign", "-vvvv", "-R=notarized", "--check-notarization", str(bundle)), cwd=cwd)
         architectures = _run_checked(("lipo", "-archs", str(binary)), cwd=cwd, capture_output=True).stdout.strip()
         if architectures != "arm64":
             raise ValueError(f"{format_name} ZIP binary must contain exactly arm64")
@@ -439,7 +442,7 @@ def publish_release(*, endpoint: str, token: str, manifest_path: Path, root: Opt
     _publish_validated_manifest(endpoint=endpoint, token=token, manifest=manifest, root=artifact_root, transport=_request)
 
 
-def validate_publish_manifest(manifest: dict[str, Any], root: Path) -> None:
+def validate_publish_manifest(manifest: dict[str, Any], root: Path, *, require_production: bool = True) -> None:
     if manifest.get("schema_version") != MANIFEST_SCHEMA or manifest.get("product") != "pump":
         raise ValueError("publish requires Pump manifest schema 2")
     build_id = manifest.get("build_id")
@@ -449,13 +452,19 @@ def validate_publish_manifest(manifest: dict[str, Any], root: Path) -> None:
         raise ValueError("publish manifest has invalid signing provenance")
     if not isinstance(build_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,127}", build_id) or not isinstance(source, dict) or source != {"repository": "PORTALSURFER/pump", "git_sha": source.get("git_sha"), "dirty": False} or not isinstance(source.get("git_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", source["git_sha"]):
         raise ValueError("publish manifest has invalid immutable source")
-    if manifest.get("distribution") != "production" or signing.get("identity_class") != "Developer ID Application" or signing.get("notarized") is not True or signing.get("stapled") is not True:
-        raise ValueError("publish requires production Developer ID notarized provenance")
-    if not TEAM_ID.fullmatch(signing.get("team_id", "")):
-        raise ValueError("publish requires a valid Developer Team ID")
+    if require_production:
+        if manifest.get("distribution") != "production" or signing.get("identity_class") != "Developer ID Application" or signing.get("notarized") is not True or signing.get("stapled") is not True:
+            raise ValueError("publish requires production Developer ID notarized provenance")
+        if not TEAM_ID.fullmatch(signing.get("team_id", "")):
+            raise ValueError("publish requires a valid Developer Team ID")
+    elif manifest.get("distribution") != "preflight" or signing.get("identity_class") != "ad hoc" or signing.get("notarized") is not False or signing.get("stapled") is not False or signing.get("team_id") != "":
+        raise ValueError("preflight requires ad hoc non-notarized provenance")
     submissions = signing.get("notary_submissions", {})
-    if set(submissions) != {"clap", "vst3"} or any(not isinstance(value, str) or not NOTARY_ID.fullmatch(value) for value in submissions.values()):
-        raise ValueError("publish requires accepted notarization submission ids")
+    if require_production:
+        if set(submissions) != {"clap", "vst3"} or any(not isinstance(value, str) or not NOTARY_ID.fullmatch(value) for value in submissions.values()):
+            raise ValueError("publish requires accepted notarization submission ids")
+    elif submissions:
+        raise ValueError("preflight manifests cannot contain notarization submission ids")
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or len(artifacts) != 2 or not all(isinstance(a, dict) for a in artifacts) or {a.get("format") for a in artifacts} != {"clap", "vst3"}:
         raise ValueError("publish requires exactly CLAP and VST3 artifacts")
@@ -484,3 +493,9 @@ def validate_publish_manifest(manifest: dict[str, Any], root: Path) -> None:
     changelog = manifest["changelog"]
     if changelog.get("format") != "markdown" or changelog.get("media_type") != "text/markdown; charset=utf-8":
         raise ValueError("publish changelog metadata does not match the release contract")
+
+
+def validate_preflight_manifest(manifest: dict[str, Any], root: Path) -> None:
+    """Validate local preflight provenance and the same file/metadata contract as publish."""
+    validate_publish_manifest(manifest, root, require_production=False)
+    _validate_exact_manifest_names(manifest)
