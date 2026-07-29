@@ -190,6 +190,7 @@ EOF
   printf 'BNDL????' > "${contents}/PkgInfo"
   /usr/bin/plutil -lint "${contents}/Info.plist" >/dev/null
   if [[ "${mode}" == preflight ]]; then
+    printf 'preflight CodeResources\n' > "${contents}/CodeResources"
     codesign --force --deep --sign - "${bundle_dir}" >/dev/null
     codesign --verify --deep --strict "${bundle_dir}"
   else
