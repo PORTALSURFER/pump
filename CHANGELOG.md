@@ -106,6 +106,8 @@ All notable changes to this project are documented in this file.
 
 - Run Pump checks on macOS only (dc184f8)
 
+- Add release preflight (#53) (fee51ea)
+
 
 ### Chores
 
@@ -387,6 +389,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (17089b6)
 
 - (changelog) Update changelog [skip ci] (655be22)
+
+- (changelog) Update changelog [skip ci] (fc63a2d)
 
 
 ### Features
