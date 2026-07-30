@@ -2535,8 +2535,9 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 } else {
                     raw_delta
                 };
-                state.preview_curve_offset =
-                    Some(cyclically_offset_editable_curve(&origin_curve, delta));
+                let curve = cyclically_offset_editable_curve(&origin_curve, delta);
+                state.params.set_editable_curve_preserving_phase(&curve);
+                state.preview_curve_offset = Some(curve);
             }
             if constraint_changed {
                 let curve = state.params.editable_curve_snapshot();
@@ -2757,6 +2758,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 delta
             };
             let curve = cyclically_offset_editable_curve(&drag.origin_curve, delta);
+            state.params.set_editable_curve_preserving_phase(&curve);
             state.preview_curve_offset = Some(curve);
             state.active_curve_node = None;
             state.active_curve_segment = None;
@@ -2906,10 +2908,16 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             }
         }
         CurvePreviewMessage::Cancel => {
+            if let Some(drag) = state.active_curve_offset.take() {
+                if state.params.editable_curve_snapshot() != drag.origin_curve {
+                    state
+                        .params
+                        .set_editable_curve_preserving_phase(&drag.origin_curve);
+                }
+            }
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
             state.active_curve_segment = None;
-            state.active_curve_offset = None;
             state.active_curve_marquee = None;
             state.preview_curve_offset = None;
             state.hover_curve_node = None;
@@ -7744,6 +7752,7 @@ mod tests {
     fn radiant_editor_cmd_shift_offset_moves_only_phase_and_commits_on_release() {
         let params = Arc::new(PumpParams::new());
         let origin = params.editable_curve_snapshot();
+        let origin_table = params.curve_snapshot();
         let mut state = editor_state(Arc::clone(&params));
 
         reduce_editor_message(
@@ -7763,7 +7772,9 @@ mod tests {
             .clone()
             .expect("offset drag should expose a live preview");
         assert!(state.active_curve_offset.is_some());
-        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert_eq!(params.editable_curve_snapshot(), moved);
+        assert!(params.curve_revision() > 1);
+        assert_ne!(params.curve_snapshot(), origin_table);
         assert!(moved.nodes.iter().any(|node| {
             !origin
                 .nodes
@@ -7799,6 +7810,35 @@ mod tests {
     }
 
     #[test]
+    fn radiant_editor_cmd_shift_offset_cancel_restores_auditioned_origin() {
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: 0.4,
+                quantized: false,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragCurveOffset { delta: 0.25 }),
+        );
+        assert_ne!(params.editable_curve_snapshot(), origin);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::Cancel),
+        );
+
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert!(state.active_curve_offset.is_none());
+        assert!(state.preview_curve_offset.is_none());
+    }
+
+    #[test]
     fn radiant_editor_cmd_shift_offset_snaps_immediately_when_option_is_pressed() {
         let params = Arc::new(PumpParams::new());
         let origin = params.editable_curve_snapshot();
@@ -7821,6 +7861,7 @@ mod tests {
             .preview_curve_offset
             .clone()
             .expect("free offset should have a preview");
+        assert_eq!(params.editable_curve_snapshot(), free_preview);
 
         reduce_editor_message(
             &mut state,
@@ -7834,6 +7875,7 @@ mod tests {
             .preview_curve_offset
             .clone()
             .expect("option change should recompute the preview immediately");
+        assert_eq!(params.editable_curve_snapshot(), quantized_preview);
         let snapped = quantize_curve_offset_delta(
             state.params.sync_division(),
             width,
