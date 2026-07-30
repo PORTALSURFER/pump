@@ -402,6 +402,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (44bb4a3)
 
+- (changelog) Update changelog [skip ci] (e589762)
+
 
 ### Features
 
@@ -1293,6 +1295,12 @@ Pump redesign: build branded header and global action bar (cbdcf43)
 * Schedule guarded Pump nightly releases
 
 * Keep release preflight checkout clean (b8c4c59)
+
+- Make curve slides audible while dragging (4226d99)
+
+- Merge pull request #58 from PORTALSURFER/codex/live-curve-slide-audition
+
+Make curve slides audible while dragging (6170215)
 
 
 ### Refactoring
