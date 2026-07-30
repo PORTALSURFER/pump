@@ -11,11 +11,12 @@ from their working snapshots and therefore reopen clean.
 
 Changing A/B publishes the selected snapshot through the existing atomic audio
 parameter boundary. The processor never reads the UI-owned snapshot lock.
-Copy is explicit and directional (active to inactive), leaves the active audio
-unchanged, and is available by Command-clicking the center switch or
-Option-clicking the inactive side button. Working edits are captured
-automatically as they occur; there is no manual Command-click store step or
-`Stored`/`Modified` workflow in the editor. Preset selection and quick-slot edits
+Copy is explicit and directional (active to inactive). Command-clicking the
+center switch copies the active side and then selects the destination;
+Option-clicking the inactive side button copies only, leaving the active audio
+unchanged. Working edits are captured automatically as they occur; there is no
+manual Command-click store step or `Stored`/`Modified` workflow in the editor.
+Preset selection and quick-slot edits
 apply only to the active side; saving a preset captures that side's complete
 editable state. Host automation for the appended `Sound` parameter switches a
 pre-published realtime selector in the callback; the UI projection only
