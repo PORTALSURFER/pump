@@ -408,6 +408,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (15eb1cf)
 
+- (changelog) Update changelog [skip ci] (f70252a)
+
 
 ### Features
 
@@ -1333,6 +1335,12 @@ Refine compact Pump editor workflow (e31f4fd)
 - Merge pull request #60 from PORTALSURFER/codex/curve-multi-select-edit
 
 Improve Pump curve and A/B interactions (80fec81)
+
+- Extend high-end smoothing (b5f5d08)
+
+- Merge pull request #62 from PORTALSURFER/codex/smoother-high-end-impl
+
+Extend high-end smoothing (f3b3309)
 
 
 ### Refactoring
