@@ -33,7 +33,7 @@ bash scripts/release.sh --package-only --channel stable
 ```
 
 This creates `dist/releases/pump-v<version>-<12-char HEAD>/` containing only the
-two host-installable ZIP bundles, `pump-default-720x540.png`, `CHANGELOG.md`, and
+two host-installable ZIP bundles, `pump-default-640x400.png`, `CHANGELOG.md`, and
 `release-manifest.json` schema 2. Add `--publish` and set
 `PORTALSURFER_RELEASE_TOKEN` in the environment to capability-check and publish
 the immutable bundle. The token is never accepted as a command-line argument.

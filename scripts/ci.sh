@@ -76,23 +76,23 @@ if [[ "${want_screenshots}" == "1" ]]; then
   cargo test --locked -r --features screenshot-test gui::screenshot_tests -- --nocapture
 
   required_captures=(
-    target/ui-screenshots/pump/pump-min-720x540.png
-    target/ui-screenshots/pump/pump-default-720x540.png
-    target/ui-screenshots/pump/pump-max-1440x1080.png
-    target/ui-screenshots/pump/pump-default-720x540-dpi-1_25.png
+    target/ui-screenshots/pump/pump-min-640x400.png
+    target/ui-screenshots/pump/pump-default-640x400.png
+    target/ui-screenshots/pump/pump-max-1280x800.png
+    target/ui-screenshots/pump/pump-default-640x400-dpi-1_25.png
     target/ui-screenshots/pump/pump-components-states-720x360-1x.png
     target/ui-screenshots/pump/pump-components-states-720x360-2x.png
-    target/ui-screenshots/pump/pump-bypass-active-720x540.png
-    target/ui-screenshots/pump/pump-bypass-bypassed-720x540.png
-    target/ui-screenshots/pump/pump-header-normal-720x540.png
-    target/ui-screenshots/pump/pump-header-hovered-720x540.png
-    target/ui-screenshots/pump/pump-header-copy-hovered-720x540.png
-    target/ui-screenshots/pump/pump-header-a-hovered-720x540.png
-    target/ui-screenshots/pump/pump-header-b-hovered-720x540.png
-    target/ui-screenshots/pump/pump-header-pressed-720x540.png
-    target/ui-screenshots/pump/pump-header-disabled-720x540.png
-    target/ui-screenshots/pump/pump-header-a-active-720x540.png
-    target/ui-screenshots/pump/pump-header-b-active-720x540.png
+    target/ui-screenshots/pump/pump-bypass-active-640x400.png
+    target/ui-screenshots/pump/pump-bypass-bypassed-640x400.png
+    target/ui-screenshots/pump/pump-header-normal-640x400.png
+    target/ui-screenshots/pump/pump-header-hovered-640x400.png
+    target/ui-screenshots/pump/pump-header-copy-hovered-640x400.png
+    target/ui-screenshots/pump/pump-header-a-hovered-640x400.png
+    target/ui-screenshots/pump/pump-header-b-hovered-640x400.png
+    target/ui-screenshots/pump/pump-header-pressed-640x400.png
+    target/ui-screenshots/pump/pump-header-disabled-640x400.png
+    target/ui-screenshots/pump/pump-header-a-active-640x400.png
+    target/ui-screenshots/pump/pump-header-b-active-640x400.png
   )
   for capture in "${required_captures[@]}"; do
     if [[ ! -f "${capture}" ]]; then

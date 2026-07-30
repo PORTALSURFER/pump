@@ -1,7 +1,7 @@
 //! Lock-free, cycle-aligned incoming-audio visualization snapshots.
 
 use std::array;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::time_utils::monotonic_micros;
 
@@ -18,8 +18,10 @@ pub(crate) type IncomingWaveformSnapshot = [f32; INCOMING_WAVEFORM_BIN_COUNT];
 /// Shared atomics written by the audio thread and sampled by the GUI thread.
 pub(crate) struct IncomingWaveformBuffer {
     generation: AtomicU32,
-    values: [AtomicU32; INCOMING_WAVEFORM_BIN_COUNT],
-    value_generations: [AtomicU32; INCOMING_WAVEFORM_BIN_COUNT],
+    displayed_generation: AtomicU32,
+    live_mode: AtomicBool,
+    values: [[AtomicU32; INCOMING_WAVEFORM_BIN_COUNT]; 2],
+    value_generations: [[AtomicU32; INCOMING_WAVEFORM_BIN_COUNT]; 2],
     last_update_micros: AtomicU64,
 }
 
@@ -27,8 +29,12 @@ impl Default for IncomingWaveformBuffer {
     fn default() -> Self {
         Self {
             generation: AtomicU32::new(1),
-            values: array::from_fn(|_| AtomicU32::new(0.0_f32.to_bits())),
-            value_generations: array::from_fn(|_| AtomicU32::new(0)),
+            // Show the initial capture live. Once that first cycle completes, subsequent
+            // captures remain hidden until their completed generation swaps in atomically.
+            displayed_generation: AtomicU32::new(1),
+            live_mode: AtomicBool::new(false),
+            values: array::from_fn(|_| array::from_fn(|_| AtomicU32::new(0.0_f32.to_bits()))),
+            value_generations: array::from_fn(|_| array::from_fn(|_| AtomicU32::new(0))),
             last_update_micros: AtomicU64::new(0),
         }
     }
@@ -51,9 +57,40 @@ impl IncomingWaveformBuffer {
         next
     }
 
-    fn invalidate(&self) {
+    fn begin_next_generation_seeded_from_display(&self) -> u32 {
+        let generation = self.begin_next_generation();
+        self.seed_generation_from_display(generation);
+        generation
+    }
+
+    fn seed_generation_from_display(&self, generation: u32) {
+        let displayed = self.displayed_generation.load(Ordering::Acquire);
+        if displayed == 0 || displayed == generation {
+            return;
+        }
+        let source_page = displayed as usize & 1;
+        let target_page = generation as usize & 1;
+        for index in 0..INCOMING_WAVEFORM_BIN_COUNT {
+            if self.value_generations[target_page][index].load(Ordering::Acquire) == generation {
+                continue;
+            }
+            let value = if self.value_generations[source_page][index].load(Ordering::Acquire)
+                == displayed
+            {
+                self.values[source_page][index].load(Ordering::Relaxed)
+            } else {
+                0.0_f32.to_bits()
+            };
+            self.values[target_page][index].store(value, Ordering::Relaxed);
+            self.value_generations[target_page][index].store(generation, Ordering::Release);
+        }
+    }
+
+    fn invalidate(&self) -> u32 {
+        self.displayed_generation.store(0, Ordering::Release);
         self.begin_next_generation();
         self.last_update_micros.store(0, Ordering::Release);
+        self.generation()
     }
 
     /// Mark the source unavailable so stale data disappears immediately.
@@ -61,12 +98,29 @@ impl IncomingWaveformBuffer {
         self.invalidate();
     }
 
+    pub(crate) fn set_live_mode(&self, enabled: bool) {
+        self.live_mode.store(enabled, Ordering::Release);
+    }
+
+    pub(crate) fn live_mode(&self) -> bool {
+        self.live_mode.load(Ordering::Acquire)
+    }
+
+    /// Atomically make one fully captured cycle visible to the GUI.
+    fn publish_completed_generation(&self, generation: u32) {
+        self.displayed_generation
+            .store(generation, Ordering::Release);
+        self.last_update_micros
+            .store(monotonic_micros().max(1), Ordering::Release);
+    }
+
     fn publish(&self, generation: u32, bin: usize, value: f32) {
-        let Some(slot) = self.values.get(bin) else {
+        let page = generation as usize & 1;
+        let Some(slot) = self.values[page].get(bin) else {
             return;
         };
         slot.store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-        self.value_generations[bin].store(generation, Ordering::Release);
+        self.value_generations[page][bin].store(generation, Ordering::Release);
     }
 
     fn finish_block(&self) {
@@ -82,13 +136,17 @@ impl IncomingWaveformBuffer {
             return None;
         }
 
-        let generation = self.generation();
+        let generation = self.displayed_generation.load(Ordering::Acquire);
+        if generation == 0 {
+            return None;
+        }
+        let page = generation as usize & 1;
         let mut any_signal = false;
         let snapshot = array::from_fn(|index| {
-            if self.value_generations[index].load(Ordering::Acquire) != generation {
+            if self.value_generations[page][index].load(Ordering::Acquire) != generation {
                 return 0.0;
             }
-            let value = f32::from_bits(self.values[index].load(Ordering::Relaxed));
+            let value = f32::from_bits(self.values[page][index].load(Ordering::Relaxed));
             let value = if value.is_finite() {
                 value.clamp(0.0, 1.0)
             } else {
@@ -106,7 +164,7 @@ impl IncomingWaveformBuffer {
     }
 }
 
-/// Audio-owned peak aggregator that publishes at most once per visited bin.
+/// Audio-owned peak aggregator that holds the last completed cycle for the GUI.
 #[derive(Default)]
 pub(crate) struct IncomingWaveformWriter {
     generation: u32,
@@ -114,7 +172,9 @@ pub(crate) struct IncomingWaveformWriter {
     last_cycle_mapping: Option<[u32; 2]>,
     current_bin: Option<usize>,
     current_peak: f32,
+    cycle_has_signal: bool,
     block_has_signal: bool,
+    live_mode: bool,
 }
 
 impl IncomingWaveformWriter {
@@ -124,6 +184,11 @@ impl IncomingWaveformWriter {
             self.reset();
             self.generation = generation;
         }
+        let live_mode = buffer.live_mode();
+        if live_mode && !self.live_mode {
+            buffer.seed_generation_from_display(self.generation);
+        }
+        self.live_mode = live_mode;
         self.block_has_signal = false;
     }
 
@@ -156,10 +221,28 @@ impl IncomingWaveformWriter {
             phase + BACKWARD_PHASE_EPSILON < previous
                 || phase - previous > FORWARD_PHASE_DISCONTINUITY
         });
+        let cycle_complete = self.last_phase.is_some_and(|previous| {
+            previous > 0.5 && phase < 0.5 && phase + BACKWARD_PHASE_EPSILON < previous
+        });
         if cycle_mapping_changed || phase_discontinuity {
-            self.generation = buffer.begin_next_generation();
+            if cycle_complete && !cycle_mapping_changed {
+                self.flush_current(buffer);
+                if self.cycle_has_signal {
+                    buffer.publish_completed_generation(self.generation);
+                }
+                self.generation = if self.live_mode {
+                    let next = buffer.begin_next_generation_seeded_from_display();
+                    buffer.publish_completed_generation(next);
+                    next
+                } else {
+                    buffer.begin_next_generation()
+                };
+            } else {
+                self.generation = buffer.invalidate();
+            }
             self.current_bin = None;
             self.current_peak = 0.0;
+            self.cycle_has_signal = false;
             self.block_has_signal = false;
         }
         self.last_phase = Some(phase);
@@ -176,6 +259,7 @@ impl IncomingWaveformWriter {
         if peak.is_finite() {
             let peak = peak.clamp(0.0, 1.0);
             self.block_has_signal |= peak > SILENCE_FLOOR;
+            self.cycle_has_signal |= peak > SILENCE_FLOOR;
             self.current_peak = self.current_peak.max(peak);
         }
     }
@@ -195,7 +279,9 @@ impl IncomingWaveformWriter {
         self.last_cycle_mapping = None;
         self.current_bin = None;
         self.current_peak = 0.0;
+        self.cycle_has_signal = false;
         self.block_has_signal = false;
+        self.live_mode = false;
     }
 
     fn flush_current(&self, buffer: &IncomingWaveformBuffer) {
@@ -270,6 +356,10 @@ mod tests {
             };
             writer.record(&buffer, phase, peak, -peak);
         }
+        for step in 76..100 {
+            writer.record(&buffer, step as f32 / 100.0, 0.0, 0.0);
+        }
+        writer.record(&buffer, 0.0, 0.0, 0.0);
         writer.finish_block(&buffer);
 
         let snapshot = buffer.snapshot().expect("signal should be available");
@@ -282,7 +372,8 @@ mod tests {
         let buffer = IncomingWaveformBuffer::default();
         let mut writer = IncomingWaveformWriter::default();
         writer.begin_block(&buffer);
-        writer.record(&buffer, 0.2, 1.0, 0.0);
+        writer.record(&buffer, 0.8, 1.0, 0.0);
+        writer.record(&buffer, 0.1, 0.0, 0.0);
         writer.finish_block(&buffer);
         assert!(buffer.snapshot().is_some());
 
@@ -290,24 +381,53 @@ mod tests {
         assert!(buffer.snapshot().is_none());
 
         writer.begin_block(&buffer);
-        writer.record(&buffer, 0.3, 0.0, 0.0);
+        writer.record(&buffer, 0.12, 0.0, 0.0);
         writer.finish_block(&buffer);
         assert!(buffer.snapshot().is_none());
     }
 
     #[test]
-    fn cycle_wrap_invalidates_unvisited_bins_from_the_previous_cycle() {
+    fn cycle_wrap_holds_the_completed_cycle_while_capturing_the_next() {
         let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record(&buffer, 0.8, 0.9, 0.0);
+        writer.record(&buffer, 0.1, 0.4, 0.0);
+        for step in 11..=80 {
+            writer.record(
+                &buffer,
+                step as f32 / 100.0,
+                if step == 80 { 0.2 } else { 0.0 },
+                0.0,
+            );
+        }
+        writer.finish_block(&buffer);
+
+        let snapshot = buffer.snapshot().expect("completed cycle should remain");
+        assert!(
+            (snapshot[(0.8 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.9).abs() < 1.0e-6
+        );
+        assert_eq!(
+            snapshot[(0.1 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize],
+            0.0
+        );
+    }
+
+    #[test]
+    fn live_mode_seeds_the_next_cycle_without_clearing_the_display() {
+        let buffer = IncomingWaveformBuffer::default();
+        buffer.set_live_mode(true);
         let mut writer = IncomingWaveformWriter::default();
         writer.begin_block(&buffer);
         writer.record(&buffer, 0.8, 0.9, 0.0);
         writer.record(&buffer, 0.1, 0.4, 0.0);
         writer.finish_block(&buffer);
 
-        let snapshot = buffer.snapshot().expect("new cycle signal should remain");
-        assert_eq!(
-            snapshot[(0.8 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize],
-            0.0
+        let snapshot = buffer
+            .snapshot()
+            .expect("live waveform should remain visible");
+        assert!(
+            (snapshot[(0.8 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.9).abs() < 1.0e-6
         );
         assert!(
             (snapshot[(0.1 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.4).abs() < 1.0e-6
@@ -323,14 +443,9 @@ mod tests {
         writer.record(&buffer, 0.2, 0.4, 0.0);
         writer.finish_block(&buffer);
 
-        let snapshot = buffer.snapshot().expect("post-seek signal should remain");
-        assert_eq!(
-            snapshot[(0.45 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize],
-            0.0,
-            "bins after a sub-half-cycle backward seek must not remain visible"
-        );
         assert!(
-            (snapshot[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.4).abs() < 1.0e-6
+            buffer.snapshot().is_none(),
+            "a seek discards the incomplete capture"
         );
     }
 
@@ -343,7 +458,7 @@ mod tests {
         writer.record(&buffer, 0.45 - BACKWARD_PHASE_EPSILON * 0.5, 0.4, 0.0);
         writer.finish_block(&buffer);
 
-        let snapshot = buffer.snapshot().expect("signal should remain available");
+        let snapshot = buffer.snapshot().expect("the first cycle is shown live");
         assert!(snapshot.iter().copied().fold(0.0_f32, f32::max) >= 0.9);
     }
 
@@ -356,14 +471,9 @@ mod tests {
         writer.record(&buffer, 0.6, 0.4, 0.0);
         writer.finish_block(&buffer);
 
-        let snapshot = buffer.snapshot().expect("post-seek signal should remain");
-        assert_eq!(
-            snapshot[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize],
-            0.0,
-            "bins before a large forward seek must not remain visible"
-        );
         assert!(
-            (snapshot[(0.6 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.4).abs() < 1.0e-6
+            buffer.snapshot().is_none(),
+            "a seek discards the incomplete capture"
         );
     }
 
@@ -376,7 +486,7 @@ mod tests {
         writer.record(&buffer, 0.21, 0.4, 0.0);
         writer.finish_block(&buffer);
 
-        let snapshot = buffer.snapshot().expect("signal should remain available");
+        let snapshot = buffer.snapshot().expect("the first cycle is shown live");
         assert!(snapshot[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] >= 0.8);
         assert!(snapshot[(0.21 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] >= 0.4);
     }
@@ -392,14 +502,10 @@ mod tests {
         writer.record_with_cycle_mapping(&buffer, 0.2, 8.0, 0.25, 0.4, 0.0);
         writer.finish_block(&buffer);
 
-        let snapshot = buffer
-            .snapshot()
-            .expect("signal from the latest cycle mapping should remain");
         assert!(
-            (snapshot[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize] - 0.4).abs() < 1.0e-6,
-            "only the signal recorded after the final mapping change may remain"
+            buffer.snapshot().is_none(),
+            "a mapping change discards the incomplete capture"
         );
-        assert_eq!(snapshot.iter().filter(|peak| **peak > 0.0).count(), 1);
     }
 
     #[test]
@@ -423,13 +529,14 @@ mod tests {
         let buffer = IncomingWaveformBuffer::default();
         let mut writer = IncomingWaveformWriter::default();
         writer.begin_block(&buffer);
-        writer.record(&buffer, 0.2, 0.8, 0.0);
+        writer.record(&buffer, 0.8, 0.8, 0.0);
+        writer.record(&buffer, 0.1, 0.0, 0.0);
         writer.finish_block(&buffer);
         assert!(buffer.snapshot().is_some());
 
         buffer.last_update_micros.store(1, Ordering::Release);
         writer.begin_block(&buffer);
-        writer.record(&buffer, 0.3, 0.0, 0.0);
+        writer.record(&buffer, 0.12, 0.0, 0.0);
         writer.finish_block(&buffer);
 
         assert_eq!(

@@ -275,6 +275,57 @@ fn sound_sides_switch_copy_and_roundtrip_as_complete_states() {
 }
 
 #[test]
+fn stored_sound_references_track_complete_working_state_and_copy_dirtyness() {
+    let params = PumpParams::new();
+    params.set_mix(0.23);
+    assert!(params.sound_state_is_dirty(super::SoundSide::A));
+    assert!(params.store_active_sound_state());
+    assert!(!params.sound_state_is_dirty(super::SoundSide::A));
+
+    assert!(params.copy_active_to_inactive());
+    assert!(params.sound_state_is_dirty(super::SoundSide::B));
+    assert!(params.set_active_sound(super::SoundSide::B));
+    assert!(params.sound_state_is_dirty(super::SoundSide::B));
+    assert!(params.store_active_sound_state());
+    assert!(!params.sound_state_is_dirty(super::SoundSide::B));
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("stored references should round-trip");
+    assert!(!restored.sound_state_is_dirty(super::SoundSide::A));
+    assert!(!restored.sound_state_is_dirty(super::SoundSide::B));
+    assert_eq!(
+        restored.sound_state_snapshot(super::SoundSide::B),
+        restored.stored_sound_state_snapshot(super::SoundSide::B)
+    );
+}
+
+#[test]
+fn active_quick_slot_replacement_marks_dirty_until_store() {
+    let params = PumpParams::new();
+    let mut slots = seeded_quick_shape_slots();
+    slots[0].curve = test_quick_slot_curve(0.08);
+    assert!(params.set_active_sound_quick_slots(slots).is_ok());
+    assert!(params.sound_state_is_dirty(super::SoundSide::A));
+    assert!(params.store_active_sound_state());
+    assert!(!params.sound_state_is_dirty(super::SoundSide::A));
+}
+
+#[test]
+fn v16_roundtrip_restores_working_reference_dirtyness() {
+    let params = PumpParams::new();
+    params.set_mix(0.37);
+    assert!(params.sound_state_is_dirty(super::SoundSide::A));
+    assert!(!params.sound_state_is_dirty(super::SoundSide::B));
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("v16 state should decode");
+    assert!(restored.sound_state_is_dirty(super::SoundSide::A));
+    assert!(!restored.sound_state_is_dirty(super::SoundSide::B));
+}
+
+#[test]
 fn host_sound_automation_is_queued_without_audio_thread_snapshot_access() {
     let params = PumpParams::new();
     super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);

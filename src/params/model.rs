@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 15;
+pub(crate) const STATE_VERSION: u32 = 16;
 
 /// The two independently editable Pump sound sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -578,4 +578,7 @@ pub struct PumpParams {
     pub(super) realtime_free_rate_hz: [AtomicF32; 2],
     pub(super) realtime_curve: [[AtomicF32; CURVE_TABLE_LEN]; 2],
     pub(super) sound_states: RwLock<[PumpSoundState; 2]>,
+    /// Durable per-side reference states used for A/B dirty indicators.
+    pub(super) stored_sound_states: RwLock<[PumpSoundState; 2]>,
+    pub(super) sound_state_dirty: [AtomicBool; 2],
 }

@@ -117,7 +117,7 @@ def file_digest(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def validate_png(path: Path, width: int = 720, height: int = 540) -> dict[str, Any]:
+def validate_png(path: Path, width: int = 640, height: int = 400) -> dict[str, Any]:
     """Validate the structural PNG contract used by the default UI capture."""
     data = path.read_bytes()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
@@ -460,7 +460,7 @@ def _validate_exact_manifest_names(manifest: dict[str, Any]) -> None:
     actual = {artifact["format"]: artifact["name"] for artifact in manifest["artifacts"]}
     if actual != expected:
         raise ValueError("manifest artifact names do not match the exact Pump ZIP contract")
-    if manifest["screenshot"]["role"] != "default-ui" or manifest["screenshot"]["name"] != "pump-default-720x540.png" or manifest["changelog"]["name"] != "CHANGELOG.md":
+    if manifest["screenshot"]["role"] != "default-ui" or manifest["screenshot"]["name"] != "pump-default-640x400.png" or manifest["changelog"]["name"] != "CHANGELOG.md":
         raise ValueError("manifest support-file roles or names do not match the Pump release contract")
 
 
@@ -541,8 +541,8 @@ def validate_publish_manifest(manifest: dict[str, Any], root: Path, *, require_p
             raise ValueError("publish artifacts must be macOS arm64")
     screenshot = manifest["screenshot"]
     if (screenshot.get("role") != "default-ui" or screenshot.get("media_type") != "image/png" or
-            screenshot.get("width") != 720 or screenshot.get("height") != 540 or
-            screenshot.get("logical_width") != 720 or screenshot.get("logical_height") != 540 or
+            screenshot.get("width") != 640 or screenshot.get("height") != 400 or
+            screenshot.get("logical_width") != 640 or screenshot.get("logical_height") != 400 or
             screenshot.get("dpi_scale") != 1.0 or screenshot.get("source_git_sha") != source["git_sha"]):
         raise ValueError("publish screenshot metadata does not match the Pump UI contract")
     validate_png(root / screenshot["name"])

@@ -165,9 +165,9 @@ if [[ "${mode}" == preflight ]]; then codesign_identity="-"; fi
 echo "[release] rendering Pump screenshots"
 rm -rf target/ui-screenshots
 bash scripts/ci.sh --screenshots
-png="target/ui-screenshots/pump/pump-default-720x540.png"
+png="target/ui-screenshots/pump/pump-default-640x400.png"
 [[ -f "${png}" ]] || { echo "default screenshot was not produced" >&2; exit 1; }
-cp "${png}" "${release_dir}/pump-default-720x540.png"
+cp "${png}" "${release_dir}/pump-default-640x400.png"
 
 build_bundle() {
   local format="$1" target_dir="$2" bundle_dir="$3" binary="$4"
@@ -311,7 +311,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
 from release_helper import build_manifest, canonical_json, validate_preflight_manifest
 root = pathlib.Path(sys.argv[1])
-manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys.argv[4], released_at=sys.argv[5], git_sha=sys.argv[6], clap=root / f"pump-v{sys.argv[2]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[2]}-macos.vst3.zip", screenshot=root / "pump-default-720x540.png", changelog=root / "CHANGELOG.md", distribution="preflight", signing_identity_class="ad hoc", notarized=False, stapled=False)
+manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys.argv[4], released_at=sys.argv[5], git_sha=sys.argv[6], clap=root / f"pump-v{sys.argv[2]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[2]}-macos.vst3.zip", screenshot=root / "pump-default-640x400.png", changelog=root / "CHANGELOG.md", distribution="preflight", signing_identity_class="ad hoc", notarized=False, stapled=False)
 (root / "release-manifest.json").write_bytes(canonical_json(manifest))
 validate_preflight_manifest(manifest, root)
 PY
@@ -321,7 +321,7 @@ import json, pathlib, sys
 sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
 from release_helper import build_manifest, canonical_json
 root = pathlib.Path(sys.argv[1])
-manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys.argv[4], released_at=sys.argv[5], git_sha=sys.argv[6], clap=root / f"pump-v{sys.argv[2]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[2]}-macos.vst3.zip", screenshot=root / "pump-default-720x540.png", changelog=root / "CHANGELOG.md", distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id=sys.argv[7], notary_submissions={"clap": sys.argv[8], "vst3": sys.argv[9]})
+manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys.argv[4], released_at=sys.argv[5], git_sha=sys.argv[6], clap=root / f"pump-v{sys.argv[2]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[2]}-macos.vst3.zip", screenshot=root / "pump-default-640x400.png", changelog=root / "CHANGELOG.md", distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id=sys.argv[7], notary_submissions={"clap": sys.argv[8], "vst3": sys.argv[9]})
 (root / "release-manifest.json").write_bytes(canonical_json(manifest))
 PY
 fi

@@ -23,14 +23,14 @@ pub(crate) use radiant_editor::HostParamEditSink;
 pub(crate) use radiant_editor::{HostParamFlushRequester, RadiantPumpEditor};
 
 /// Minimum supported logical editor size.
-pub const MIN_WINDOW_WIDTH: u32 = 720;
-pub const MIN_WINDOW_HEIGHT: u32 = 540;
+pub const MIN_WINDOW_WIDTH: u32 = 640;
+pub const MIN_WINDOW_HEIGHT: u32 = 400;
 /// Default logical editor size.
-pub const WINDOW_WIDTH: u32 = 720;
-pub const WINDOW_HEIGHT: u32 = 540;
+pub const WINDOW_WIDTH: u32 = 640;
+pub const WINDOW_HEIGHT: u32 = 400;
 /// Maximum supported logical editor size.
-pub const MAX_WINDOW_WIDTH: u32 = 1440;
-pub const MAX_WINDOW_HEIGHT: u32 = 1080;
+pub const MAX_WINDOW_WIDTH: u32 = 1280;
+pub const MAX_WINDOW_HEIGHT: u32 = 800;
 
 const PRESET_WARNING_STORAGE: &str = "NOT SAVED - CHECK PRESET FOLDER";
 
@@ -39,7 +39,7 @@ pub(crate) fn preferred_window_size() -> (u32, u32) {
     (WINDOW_WIDTH, WINDOW_HEIGHT)
 }
 
-/// Normalize a host request to the supported 4:3 logical contract.
+/// Normalize a host request to the supported 8:5 logical contract.
 #[allow(dead_code)]
 pub(crate) fn normalize_host_size(size: GuiSize) -> GuiSize {
     let width = size.width.clamp(MIN_WINDOW_WIDTH, MAX_WINDOW_WIDTH);
@@ -271,8 +271,8 @@ mod tests {
                 height: 1
             }),
             GuiSize {
-                width: 720,
-                height: 540
+                width: 640,
+                height: 400
             }
         );
         assert_eq!(
@@ -281,8 +281,8 @@ mod tests {
                 height: 5000
             }),
             GuiSize {
-                width: 1440,
-                height: 1080
+                width: 1280,
+                height: 800
             }
         );
     }

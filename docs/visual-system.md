@@ -41,22 +41,32 @@ font selection; host/runtime glyph diagnostics remain the authoritative evidence
 for that final fallback.
 
 Shared controls use the retained Lucide v0.468 ISC catalog in Radiant: `History`,
-`CompareAb`, `Copy`, `Settings`, `Favorite`, `ChevronLeft`, `ChevronRight`,
+`CompareAb`, `Settings`, `Favorite`, `ChevronLeft`, `ChevronRight`,
 `ChevronUp`, `ChevronDown`, `Trigger`, `Pattern`, and `Power`. Icon identity is
 retained SVG identity, never a single-character text approximation.
 
-Pump header actions map to that catalog with explicit automation labels: `Undo`
-→ `ChevronLeft` ("Undo"), `Redo` → `ChevronRight` ("Redo"), and the A/B copy
-action → `Copy` ("Copy A to B" or "Copy B to A"). The copy action clones the
-active sound into the inactive A/B side.
+Pump header actions map to that catalog with explicit semantic labels: `Undo`
+→ `ChevronLeft` ("Undo"), `Redo` → `ChevronRight` ("Redo"), and the A/B group
+uses `Sound A` and `Sound B` buttons around a directional `ChevronLeft` or
+`ChevronRight` `Switch sound` control. The switch chevron selects the other
+side; Option-click copies the active sound to the inactive side. Cmd-clicking
+the active `Sound A` or `Sound B` button stores that side's working state.
+Sound-side value text is `Stored` or `Modified`.
 
 ## Metrics and states
 
-The base unit is 4 px. The spacing scale is 4/8/12/16; surface padding is 12,
-control gap 8, radius 8, border/divider 1, control/dropdown height 32, dropdown
-minimum width 96, icon hit target 28, icon 16, knob 56, knob column 88, label line
-16, meter panel width 48, meter track width 32, meter segment 4 with a 2 px gap,
-and the existing Pump parameter deck remains 96 px high.
+The compact editor uses a uniform 0.85 visual scale. The spacing scale is
+3.4/6.8/10.2/13.6; surface padding is 10.2, control gap 6.8, radius 6.8,
+border/divider 1, control/dropdown height 27.2, dropdown minimum width 81.6,
+icon hit target 28 (24 px floor), icon 13.6, knob 47.6, knob column 74.8,
+label line 13.6, meter panel width 40.8, meter track width 27.2, meter segment
+3.4 with a 1.7 px gap, and the Pump parameter deck is 81.6 px high. The eight
+curve slots remain equal-width and fluid across the inner width; the compact
+slot height is 51 px with a 3.4 px gap.
+
+Typography scales with the composition: brand 18.7/23.8, body 11.9/15.3,
+value 10.2/13.6, control label 8.5/13.6, and metadata 8/11.9 (font size / line
+height in logical pixels). Metadata keeps an 8 px legibility floor.
 
 Resolver precedence is disabled, pressed, selected, hover, focus, then default;
 automation is an additive state. Focus and automation remain visible through

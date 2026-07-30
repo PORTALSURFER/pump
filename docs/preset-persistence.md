@@ -4,13 +4,16 @@
 
 Pump stores two complete editable sound snapshots. Side A is the compatibility
 default for v2-v13 project payloads; those payloads migrate by cloning the
-legacy active state into both sides and selecting A. New v14 payloads append
-the active side and both snapshots without changing any existing parameter ID.
+legacy active state into both sides and selecting A. v14 and v15 payloads append
+the active side and both working snapshots. v16 appends one durable
+stored/reference snapshot for each side; older payloads seed those references
+from their working snapshots and therefore reopen clean.
 
 Changing A/B publishes the selected snapshot through the existing atomic audio
 parameter boundary. The processor never reads the UI-owned snapshot lock.
 Copy is explicit and directional (active to inactive), leaves the active audio
-unchanged, and is represented as one editor history action. Preset selection and
+unchanged, and leaves the destination working state dirty until it is stored by
+Cmd-clicking the active A/B control. Preset selection and
 quick-slot edits apply only to the active side; saving a preset captures that
 side's complete editable state. Host automation for the appended `Sound`
 parameter switches a pre-published realtime selector in the callback; the UI

@@ -1,4 +1,27 @@
 use super::*;
+
+fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
+    float_near_eq(left.mix, right.mix)
+        && float_near_eq(left.depth_db, right.depth_db)
+        && float_near_eq(left.floor_db, right.floor_db)
+        && float_near_eq(left.phase_offset, right.phase_offset)
+        && float_near_eq(left.output_gain_db, right.output_gain_db)
+        && left.sync_division == right.sync_division
+        && left.trigger_mode == right.trigger_mode
+        && float_near_eq(left.smooth, right.smooth)
+        && left.mode == right.mode
+        && float_near_eq(left.swing, right.swing)
+        && left.timing_mode == right.timing_mode
+        && float_near_eq(left.free_rate_hz, right.free_rate_hz)
+        && curve_near_eq(&left.editable_curve, &right.editable_curve)
+        && left.quick_slots.len() == right.quick_slots.len()
+        && left
+            .quick_slots
+            .iter()
+            .zip(right.quick_slots.iter())
+            .all(|(lhs, rhs)| curve_near_eq(&lhs.curve, &rhs.curve))
+}
+
 impl PumpParams {
     #[inline]
     fn realtime_index(&self) -> usize {
@@ -60,6 +83,11 @@ impl PumpParams {
                 PumpSoundState::default_init(),
                 PumpSoundState::default_init(),
             ]),
+            stored_sound_states: RwLock::new([
+                PumpSoundState::default_init(),
+                PumpSoundState::default_init(),
+            ]),
+            sound_state_dirty: std::array::from_fn(|_| AtomicBool::new(false)),
         };
         match super::preset_store::load_persisted_preset_bank() {
             Ok(Some(bank)) => params.set_preset_bank_without_persistence(bank),
@@ -355,13 +383,13 @@ impl PumpParams {
         plain_curve.phase_source = None;
         plain_curve.phase_offset = 0.0;
         self.set_editable_curve_internal(&plain_curve);
-        self.sync_active_sound_state();
+        self.capture_active_working_state();
     }
 
     /// Replace the editable curve while retaining an exact cyclic phase source.
     pub fn set_editable_curve_preserving_phase(&self, editable_curve: &EditableCurve) {
         self.set_editable_curve_internal(editable_curve);
-        self.sync_active_sound_state();
+        self.capture_active_working_state();
     }
 
     fn set_editable_curve_internal(&self, editable_curve: &EditableCurve) {
@@ -382,7 +410,7 @@ impl PumpParams {
         }
         self.store_curve_table(values);
         self.curve_revision.fetch_add(1, Ordering::AcqRel);
-        self.sync_active_sound_state();
+        self.capture_active_working_state();
     }
 
     /// Restore default curve shape and advance revision.
@@ -411,9 +439,42 @@ impl PumpParams {
             .unwrap_or_else(PumpSoundState::default_init)
     }
 
+    /// Return the durable reference state for one A/B side.
+    pub fn stored_sound_state_snapshot(&self, side: SoundSide) -> PumpSoundState {
+        self.stored_sound_states
+            .read()
+            .ok()
+            .and_then(|states| states.get(side.index()).cloned())
+            .unwrap_or_else(PumpSoundState::default_init)
+    }
+
+    /// Return whether a side's complete working state differs from its stored reference.
+    pub fn sound_state_is_dirty(&self, side: SoundSide) -> bool {
+        if side == self.active_sound() && self.active_sound_dirty.load(Ordering::Acquire) {
+            let current = self.current_audio_state();
+            let stored = self.stored_sound_state_snapshot(side);
+            return !sound_state_near_eq(&current, &stored);
+        }
+        self.sound_state_dirty[side.index()].load(Ordering::Acquire)
+    }
+
+    /// Store the active complete working state as its durable reference.
+    pub fn store_active_sound_state(&self) -> bool {
+        let side = self.active_sound();
+        self.capture_active_working_state();
+        let working = self.sound_state_snapshot(side);
+        if let Ok(mut states) = self.stored_sound_states.write() {
+            states[side.index()] = working;
+            self.sound_state_dirty[side.index()].store(false, Ordering::Release);
+            self.active_sound_dirty.store(false, Ordering::Release);
+            return true;
+        }
+        false
+    }
+
     /// Return whether the two complete sound sides differ.
     pub fn sound_sides_differ(&self) -> bool {
-        self.sync_active_sound_state();
+        self.capture_active_working_state();
         self.sound_states
             .read()
             .map(|states| states[0] != states[1])
@@ -429,7 +490,7 @@ impl PumpParams {
         if current == side {
             return false;
         }
-        self.sync_active_sound_state();
+        self.capture_active_working_state();
         let target = self
             .sound_states
             .read()
@@ -488,7 +549,7 @@ impl PumpParams {
     /// currently audible state remains unchanged.
     pub fn copy_active_to_inactive(&self) -> bool {
         let active = self.active_sound();
-        self.sync_active_sound_state();
+        self.capture_active_working_state();
         let snapshot = self.current_audio_state();
         let Ok(mut states) = self.sound_states.write() else {
             return false;
@@ -499,6 +560,7 @@ impl PumpParams {
         }
         self.publish_sound_state_at(inactive.index(), &snapshot);
         states[inactive.index()] = snapshot;
+        self.sound_state_dirty[inactive.index()].store(true, Ordering::Release);
         true
     }
 
@@ -515,7 +577,18 @@ impl PumpParams {
         let Ok(mut states) = self.sound_states.write() else {
             return Err(PresetMutationError::StateUnavailable);
         };
-        states[self.active_sound().index()].quick_slots = quick_slots;
+        let side = self.active_sound();
+        let index = side.index();
+        states[index].quick_slots = quick_slots;
+        let dirty = self
+            .stored_sound_states
+            .read()
+            .ok()
+            .and_then(|stored| stored.get(index).cloned())
+            .map(|stored| !sound_state_near_eq(&states[index], &stored))
+            .unwrap_or(true);
+        self.sound_state_dirty[index].store(dirty, Ordering::Release);
+        self.active_sound_dirty.store(dirty, Ordering::Release);
         Ok(())
     }
 
@@ -525,16 +598,19 @@ impl PumpParams {
         // with the editor closed. Keep the stored side curve as the source of
         // truth for scalar-only dirty snapshots; UI curve edits synchronize
         // this stored value immediately through `sync_active_sound_state`.
-        let editable_curve = self
-            .sound_states
-            .read()
-            .ok()
-            .and_then(|states| {
-                states
-                    .get(self.active_sound().index())
-                    .map(|state| state.editable_curve.clone())
-            })
-            .unwrap_or_else(default_editable_curve);
+        let editable_curve = if self.has_pending_active_sound() {
+            self.sound_states
+                .read()
+                .ok()
+                .and_then(|states| {
+                    states
+                        .get(self.active_sound().index())
+                        .map(|state| state.editable_curve.clone())
+                })
+                .unwrap_or_else(default_editable_curve)
+        } else {
+            self.editable_curve_snapshot()
+        };
         let quick_slots = self
             .sound_states
             .read()
@@ -563,7 +639,7 @@ impl PumpParams {
         }
     }
 
-    fn sync_active_sound_state(&self) {
+    fn capture_active_working_state(&self) {
         let snapshot = self.current_audio_state();
         // Public curve mutators update the UI projection before reaching this
         // helper, so capture that exact editable representation rather than
@@ -574,7 +650,16 @@ impl PumpParams {
         };
         if let Ok(mut states) = self.sound_states.write() {
             states[self.active_sound().index()] = snapshot;
-            self.active_sound_dirty.store(false, Ordering::Release);
+            let index = self.active_sound().index();
+            let dirty = self
+                .stored_sound_states
+                .read()
+                .ok()
+                .and_then(|stored| stored.get(index).cloned())
+                .map(|stored| !sound_state_near_eq(&states[index], &stored))
+                .unwrap_or(true);
+            self.sound_state_dirty[index].store(dirty, Ordering::Release);
+            self.active_sound_dirty.store(dirty, Ordering::Release);
         }
     }
 
@@ -609,12 +694,13 @@ impl PumpParams {
                 editable_curve,
                 quick_slots,
             };
-            self.active_sound_dirty.store(false, Ordering::Release);
+            self.sound_state_dirty[index].store(true, Ordering::Release);
         }
     }
 
     fn mark_active_sound_dirty(&self) {
         self.active_sound_dirty.store(true, Ordering::Release);
+        self.sound_state_dirty[self.active_sound().index()].store(true, Ordering::Release);
     }
 
     fn publish_sound_state_at(&self, index: usize, state: &PumpSoundState) {
@@ -1008,11 +1094,41 @@ impl PumpParams {
         active: SoundSide,
         states: [PumpSoundState; 2],
     ) {
+        self.set_sound_states_with_references_without_persistence(active, states.clone(), states);
+    }
+
+    /// Restore working and durable A/B states after state decoding.
+    pub(crate) fn set_sound_states_with_references_without_persistence(
+        &self,
+        active: SoundSide,
+        states: [PumpSoundState; 2],
+        stored_states: [PumpSoundState; 2],
+    ) {
         self.pending_active_sound.store(u32::MAX, Ordering::Release);
         self.active_sound_dirty.store(false, Ordering::Release);
         if let Ok(mut guard) = self.sound_states.write() {
             *guard = states;
         }
+        if let Ok(mut guard) = self.stored_sound_states.write() {
+            *guard = stored_states;
+        }
+        let dirty = [SoundSide::A, SoundSide::B].map(|side| {
+            let working = self
+                .sound_states
+                .read()
+                .ok()
+                .and_then(|states| states.get(side.index()).cloned())
+                .unwrap_or_else(PumpSoundState::default_init);
+            let stored = self
+                .stored_sound_states
+                .read()
+                .ok()
+                .and_then(|states| states.get(side.index()).cloned())
+                .unwrap_or_else(PumpSoundState::default_init);
+            let dirty = !sound_state_near_eq(&working, &stored);
+            self.sound_state_dirty[side.index()].store(dirty, Ordering::Release);
+            dirty
+        });
         for side in [SoundSide::A, SoundSide::B] {
             let snapshot = self
                 .sound_states
@@ -1026,6 +1142,8 @@ impl PumpParams {
             .store(active.index() as u32, Ordering::Release);
         self.curve_revision.fetch_add(1, Ordering::AcqRel);
         self.reconcile_active_sound_projection();
+        self.active_sound_dirty
+            .store(dirty[active.index()], Ordering::Release);
     }
 
     /// Load one preset by index into the active parameter state.

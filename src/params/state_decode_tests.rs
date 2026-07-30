@@ -198,6 +198,19 @@ fn sound_state_offsets(payload: &[u8], start: usize) -> (usize, usize, usize) {
 
 pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 16 {
+        // Stored/reference snapshots were appended in v16. Remove both
+        // variable-length records before applying the older field removals.
+        let extension_start = v15_extension_start(&payload);
+        let (_, _, a_end) = sound_state_offsets(&payload, extension_start + 4);
+        let b_start = a_end + 8;
+        let (_, _, b_end) = sound_state_offsets(&payload, b_start);
+        let stored_a_start = b_end + 8;
+        let (_, _, stored_a_end) = sound_state_offsets(&payload, stored_a_start);
+        let stored_b_start = stored_a_end + 8;
+        let (_, _, stored_b_end) = sound_state_offsets(&payload, stored_b_start);
+        payload.drain(stored_a_start..stored_b_end + 8);
+    }
     if version < 15 {
         let preset_timing_offsets = preset_timing_offsets(&payload);
         let extension_start = v15_extension_start(&payload);
@@ -335,7 +348,10 @@ fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
     let b_start = a_end + 8;
     let (b_trigger, b_mode, b_end) = sound_state_offsets(&payload, b_start);
     assert_eq!(a_end + 8, b_start);
-    assert_eq!(b_end + 8, payload.len() - 8);
+    let (stored_a_trigger, stored_a_mode, stored_a_end) = sound_state_offsets(&payload, b_end + 8);
+    let (stored_b_trigger, stored_b_mode, stored_b_end) =
+        sound_state_offsets(&payload, stored_a_end + 8);
+    assert_eq!(stored_b_end + 8, payload.len() - 8);
     write_u32(
         &mut payload,
         a_trigger,
@@ -348,6 +364,26 @@ fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
         super::TRIGGER_MODE_SIDECHAIN as u32,
     );
     write_u32(&mut payload, b_mode, super::PROCESSING_MODE_PUNCH as u32);
+    write_u32(
+        &mut payload,
+        stored_a_trigger,
+        super::TRIGGER_MODE_SIDECHAIN as u32,
+    );
+    write_u32(
+        &mut payload,
+        stored_a_mode,
+        super::PROCESSING_MODE_PUNCH as u32,
+    );
+    write_u32(
+        &mut payload,
+        stored_b_trigger,
+        super::TRIGGER_MODE_SIDECHAIN as u32,
+    );
+    write_u32(
+        &mut payload,
+        stored_b_mode,
+        super::PROCESSING_MODE_PUNCH as u32,
+    );
 
     let restored = PumpParams::new();
     decode_state_payload(&restored, &payload).expect("current state should decode");
@@ -424,6 +460,43 @@ fn decode_v12_preserves_controls_and_defaults_swing() {
         assert_eq!(preset.timing_mode, super::DEFAULT_TIMING_MODE);
         assert_eq!(preset.free_rate_hz, super::DEFAULT_FREE_RATE_HZ);
     }
+}
+
+fn assert_legacy_ab_state_seeds_stored_references(version: u32) {
+    let source = sample_params();
+    source.set_mix(0.23);
+    assert!(source.copy_active_to_inactive());
+    assert!(source.set_active_sound(super::SoundSide::B));
+    source.set_mix(0.71);
+
+    let payload = payload_for_state_version(&source, version);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload)
+        .unwrap_or_else(|error| panic!("state v{version} should decode: {error}"));
+
+    for side in [super::SoundSide::A, super::SoundSide::B] {
+        assert_eq!(
+            restored.sound_state_snapshot(side),
+            restored.stored_sound_state_snapshot(side),
+            "state v{version} should seed stored sound {} from working state",
+            side.label()
+        );
+        assert!(
+            !restored.sound_state_is_dirty(side),
+            "state v{version} should reopen sound {} clean",
+            side.label()
+        );
+    }
+}
+
+#[test]
+fn decode_v14_state_seeds_stored_references_from_working_state() {
+    assert_legacy_ab_state_seeds_stored_references(14);
+}
+
+#[test]
+fn decode_v15_state_seeds_stored_references_from_working_state() {
+    assert_legacy_ab_state_seeds_stored_references(15);
 }
 
 #[test]
