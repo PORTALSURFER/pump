@@ -2418,32 +2418,43 @@ fn reduce_knob_message(
             }
         }
         KnobMessage::KeyboardGesture(gesture) => {
-            let Some(value) = (match gesture.events[1] {
-                radiant::prelude::KnobAutomationEvent::ValueChanged { value } => Some(value),
-                _ => None,
-            }) else {
-                return;
-            };
-            if !state
-                .host_param_edit_sink
-                .gesture_started(&state.automation_config, target.param_id())
-            {
-                return;
-            }
-            state.push_history();
-            let (param_id, plain_value) = knob_plain_value(target, value);
-            if state.host_param_edit_sink.gesture_value(
-                &state.automation_config,
-                param_id,
-                plain_value as f64,
-            ) {
-                let _ = set_knob_param(state.params.as_ref(), target, value);
-            }
-            let _ = state
-                .host_param_edit_sink
-                .gesture_ended(&state.automation_config, target.param_id());
+            reduce_discrete_knob_gesture(state, target, gesture.events);
+        }
+        KnobMessage::WheelGesture(gesture) => {
+            reduce_discrete_knob_gesture(state, target, gesture.events);
         }
     }
+}
+
+fn reduce_discrete_knob_gesture(
+    state: &mut RadiantEditorState,
+    target: NumericEntryTarget,
+    events: [radiant::prelude::KnobAutomationEvent; 3],
+) {
+    let Some(value) = (match events[1] {
+        radiant::prelude::KnobAutomationEvent::ValueChanged { value } => Some(value),
+        _ => None,
+    }) else {
+        return;
+    };
+    if !state
+        .host_param_edit_sink
+        .gesture_started(&state.automation_config, target.param_id())
+    {
+        return;
+    }
+    state.push_history();
+    let (param_id, plain_value) = knob_plain_value(target, value);
+    if state.host_param_edit_sink.gesture_value(
+        &state.automation_config,
+        param_id,
+        plain_value as f64,
+    ) {
+        let _ = set_knob_param(state.params.as_ref(), target, value);
+    }
+    let _ = state
+        .host_param_edit_sink
+        .gesture_ended(&state.automation_config, target.param_id());
 }
 
 fn knob_plain_value(target: NumericEntryTarget, value: f32) -> (ClapId, f32) {
@@ -6685,6 +6696,141 @@ mod tests {
                 assert!((event.value() - 0.5).abs() < f64::EPSILON);
             }
         }
+    }
+
+    #[test]
+    fn wheel_gesture_updates_mapped_param_with_one_ordered_transaction() {
+        let params = Arc::new(PumpParams::new());
+        let queue = Arc::new(PumpAutomationQueue::default());
+        let mut state = RadiantEditorState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            }),
+        );
+        let final_value = 0.75;
+        let expected_plain = knob_plain_value(NumericEntryTarget::FreeRate, final_value).1;
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::FreeRate,
+                message: KnobMessage::WheelGesture(radiant::prelude::KnobWheelGesture::new(
+                    0.5,
+                    final_value,
+                )),
+            },
+        );
+
+        assert!((params.free_rate_hz() - expected_plain).abs() < 1.0e-3);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.active_knob_gesture.is_none());
+
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            queue.drain_to_output(&mut output, &mut scratch).attempted,
+            3
+        );
+        let kinds: Vec<_> = (0..buffer.len())
+            .map(|index| {
+                let event = buffer
+                    .get(index as u32)
+                    .expect("wheel lifecycle event should be present");
+                match event.header().type_id() {
+                    ParamGestureBeginEvent::TYPE_ID => {
+                        assert_eq!(
+                            event
+                                .as_event::<ParamGestureBeginEvent>()
+                                .expect("wheel begin should decode")
+                                .param_id(),
+                            Some(PARAM_FREE_RATE_ID)
+                        );
+                        "begin"
+                    }
+                    ParamValueEvent::TYPE_ID => {
+                        let CoreEventSpace::ParamValue(value) = event
+                            .as_core_event()
+                            .expect("wheel value should decode as a core event")
+                        else {
+                            unreachable!()
+                        };
+                        assert_eq!(value.param_id(), Some(PARAM_FREE_RATE_ID));
+                        let expected_normalized =
+                            normalized_from_plain_value(PARAM_FREE_RATE_ID, expected_plain as f64)
+                                .expect("free-rate plain value should normalize");
+                        assert!((value.value() - expected_normalized).abs() < f64::EPSILON);
+                        "value"
+                    }
+                    ParamGestureEndEvent::TYPE_ID => {
+                        assert_eq!(
+                            event
+                                .as_event::<ParamGestureEndEvent>()
+                                .expect("wheel end should decode")
+                                .param_id(),
+                            Some(PARAM_FREE_RATE_ID)
+                        );
+                        "end"
+                    }
+                    _ => "other",
+                }
+            })
+            .collect();
+        assert_eq!(kinds, ["begin", "value", "end"]);
+    }
+
+    #[test]
+    fn wheel_gesture_ends_after_rejected_value_without_mutating_state() {
+        let params = Arc::new(PumpParams::new());
+        let initial_rate = params.free_rate_hz();
+        let queue = Arc::new(PumpAutomationQueue::with_config(
+            AutomationQueueConfig::new(2, AutomationDropPolicy::DropNewest),
+        ));
+        let mut state = RadiantEditorState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            }),
+        );
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Knob {
+                target: NumericEntryTarget::FreeRate,
+                message: KnobMessage::WheelGesture(radiant::prelude::KnobWheelGesture::new(
+                    0.5, 0.75,
+                )),
+            },
+        );
+
+        assert!((params.free_rate_hz() - initial_rate).abs() < f32::EPSILON);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.active_knob_gesture.is_none());
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            queue.drain_to_output(&mut output, &mut scratch).attempted,
+            2
+        );
+        let kinds: Vec<_> = (0..buffer.len())
+            .map(|index| {
+                let event = buffer
+                    .get(index as u32)
+                    .expect("rejected wheel lifecycle event should be present");
+                match event.header().type_id() {
+                    ParamGestureBeginEvent::TYPE_ID => "begin",
+                    ParamGestureEndEvent::TYPE_ID => "end",
+                    _ => "other",
+                }
+            })
+            .collect();
+        assert_eq!(kinds, ["begin", "end"]);
     }
 
     #[test]
