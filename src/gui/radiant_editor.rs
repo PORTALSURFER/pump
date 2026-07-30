@@ -4662,6 +4662,8 @@ impl CurvePreviewWidget {
     fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
         let curve_bounds = Self::curve_bounds(bounds);
         let points = self.sample_curve_points(bounds);
+        let fill_points = points.clone();
+        let fill_steps = fill_points.len().saturating_sub(1).max(1);
         let gradient = PaintLinearGradient::vertical(
             curve_bounds,
             theme.accent_mint.with_alpha(CURVE_FILL_TOP_ALPHA),
@@ -4672,18 +4674,13 @@ impl CurvePreviewWidget {
             SampledCurveAreaFillParts::new(
                 self.common.id,
                 curve_bounds,
-                CURVE_SAMPLE_COUNT,
+                fill_steps,
                 SampledCurveAreaBaseline::Bottom,
                 PaintBrush::linear_gradient(gradient),
             ),
-            |phase| {
-                Some(Self::curve_point(
-                    bounds,
-                    CurveNode {
-                        x: phase,
-                        y: self.sample_display_curve(phase),
-                    },
-                ))
+            move |phase| {
+                let index = (phase * fill_steps as f32).round() as usize;
+                fill_points.get(index).copied()
             },
         );
         if self.smooth > f32::EPSILON {
@@ -4734,8 +4731,10 @@ impl CurvePreviewWidget {
             .map(|segment| (segment, CURVE_SEGMENT_MOVE_COLOR))
             .or_else(|| tension_segment.map(|segment| (segment, theme.accent_warning)))
         {
-            let points = self.sample_segment_points(bounds, segment);
-            if points.len() > 1 {
+            for points in self.sample_segment_polylines(bounds, segment) {
+                if points.len() <= 1 {
+                    continue;
+                }
                 primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
                     widget_id: self.common.id,
                     points: Arc::from(points),
@@ -4837,16 +4836,63 @@ impl CurvePreviewWidget {
     }
 
     fn sample_curve_points(&self, bounds: Rect) -> Vec<Point> {
-        let mut points = Vec::with_capacity(CURVE_SAMPLE_COUNT + 1);
-        for step in 0..=CURVE_SAMPLE_COUNT {
-            let phase = step as f32 / CURVE_SAMPLE_COUNT as f32;
-            points.push(Self::curve_point(
-                bounds,
-                CurveNode {
-                    x: phase,
-                    y: self.sample_display_curve(phase),
-                },
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let mut samples = Vec::new();
+
+        // Keep authored nodes in the rendered polyline. A uniform phase grid
+        // can otherwise land on neither side of a narrow or steep segment.
+        for node in self.curve.nodes.iter().copied() {
+            let display = self.display_node(node);
+            samples.push((display.x, Self::curve_point(bounds, display)));
+        }
+
+        // Sample each authored segment in proportion to its displayed width.
+        // Interior samples avoid duplicating the explicit node points above.
+        for nodes in self.curve.nodes.windows(2) {
+            let left = nodes[0];
+            let right = nodes[1];
+            let span = (right.x - left.x).max(0.0);
+            let steps = (span * width).ceil().clamp(2.0, CURVE_SAMPLE_COUNT as f32) as usize;
+            for step in 1..steps {
+                let t = step as f32 / steps as f32;
+                let raw_x = left.x + (right.x - left.x) * t;
+                let display = self.display_node(CurveNode {
+                    x: raw_x,
+                    y: sample_editable_curve(&self.curve, raw_x),
+                });
+                samples.push((display.x, Self::curve_point(bounds, display)));
+            }
+        }
+
+        // Always cover both viewport edges. The curve is cyclic, so these are
+        // equivalent when the phase offset puts the seam in the middle.
+        for phase in [0.0, 1.0] {
+            samples.push((
+                phase,
+                Self::curve_point(
+                    bounds,
+                    CurveNode {
+                        x: phase,
+                        y: self.sample_display_curve(phase),
+                    },
+                ),
             ));
+        }
+
+        samples.sort_by(|left, right| left.0.total_cmp(&right.0));
+        let mut points = Vec::with_capacity(samples.len());
+        let mut last_phase: Option<f32> = None;
+        for (phase, point) in samples {
+            // Preserve the distinct 0 and 1 endpoints while collapsing the
+            // duplicate points introduced at segment boundaries and the seam.
+            let duplicate = last_phase.is_some_and(|last| {
+                (phase - last).abs() <= 1.0e-6 && phase > 1.0e-6 && phase < 1.0 - 1.0e-6
+            });
+            if !duplicate {
+                points.push(point);
+                last_phase = Some(phase);
+            }
         }
         points
     }
@@ -4874,7 +4920,7 @@ impl CurvePreviewWidget {
                     bounds,
                     CurveNode {
                         x: phase,
-                        y: self.sample_smoothed_curve(phase),
+                        y: self.sample_smoothed_curve(phase - self.phase_offset),
                     },
                 )
             })
@@ -4888,14 +4934,16 @@ impl CurvePreviewWidget {
         let Some(right) = self.curve.nodes.get(index + 1).copied() else {
             return Vec::new();
         };
-        let left_x = Self::curve_point(bounds, CurveNode { x: left.x, y: 0.0 }).x;
-        let right_x = Self::curve_point(bounds, CurveNode { x: right.x, y: 0.0 }).x;
-        let steps = (right_x - left_x).abs().round().clamp(2.0, 96.0) as usize;
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let steps = ((right.x - left.x).max(0.0) * width)
+            .ceil()
+            .clamp(2.0, CURVE_SAMPLE_COUNT as f32) as usize;
         let mut points = Vec::with_capacity(steps + 1);
         for step in 0..=steps {
             let t = step as f32 / steps as f32;
             let x = left.x + (right.x - left.x) * t;
-            points.push(Self::curve_point(
+            points.push(self.display_curve_point(
                 bounds,
                 CurveNode {
                     x,
@@ -4904,6 +4952,30 @@ impl CurvePreviewWidget {
             ));
         }
         points
+    }
+
+    fn sample_segment_polylines(&self, bounds: Rect, index: usize) -> Vec<Vec<Point>> {
+        let points = self.sample_segment_points(bounds, index);
+        let Some(first) = points.first().copied() else {
+            return Vec::new();
+        };
+
+        let mut polylines = vec![vec![first]];
+        for point in points.into_iter().skip(1) {
+            let current = polylines
+                .last_mut()
+                .expect("segment polyline list always has a current line");
+            let previous = current
+                .last()
+                .copied()
+                .expect("segment polyline always has a previous point");
+            if point.x + 1.0e-6 < previous.x {
+                polylines.push(vec![point]);
+            } else {
+                current.push(point);
+            }
+        }
+        polylines
     }
 
     fn push_nodes(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
@@ -9360,6 +9432,55 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_splits_wrapping_segment_highlight_at_display_seam() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.5 },
+                CurveNode { x: 0.4, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 2],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let widget = CurvePreviewWidget::new(curve, None, Some(1), None, None, None, false)
+            .with_phase_offset(0.5);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let highlights: Vec<_> = primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == theme.accent_warning
+                        && (polyline.width - 2.975).abs() < 1.0e-6 =>
+                {
+                    Some(polyline)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(highlights.len(), 2, "wrapping segment should split at seam");
+        let curve_width = CurvePreviewWidget::curve_bounds(bounds).width();
+        for highlight in highlights {
+            assert!(highlight.points.len() > 1);
+            for pair in highlight.points.windows(2) {
+                assert!(
+                    pair[1].x >= pair[0].x - 1.0e-6,
+                    "highlight polyline must not run right-to-left: {pair:?}"
+                );
+                assert!(
+                    (pair[1].x - pair[0].x).abs() < curve_width * 0.5,
+                    "highlight polyline contains a seam bridge: {pair:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn curve_preview_widget_highlights_entire_curve_during_offset_drag() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
@@ -9478,7 +9599,6 @@ mod tests {
             .with_playhead_phase(Some(0.5));
 
         let points = widget.sample_curve_points(bounds);
-        let midpoint = points[CURVE_SAMPLE_COUNT / 2];
         let expected = CurvePreviewWidget::curve_point(
             bounds,
             CurveNode {
@@ -9486,8 +9606,17 @@ mod tests {
                 y: sample_editable_curve(&curve, 0.5 - phase_offset),
             },
         );
-        assert!((midpoint.x - expected.x).abs() < 1.0e-6);
-        assert!((midpoint.y - expected.y).abs() < 1.0e-6);
+        let midpoint = points
+            .iter()
+            .copied()
+            .min_by(|left, right| {
+                (left.x - expected.x)
+                    .abs()
+                    .total_cmp(&(right.x - expected.x).abs())
+            })
+            .expect("curve sampling should produce points");
+        assert!((midpoint.x - expected.x).abs() <= 2.0);
+        assert!((midpoint.y - expected.y).abs() <= 4.0);
 
         let mut primitives = Vec::new();
         widget.append_paint(
@@ -9508,6 +9637,86 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_samples_authored_nodes_at_exact_display_positions() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.137, y: 0.16 },
+                CurveNode { x: 0.863, y: 0.74 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 1.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(0.271);
+        let points = widget.sample_curve_points(bounds);
+
+        for node in widget.curve.nodes.iter().copied() {
+            let expected = widget.display_curve_point(bounds, node);
+            assert!(
+                points.iter().any(|point| {
+                    (point.x - expected.x).abs() < 1.0e-6 && (point.y - expected.y).abs() < 1.0e-6
+                }),
+                "authored node {node:?} should be represented exactly"
+            );
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_smoothed_curve_uses_display_phase_offset() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let phase_offset = 0.237;
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_phase_offset(phase_offset)
+            .with_smooth(0.75);
+        let points = widget.sample_smoothed_curve_points(bounds);
+        let midpoint = points[CURVE_SAMPLE_COUNT / 2];
+        let expected = CurvePreviewWidget::curve_point(
+            bounds,
+            CurveNode {
+                x: 0.5,
+                y: widget.sample_smoothed_curve(0.5 - phase_offset),
+            },
+        );
+        assert!((midpoint.x - expected.x).abs() < 1.0e-6);
+        assert!((midpoint.y - expected.y).abs() < 1.0e-6);
+        assert_ne!(
+            midpoint.y,
+            CurvePreviewWidget::curve_point(
+                bounds,
+                CurveNode {
+                    x: 0.5,
+                    y: widget.sample_smoothed_curve(0.5),
+                },
+            )
+            .y
+        );
+    }
+
+    #[test]
+    fn curve_preview_widget_segment_highlight_uses_display_phase_offset() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_phase_offset(0.237);
+        let points = widget.sample_segment_points(bounds, 1);
+        let left = curve.nodes[1];
+        let right = curve.nodes[2];
+        assert_eq!(
+            points.first().copied(),
+            Some(widget.display_curve_point(bounds, left))
+        );
+        assert_eq!(
+            points.last().copied(),
+            Some(widget.display_curve_point(bounds, right))
+        );
+    }
+
+    #[test]
     fn curve_preview_widget_paints_subtle_fill_beneath_curve() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
@@ -9524,7 +9733,10 @@ mod tests {
                 _ => None,
             })
             .expect("curve preview should emit one gradient attenuation fill path");
-        assert_eq!(fill.path.commands().len(), CURVE_SAMPLE_COUNT + 4);
+        assert_eq!(
+            fill.path.commands().len(),
+            widget.sample_curve_points(bounds).len() + 3
+        );
         assert_eq!(
             fill.brush,
             PaintBrush::linear_gradient(PaintLinearGradient::vertical(
