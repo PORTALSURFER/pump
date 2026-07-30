@@ -404,6 +404,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (e589762)
 
+- (changelog) Update changelog [skip ci] (36442ac)
+
 
 ### Features
 
@@ -1301,6 +1303,14 @@ Pump redesign: build branded header and global action bar (cbdcf43)
 - Merge pull request #58 from PORTALSURFER/codex/live-curve-slide-audition
 
 Make curve slides audible while dragging (6170215)
+
+- Refine compact Pump editor workflow (8265ad6)
+
+- Fix compact gutter CI assertion (8a42b53)
+
+- Merge pull request #59 from PORTALSURFER/codex/eight-curve-slots
+
+Refine compact Pump editor workflow (e31f4fd)
 
 
 ### Refactoring
