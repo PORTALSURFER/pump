@@ -86,33 +86,32 @@ fn header_text_center(plan: &SurfacePaintPlan, label: &str) -> Point {
         .unwrap_or_else(|| panic!("production header should expose {label} selector text"))
 }
 
-fn header_empty_switch_center(plan: &SurfacePaintPlan) -> Point {
+fn header_switch_center(plan: &SurfacePaintPlan) -> Point {
     let a = header_text_center(plan, "A");
     let b = header_text_center(plan, "B");
-    let center = Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+    let center = plan
+        .primitives
+        .iter()
+        .find_map(|primitive| match primitive {
+            PaintPrimitive::Svg(svg) => {
+                let center = Point::new(
+                    svg.rect.min.x + svg.rect.width() * 0.5,
+                    svg.rect.min.y + svg.rect.height() * 0.5,
+                );
+                (center.x > a.x && center.x < b.x).then_some(center)
+            }
+            _ => None,
+        })
+        .expect("center switch should expose a directional chevron");
     assert!(
         b.x - a.x >= PUMP_VISUAL_METRICS.icon_hit + 2.0 * PUMP_VISUAL_METRICS.space_4,
         "A/B selectors should leave room for the center switch hit target"
     );
     assert!(
-        plan.primitives.iter().all(|primitive| match primitive {
-            PaintPrimitive::Svg(svg) if svg.rect.min.y < 70.0 => !svg.rect.contains(center),
-            PaintPrimitive::Text(text) if text.rect.min.y < 70.0 && !text.text.is_empty() => {
-                !text.rect.contains(center)
-            }
-            _ => true,
-        }),
-        "center switch should intentionally have no icon or label"
-    );
-    assert!(
         plan.primitives.iter().any(|primitive| {
-            matches!(
-                primitive,
-                PaintPrimitive::StrokeRect(stroke)
-                    if stroke.rect.min.y < 70.0 && stroke.rect.contains(center)
-            )
+            matches!(primitive, PaintPrimitive::Svg(svg) if svg.rect.min.y < 70.0 && svg.rect.contains(center))
         }),
-        "center switch should retain a visible bordered button target"
+        "center switch should expose a directional chevron"
     );
     center
 }
@@ -138,17 +137,15 @@ fn render_header_case(name: &str, state: HeaderCaptureState) -> (SurfacePaintPla
         );
         let initial = editor.paint_plan().clone();
         let header_icons = header_svg_centers(&initial);
-        assert_eq!(
-            header_icons.len(),
-            3,
-            "production header should expose undo/redo and copy icons; the center switch is empty"
+        assert!(
+            header_icons.len() >= 3,
+            "production header should expose undo/redo and the center switch chevron"
         );
-        let switch_center = header_empty_switch_center(&initial);
+        let switch_center = header_switch_center(&initial);
         let a_center = header_text_center(&initial, "A");
         assert!(
-            a_center.x - header_icons[1].x
-                >= PUMP_VISUAL_METRICS.icon_hit + PUMP_VISUAL_METRICS.gap,
-            "header should leave a visible gap between redo and the A/B group"
+            a_center.x < switch_center.x,
+            "A should remain left of the center switch"
         );
         match state {
             HeaderCaptureState::Normal
@@ -158,7 +155,7 @@ fn render_header_case(name: &str, state: HeaderCaptureState) -> (SurfacePaintPla
                 editor.dispatch_event(Event::pointer_move(switch_center));
             }
             HeaderCaptureState::CopyHovered => {
-                editor.dispatch_event(Event::pointer_move(header_icons[2]));
+                editor.dispatch_event(Event::pointer_move(switch_center));
             }
             HeaderCaptureState::AHovered => {
                 editor.dispatch_event(Event::pointer_move(header_text_center(&initial, "A")));
@@ -167,8 +164,8 @@ fn render_header_case(name: &str, state: HeaderCaptureState) -> (SurfacePaintPla
                 editor.dispatch_event(Event::pointer_move(header_text_center(&initial, "B")));
             }
             HeaderCaptureState::Pressed => {
-                editor.dispatch_event(Event::pointer_move(header_icons[2]));
-                editor.dispatch_event(Event::primary_press(header_icons[2]));
+                editor.dispatch_event(Event::pointer_move(switch_center));
+                editor.dispatch_event(Event::primary_press(switch_center));
             }
             HeaderCaptureState::Disabled => {
                 editor.dispatch_event(Event::pointer_move(header_icons[0]));
@@ -213,7 +210,7 @@ fn render_case_with_bypass(
     let (plan, pixels) = with_test_curve_slot_path(store_path.clone(), || {
         let params = Arc::new(PumpParams::new());
         params.set_bypass(f32::from(bypassed));
-        for (index, seed) in quick_slot_seeds().iter().take(6).enumerate() {
+        for (index, seed) in quick_slot_seeds().iter().take(8).enumerate() {
             assert!(params.set_global_curve_slot_curve(index, &seed.curve));
         }
         let mut editor = RadiantPumpEditor::new(
@@ -806,7 +803,7 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
         sync_division_label(crate::params::DEFAULT_SYNC_DIVISION_INDEX)
     );
     let mut curve_points = 0;
-    let mut shaped_carousel_tiles = 0;
+    let mut shaped_curve_slots = 0;
     let mut frame_paths = 0;
     for primitive in &plan.primitives {
         let rect = match primitive {
@@ -863,7 +860,7 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
                         (min.min(x), max.max(x))
                     });
                 if polyline.points.len() >= 8 && max_y - min_y > 8.0 && max_x - min_x > 40.0 {
-                    shaped_carousel_tiles += 1;
+                    shaped_curve_slots += 1;
                 }
                 None
             }
@@ -885,8 +882,8 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
         "editor should paint a rounded outer frame and card surfaces"
     );
     assert!(
-        shaped_carousel_tiles >= 6,
-        "quick-shape carousel must paint seeded curves instead of flat empty tiles"
+        shaped_curve_slots >= 8,
+        "all eight global curve slots must paint seeded curves instead of flat empty tiles"
     );
     for label in [
         "PUMP",
@@ -915,7 +912,7 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
         );
     }
     assert!(
-        timing_label_widths.iter().all(|width| *width >= 80.0),
+        timing_label_widths.iter().all(|width| *width >= 60.0),
         "timing labels need a full-width text cell"
     );
     for obsolete_label in [
@@ -947,9 +944,9 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
 #[test]
 fn pump_editor_screenshots_cover_supported_sizes_and_fractional_scale() {
     for (name, width, height) in [
-        ("pump-min-720x540", MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
-        ("pump-default-720x540", WINDOW_WIDTH, WINDOW_HEIGHT),
-        ("pump-max-1440x1080", MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT),
+        ("pump-min-640x400", MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
+        ("pump-default-640x400", WINDOW_WIDTH, WINDOW_HEIGHT),
+        ("pump-max-1280x800", MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT),
     ] {
         let (plan, pixels) = render_case(name, width, height, DpiScale::ONE);
         assert!(!pixels.iter().all(|byte| *byte == plan.clear_color.r));
@@ -957,7 +954,7 @@ fn pump_editor_screenshots_cover_supported_sizes_and_fractional_scale() {
     }
 
     let (fractional_plan, fractional_pixels) = render_case(
-        "pump-default-720x540-dpi-1_25",
+        "pump-default-640x400-dpi-1_25",
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
         DpiScale::new(1.25),
@@ -969,14 +966,14 @@ fn pump_editor_screenshots_cover_supported_sizes_and_fractional_scale() {
 #[test]
 fn pump_editor_screenshots_capture_explicit_active_and_bypassed_states() {
     let (active, _) = render_case_with_bypass(
-        "pump-bypass-active-720x540",
+        "pump-bypass-active-640x400",
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
         DpiScale::ONE,
         false,
     );
     let (bypassed, _) = render_case_with_bypass(
-        "pump-bypass-bypassed-720x540",
+        "pump-bypass-bypassed-640x400",
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
         DpiScale::ONE,
@@ -999,29 +996,29 @@ fn pump_editor_screenshots_capture_explicit_active_and_bypassed_states() {
 #[test]
 fn pump_editor_header_captures_production_interaction_states() {
     let (normal, normal_pixels) =
-        render_header_case("pump-header-normal-720x540", HeaderCaptureState::Normal);
+        render_header_case("pump-header-normal-640x400", HeaderCaptureState::Normal);
     let (hovered, hovered_pixels) =
-        render_header_case("pump-header-hovered-720x540", HeaderCaptureState::Hovered);
+        render_header_case("pump-header-hovered-640x400", HeaderCaptureState::Hovered);
     let (copy_hovered, _) = render_header_case(
-        "pump-header-copy-hovered-720x540",
+        "pump-header-copy-hovered-640x400",
         HeaderCaptureState::CopyHovered,
     );
     let (a_hovered, _) = render_header_case(
-        "pump-header-a-hovered-720x540",
+        "pump-header-a-hovered-640x400",
         HeaderCaptureState::AHovered,
     );
     let (b_hovered, _) = render_header_case(
-        "pump-header-b-hovered-720x540",
+        "pump-header-b-hovered-640x400",
         HeaderCaptureState::BHovered,
     );
     let (pressed, pressed_pixels) =
-        render_header_case("pump-header-pressed-720x540", HeaderCaptureState::Pressed);
+        render_header_case("pump-header-pressed-640x400", HeaderCaptureState::Pressed);
     let (disabled, _) =
-        render_header_case("pump-header-disabled-720x540", HeaderCaptureState::Disabled);
+        render_header_case("pump-header-disabled-640x400", HeaderCaptureState::Disabled);
     let (a_active, _) =
-        render_header_case("pump-header-a-active-720x540", HeaderCaptureState::AActive);
+        render_header_case("pump-header-a-active-640x400", HeaderCaptureState::AActive);
     let (b_active, _) =
-        render_header_case("pump-header-b-active-720x540", HeaderCaptureState::BActive);
+        render_header_case("pump-header-b-active-640x400", HeaderCaptureState::BActive);
 
     for plan in [&normal, &hovered, &pressed, &disabled, &a_active, &b_active] {
         assert!(plan.primitives.iter().any(|primitive| {
@@ -1029,16 +1026,16 @@ fn pump_editor_header_captures_production_interaction_states() {
         }));
     }
     assert!(hovered.primitives.iter().any(|primitive| {
-        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Switch to sound B")
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str().starts_with("Switch to sound B; Option-click copies A to"))
     }));
     assert!(copy_hovered.primitives.iter().any(|primitive| {
-        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Copy sound A to sound B")
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str().starts_with("Switch to sound B; Option-click copies A to"))
     }));
     assert!(a_hovered.primitives.iter().any(|primitive| {
-        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Select sound A")
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str().starts_with("Select sound A"))
     }));
     assert!(b_hovered.primitives.iter().any(|primitive| {
-        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "Select sound B")
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str().starts_with("Select sound B"))
     }));
     assert_ne!(
         normal_pixels, hovered_pixels,
@@ -1061,7 +1058,7 @@ fn pump_editor_header_captures_production_interaction_states() {
 #[test]
 fn pump_editor_screenshot_fixture_renders_non_default_deck_and_active_meter() {
     let (plan, pixels) = render_non_default_active_meter_case(
-        "pump-non-default-active-meter-720x540",
+        "pump-non-default-active-meter-640x400",
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
         DpiScale::ONE,

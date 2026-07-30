@@ -46,6 +46,9 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     for side in [SoundSide::A, SoundSide::B] {
         encode_sound_state(&mut payload, &params.sound_state_snapshot(side));
     }
+    for side in [SoundSide::A, SoundSide::B] {
+        encode_sound_state(&mut payload, &params.stored_sound_state_snapshot(side));
+    }
     payload.extend_from_slice(&(params.timing_mode() as u32).to_le_bytes());
     payload.extend_from_slice(&params.free_rate_hz().to_le_bytes());
 
@@ -194,7 +197,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     {
         return Err("invalid A/B scalar field");
     }
-    let (active_sound, sound_states) = if version >= 14 {
+    let (active_sound, sound_states, stored_sound_states) = if version >= 14 {
         let Some(active_sound) = read_u32(&mut cursor).map(|value| {
             if value == SoundSide::B.index() as u32 {
                 SoundSide::B
@@ -206,7 +209,16 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
         };
         let a = decode_sound_state(&mut cursor, version)?;
         let b = decode_sound_state(&mut cursor, version)?;
-        (active_sound, [a, b])
+        let working = [a, b];
+        let stored = if version >= 16 {
+            [
+                decode_sound_state(&mut cursor, version)?,
+                decode_sound_state(&mut cursor, version)?,
+            ]
+        } else {
+            working.clone()
+        };
+        (active_sound, working, stored)
     } else {
         let legacy = PumpSoundState {
             mix,
@@ -228,7 +240,11 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 .map(|preset| preset.quick_slots.clone())
                 .unwrap_or_else(seeded_quick_shape_slots),
         };
-        (SoundSide::A, [legacy.clone(), legacy])
+        (
+            SoundSide::A,
+            [legacy.clone(), legacy.clone()],
+            [legacy.clone(), legacy],
+        )
     };
     let (timing_mode, free_rate_hz) = if version >= 15 {
         let Some(timing_mode) = read_u32(&mut cursor) else {
@@ -266,7 +282,11 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_free_rate_hz(free_rate_hz);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
-    params.set_sound_states_without_persistence(active_sound, sound_states);
+    params.set_sound_states_with_references_without_persistence(
+        active_sound,
+        sound_states,
+        stored_sound_states,
+    );
 
     Ok(())
 }

@@ -597,7 +597,7 @@ fn view_normalizes_off_aspect_host_resize_and_preserves_origin() {
     assert_eq!(unsafe { view.checkSizeConstraint(&mut rect) }, kResultOk);
     assert_eq!((rect.left, rect.top), (12, 18));
     assert_eq!(rect.right - rect.left, 1_200);
-    assert_eq!(rect.bottom - rect.top, 900);
+    assert_eq!(rect.bottom - rect.top, 750);
 }
 
 #[test]
@@ -676,7 +676,7 @@ fn processor_writes_the_full_normal_output_range() {
 }
 
 #[test]
-fn processor_publishes_input_waveform_by_default_and_clears_it_when_input_disappears() {
+fn processor_shows_the_initial_input_waveform_and_clears_it_when_input_disappears() {
     let shared = Arc::new(PumpVst3Shared::new());
     let processor = PumpVst3Processor::new(Arc::clone(&shared));
     let mut fixture = stereo_process_fixture(64, 9.0);
@@ -688,7 +688,7 @@ fn processor_publishes_input_waveform_by_default_and_clears_it_when_input_disapp
     let snapshot = shared
         .status
         .incoming_waveform_snapshot()
-        .expect("VST3 input should publish a waveform snapshot");
+        .expect("the first cycle should be visible while it is captured");
     assert!(snapshot.iter().copied().fold(0.0_f32, f32::max) >= 1.0);
 
     fixture.process_data.inputs = ptr::null_mut();

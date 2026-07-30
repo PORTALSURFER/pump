@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import release_helper
 
 
-def png(width=720, height=540):
+def png(width=640, height=400):
     def chunk(kind, payload):
         import zlib
         return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
@@ -164,7 +164,7 @@ class ReleaseHelperTests(unittest.TestCase):
     def test_manifest_and_png_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            screenshot = root / "pump-default-720x540.png"
+            screenshot = root / "pump-default-640x400.png"
             screenshot.write_bytes(png())
             clap, vst3, changelog = (root / name for name in ("clap.zip", "vst3.zip", "CHANGELOG.md"))
             clap.write_bytes(b"clap")
@@ -173,13 +173,13 @@ class ReleaseHelperTests(unittest.TestCase):
             manifest = release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-abcdef012345", channel="stable", released_at="2026-07-28T00:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id="TEAM123456", notary_submissions={"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"})
             self.assertEqual(manifest["schema_version"], 2)
             self.assertEqual(manifest["source"]["dirty"], False)
-            self.assertEqual((manifest["screenshot"]["logical_width"], manifest["screenshot"]["logical_height"]), (720, 540))
+            self.assertEqual((manifest["screenshot"]["logical_width"], manifest["screenshot"]["logical_height"]), (640, 400))
             self.assertEqual(json.loads(release_helper.canonical_json(manifest)), manifest)
 
     def test_preflight_manifest_uses_ad_hoc_non_notarized_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            screenshot = root / "pump-default-720x540.png"
+            screenshot = root / "pump-default-640x400.png"
             screenshot.write_bytes(png())
             clap, vst3, changelog = (root / name for name in ("pump-v0.2.0-macos.clap.zip", "pump-v0.2.0-macos.vst3.zip", "CHANGELOG.md"))
             clap.write_bytes(b"clap")
@@ -337,7 +337,7 @@ class ReleaseHelperTests(unittest.TestCase):
     def test_public_wrapper_rejects_raw_zip_without_request(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            screenshot = root / "pump-default-720x540.png"; screenshot.write_bytes(png())
+            screenshot = root / "pump-default-640x400.png"; screenshot.write_bytes(png())
             clap = root / "pump-v0.2.0-macos.clap.zip"; clap.write_bytes(b"raw unsigned bytes")
             vst3 = root / "pump-v0.2.0-macos.vst3.zip"; vst3.write_bytes(b"raw unsigned bytes")
             changelog = root / "CHANGELOG.md"; changelog.write_text("release\n", encoding="utf-8")

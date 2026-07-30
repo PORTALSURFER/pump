@@ -98,6 +98,14 @@ impl GuiStatus {
     ) -> Option<crate::incoming_waveform::IncomingWaveformSnapshot> {
         self.incoming_waveform.snapshot()
     }
+
+    pub(crate) fn waveform_live_mode(&self) -> bool {
+        self.incoming_waveform.live_mode()
+    }
+
+    pub(crate) fn set_waveform_live_mode(&self, enabled: bool) {
+        self.incoming_waveform.set_live_mode(enabled);
+    }
     /// Update telemetry from the latest processed frame.
     pub fn update_transport(&self, phase: f32, transport: GuiTransportTelemetry) {
         let safe_tempo = transport.tempo_bpm.clamp(20.0, 320.0);

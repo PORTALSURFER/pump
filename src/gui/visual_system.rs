@@ -83,28 +83,28 @@ pub(crate) struct PumpVisualMetrics {
 
 /// Pump's exact visual dimensions.
 pub(crate) const PUMP_VISUAL_METRICS: PumpVisualMetrics = PumpVisualMetrics {
-    base: 4.0,
-    space_4: 4.0,
-    space_8: 8.0,
-    space_12: 12.0,
-    space_16: 16.0,
-    padding: 12.0,
-    gap: 8.0,
-    radius: 8.0,
+    base: 3.4,
+    space_4: 3.4,
+    space_8: 6.8,
+    space_12: 10.2,
+    space_16: 13.6,
+    padding: 10.2,
+    gap: 6.8,
+    radius: 6.8,
     border: 1.0,
     divider: 1.0,
-    control_height: 32.0,
-    dropdown_min_width: 96.0,
+    control_height: 27.2,
+    dropdown_min_width: 81.6,
     icon_hit: 28.0,
-    icon: 16.0,
-    knob: 56.0,
-    knob_column: 88.0,
-    label_line: 16.0,
-    meter_panel: 48.0,
-    meter_track: 32.0,
-    meter_segment: 4.0,
-    meter_segment_gap: 2.0,
-    deck_height: 96.0,
+    icon: 13.6,
+    knob: 47.6,
+    knob_column: 74.8,
+    label_line: 13.6,
+    meter_panel: 40.8,
+    meter_track: 27.2,
+    meter_segment: 3.4,
+    meter_segment_gap: 1.7,
+    deck_height: 81.6,
 };
 
 /// Typography roles for the target's license-safe text hierarchy.
@@ -124,11 +124,11 @@ pub(crate) struct PumpTypography {
 
 /// Pump's target typography roles.
 pub(crate) const PUMP_TYPOGRAPHY: PumpTypography = PumpTypography {
-    brand: (22.0, 28.0),
-    body: (14.0, 18.0),
-    value: (12.0, 16.0),
-    control_label: (10.0, 16.0),
-    meta: (9.0, 14.0),
+    brand: (18.7, 23.8),
+    body: (11.9, 15.3),
+    value: (10.2, 13.6),
+    control_label: (8.5, 13.6),
+    meta: (8.0, 11.9),
 };
 
 /// Meter-specific semantic colors derived from Pump's theme tokens.
@@ -174,12 +174,12 @@ mod tests {
 
     #[test]
     fn metrics_and_typography_match_the_visual_contract() {
-        assert_eq!(PUMP_VISUAL_METRICS.base, 4.0);
-        assert_eq!(PUMP_VISUAL_METRICS.control_height, 32.0);
-        assert_eq!(PUMP_VISUAL_METRICS.knob, 56.0);
-        assert_eq!(PUMP_VISUAL_METRICS.deck_height, 96.0);
-        assert_eq!(PUMP_TYPOGRAPHY.brand, (22.0, 28.0));
-        assert_eq!(PUMP_TYPOGRAPHY.meta, (9.0, 14.0));
+        assert_eq!(PUMP_VISUAL_METRICS.base, 3.4);
+        assert_eq!(PUMP_VISUAL_METRICS.control_height, 27.2);
+        assert_eq!(PUMP_VISUAL_METRICS.knob, 47.6);
+        assert_eq!(PUMP_VISUAL_METRICS.deck_height, 81.6);
+        assert_eq!(PUMP_TYPOGRAPHY.brand, (18.7, 23.8));
+        assert_eq!(PUMP_TYPOGRAPHY.meta, (8.0, 11.9));
     }
 
     #[test]
