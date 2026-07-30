@@ -33,8 +33,32 @@ pub struct DspSettings {
 /// Host-bypass crossfade duration in seconds.
 pub const BYPASS_RAMP_SECONDS: f32 = 0.005;
 
+/// Smooth amount at the legacy one-pole time-constant boundary.
+pub const SMOOTH_COMPATIBILITY_KNEE: f32 = 0.75;
+
 /// Maximum one-pole time constant at 100% Smooth.
-pub const MAX_SMOOTH_TIME_SECONDS: f32 = 0.1;
+pub const MAX_SMOOTH_TIME_SECONDS: f32 = 0.25;
+
+/// Return the one-pole time constant selected by a Smooth amount.
+///
+/// The mapping through 75% is intentionally byte-for-byte compatible with the
+/// legacy `amount * 100 ms` mapping. The upper tail uses a smoothstep from the
+/// legacy 75 ms endpoint to the new 250 ms maximum.
+pub(crate) fn smooth_time_constant_seconds(amount: f32) -> f32 {
+    let amount = if amount.is_finite() {
+        amount.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if amount <= SMOOTH_COMPATIBILITY_KNEE {
+        return amount * 0.1;
+    }
+
+    let t = (amount - SMOOTH_COMPATIBILITY_KNEE) / (1.0 - SMOOTH_COMPATIBILITY_KNEE);
+    let smoothstep = t * t * (3.0 - 2.0 * t);
+    let legacy_seconds = amount * 0.1;
+    legacy_seconds + (MAX_SMOOTH_TIME_SECONDS - 0.1) * smoothstep
+}
 
 /// Information exposed to GUI for metering/visualization.
 #[derive(Debug, Copy, Clone)]
@@ -409,7 +433,7 @@ impl GainSmoother {
             return target;
         }
 
-        let tau = amount * MAX_SMOOTH_TIME_SECONDS;
+        let tau = smooth_time_constant_seconds(amount);
         let coefficient = if tau > 0.0 {
             (-1.0 / (tau * sample_rate.max(1.0))).exp()
         } else {
@@ -462,7 +486,10 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{curve_value_to_gain, db_to_linear, DspSettings, PumpEngine};
+    use super::{
+        curve_value_to_gain, db_to_linear, smooth_time_constant_seconds, DspSettings, PumpEngine,
+        MAX_SMOOTH_TIME_SECONDS, SMOOTH_COMPATIBILITY_KNEE,
+    };
     use crate::curve::{default_editable_curve, editable_curve_to_table};
     use toybox::dsp::TransportState;
 
@@ -857,6 +884,35 @@ mod tests {
     }
 
     #[test]
+    fn smooth_time_constant_preserves_legacy_mapping_through_knee() {
+        for amount in [0.0, 0.125, 0.5, SMOOTH_COMPATIBILITY_KNEE] {
+            assert_eq!(
+                smooth_time_constant_seconds(amount),
+                amount * 0.1,
+                "legacy tau changed at Smooth amount {amount}"
+            );
+        }
+    }
+
+    #[test]
+    fn smooth_time_constant_tail_is_monotonic_and_anchored() {
+        let knee = smooth_time_constant_seconds(SMOOTH_COMPATIBILITY_KNEE);
+        assert_eq!(knee, 0.075);
+        assert_eq!(smooth_time_constant_seconds(1.0), MAX_SMOOTH_TIME_SECONDS);
+
+        let mut previous = knee;
+        for step in 1..=100 {
+            let amount =
+                SMOOTH_COMPATIBILITY_KNEE + (1.0 - SMOOTH_COMPATIBILITY_KNEE) * step as f32 / 100.0;
+            let current = smooth_time_constant_seconds(amount);
+            assert!(current >= previous, "tau must be monotonic at {amount}");
+            previous = current;
+        }
+        assert!(smooth_time_constant_seconds(0.875) > 0.075);
+        assert!(smooth_time_constant_seconds(0.875) < MAX_SMOOTH_TIME_SECONDS);
+    }
+
+    #[test]
     fn zero_smooth_is_an_exact_identity_for_evaluated_gain() {
         let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
         let settings = smoothing_settings(0.0);
@@ -890,13 +946,33 @@ mod tests {
             .iter()
             .all(|value| value.is_finite() && (0.0..=1.0).contains(value)));
 
-        for _ in 0..48_000 {
+        for _ in 0..120_000 {
             let mut left = 1.0;
             let mut right = 1.0;
             engine.process_sample(&mut left, &mut right, settings, transport);
             values.push(left);
         }
         assert!(values.last().copied().unwrap_or(1.0) < 0.001);
+    }
+
+    #[test]
+    fn full_smooth_step_response_reaches_one_tau_at_250_ms() {
+        let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let settings = smoothing_settings(1.0);
+        let transport = smoothing_transport(120.0);
+        let mut response = 1.0;
+        for _ in 0..12_000 {
+            let mut left = 1.0;
+            let mut right = 1.0;
+            response = engine
+                .process_sample(&mut left, &mut right, settings, transport)
+                .gain;
+        }
+
+        assert!(
+            (response - (-1.0_f32).exp()).abs() < 0.01,
+            "250 ms step response should be one tau, got {response}"
+        );
     }
 
     #[test]
@@ -941,7 +1017,7 @@ mod tests {
         assert!(after_seek.gain.is_finite());
 
         let mut converged = after_seek.gain;
-        for _ in 0..48_000 {
+        for _ in 0..240_000 {
             let telemetry =
                 engine.process_sample(&mut 1.0, &mut 1.0, smoothing_settings(1.0), seek_transport);
             converged = telemetry.gain;
