@@ -203,7 +203,7 @@ const HEADER_BUTTON_TEXT_TOP_INSET: f32 = PUMP_VISUAL_METRICS.base;
 fn header_button_hover_fill(theme: &ThemeTokens) -> Rgba8 {
     theme
         .surface_base
-        .blend_toward(theme.surface_overlay, theme.state_hover_soft)
+        .blend_toward(theme.surface_overlay, theme.state_hover_strong)
 }
 
 fn header_button_text_rect(bounds: Rect) -> Rect {
@@ -213,6 +213,10 @@ fn header_button_text_rect(bounds: Rect) -> Rect {
         bounds.width(),
         (bounds.height() - HEADER_BUTTON_TEXT_TOP_INSET).max(1.0),
     )
+}
+
+fn header_button_text_baseline(rect: Rect, font_size: f32) -> f32 {
+    (rect.height() * 0.5 + font_size * 0.35).max(0.0)
 }
 
 #[derive(Clone, Debug)]
@@ -460,6 +464,10 @@ impl Widget for HotkeyHelpButtonWidget {
             .map(WidgetOutput::typed)
     }
 
+    fn accepts_pointer_move(&self) -> bool {
+        true
+    }
+
     fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
         let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
             return;
@@ -478,6 +486,7 @@ impl Widget for HotkeyHelpButtonWidget {
         _layout: &LayoutOutput,
         theme: &ThemeTokens,
     ) {
+        let text_rect = header_button_text_rect(bounds);
         let fill = if self.button.common.state.pressed {
             theme.accent_copper.with_alpha(96)
         } else if self.button.common.state.hovered {
@@ -503,9 +512,12 @@ impl Widget for HotkeyHelpButtonWidget {
         primitives.push(PaintPrimitive::Text(PaintTextRun {
             widget_id: self.button.common.id,
             text: PaintText::from_static("?"),
-            rect: header_button_text_rect(bounds),
+            rect: text_rect,
             font_size: PUMP_TYPOGRAPHY.body.0,
-            baseline: None,
+            baseline: Some(header_button_text_baseline(
+                text_rect,
+                PUMP_TYPOGRAPHY.body.0,
+            )),
             color: theme.text_primary,
             align: PaintTextAlign::Center,
             wrap: TextWrap::None,
@@ -758,6 +770,10 @@ impl Widget for SoundSideButtonWidget {
         }
     }
 
+    fn accepts_pointer_move(&self) -> bool {
+        true
+    }
+
     fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
         let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
             return;
@@ -778,6 +794,7 @@ impl Widget for SoundSideButtonWidget {
         _layout: &LayoutOutput,
         theme: &ThemeTokens,
     ) {
+        let text_rect = header_button_text_rect(bounds);
         let fill = if self.button.common.state.pressed {
             theme.accent_copper.with_alpha(96)
         } else if self.pulse {
@@ -813,9 +830,12 @@ impl Widget for SoundSideButtonWidget {
         primitives.push(PaintPrimitive::Text(PaintTextRun {
             widget_id: self.button.common.id,
             text: PaintText::from_static(self.side.label()),
-            rect: header_button_text_rect(bounds),
+            rect: text_rect,
             font_size: PUMP_TYPOGRAPHY.body.0,
-            baseline: None,
+            baseline: Some(header_button_text_baseline(
+                text_rect,
+                PUMP_TYPOGRAPHY.body.0,
+            )),
             color: theme.text_primary,
             align: PaintTextAlign::Center,
             wrap: TextWrap::None,
@@ -5536,13 +5556,27 @@ mod tests {
                 _ => None,
             })
         };
+        let text_baseline = |primitives: &[PaintPrimitive]| {
+            primitives.iter().find_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) => text.baseline,
+                _ => None,
+            })
+        };
 
         let mut normal = SoundSideButtonWidget::new(SoundSide::A, false, false, false);
+        assert!(normal.accepts_pointer_move());
         let mut normal_primitives = Vec::new();
         normal.append_paint(&mut normal_primitives, bounds, &layout, &theme);
         assert_eq!(
             text_rect(&normal_primitives),
             Some(header_button_text_rect(bounds))
+        );
+        assert_eq!(
+            text_baseline(&normal_primitives),
+            Some(header_button_text_baseline(
+                header_button_text_rect(bounds),
+                PUMP_TYPOGRAPHY.body.0,
+            ))
         );
         assert_eq!(fill(&normal_primitives), Some(theme.surface_base));
 
@@ -5588,6 +5622,7 @@ mod tests {
 
         let help_bounds = Rect::from_xy_size(0.0, 0.0, 28.0, TIMING_CONTROL_HEIGHT);
         let mut help = HotkeyHelpButtonWidget::new();
+        assert!(help.accepts_pointer_move());
         help.handle_input(
             help_bounds,
             WidgetInput::PointerMove {
@@ -5604,6 +5639,13 @@ mod tests {
         assert_eq!(
             text_rect(&help_primitives),
             Some(header_button_text_rect(help_bounds))
+        );
+        assert_eq!(
+            text_baseline(&help_primitives),
+            Some(header_button_text_baseline(
+                header_button_text_rect(help_bounds),
+                PUMP_TYPOGRAPHY.body.0,
+            ))
         );
         help.handle_input(help_bounds, WidgetInput::FocusChanged(true));
         let mut focused_primitives = Vec::new();
