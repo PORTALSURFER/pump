@@ -5540,7 +5540,7 @@ mod tests {
     }
 
     #[test]
-    fn header_letter_buttons_lower_labels_and_show_subtle_hover_without_changing_precedence() {
+    fn header_letter_buttons_lower_labels_and_show_visible_hover_without_changing_precedence() {
         let theme = pump_theme();
         let layout = LayoutOutput::default();
         let bounds = Rect::from_xy_size(0.0, 0.0, 28.9, TIMING_CONTROL_HEIGHT);
