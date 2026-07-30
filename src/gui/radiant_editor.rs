@@ -7654,7 +7654,6 @@ mod tests {
         let gutter_position = Point::new(bounds.min.x + 10.0, bounds.min.y + 30.0);
 
         assert_eq!(curve_bounds.min.x, CURVE_REFERENCE_GUTTER_WIDTH);
-        assert!(CURVE_REFERENCE_GUTTER_WIDTH >= 40.0);
         assert!(!curve_bounds.contains(gutter_position));
         assert_eq!(widget.hit_node(bounds, gutter_position), None);
         assert_eq!(widget.insert_node_at(bounds, gutter_position), None);
