@@ -583,10 +583,16 @@ impl Widget for SoundSwitchButtonWidget {
                     .and_then(|output| output.typed_copied::<ButtonMessage>())
                     .and_then(|message| {
                         message.is_activate().then(|| {
-                            WidgetOutput::typed(RadiantEditorMessage::SelectSound {
-                                side: self.active_sound.other(),
-                                copy: command_held,
-                            })
+                            if command_held {
+                                WidgetOutput::typed(RadiantEditorMessage::CopyAndSelectSound(
+                                    self.active_sound.other(),
+                                ))
+                            } else {
+                                WidgetOutput::typed(RadiantEditorMessage::SelectSound {
+                                    side: self.active_sound.other(),
+                                    copy: false,
+                                })
+                            }
                         })
                     });
                 self.command_held = false;
@@ -1506,6 +1512,7 @@ enum RadiantEditorMessage {
         side: SoundSide,
         copy: bool,
     },
+    CopyAndSelectSound(SoundSide),
     ToggleBypass,
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
@@ -2558,6 +2565,32 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                     push_radiant_param_update(state, PARAM_SOUND_ID, side.index() as f64);
                 }
             }
+        }
+        RadiantEditorMessage::CopyAndSelectSound(side) => {
+            let active = state.params.active_sound();
+            if active == side {
+                return;
+            }
+
+            let before = state.snapshot();
+            let copied = state.params.copy_active_to_inactive();
+            if !state.params.set_active_sound(side) {
+                return;
+            }
+
+            state.push_history_snapshot(before);
+            state.clear_curve_selection();
+            state.ab_confirmation = Some(if copied {
+                format!(
+                    "Copied {} → {}; switched to sound {}",
+                    active.label(),
+                    side.label(),
+                    side.label()
+                )
+            } else {
+                format!("Switched to sound {}", side.label())
+            });
+            push_radiant_param_update(state, PARAM_SOUND_ID, side.index() as f64);
         }
         RadiantEditorMessage::ToggleBypass => {
             if try_toggle_bypass(
@@ -5507,6 +5540,73 @@ mod tests {
     }
 
     #[test]
+    fn ab_command_copy_switches_to_the_copied_side_and_emits_sound_automation() {
+        let params = Arc::new(PumpParams::new());
+        params.set_mix(0.2);
+        let queue = Arc::new(PumpAutomationQueue::default());
+        let mut state = RadiantEditorState::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(ClapHostParamEditSink {
+                queue: Arc::clone(&queue),
+                requester: None,
+            }),
+        );
+        state.selected_curve_nodes.push(1);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::CopyAndSelectSound(SoundSide::B),
+        );
+
+        assert_eq!(params.active_sound(), SoundSide::B);
+        assert!(!params.sound_sides_differ());
+        assert!(state.selected_curve_nodes.is_empty());
+        assert_eq!(state.undo_history.len(), 1);
+
+        let mut buffer = EventBuffer::new();
+        let mut output = buffer.as_output();
+        let mut scratch = Vec::new();
+        assert_eq!(
+            queue.drain_to_output(&mut output, &mut scratch).attempted,
+            3
+        );
+        let value = (0..buffer.len()).find_map(|index| {
+            match buffer.get(index as u32)?.as_core_event()? {
+                CoreEventSpace::ParamValue(value) => Some((value.param_id(), value.value())),
+                _ => None,
+            }
+        });
+        assert_eq!(value, Some((Some(PARAM_SOUND_ID), 1.0)));
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert_eq!(params.active_sound(), SoundSide::A);
+        assert!(params.sound_sides_differ());
+        reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
+        assert_eq!(params.active_sound(), SoundSide::B);
+        assert!(!params.sound_sides_differ());
+    }
+
+    #[test]
+    fn ab_command_copy_switches_even_when_sides_are_equal() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::CopyAndSelectSound(SoundSide::B),
+        );
+
+        assert_eq!(params.active_sound(), SoundSide::B);
+        assert!(!params.sound_sides_differ());
+        assert_eq!(state.undo_history.len(), 1);
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert_eq!(params.active_sound(), SoundSide::A);
+        reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
+        assert_eq!(params.active_sound(), SoundSide::B);
+    }
+
+    #[test]
     fn equivalent_ab_copy_preserves_undo_and_redo_history() {
         let params = Arc::new(PumpParams::new());
         params.set_mix(0.2);
@@ -5588,10 +5688,7 @@ mod tests {
             copy_switch
                 .handle_input(bounds, release(PointerModifiers::default()))
                 .and_then(|output| output.typed_cloned()),
-            Some(RadiantEditorMessage::SelectSound {
-                side: SoundSide::B,
-                copy: true,
-            })
+            Some(RadiantEditorMessage::CopyAndSelectSound(SoundSide::B))
         );
 
         let mut option_switch = SoundSwitchButtonWidget::new(SoundSide::A);
