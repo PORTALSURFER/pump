@@ -413,7 +413,7 @@ struct ActionIconButtonWidget {
 struct SoundSwitchButtonWidget {
     button: IconButtonWidget,
     active_sound: SoundSide,
-    alt_held: bool,
+    command_held: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -421,9 +421,6 @@ struct SoundSideButtonWidget {
     button: ButtonWidget,
     side: SoundSide,
     selected: bool,
-    dirty: bool,
-    pulse: bool,
-    command_held: bool,
     alt_held: bool,
 }
 
@@ -555,7 +552,7 @@ impl SoundSwitchButtonWidget {
                 )),
             ),
             active_sound,
-            alt_held: false,
+            command_held: false,
         }
     }
 }
@@ -572,27 +569,27 @@ impl Widget for SoundSwitchButtonWidget {
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         match input {
             WidgetInput::PointerModifiersChanged { modifiers } => {
-                self.alt_held = modifiers.alt;
+                self.command_held = modifiers.command;
                 None
             }
             WidgetInput::PointerPress { modifiers, .. } => {
-                self.alt_held = modifiers.alt;
+                self.command_held = modifiers.command;
                 let _ = Widget::handle_input(&mut self.button, bounds, input);
                 None
             }
             WidgetInput::PointerRelease { modifiers, .. } => {
-                let alt_held = self.alt_held || modifiers.alt;
+                let command_held = self.command_held || modifiers.command;
                 let output = Widget::handle_input(&mut self.button, bounds, input)
                     .and_then(|output| output.typed_copied::<ButtonMessage>())
                     .and_then(|message| {
                         message.is_activate().then(|| {
                             WidgetOutput::typed(RadiantEditorMessage::SelectSound {
                                 side: self.active_sound.other(),
-                                copy: alt_held,
+                                copy: command_held,
                             })
                         })
                     });
-                self.alt_held = false;
+                self.command_held = false;
                 output
             }
             WidgetInput::KeyPress(WidgetKey::Enter | WidgetKey::Space) => self
@@ -609,7 +606,7 @@ impl Widget for SoundSwitchButtonWidget {
                 }),
             WidgetInput::PointerDrop { .. } => {
                 let _ = Widget::handle_input(&mut self.button, bounds, input);
-                self.alt_held = false;
+                self.command_held = false;
                 None
             }
             _ => {
@@ -686,7 +683,7 @@ impl WidgetSemantics for SoundSwitchButtonWidget {
 }
 
 impl SoundSideButtonWidget {
-    fn new(side: SoundSide, selected: bool, dirty: bool, pulse: bool) -> Self {
+    fn new(side: SoundSide, selected: bool) -> Self {
         Self {
             button: ButtonWidget::new(
                 0,
@@ -695,9 +692,6 @@ impl SoundSideButtonWidget {
             ),
             side,
             selected,
-            dirty,
-            pulse,
-            command_held: false,
             alt_held: false,
         }
     }
@@ -715,36 +709,27 @@ impl Widget for SoundSideButtonWidget {
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         match input {
             WidgetInput::PointerModifiersChanged { modifiers } => {
-                self.command_held = modifiers.command;
                 self.alt_held = modifiers.alt;
                 None
             }
             WidgetInput::PointerPress { modifiers, .. } => {
-                self.command_held = modifiers.command;
                 self.alt_held = modifiers.alt;
                 let _ = self.button.handle_input(bounds, input);
                 None
             }
             WidgetInput::PointerRelease { modifiers, .. } => {
-                let command_held = self.command_held || modifiers.command;
                 let alt_held = self.alt_held || modifiers.alt;
                 let activated = self
                     .button
                     .handle_input(bounds, input)
                     .is_some_and(ButtonMessage::is_activate);
-                self.command_held = false;
                 self.alt_held = false;
                 if !activated {
                     return None;
                 }
-                if command_held {
-                    return self
-                        .selected
-                        .then(|| WidgetOutput::typed(RadiantEditorMessage::StoreSound(self.side)));
-                }
                 Some(WidgetOutput::typed(RadiantEditorMessage::SelectSound {
                     side: self.side,
-                    copy: alt_held,
+                    copy: alt_held && !self.selected,
                 }))
             }
             WidgetInput::KeyPress(WidgetKey::Enter | WidgetKey::Space) => {
@@ -759,7 +744,6 @@ impl Widget for SoundSideButtonWidget {
             }
             WidgetInput::PointerDrop { .. } => {
                 let _ = self.button.handle_input(bounds, input);
-                self.command_held = false;
                 self.alt_held = false;
                 None
             }
@@ -779,7 +763,6 @@ impl Widget for SoundSideButtonWidget {
             return;
         };
         self.button.synchronize_from_previous(&previous.button);
-        self.command_held = previous.command_held;
         self.alt_held = previous.alt_held;
     }
 
@@ -797,10 +780,6 @@ impl Widget for SoundSideButtonWidget {
         let text_rect = header_button_text_rect(bounds);
         let fill = if self.button.common.state.pressed {
             theme.accent_copper.with_alpha(96)
-        } else if self.pulse {
-            theme.accent_warning.with_alpha(128)
-        } else if self.dirty {
-            theme.accent_danger.with_alpha(72)
         } else if self.selected {
             theme.surface_raised.with_alpha(224)
         } else if self.button.common.state.hovered {
@@ -818,8 +797,6 @@ impl Widget for SoundSideButtonWidget {
             rect: bounds,
             color: if self.button.common.state.pressed {
                 theme.accent_copper
-            } else if self.dirty {
-                theme.accent_danger
             } else if self.selected || self.button.common.state.focused {
                 theme.text_muted
             } else {
@@ -850,10 +827,6 @@ impl WidgetSemantics for SoundSideButtonWidget {
 
     fn automation_label(&self) -> Option<String> {
         Some(format!("Sound {}", self.side.label()))
-    }
-
-    fn automation_value_text(&self) -> Option<String> {
-        Some(if self.dirty { "Modified" } else { "Stored" }.to_owned())
     }
 
     fn automation_checked(&self) -> Option<bool> {
@@ -1494,7 +1467,6 @@ struct RadiantEditorState {
     hotkey_help_open: bool,
     free_rate_unit: FreeRateUnit,
     ab_confirmation: Option<String>,
-    ab_store_pulse_until_micros: u64,
     undo_history: Vec<RadiantHistorySnapshot>,
     redo_history: Vec<RadiantHistorySnapshot>,
 }
@@ -1534,7 +1506,6 @@ enum RadiantEditorMessage {
         side: SoundSide,
         copy: bool,
     },
-    StoreSound(SoundSide),
     ToggleBypass,
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
@@ -1685,8 +1656,6 @@ impl RadiantPumpEditor {
                 .state()
                 .params
                 .has_pending_active_sound()
-            || crate::time_utils::monotonic_micros()
-                < self.runtime.bridge().state().ab_store_pulse_until_micros
     }
 
     /// Refresh and return the current backend-neutral paint plan.
@@ -1877,7 +1846,6 @@ impl RadiantEditorState {
             hotkey_help_open: false,
             free_rate_unit: FreeRateUnit::Hertz,
             ab_confirmation: None,
-            ab_store_pulse_until_micros: 0,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
         }
@@ -1908,8 +1876,12 @@ impl RadiantEditorState {
     }
 
     fn push_history(&mut self) {
+        self.push_history_snapshot(self.snapshot());
+    }
+
+    fn push_history_snapshot(&mut self, snapshot: RadiantHistorySnapshot) {
         self.ab_confirmation = None;
-        self.undo_history.push(self.snapshot());
+        self.undo_history.push(snapshot);
         if self.undo_history.len() > 128 {
             self.undo_history.remove(0);
         }
@@ -1980,7 +1952,6 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let playhead_phase = (state.status.has_host_beats_timeline() || state.status.is_playing())
         .then_some(state.status.phase());
     let active_sound = params.active_sound();
-    let store_pulse = crate::time_utils::monotonic_micros() < state.ab_store_pulse_until_micros;
     let timing_options: Vec<_> = if free_timing {
         FreeRateUnit::ALL
             .into_iter()
@@ -2053,26 +2024,22 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         custom_widget_direct(SoundSideButtonWidget::new(
             SoundSide::A,
             active_sound == SoundSide::A,
-            params.sound_state_is_dirty(SoundSide::A),
-            store_pulse && active_sound == SoundSide::A,
         ))
         .size(28.9, TIMING_CONTROL_HEIGHT)
-        .tooltip("Select sound A; Cmd-click stores the active sound"),
+        .tooltip("Select sound A"),
         custom_widget_direct(SoundSwitchButtonWidget::new(active_sound))
             .size(PUMP_VISUAL_METRICS.icon_hit, TIMING_CONTROL_HEIGHT)
             .tooltip(if active_sound == SoundSide::A {
-                "Switch to sound B; Option-click copies A to B"
+                "Switch to sound B; Cmd-click copies A to B"
             } else {
-                "Switch to sound A; Option-click copies B to A"
+                "Switch to sound A; Cmd-click copies B to A"
             }),
         custom_widget_direct(SoundSideButtonWidget::new(
             SoundSide::B,
             active_sound == SoundSide::B,
-            params.sound_state_is_dirty(SoundSide::B),
-            store_pulse && active_sound == SoundSide::B,
         ))
         .size(28.9, TIMING_CONTROL_HEIGHT)
-        .tooltip("Select sound B; Cmd-click stores the active sound"),
+        .tooltip("Select sound B"),
     ])
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .height(TIMING_CONTROL_HEIGHT);
@@ -2571,12 +2538,15 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
         }
         RadiantEditorMessage::SelectSound { side, copy } => {
             if copy {
-                state.push_history();
                 let active = state.params.active_sound();
-                if side == active.other() && state.params.copy_active_to_inactive() {
-                    state.clear_curve_selection();
-                    state.ab_confirmation =
-                        Some(format!("Copied {} → {}", active.label(), side.label()));
+                if side == active.other() {
+                    let before = state.snapshot();
+                    if state.params.copy_active_to_inactive() {
+                        state.push_history_snapshot(before);
+                        state.clear_curve_selection();
+                        state.ab_confirmation =
+                            Some(format!("Copied {} → {}", active.label(), side.label()));
+                    }
                 }
                 return;
             }
@@ -2586,16 +2556,6 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                     state.clear_curve_selection();
                     state.ab_confirmation = Some(format!("Switched to sound {}", side.label()));
                     push_radiant_param_update(state, PARAM_SOUND_ID, side.index() as f64);
-                }
-            }
-        }
-        RadiantEditorMessage::StoreSound(side) => {
-            if side == state.params.active_sound() && state.params.sound_state_is_dirty(side) {
-                state.push_history();
-                if state.params.store_active_sound_state() {
-                    state.ab_store_pulse_until_micros =
-                        crate::time_utils::monotonic_micros().saturating_add(400_000);
-                    state.ab_confirmation = Some(format!("Stored sound {}", side.label()));
                 }
             }
         }
@@ -5459,6 +5419,45 @@ mod tests {
     }
 
     #[test]
+    fn equivalent_ab_copy_preserves_undo_and_redo_history() {
+        let params = Arc::new(PumpParams::new());
+        params.set_mix(0.2);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: true,
+            },
+        );
+        params.set_mix(0.3);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: true,
+            },
+        );
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        params.set_mix(0.2);
+        assert!(!params.sound_sides_differ());
+
+        let undo_len = state.undo_history.len();
+        let redo_len = state.redo_history.len();
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: true,
+            },
+        );
+
+        assert_eq!(state.undo_history.len(), undo_len);
+        assert_eq!(state.redo_history.len(), redo_len);
+    }
+
+    #[test]
     fn ab_buttons_activate_on_release_and_preserve_modifier_intent() {
         let bounds = Rect::from_xy_size(0.0, 0.0, 40.0, BUILD_LABEL_HEIGHT);
         let point = Point::new(20.0, BUILD_LABEL_HEIGHT * 0.5);
@@ -5492,7 +5491,7 @@ mod tests {
             .handle_input(
                 bounds,
                 press(PointerModifiers {
-                    alt: true,
+                    command: true,
                     ..PointerModifiers::default()
                 }),
             )
@@ -5507,7 +5506,27 @@ mod tests {
             })
         );
 
-        let mut active = SoundSideButtonWidget::new(SoundSide::A, true, true, false);
+        let mut option_switch = SoundSwitchButtonWidget::new(SoundSide::A);
+        assert!(option_switch
+            .handle_input(
+                bounds,
+                press(PointerModifiers {
+                    alt: true,
+                    ..PointerModifiers::default()
+                }),
+            )
+            .is_none());
+        assert_eq!(
+            option_switch
+                .handle_input(bounds, release(PointerModifiers::default()))
+                .and_then(|output| output.typed_cloned()),
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: false,
+            })
+        );
+
+        let mut active = SoundSideButtonWidget::new(SoundSide::A, true);
         assert!(active
             .handle_input(
                 bounds,
@@ -5521,10 +5540,13 @@ mod tests {
             active
                 .handle_input(bounds, release(PointerModifiers::default()))
                 .and_then(|output| output.typed_cloned()),
-            Some(RadiantEditorMessage::StoreSound(SoundSide::A))
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::A,
+                copy: false,
+            })
         );
 
-        let mut inactive = SoundSideButtonWidget::new(SoundSide::B, false, true, false);
+        let mut inactive = SoundSideButtonWidget::new(SoundSide::B, false);
         assert!(inactive
             .handle_input(
                 bounds,
@@ -5534,9 +5556,75 @@ mod tests {
                 }),
             )
             .is_none());
-        assert!(inactive
-            .handle_input(bounds, release(PointerModifiers::default()))
+        assert_eq!(
+            inactive
+                .handle_input(bounds, release(PointerModifiers::default()))
+                .and_then(|output| output.typed_cloned()),
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: false,
+            })
+        );
+
+        let mut option_inactive = SoundSideButtonWidget::new(SoundSide::B, false);
+        assert!(option_inactive
+            .handle_input(
+                bounds,
+                press(PointerModifiers {
+                    alt: true,
+                    ..PointerModifiers::default()
+                }),
+            )
             .is_none());
+        assert_eq!(
+            option_inactive
+                .handle_input(bounds, release(PointerModifiers::default()))
+                .and_then(|output| output.typed_cloned()),
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: true,
+            })
+        );
+    }
+
+    #[test]
+    fn active_option_click_does_not_copy_or_create_undo_history() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, 40.0, BUILD_LABEL_HEIGHT);
+        let point = Point::new(20.0, BUILD_LABEL_HEIGHT * 0.5);
+        let mut active = SoundSideButtonWidget::new(SoundSide::A, true);
+        let press = WidgetInput::PointerPress {
+            position: point,
+            button: PointerButton::Primary,
+            modifiers: PointerModifiers {
+                alt: true,
+                ..PointerModifiers::default()
+            },
+        };
+        let release = WidgetInput::PointerRelease {
+            position: point,
+            button: PointerButton::Primary,
+            modifiers: PointerModifiers::default(),
+        };
+
+        assert!(active.handle_input(bounds, press).is_none());
+        let message = active
+            .handle_input(bounds, release)
+            .and_then(|output| output.typed_cloned());
+        assert_eq!(
+            message,
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::A,
+                copy: false,
+            })
+        );
+
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(params);
+        reduce_editor_message(
+            &mut state,
+            message.expect("active click should select normally"),
+        );
+        assert!(state.undo_history.is_empty());
     }
 
     #[test]
@@ -5563,7 +5651,7 @@ mod tests {
             })
         };
 
-        let mut normal = SoundSideButtonWidget::new(SoundSide::A, false, false, false);
+        let mut normal = SoundSideButtonWidget::new(SoundSide::A, false);
         assert!(normal.accepts_pointer_move());
         let mut normal_primitives = Vec::new();
         normal.append_paint(&mut normal_primitives, bounds, &layout, &theme);
@@ -5605,7 +5693,7 @@ mod tests {
             "hover must not alter the header button hit bounds"
         );
 
-        let mut selected = SoundSideButtonWidget::new(SoundSide::B, true, false, false);
+        let mut selected = SoundSideButtonWidget::new(SoundSide::B, true);
         selected.handle_input(
             bounds,
             WidgetInput::PointerMove {
@@ -5654,21 +5742,6 @@ mod tests {
             primitive,
             PaintPrimitive::StrokeRect(stroke) if stroke.color == theme.accent_warning
         )));
-    }
-
-    #[test]
-    fn storing_active_sound_round_trips_dirtyness_through_undo_redo() {
-        let params = Arc::new(PumpParams::new());
-        params.set_mix(0.2);
-        assert!(params.sound_state_is_dirty(SoundSide::A));
-        let mut state = editor_state(Arc::clone(&params));
-
-        reduce_editor_message(&mut state, RadiantEditorMessage::StoreSound(SoundSide::A));
-        assert!(!params.sound_state_is_dirty(SoundSide::A));
-        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
-        assert!(params.sound_state_is_dirty(SoundSide::A));
-        reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
-        assert!(!params.sound_state_is_dirty(SoundSide::A));
     }
 
     #[test]

@@ -49,9 +49,11 @@ Pump header actions map to that catalog with explicit semantic labels: `Undo`
 → `ChevronLeft` ("Undo"), `Redo` → `ChevronRight` ("Redo"), and the A/B group
 uses `Sound A` and `Sound B` buttons around a directional `ChevronLeft` or
 `ChevronRight` `Switch sound` control. The switch chevron selects the other
-side; Option-click copies the active sound to the inactive side. Cmd-clicking
-the active `Sound A` or `Sound B` button stores that side's working state.
-Sound-side value text is `Stored` or `Modified`.
+side; Command-clicking it copies the active sound to the inactive side.
+Option-clicking the inactive `Sound A` or `Sound B` button also copies the
+active sound to that side. Working edits are captured automatically; there is
+no manual Command-click store action or `Stored`/`Modified` sound-side value
+text.
 
 ## Metrics and states
 
