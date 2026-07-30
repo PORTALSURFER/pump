@@ -406,6 +406,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (36442ac)
 
+- (changelog) Update changelog [skip ci] (15eb1cf)
+
 
 ### Features
 
@@ -1311,6 +1313,26 @@ Make curve slides audible while dragging (6170215)
 - Merge pull request #59 from PORTALSURFER/codex/eight-curve-slots
 
 Refine compact Pump editor workflow (e31f4fd)
+
+- Add curve multi-node editing (9f0217e)
+
+- Fix curve editor clippy lint (c54eb11)
+
+- Refine header button labels and hover (d157650)
+
+- Fix header button hover and label alignment (34b884d)
+
+- Clarify header hover regression name (e29269f)
+
+- Document local VST3 test builds (5016f9b)
+
+- Simplify A/B copy interactions (d7746bc)
+
+- Improve curve rendering fidelity (0a13518)
+
+- Merge pull request #60 from PORTALSURFER/codex/curve-multi-select-edit
+
+Improve Pump curve and A/B interactions (80fec81)
 
 
 ### Refactoring
