@@ -21,6 +21,21 @@ VST3_SDK_DIR=/mnt/e/lib/vst3sdk cargo build --features vst3
 VST3_SDK_DIR=/mnt/e/lib/vst3sdk cargo test --features vst3
 ```
 
+## Local VST3 testing
+
+Build the host-installable bundle for local testing with the audiodev producer
+(this is separate from the signed/notarized production release workflow below):
+
+```bash
+bash /Users/portalsurfer/dev/audiodev/scripts/build-vst3-release.sh pump
+```
+
+When run from `/Users/portalsurfer/dev/audiodev`, the equivalent command is
+`bash scripts/build-vst3-release.sh pump`. The resulting bundle is
+`/Users/portalsurfer/dev/audiodev/dist/pump-v<version>-macos.vst3`. Do not copy
+`pump/target/release/*.vst3`: Cargo refreshes the binary but not that bundle.
+Restart the DAW or fully unload the previous plugin before testing a replacement.
+
 ## Production releases
 
 The same producer is used locally and by the manual `Pump release` Actions
