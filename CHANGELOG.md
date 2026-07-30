@@ -99,6 +99,8 @@ All notable changes to this project are documented in this file.
 
 - Audit signed vst3 resource metadata (#54) (de0c518)
 
+- Switch after copying A/B sound (7460bee)
+
 
 ### CI
 
@@ -409,6 +411,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (15eb1cf)
 
 - (changelog) Update changelog [skip ci] (f70252a)
+
+- (changelog) Update changelog [skip ci] (5a8e8c9)
 
 
 ### Features
@@ -1341,6 +1345,10 @@ Improve Pump curve and A/B interactions (80fec81)
 - Merge pull request #62 from PORTALSURFER/codex/smoother-high-end-impl
 
 Extend high-end smoothing (f3b3309)
+
+- Merge pull request #63 from PORTALSURFER/codex/pump-ab-command-switch
+
+Fix A/B command-copy switching (863d5d0)
 
 
 ### Refactoring
