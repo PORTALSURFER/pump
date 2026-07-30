@@ -1026,10 +1026,10 @@ fn pump_editor_header_captures_production_interaction_states() {
         }));
     }
     assert!(hovered.primitives.iter().any(|primitive| {
-        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str().starts_with("Switch to sound B; Option-click copies A to"))
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str().starts_with("Switch to sound B; Cmd-click copies A to"))
     }));
     assert!(copy_hovered.primitives.iter().any(|primitive| {
-        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str().starts_with("Switch to sound B; Option-click copies A to"))
+        matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str().starts_with("Switch to sound B; Cmd-click copies A to"))
     }));
     assert!(a_hovered.primitives.iter().any(|primitive| {
         matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str().starts_with("Select sound A"))

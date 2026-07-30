@@ -12,13 +12,15 @@ from their working snapshots and therefore reopen clean.
 Changing A/B publishes the selected snapshot through the existing atomic audio
 parameter boundary. The processor never reads the UI-owned snapshot lock.
 Copy is explicit and directional (active to inactive), leaves the active audio
-unchanged, and leaves the destination working state dirty until it is stored by
-Cmd-clicking the active A/B control. Preset selection and
-quick-slot edits apply only to the active side; saving a preset captures that
-side's complete editable state. Host automation for the appended `Sound`
-parameter switches a pre-published realtime selector in the callback; the UI
-projection only consumes the repaint cue, avoiding a realtime lock while
-keeping the host-facing A/B value authoritative with the editor closed.
+unchanged, and is available by Command-clicking the center switch or
+Option-clicking the inactive side button. Working edits are captured
+automatically as they occur; there is no manual Command-click store step or
+`Stored`/`Modified` workflow in the editor. Preset selection and quick-slot edits
+apply only to the active side; saving a preset captures that side's complete
+editable state. Host automation for the appended `Sound` parameter switches a
+pre-published realtime selector in the callback; the UI projection only
+consumes the repaint cue, avoiding a realtime lock while keeping the host-facing
+A/B value authoritative with the editor closed.
 
 Pump treats preset-bank mutations as durable transactions. Create, overwrite,
 rename, full-bank replacement, legacy preset quick-slot updates, and selected

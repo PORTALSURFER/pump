@@ -195,6 +195,29 @@ const VALUE_ENTRY_MAX_CHARS: usize = 16;
 const VALUE_LABEL_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.value.0;
 const BYPASS_CONTROL_WIDTH: f32 = 125.8;
 const WAVEFORM_MODE_CONTROL_WIDTH: f32 = 61.2;
+// Keep the compact header glyphs optically centered against the neighboring
+// controls; the extra lower inset compensates for their font's ascender-heavy
+// shape without changing the widget's hit rectangle.
+const HEADER_BUTTON_TEXT_TOP_INSET: f32 = PUMP_VISUAL_METRICS.base;
+
+fn header_button_hover_fill(theme: &ThemeTokens) -> Rgba8 {
+    theme
+        .surface_base
+        .blend_toward(theme.surface_overlay, theme.state_hover_strong)
+}
+
+fn header_button_text_rect(bounds: Rect) -> Rect {
+    Rect::from_xy_size(
+        bounds.min.x,
+        bounds.min.y + HEADER_BUTTON_TEXT_TOP_INSET,
+        bounds.width(),
+        (bounds.height() - HEADER_BUTTON_TEXT_TOP_INSET).max(1.0),
+    )
+}
+
+fn header_button_text_baseline(rect: Rect, font_size: f32) -> f32 {
+    (rect.height() * 0.5 + font_size * 0.35).max(0.0)
+}
 
 #[derive(Clone, Debug)]
 struct BypassControlWidget {
@@ -390,7 +413,7 @@ struct ActionIconButtonWidget {
 struct SoundSwitchButtonWidget {
     button: IconButtonWidget,
     active_sound: SoundSide,
-    alt_held: bool,
+    command_held: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -398,9 +421,6 @@ struct SoundSideButtonWidget {
     button: ButtonWidget,
     side: SoundSide,
     selected: bool,
-    dirty: bool,
-    pulse: bool,
-    command_held: bool,
     alt_held: bool,
 }
 
@@ -441,6 +461,10 @@ impl Widget for HotkeyHelpButtonWidget {
             .map(WidgetOutput::typed)
     }
 
+    fn accepts_pointer_move(&self) -> bool {
+        true
+    }
+
     fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
         let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
             return;
@@ -459,10 +483,11 @@ impl Widget for HotkeyHelpButtonWidget {
         _layout: &LayoutOutput,
         theme: &ThemeTokens,
     ) {
+        let text_rect = header_button_text_rect(bounds);
         let fill = if self.button.common.state.pressed {
             theme.accent_copper.with_alpha(96)
         } else if self.button.common.state.hovered {
-            theme.surface_raised
+            header_button_hover_fill(theme)
         } else {
             theme.surface_base
         };
@@ -484,9 +509,12 @@ impl Widget for HotkeyHelpButtonWidget {
         primitives.push(PaintPrimitive::Text(PaintTextRun {
             widget_id: self.button.common.id,
             text: PaintText::from_static("?"),
-            rect: bounds,
+            rect: text_rect,
             font_size: PUMP_TYPOGRAPHY.body.0,
-            baseline: None,
+            baseline: Some(header_button_text_baseline(
+                text_rect,
+                PUMP_TYPOGRAPHY.body.0,
+            )),
             color: theme.text_primary,
             align: PaintTextAlign::Center,
             wrap: TextWrap::None,
@@ -524,7 +552,7 @@ impl SoundSwitchButtonWidget {
                 )),
             ),
             active_sound,
-            alt_held: false,
+            command_held: false,
         }
     }
 }
@@ -541,27 +569,27 @@ impl Widget for SoundSwitchButtonWidget {
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         match input {
             WidgetInput::PointerModifiersChanged { modifiers } => {
-                self.alt_held = modifiers.alt;
+                self.command_held = modifiers.command;
                 None
             }
             WidgetInput::PointerPress { modifiers, .. } => {
-                self.alt_held = modifiers.alt;
+                self.command_held = modifiers.command;
                 let _ = Widget::handle_input(&mut self.button, bounds, input);
                 None
             }
             WidgetInput::PointerRelease { modifiers, .. } => {
-                let alt_held = self.alt_held || modifiers.alt;
+                let command_held = self.command_held || modifiers.command;
                 let output = Widget::handle_input(&mut self.button, bounds, input)
                     .and_then(|output| output.typed_copied::<ButtonMessage>())
                     .and_then(|message| {
                         message.is_activate().then(|| {
                             WidgetOutput::typed(RadiantEditorMessage::SelectSound {
                                 side: self.active_sound.other(),
-                                copy: alt_held,
+                                copy: command_held,
                             })
                         })
                     });
-                self.alt_held = false;
+                self.command_held = false;
                 output
             }
             WidgetInput::KeyPress(WidgetKey::Enter | WidgetKey::Space) => self
@@ -578,7 +606,7 @@ impl Widget for SoundSwitchButtonWidget {
                 }),
             WidgetInput::PointerDrop { .. } => {
                 let _ = Widget::handle_input(&mut self.button, bounds, input);
-                self.alt_held = false;
+                self.command_held = false;
                 None
             }
             _ => {
@@ -655,7 +683,7 @@ impl WidgetSemantics for SoundSwitchButtonWidget {
 }
 
 impl SoundSideButtonWidget {
-    fn new(side: SoundSide, selected: bool, dirty: bool, pulse: bool) -> Self {
+    fn new(side: SoundSide, selected: bool) -> Self {
         Self {
             button: ButtonWidget::new(
                 0,
@@ -664,9 +692,6 @@ impl SoundSideButtonWidget {
             ),
             side,
             selected,
-            dirty,
-            pulse,
-            command_held: false,
             alt_held: false,
         }
     }
@@ -684,36 +709,27 @@ impl Widget for SoundSideButtonWidget {
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         match input {
             WidgetInput::PointerModifiersChanged { modifiers } => {
-                self.command_held = modifiers.command;
                 self.alt_held = modifiers.alt;
                 None
             }
             WidgetInput::PointerPress { modifiers, .. } => {
-                self.command_held = modifiers.command;
                 self.alt_held = modifiers.alt;
                 let _ = self.button.handle_input(bounds, input);
                 None
             }
             WidgetInput::PointerRelease { modifiers, .. } => {
-                let command_held = self.command_held || modifiers.command;
                 let alt_held = self.alt_held || modifiers.alt;
                 let activated = self
                     .button
                     .handle_input(bounds, input)
                     .is_some_and(ButtonMessage::is_activate);
-                self.command_held = false;
                 self.alt_held = false;
                 if !activated {
                     return None;
                 }
-                if command_held {
-                    return self
-                        .selected
-                        .then(|| WidgetOutput::typed(RadiantEditorMessage::StoreSound(self.side)));
-                }
                 Some(WidgetOutput::typed(RadiantEditorMessage::SelectSound {
                     side: self.side,
-                    copy: alt_held,
+                    copy: alt_held && !self.selected,
                 }))
             }
             WidgetInput::KeyPress(WidgetKey::Enter | WidgetKey::Space) => {
@@ -728,7 +744,6 @@ impl Widget for SoundSideButtonWidget {
             }
             WidgetInput::PointerDrop { .. } => {
                 let _ = self.button.handle_input(bounds, input);
-                self.command_held = false;
                 self.alt_held = false;
                 None
             }
@@ -739,12 +754,15 @@ impl Widget for SoundSideButtonWidget {
         }
     }
 
+    fn accepts_pointer_move(&self) -> bool {
+        true
+    }
+
     fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
         let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
             return;
         };
         self.button.synchronize_from_previous(&previous.button);
-        self.command_held = previous.command_held;
         self.alt_held = previous.alt_held;
     }
 
@@ -759,16 +777,13 @@ impl Widget for SoundSideButtonWidget {
         _layout: &LayoutOutput,
         theme: &ThemeTokens,
     ) {
+        let text_rect = header_button_text_rect(bounds);
         let fill = if self.button.common.state.pressed {
             theme.accent_copper.with_alpha(96)
-        } else if self.pulse {
-            theme.accent_warning.with_alpha(128)
-        } else if self.dirty {
-            theme.accent_danger.with_alpha(72)
         } else if self.selected {
             theme.surface_raised.with_alpha(224)
         } else if self.button.common.state.hovered {
-            theme.surface_raised
+            header_button_hover_fill(theme)
         } else {
             theme.surface_base
         };
@@ -782,8 +797,6 @@ impl Widget for SoundSideButtonWidget {
             rect: bounds,
             color: if self.button.common.state.pressed {
                 theme.accent_copper
-            } else if self.dirty {
-                theme.accent_danger
             } else if self.selected || self.button.common.state.focused {
                 theme.text_muted
             } else {
@@ -794,14 +807,12 @@ impl Widget for SoundSideButtonWidget {
         primitives.push(PaintPrimitive::Text(PaintTextRun {
             widget_id: self.button.common.id,
             text: PaintText::from_static(self.side.label()),
-            rect: Rect::from_xy_size(
-                bounds.min.x,
-                bounds.min.y + 1.7,
-                bounds.width(),
-                (bounds.height() - 1.7).max(1.0),
-            ),
+            rect: text_rect,
             font_size: PUMP_TYPOGRAPHY.body.0,
-            baseline: None,
+            baseline: Some(header_button_text_baseline(
+                text_rect,
+                PUMP_TYPOGRAPHY.body.0,
+            )),
             color: theme.text_primary,
             align: PaintTextAlign::Center,
             wrap: TextWrap::None,
@@ -816,10 +827,6 @@ impl WidgetSemantics for SoundSideButtonWidget {
 
     fn automation_label(&self) -> Option<String> {
         Some(format!("Sound {}", self.side.label()))
-    }
-
-    fn automation_value_text(&self) -> Option<String> {
-        Some(if self.dirty { "Modified" } else { "Stored" }.to_owned())
     }
 
     fn automation_checked(&self) -> Option<bool> {
@@ -1210,6 +1217,9 @@ fn resolve_curve_offset(
 struct ActiveCurveNodeDrag {
     origin_index: usize,
     origin_curve: EditableCurve,
+    /// Marquee selection retained for a grouped node drag. An empty list is
+    /// the ordinary single-node gesture.
+    selected_indices: Vec<usize>,
     horizontal_gain_anchor: Option<f32>,
     vertical_time_anchor: Option<f32>,
     last_pointer_x: f32,
@@ -1457,7 +1467,6 @@ struct RadiantEditorState {
     hotkey_help_open: bool,
     free_rate_unit: FreeRateUnit,
     ab_confirmation: Option<String>,
-    ab_store_pulse_until_micros: u64,
     undo_history: Vec<RadiantHistorySnapshot>,
     redo_history: Vec<RadiantHistorySnapshot>,
 }
@@ -1497,7 +1506,6 @@ enum RadiantEditorMessage {
         side: SoundSide,
         copy: bool,
     },
-    StoreSound(SoundSide),
     ToggleBypass,
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
@@ -1648,8 +1656,6 @@ impl RadiantPumpEditor {
                 .state()
                 .params
                 .has_pending_active_sound()
-            || crate::time_utils::monotonic_micros()
-                < self.runtime.bridge().state().ab_store_pulse_until_micros
     }
 
     /// Refresh and return the current backend-neutral paint plan.
@@ -1840,7 +1846,6 @@ impl RadiantEditorState {
             hotkey_help_open: false,
             free_rate_unit: FreeRateUnit::Hertz,
             ab_confirmation: None,
-            ab_store_pulse_until_micros: 0,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
         }
@@ -1871,8 +1876,12 @@ impl RadiantEditorState {
     }
 
     fn push_history(&mut self) {
+        self.push_history_snapshot(self.snapshot());
+    }
+
+    fn push_history_snapshot(&mut self, snapshot: RadiantHistorySnapshot) {
         self.ab_confirmation = None;
-        self.undo_history.push(self.snapshot());
+        self.undo_history.push(snapshot);
         if self.undo_history.len() > 128 {
             self.undo_history.remove(0);
         }
@@ -1943,7 +1952,6 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let playhead_phase = (state.status.has_host_beats_timeline() || state.status.is_playing())
         .then_some(state.status.phase());
     let active_sound = params.active_sound();
-    let store_pulse = crate::time_utils::monotonic_micros() < state.ab_store_pulse_until_micros;
     let timing_options: Vec<_> = if free_timing {
         FreeRateUnit::ALL
             .into_iter()
@@ -2016,26 +2024,22 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         custom_widget_direct(SoundSideButtonWidget::new(
             SoundSide::A,
             active_sound == SoundSide::A,
-            params.sound_state_is_dirty(SoundSide::A),
-            store_pulse && active_sound == SoundSide::A,
         ))
         .size(28.9, TIMING_CONTROL_HEIGHT)
-        .tooltip("Select sound A; Cmd-click stores the active sound"),
+        .tooltip("Select sound A"),
         custom_widget_direct(SoundSwitchButtonWidget::new(active_sound))
             .size(PUMP_VISUAL_METRICS.icon_hit, TIMING_CONTROL_HEIGHT)
             .tooltip(if active_sound == SoundSide::A {
-                "Switch to sound B; Option-click copies A to B"
+                "Switch to sound B; Cmd-click copies A to B"
             } else {
-                "Switch to sound A; Option-click copies B to A"
+                "Switch to sound A; Cmd-click copies B to A"
             }),
         custom_widget_direct(SoundSideButtonWidget::new(
             SoundSide::B,
             active_sound == SoundSide::B,
-            params.sound_state_is_dirty(SoundSide::B),
-            store_pulse && active_sound == SoundSide::B,
         ))
         .size(28.9, TIMING_CONTROL_HEIGHT)
-        .tooltip("Select sound B; Cmd-click stores the active sound"),
+        .tooltip("Select sound B"),
     ])
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .height(TIMING_CONTROL_HEIGHT);
@@ -2534,12 +2538,15 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
         }
         RadiantEditorMessage::SelectSound { side, copy } => {
             if copy {
-                state.push_history();
                 let active = state.params.active_sound();
-                if side == active.other() && state.params.copy_active_to_inactive() {
-                    state.clear_curve_selection();
-                    state.ab_confirmation =
-                        Some(format!("Copied {} → {}", active.label(), side.label()));
+                if side == active.other() {
+                    let before = state.snapshot();
+                    if state.params.copy_active_to_inactive() {
+                        state.push_history_snapshot(before);
+                        state.clear_curve_selection();
+                        state.ab_confirmation =
+                            Some(format!("Copied {} → {}", active.label(), side.label()));
+                    }
                 }
                 return;
             }
@@ -2549,16 +2556,6 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                     state.clear_curve_selection();
                     state.ab_confirmation = Some(format!("Switched to sound {}", side.label()));
                     push_radiant_param_update(state, PARAM_SOUND_ID, side.index() as f64);
-                }
-            }
-        }
-        RadiantEditorMessage::StoreSound(side) => {
-            if side == state.params.active_sound() && state.params.sound_state_is_dirty(side) {
-                state.push_history();
-                if state.params.store_active_sound_state() {
-                    state.ab_store_pulse_until_micros =
-                        crate::time_utils::monotonic_micros().saturating_add(400_000);
-                    state.ab_confirmation = Some(format!("Stored sound {}", side.label()));
                 }
             }
         }
@@ -2582,6 +2579,7 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                     | CurvePreviewMessage::ResetCurveOffset
                     | CurvePreviewMessage::InsertNode { .. }
                     | CurvePreviewMessage::DeleteNode { .. }
+                    | CurvePreviewMessage::DeleteSelectedNodes
                     | CurvePreviewMessage::PressSegment { .. }
                     | CurvePreviewMessage::PressSegmentMove { .. }
             ) {
@@ -2829,10 +2827,23 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             command_held,
         } => {
             let curve = state.params.editable_curve_snapshot();
-            state.clear_curve_selection();
-            if let Some(drag) =
+            let selected_indices = if state.selected_curve_nodes.contains(&index) {
+                state
+                    .selected_curve_nodes
+                    .iter()
+                    .copied()
+                    .filter(|selected| *selected < curve.nodes.len())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            if selected_indices.is_empty() {
+                state.clear_curve_selection();
+            }
+            if let Some(mut drag) =
                 start_curve_node_drag(&curve, index, pointer, shift_held, option_held)
             {
+                drag.selected_indices = selected_indices;
                 state.option_hover_held = option_held;
                 state.command_hover_held = command_held;
                 state.active_curve_node = Some(index);
@@ -2971,12 +2982,28 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
+        CurvePreviewMessage::DeleteSelectedNodes => {
+            let mut curve = state.params.editable_curve_snapshot();
+            let deleted = delete_selected_curve_nodes(&mut curve, &state.selected_curve_nodes);
+            if deleted {
+                state.params.set_editable_curve(&curve);
+            }
+            state.active_curve_node = None;
+            state.active_curve_node_drag = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.active_curve_marquee = None;
+            state.preview_curve_offset = None;
+            state.selected_curve_nodes.clear();
+            state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.hover_curve_segment = None;
+        }
         CurvePreviewMessage::DragNode {
             index,
             node,
             push_through_threshold_x,
         } => {
-            state.clear_curve_selection();
             let current_curve = state.params.editable_curve_snapshot();
             let current = state
                 .active_curve_node
@@ -3088,7 +3115,13 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             option_held,
             command_held,
         } => {
-            state.clear_curve_selection();
+            let grouped_drag = state
+                .active_curve_node_drag
+                .as_ref()
+                .is_some_and(|drag| !drag.selected_indices.is_empty());
+            if !grouped_drag {
+                state.clear_curve_selection();
+            }
             let current_curve = state.params.editable_curve_snapshot();
             let current = state
                 .active_curve_node
@@ -3239,6 +3272,7 @@ fn start_curve_node_drag(
     Some(ActiveCurveNodeDrag {
         origin_index: index,
         origin_curve: normalized,
+        selected_indices: Vec::new(),
         horizontal_gain_anchor: horizontal_active.then_some(origin.y),
         vertical_time_anchor: vertical_active.then_some(origin.x),
         last_pointer_x: pointer.x.clamp(0.0, 1.0),
@@ -3254,6 +3288,9 @@ fn curve_with_dragged_node(
     target: CurveNode,
     push_through_threshold_x: f32,
 ) -> (EditableCurve, usize) {
+    if !drag.selected_indices.is_empty() {
+        return curve_with_dragged_selected_nodes(drag, target);
+    }
     let mut curve = drag.origin_curve.clone();
     let moved_index = move_curve_node_with_push_through(
         &mut curve,
@@ -3263,6 +3300,86 @@ fn curve_with_dragged_node(
     );
     curve.normalize_in_place();
     (curve, moved_index)
+}
+
+/// Apply one pointer delta to all nodes in a retained marquee selection.
+///
+/// Unlike the single-node gesture, grouped movement never pushes through or
+/// removes neighbours. The common x delta is clipped against every unselected
+/// node (and the fixed endpoints), so the original ordering and minimum
+/// spacing remain intact for the duration of the gesture.
+fn curve_with_dragged_selected_nodes(
+    drag: &ActiveCurveNodeDrag,
+    target: CurveNode,
+) -> (EditableCurve, usize) {
+    let mut curve = drag.origin_curve.clone();
+    let Some(anchor) = drag.origin_curve.nodes.get(drag.origin_index).copied() else {
+        return (curve, drag.origin_index);
+    };
+    let selected: std::collections::HashSet<usize> = drag
+        .selected_indices
+        .iter()
+        .copied()
+        .filter(|index| *index < drag.origin_curve.nodes.len())
+        .collect();
+    if selected.is_empty() {
+        return (curve, drag.origin_index);
+    }
+
+    let mut min_delta = -1.0_f32;
+    let mut max_delta = 1.0_f32;
+    for (index, node) in drag.origin_curve.nodes.iter().enumerate() {
+        if !selected.contains(&index) || index == 0 || index + 1 == drag.origin_curve.nodes.len() {
+            continue;
+        }
+        min_delta = min_delta.max(-node.x + CURVE_NODE_MIN_SPACING_X);
+        max_delta = max_delta.min(1.0 - node.x - CURVE_NODE_MIN_SPACING_X);
+        for (other_index, other) in drag.origin_curve.nodes.iter().enumerate() {
+            // Endpoints are always fixed in x, even when marquee-selected.
+            let other_selected = selected.contains(&other_index)
+                && other_index > 0
+                && other_index + 1 < drag.origin_curve.nodes.len();
+            if other_selected {
+                continue;
+            }
+            if other_index < index {
+                min_delta = min_delta.max(other.x + CURVE_NODE_MIN_SPACING_X - node.x);
+            } else if other_index > index {
+                max_delta = max_delta.min(other.x - CURVE_NODE_MIN_SPACING_X - node.x);
+            }
+        }
+    }
+    let delta_x = (target.x - anchor.x).clamp(min_delta, max_delta);
+    let delta_y = target.y - anchor.y;
+    for index in selected.iter().copied() {
+        let Some(origin) = drag.origin_curve.nodes.get(index).copied() else {
+            continue;
+        };
+        let x = if index == 0 {
+            0.0
+        } else if index + 1 == drag.origin_curve.nodes.len() {
+            1.0
+        } else {
+            (origin.x + delta_x).clamp(0.0, 1.0)
+        };
+        curve.nodes[index] = CurveNode {
+            x,
+            y: (origin.y + delta_y).clamp(0.0, 1.0),
+        };
+    }
+    if selected.contains(&0) || selected.contains(&(curve.nodes.len().saturating_sub(1))) {
+        let endpoint_y = selected
+            .iter()
+            .find_map(|index| {
+                (*index == 0 || *index + 1 == curve.nodes.len()).then_some(curve.nodes[*index].y)
+            })
+            .unwrap_or(curve.nodes[0].y);
+        set_wrapped_curve_endpoint_y(&mut curve, endpoint_y);
+    } else {
+        enforce_wrapped_curve_endpoints(&mut curve);
+    }
+    curve.normalize_in_place();
+    (curve, drag.origin_index)
 }
 
 fn move_curve_node_with_push_through(
@@ -3501,6 +3618,21 @@ fn delete_curve_node(curve: &mut EditableCurve, index: usize) -> bool {
     }
     curve.normalize_in_place();
     true
+}
+
+fn delete_selected_curve_nodes(curve: &mut EditableCurve, selected: &[usize]) -> bool {
+    let mut indices: Vec<usize> = selected
+        .iter()
+        .copied()
+        .filter(|index| *index > 0 && *index + 1 < curve.nodes.len())
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    let mut deleted = false;
+    for index in indices.into_iter().rev() {
+        deleted |= delete_curve_node(curve, index);
+    }
+    deleted
 }
 
 fn update_curve_node(curve: &mut EditableCurve, index: usize, node: CurveNode) {
@@ -4157,7 +4289,7 @@ impl CurvePreviewWidget {
                 (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0),
                 CURVE_PREVIEW_HEIGHT,
             )
-            .with_pointer_focus()
+            .with_keyboard_focus()
             .without_default_chrome(),
             curve: curve.normalized(),
             active_node,
@@ -4530,6 +4662,8 @@ impl CurvePreviewWidget {
     fn push_curve(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
         let curve_bounds = Self::curve_bounds(bounds);
         let points = self.sample_curve_points(bounds);
+        let fill_points = points.clone();
+        let fill_steps = fill_points.len().saturating_sub(1).max(1);
         let gradient = PaintLinearGradient::vertical(
             curve_bounds,
             theme.accent_mint.with_alpha(CURVE_FILL_TOP_ALPHA),
@@ -4540,18 +4674,13 @@ impl CurvePreviewWidget {
             SampledCurveAreaFillParts::new(
                 self.common.id,
                 curve_bounds,
-                CURVE_SAMPLE_COUNT,
+                fill_steps,
                 SampledCurveAreaBaseline::Bottom,
                 PaintBrush::linear_gradient(gradient),
             ),
-            |phase| {
-                Some(Self::curve_point(
-                    bounds,
-                    CurveNode {
-                        x: phase,
-                        y: self.sample_display_curve(phase),
-                    },
-                ))
+            move |phase| {
+                let index = (phase * fill_steps as f32).round() as usize;
+                fill_points.get(index).copied()
             },
         );
         if self.smooth > f32::EPSILON {
@@ -4602,8 +4731,10 @@ impl CurvePreviewWidget {
             .map(|segment| (segment, CURVE_SEGMENT_MOVE_COLOR))
             .or_else(|| tension_segment.map(|segment| (segment, theme.accent_warning)))
         {
-            let points = self.sample_segment_points(bounds, segment);
-            if points.len() > 1 {
+            for points in self.sample_segment_polylines(bounds, segment) {
+                if points.len() <= 1 {
+                    continue;
+                }
                 primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
                     widget_id: self.common.id,
                     points: Arc::from(points),
@@ -4705,16 +4836,63 @@ impl CurvePreviewWidget {
     }
 
     fn sample_curve_points(&self, bounds: Rect) -> Vec<Point> {
-        let mut points = Vec::with_capacity(CURVE_SAMPLE_COUNT + 1);
-        for step in 0..=CURVE_SAMPLE_COUNT {
-            let phase = step as f32 / CURVE_SAMPLE_COUNT as f32;
-            points.push(Self::curve_point(
-                bounds,
-                CurveNode {
-                    x: phase,
-                    y: self.sample_display_curve(phase),
-                },
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let mut samples = Vec::new();
+
+        // Keep authored nodes in the rendered polyline. A uniform phase grid
+        // can otherwise land on neither side of a narrow or steep segment.
+        for node in self.curve.nodes.iter().copied() {
+            let display = self.display_node(node);
+            samples.push((display.x, Self::curve_point(bounds, display)));
+        }
+
+        // Sample each authored segment in proportion to its displayed width.
+        // Interior samples avoid duplicating the explicit node points above.
+        for nodes in self.curve.nodes.windows(2) {
+            let left = nodes[0];
+            let right = nodes[1];
+            let span = (right.x - left.x).max(0.0);
+            let steps = (span * width).ceil().clamp(2.0, CURVE_SAMPLE_COUNT as f32) as usize;
+            for step in 1..steps {
+                let t = step as f32 / steps as f32;
+                let raw_x = left.x + (right.x - left.x) * t;
+                let display = self.display_node(CurveNode {
+                    x: raw_x,
+                    y: sample_editable_curve(&self.curve, raw_x),
+                });
+                samples.push((display.x, Self::curve_point(bounds, display)));
+            }
+        }
+
+        // Always cover both viewport edges. The curve is cyclic, so these are
+        // equivalent when the phase offset puts the seam in the middle.
+        for phase in [0.0, 1.0] {
+            samples.push((
+                phase,
+                Self::curve_point(
+                    bounds,
+                    CurveNode {
+                        x: phase,
+                        y: self.sample_display_curve(phase),
+                    },
+                ),
             ));
+        }
+
+        samples.sort_by(|left, right| left.0.total_cmp(&right.0));
+        let mut points = Vec::with_capacity(samples.len());
+        let mut last_phase: Option<f32> = None;
+        for (phase, point) in samples {
+            // Preserve the distinct 0 and 1 endpoints while collapsing the
+            // duplicate points introduced at segment boundaries and the seam.
+            let duplicate = last_phase.is_some_and(|last| {
+                (phase - last).abs() <= 1.0e-6 && phase > 1.0e-6 && phase < 1.0 - 1.0e-6
+            });
+            if !duplicate {
+                points.push(point);
+                last_phase = Some(phase);
+            }
         }
         points
     }
@@ -4742,7 +4920,7 @@ impl CurvePreviewWidget {
                     bounds,
                     CurveNode {
                         x: phase,
-                        y: self.sample_smoothed_curve(phase),
+                        y: self.sample_smoothed_curve(phase - self.phase_offset),
                     },
                 )
             })
@@ -4756,14 +4934,16 @@ impl CurvePreviewWidget {
         let Some(right) = self.curve.nodes.get(index + 1).copied() else {
             return Vec::new();
         };
-        let left_x = Self::curve_point(bounds, CurveNode { x: left.x, y: 0.0 }).x;
-        let right_x = Self::curve_point(bounds, CurveNode { x: right.x, y: 0.0 }).x;
-        let steps = (right_x - left_x).abs().round().clamp(2.0, 96.0) as usize;
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let steps = ((right.x - left.x).max(0.0) * width)
+            .ceil()
+            .clamp(2.0, CURVE_SAMPLE_COUNT as f32) as usize;
         let mut points = Vec::with_capacity(steps + 1);
         for step in 0..=steps {
             let t = step as f32 / steps as f32;
             let x = left.x + (right.x - left.x) * t;
-            points.push(Self::curve_point(
+            points.push(self.display_curve_point(
                 bounds,
                 CurveNode {
                     x,
@@ -4772,6 +4952,30 @@ impl CurvePreviewWidget {
             ));
         }
         points
+    }
+
+    fn sample_segment_polylines(&self, bounds: Rect, index: usize) -> Vec<Vec<Point>> {
+        let points = self.sample_segment_points(bounds, index);
+        let Some(first) = points.first().copied() else {
+            return Vec::new();
+        };
+
+        let mut polylines = vec![vec![first]];
+        for point in points.into_iter().skip(1) {
+            let current = polylines
+                .last_mut()
+                .expect("segment polyline list always has a current line");
+            let previous = current
+                .last()
+                .copied()
+                .expect("segment polyline always has a previous point");
+            if point.x + 1.0e-6 < previous.x {
+                polylines.push(vec![point]);
+            } else {
+                current.push(point);
+            }
+        }
+        polylines
     }
 
     fn push_nodes(&self, primitives: &mut Vec<PaintPrimitive>, bounds: Rect, theme: &ThemeTokens) {
@@ -4990,6 +5194,15 @@ impl Widget for CurvePreviewWidget {
                         .map(|index| CurvePreviewMessage::DeleteNode { index })
                 }
             }
+            WidgetInput::KeyPress(WidgetKey::Delete | WidgetKey::Backspace)
+                if self.common.state.focused
+                    && self
+                        .selected_nodes
+                        .iter()
+                        .any(|index| *index > 0 && *index + 1 < self.curve.nodes.len()) =>
+            {
+                Some(CurvePreviewMessage::DeleteSelectedNodes)
+            }
             WidgetInput::PointerMove { position } => {
                 if self.active_marquee.is_some() {
                     Some(CurvePreviewMessage::DragMarquee {
@@ -5079,17 +5292,21 @@ impl Widget for CurvePreviewWidget {
                         })
                 }
             }
-            WidgetInput::FocusChanged(false) => (self.active_node.is_some()
-                || self.active_segment.is_some()
-                || self.active_curve_offset_start_x.is_some()
-                || self.active_marquee.is_some()
-                || self.hover_node.is_some()
-                || self.preview_node.is_some()
-                || self.hover_segment.is_some()
-                || self.option_hover_held
-                || self.command_hover_held
-                || self.shift_hover_held)
-                .then_some(CurvePreviewMessage::Cancel),
+            WidgetInput::FocusChanged(focused) => {
+                self.common.state.focused = focused;
+                (!focused
+                    && (self.active_node.is_some()
+                        || self.active_segment.is_some()
+                        || self.active_curve_offset_start_x.is_some()
+                        || self.active_marquee.is_some()
+                        || self.hover_node.is_some()
+                        || self.preview_node.is_some()
+                        || self.hover_segment.is_some()
+                        || self.option_hover_held
+                        || self.command_hover_held
+                        || self.shift_hover_held))
+                    .then_some(CurvePreviewMessage::Cancel)
+            }
             _ => None,
         }?;
         Some(WidgetOutput::typed(message))
@@ -5153,6 +5370,7 @@ enum CurvePreviewMessage {
     DeleteNode {
         index: usize,
     },
+    DeleteSelectedNodes,
     DragNode {
         index: usize,
         node: CurveNode,
@@ -5273,6 +5491,45 @@ mod tests {
     }
 
     #[test]
+    fn equivalent_ab_copy_preserves_undo_and_redo_history() {
+        let params = Arc::new(PumpParams::new());
+        params.set_mix(0.2);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: true,
+            },
+        );
+        params.set_mix(0.3);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: true,
+            },
+        );
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        params.set_mix(0.2);
+        assert!(!params.sound_sides_differ());
+
+        let undo_len = state.undo_history.len();
+        let redo_len = state.redo_history.len();
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: true,
+            },
+        );
+
+        assert_eq!(state.undo_history.len(), undo_len);
+        assert_eq!(state.redo_history.len(), redo_len);
+    }
+
+    #[test]
     fn ab_buttons_activate_on_release_and_preserve_modifier_intent() {
         let bounds = Rect::from_xy_size(0.0, 0.0, 40.0, BUILD_LABEL_HEIGHT);
         let point = Point::new(20.0, BUILD_LABEL_HEIGHT * 0.5);
@@ -5306,7 +5563,7 @@ mod tests {
             .handle_input(
                 bounds,
                 press(PointerModifiers {
-                    alt: true,
+                    command: true,
                     ..PointerModifiers::default()
                 }),
             )
@@ -5321,7 +5578,27 @@ mod tests {
             })
         );
 
-        let mut active = SoundSideButtonWidget::new(SoundSide::A, true, true, false);
+        let mut option_switch = SoundSwitchButtonWidget::new(SoundSide::A);
+        assert!(option_switch
+            .handle_input(
+                bounds,
+                press(PointerModifiers {
+                    alt: true,
+                    ..PointerModifiers::default()
+                }),
+            )
+            .is_none());
+        assert_eq!(
+            option_switch
+                .handle_input(bounds, release(PointerModifiers::default()))
+                .and_then(|output| output.typed_cloned()),
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: false,
+            })
+        );
+
+        let mut active = SoundSideButtonWidget::new(SoundSide::A, true);
         assert!(active
             .handle_input(
                 bounds,
@@ -5335,10 +5612,13 @@ mod tests {
             active
                 .handle_input(bounds, release(PointerModifiers::default()))
                 .and_then(|output| output.typed_cloned()),
-            Some(RadiantEditorMessage::StoreSound(SoundSide::A))
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::A,
+                copy: false,
+            })
         );
 
-        let mut inactive = SoundSideButtonWidget::new(SoundSide::B, false, true, false);
+        let mut inactive = SoundSideButtonWidget::new(SoundSide::B, false);
         assert!(inactive
             .handle_input(
                 bounds,
@@ -5348,24 +5628,192 @@ mod tests {
                 }),
             )
             .is_none());
-        assert!(inactive
-            .handle_input(bounds, release(PointerModifiers::default()))
+        assert_eq!(
+            inactive
+                .handle_input(bounds, release(PointerModifiers::default()))
+                .and_then(|output| output.typed_cloned()),
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: false,
+            })
+        );
+
+        let mut option_inactive = SoundSideButtonWidget::new(SoundSide::B, false);
+        assert!(option_inactive
+            .handle_input(
+                bounds,
+                press(PointerModifiers {
+                    alt: true,
+                    ..PointerModifiers::default()
+                }),
+            )
             .is_none());
+        assert_eq!(
+            option_inactive
+                .handle_input(bounds, release(PointerModifiers::default()))
+                .and_then(|output| output.typed_cloned()),
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::B,
+                copy: true,
+            })
+        );
     }
 
     #[test]
-    fn storing_active_sound_round_trips_dirtyness_through_undo_redo() {
-        let params = Arc::new(PumpParams::new());
-        params.set_mix(0.2);
-        assert!(params.sound_state_is_dirty(SoundSide::A));
-        let mut state = editor_state(Arc::clone(&params));
+    fn active_option_click_does_not_copy_or_create_undo_history() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, 40.0, BUILD_LABEL_HEIGHT);
+        let point = Point::new(20.0, BUILD_LABEL_HEIGHT * 0.5);
+        let mut active = SoundSideButtonWidget::new(SoundSide::A, true);
+        let press = WidgetInput::PointerPress {
+            position: point,
+            button: PointerButton::Primary,
+            modifiers: PointerModifiers {
+                alt: true,
+                ..PointerModifiers::default()
+            },
+        };
+        let release = WidgetInput::PointerRelease {
+            position: point,
+            button: PointerButton::Primary,
+            modifiers: PointerModifiers::default(),
+        };
 
-        reduce_editor_message(&mut state, RadiantEditorMessage::StoreSound(SoundSide::A));
-        assert!(!params.sound_state_is_dirty(SoundSide::A));
-        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
-        assert!(params.sound_state_is_dirty(SoundSide::A));
-        reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
-        assert!(!params.sound_state_is_dirty(SoundSide::A));
+        assert!(active.handle_input(bounds, press).is_none());
+        let message = active
+            .handle_input(bounds, release)
+            .and_then(|output| output.typed_cloned());
+        assert_eq!(
+            message,
+            Some(RadiantEditorMessage::SelectSound {
+                side: SoundSide::A,
+                copy: false,
+            })
+        );
+
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(params);
+        reduce_editor_message(
+            &mut state,
+            message.expect("active click should select normally"),
+        );
+        assert!(state.undo_history.is_empty());
+    }
+
+    #[test]
+    fn header_letter_buttons_lower_labels_and_show_visible_hover_without_changing_precedence() {
+        let theme = pump_theme();
+        let layout = LayoutOutput::default();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 28.9, TIMING_CONTROL_HEIGHT);
+        let fill = |primitives: &[PaintPrimitive]| {
+            primitives.iter().find_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill) => Some(fill.color),
+                _ => None,
+            })
+        };
+        let text_rect = |primitives: &[PaintPrimitive]| {
+            primitives.iter().find_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) => Some(text.rect),
+                _ => None,
+            })
+        };
+        let text_baseline = |primitives: &[PaintPrimitive]| {
+            primitives.iter().find_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) => text.baseline,
+                _ => None,
+            })
+        };
+
+        let mut normal = SoundSideButtonWidget::new(SoundSide::A, false);
+        assert!(normal.accepts_pointer_move());
+        let mut normal_primitives = Vec::new();
+        normal.append_paint(&mut normal_primitives, bounds, &layout, &theme);
+        assert_eq!(
+            text_rect(&normal_primitives),
+            Some(header_button_text_rect(bounds))
+        );
+        assert_eq!(
+            text_baseline(&normal_primitives),
+            Some(header_button_text_baseline(
+                header_button_text_rect(bounds),
+                PUMP_TYPOGRAPHY.body.0,
+            ))
+        );
+        assert_eq!(fill(&normal_primitives), Some(theme.surface_base));
+
+        normal.handle_input(
+            bounds,
+            WidgetInput::PointerMove {
+                position: Point::new(8.0, 8.0),
+            },
+        );
+        let mut hovered_primitives = Vec::new();
+        normal.append_paint(&mut hovered_primitives, bounds, &layout, &theme);
+        assert!(normal.common().state.hovered);
+        assert_eq!(
+            fill(&hovered_primitives),
+            Some(header_button_hover_fill(&theme))
+        );
+        assert_ne!(fill(&hovered_primitives), fill(&normal_primitives));
+        assert_eq!(
+            hovered_primitives
+                .iter()
+                .find_map(|primitive| match primitive {
+                    PaintPrimitive::FillRect(fill) => Some(fill.rect),
+                    _ => None,
+                }),
+            Some(bounds),
+            "hover must not alter the header button hit bounds"
+        );
+
+        let mut selected = SoundSideButtonWidget::new(SoundSide::B, true);
+        selected.handle_input(
+            bounds,
+            WidgetInput::PointerMove {
+                position: Point::new(8.0, 8.0),
+            },
+        );
+        let mut selected_primitives = Vec::new();
+        selected.append_paint(&mut selected_primitives, bounds, &layout, &theme);
+        assert_eq!(
+            fill(&selected_primitives),
+            Some(theme.surface_raised.with_alpha(224)),
+            "active fill keeps precedence over hover"
+        );
+
+        let help_bounds = Rect::from_xy_size(0.0, 0.0, 28.0, TIMING_CONTROL_HEIGHT);
+        let mut help = HotkeyHelpButtonWidget::new();
+        assert!(help.accepts_pointer_move());
+        help.handle_input(
+            help_bounds,
+            WidgetInput::PointerMove {
+                position: Point::new(8.0, 8.0),
+            },
+        );
+        let mut help_primitives = Vec::new();
+        help.append_paint(&mut help_primitives, help_bounds, &layout, &theme);
+        assert!(help.common().state.hovered);
+        assert_eq!(
+            fill(&help_primitives),
+            Some(header_button_hover_fill(&theme))
+        );
+        assert_eq!(
+            text_rect(&help_primitives),
+            Some(header_button_text_rect(help_bounds))
+        );
+        assert_eq!(
+            text_baseline(&help_primitives),
+            Some(header_button_text_baseline(
+                header_button_text_rect(help_bounds),
+                PUMP_TYPOGRAPHY.body.0,
+            ))
+        );
+        help.handle_input(help_bounds, WidgetInput::FocusChanged(true));
+        let mut focused_primitives = Vec::new();
+        help.append_paint(&mut focused_primitives, help_bounds, &layout, &theme);
+        assert!(focused_primitives.iter().any(|primitive| matches!(
+            primitive,
+            PaintPrimitive::StrokeRect(stroke) if stroke.color == theme.accent_warning
+        )));
     }
 
     #[test]
@@ -7108,6 +7556,128 @@ mod tests {
     }
 
     #[test]
+    fn radiant_editor_selected_nodes_drag_as_group_with_spacing_clamp() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.2, y: 0.2 },
+                CurveNode { x: 0.4, y: 0.4 },
+                CurveNode { x: 0.7, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![1, 2];
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 1,
+                pointer: curve.nodes[1],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        assert_eq!(state.selected_curve_nodes, vec![1, 2]);
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 1,
+                node: CurveNode { x: 0.95, y: 0.8 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let moved = params.editable_curve_snapshot();
+        assert_eq!(moved.nodes.len(), curve.nodes.len());
+        assert!((moved.nodes[1].x - (moved.nodes[2].x - 0.2)).abs() < 1.0e-6);
+        assert!(moved.nodes[2].x <= moved.nodes[3].x - CURVE_NODE_MIN_SPACING_X);
+        assert!((moved.nodes[1].y - 0.8).abs() < 1.0e-6);
+        assert!((moved.nodes[2].y - 1.0).abs() < 1.0e-6);
+        assert_eq!(moved.nodes[0].x, 0.0);
+        assert_eq!(moved.nodes[4].x, 1.0);
+        assert_eq!(state.selected_curve_nodes, vec![1, 2]);
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::ReleaseNode {
+                index: 1,
+                node: moved.nodes[1],
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        assert_eq!(state.selected_curve_nodes, vec![1, 2]);
+    }
+
+    #[test]
+    fn radiant_editor_pressing_unselected_node_clears_group_selection() {
+        let params = Arc::new(PumpParams::new());
+        let curve = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![1];
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 2,
+                pointer: curve.nodes[2],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+
+        assert!(state.selected_curve_nodes.is_empty());
+        assert!(state
+            .active_curve_node_drag
+            .as_ref()
+            .is_some_and(|drag| drag.selected_indices.is_empty()));
+    }
+
+    #[test]
+    fn radiant_editor_delete_selected_nodes_preserves_endpoints_and_clears_state() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.5 },
+                CurveNode { x: 0.3, y: 0.2 },
+                CurveNode { x: 0.6, y: 0.8 },
+                CurveNode { x: 1.0, y: 0.5 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![0, 1, 2, 3];
+        state.active_curve_marquee = Some(ActiveCurveMarquee {
+            start: curve.nodes[1],
+            current: curve.nodes[2],
+        });
+
+        reduce_curve_message(&mut state, CurvePreviewMessage::DeleteSelectedNodes);
+
+        let remaining = params.editable_curve_snapshot();
+        assert_eq!(remaining.nodes.len(), 2);
+        assert_eq!(remaining.segments.len(), 1);
+        assert_eq!(remaining.nodes[0].x, 0.0);
+        assert_eq!(remaining.nodes[1].x, 1.0);
+        assert!(state.selected_curve_nodes.is_empty());
+        assert!(state.active_curve_marquee.is_none());
+        assert!(state.active_curve_node_drag.is_none());
+    }
+
+    #[test]
     fn radiant_editor_curve_drag_reverse_restores_buffered_neighbors() {
         let params = Arc::new(PumpParams::new());
         let curve = EditableCurve {
@@ -8761,6 +9331,37 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_emits_delete_for_focused_selection() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.5 },
+                CurveNode { x: 0.4, y: 0.3 },
+                CurveNode { x: 1.0, y: 0.5 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 2],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_selected_curve_nodes(&[1]);
+        assert!(widget
+            .handle_input(bounds, WidgetInput::FocusChanged(true))
+            .is_none());
+        assert!(widget.common().state.focused);
+
+        for key in [WidgetKey::Delete, WidgetKey::Backspace] {
+            let output = widget
+                .handle_input(bounds, WidgetInput::KeyPress(key))
+                .expect("focused selected curve should handle deletion");
+            assert_eq!(
+                output.typed_copied(),
+                Some(CurvePreviewMessage::DeleteSelectedNodes)
+            );
+        }
+    }
+
+    #[test]
     fn curve_preview_widget_paints_preview_node() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let preview = CurveNode {
@@ -8828,6 +9429,55 @@ mod tests {
                         && polyline.points.len() > 2
             )
         }));
+    }
+
+    #[test]
+    fn curve_preview_widget_splits_wrapping_segment_highlight_at_display_seam() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.5 },
+                CurveNode { x: 0.4, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 2],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let widget = CurvePreviewWidget::new(curve, None, Some(1), None, None, None, false)
+            .with_phase_offset(0.5);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let highlights: Vec<_> = primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == theme.accent_warning
+                        && (polyline.width - 2.975).abs() < 1.0e-6 =>
+                {
+                    Some(polyline)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(highlights.len(), 2, "wrapping segment should split at seam");
+        let curve_width = CurvePreviewWidget::curve_bounds(bounds).width();
+        for highlight in highlights {
+            assert!(highlight.points.len() > 1);
+            for pair in highlight.points.windows(2) {
+                assert!(
+                    pair[1].x >= pair[0].x - 1.0e-6,
+                    "highlight polyline must not run right-to-left: {pair:?}"
+                );
+                assert!(
+                    (pair[1].x - pair[0].x).abs() < curve_width * 0.5,
+                    "highlight polyline contains a seam bridge: {pair:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -8949,7 +9599,6 @@ mod tests {
             .with_playhead_phase(Some(0.5));
 
         let points = widget.sample_curve_points(bounds);
-        let midpoint = points[CURVE_SAMPLE_COUNT / 2];
         let expected = CurvePreviewWidget::curve_point(
             bounds,
             CurveNode {
@@ -8957,8 +9606,17 @@ mod tests {
                 y: sample_editable_curve(&curve, 0.5 - phase_offset),
             },
         );
-        assert!((midpoint.x - expected.x).abs() < 1.0e-6);
-        assert!((midpoint.y - expected.y).abs() < 1.0e-6);
+        let midpoint = points
+            .iter()
+            .copied()
+            .min_by(|left, right| {
+                (left.x - expected.x)
+                    .abs()
+                    .total_cmp(&(right.x - expected.x).abs())
+            })
+            .expect("curve sampling should produce points");
+        assert!((midpoint.x - expected.x).abs() <= 2.0);
+        assert!((midpoint.y - expected.y).abs() <= 4.0);
 
         let mut primitives = Vec::new();
         widget.append_paint(
@@ -8979,6 +9637,86 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_samples_authored_nodes_at_exact_display_positions() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.137, y: 0.16 },
+                CurveNode { x: 0.863, y: 0.74 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 1.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(0.271);
+        let points = widget.sample_curve_points(bounds);
+
+        for node in widget.curve.nodes.iter().copied() {
+            let expected = widget.display_curve_point(bounds, node);
+            assert!(
+                points.iter().any(|point| {
+                    (point.x - expected.x).abs() < 1.0e-6 && (point.y - expected.y).abs() < 1.0e-6
+                }),
+                "authored node {node:?} should be represented exactly"
+            );
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_smoothed_curve_uses_display_phase_offset() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let phase_offset = 0.237;
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_phase_offset(phase_offset)
+            .with_smooth(0.75);
+        let points = widget.sample_smoothed_curve_points(bounds);
+        let midpoint = points[CURVE_SAMPLE_COUNT / 2];
+        let expected = CurvePreviewWidget::curve_point(
+            bounds,
+            CurveNode {
+                x: 0.5,
+                y: widget.sample_smoothed_curve(0.5 - phase_offset),
+            },
+        );
+        assert!((midpoint.x - expected.x).abs() < 1.0e-6);
+        assert!((midpoint.y - expected.y).abs() < 1.0e-6);
+        assert_ne!(
+            midpoint.y,
+            CurvePreviewWidget::curve_point(
+                bounds,
+                CurveNode {
+                    x: 0.5,
+                    y: widget.sample_smoothed_curve(0.5),
+                },
+            )
+            .y
+        );
+    }
+
+    #[test]
+    fn curve_preview_widget_segment_highlight_uses_display_phase_offset() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_phase_offset(0.237);
+        let points = widget.sample_segment_points(bounds, 1);
+        let left = curve.nodes[1];
+        let right = curve.nodes[2];
+        assert_eq!(
+            points.first().copied(),
+            Some(widget.display_curve_point(bounds, left))
+        );
+        assert_eq!(
+            points.last().copied(),
+            Some(widget.display_curve_point(bounds, right))
+        );
+    }
+
+    #[test]
     fn curve_preview_widget_paints_subtle_fill_beneath_curve() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
@@ -8995,7 +9733,10 @@ mod tests {
                 _ => None,
             })
             .expect("curve preview should emit one gradient attenuation fill path");
-        assert_eq!(fill.path.commands().len(), CURVE_SAMPLE_COUNT + 4);
+        assert_eq!(
+            fill.path.commands().len(),
+            widget.sample_curve_points(bounds).len() + 3
+        );
         assert_eq!(
             fill.brush,
             PaintBrush::linear_gradient(PaintLinearGradient::vertical(
