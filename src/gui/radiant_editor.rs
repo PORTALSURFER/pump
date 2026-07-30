@@ -195,6 +195,25 @@ const VALUE_ENTRY_MAX_CHARS: usize = 16;
 const VALUE_LABEL_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.value.0;
 const BYPASS_CONTROL_WIDTH: f32 = 125.8;
 const WAVEFORM_MODE_CONTROL_WIDTH: f32 = 61.2;
+// Keep the compact header glyphs optically centered against the neighboring
+// controls; the extra lower inset compensates for their font's ascender-heavy
+// shape without changing the widget's hit rectangle.
+const HEADER_BUTTON_TEXT_TOP_INSET: f32 = PUMP_VISUAL_METRICS.base;
+
+fn header_button_hover_fill(theme: &ThemeTokens) -> Rgba8 {
+    theme
+        .surface_base
+        .blend_toward(theme.surface_overlay, theme.state_hover_soft)
+}
+
+fn header_button_text_rect(bounds: Rect) -> Rect {
+    Rect::from_xy_size(
+        bounds.min.x,
+        bounds.min.y + HEADER_BUTTON_TEXT_TOP_INSET,
+        bounds.width(),
+        (bounds.height() - HEADER_BUTTON_TEXT_TOP_INSET).max(1.0),
+    )
+}
 
 #[derive(Clone, Debug)]
 struct BypassControlWidget {
@@ -462,7 +481,7 @@ impl Widget for HotkeyHelpButtonWidget {
         let fill = if self.button.common.state.pressed {
             theme.accent_copper.with_alpha(96)
         } else if self.button.common.state.hovered {
-            theme.surface_raised
+            header_button_hover_fill(theme)
         } else {
             theme.surface_base
         };
@@ -484,7 +503,7 @@ impl Widget for HotkeyHelpButtonWidget {
         primitives.push(PaintPrimitive::Text(PaintTextRun {
             widget_id: self.button.common.id,
             text: PaintText::from_static("?"),
-            rect: bounds,
+            rect: header_button_text_rect(bounds),
             font_size: PUMP_TYPOGRAPHY.body.0,
             baseline: None,
             color: theme.text_primary,
@@ -768,7 +787,7 @@ impl Widget for SoundSideButtonWidget {
         } else if self.selected {
             theme.surface_raised.with_alpha(224)
         } else if self.button.common.state.hovered {
-            theme.surface_raised
+            header_button_hover_fill(theme)
         } else {
             theme.surface_base
         };
@@ -794,12 +813,7 @@ impl Widget for SoundSideButtonWidget {
         primitives.push(PaintPrimitive::Text(PaintTextRun {
             widget_id: self.button.common.id,
             text: PaintText::from_static(self.side.label()),
-            rect: Rect::from_xy_size(
-                bounds.min.x,
-                bounds.min.y + 1.7,
-                bounds.width(),
-                (bounds.height() - 1.7).max(1.0),
-            ),
+            rect: header_button_text_rect(bounds),
             font_size: PUMP_TYPOGRAPHY.body.0,
             baseline: None,
             color: theme.text_primary,
@@ -5503,6 +5517,101 @@ mod tests {
         assert!(inactive
             .handle_input(bounds, release(PointerModifiers::default()))
             .is_none());
+    }
+
+    #[test]
+    fn header_letter_buttons_lower_labels_and_show_subtle_hover_without_changing_precedence() {
+        let theme = pump_theme();
+        let layout = LayoutOutput::default();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 28.9, TIMING_CONTROL_HEIGHT);
+        let fill = |primitives: &[PaintPrimitive]| {
+            primitives.iter().find_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill) => Some(fill.color),
+                _ => None,
+            })
+        };
+        let text_rect = |primitives: &[PaintPrimitive]| {
+            primitives.iter().find_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) => Some(text.rect),
+                _ => None,
+            })
+        };
+
+        let mut normal = SoundSideButtonWidget::new(SoundSide::A, false, false, false);
+        let mut normal_primitives = Vec::new();
+        normal.append_paint(&mut normal_primitives, bounds, &layout, &theme);
+        assert_eq!(
+            text_rect(&normal_primitives),
+            Some(header_button_text_rect(bounds))
+        );
+        assert_eq!(fill(&normal_primitives), Some(theme.surface_base));
+
+        normal.handle_input(
+            bounds,
+            WidgetInput::PointerMove {
+                position: Point::new(8.0, 8.0),
+            },
+        );
+        let mut hovered_primitives = Vec::new();
+        normal.append_paint(&mut hovered_primitives, bounds, &layout, &theme);
+        assert!(normal.common().state.hovered);
+        assert_eq!(
+            fill(&hovered_primitives),
+            Some(header_button_hover_fill(&theme))
+        );
+        assert_ne!(fill(&hovered_primitives), fill(&normal_primitives));
+        assert_eq!(
+            hovered_primitives
+                .iter()
+                .find_map(|primitive| match primitive {
+                    PaintPrimitive::FillRect(fill) => Some(fill.rect),
+                    _ => None,
+                }),
+            Some(bounds),
+            "hover must not alter the header button hit bounds"
+        );
+
+        let mut selected = SoundSideButtonWidget::new(SoundSide::B, true, false, false);
+        selected.handle_input(
+            bounds,
+            WidgetInput::PointerMove {
+                position: Point::new(8.0, 8.0),
+            },
+        );
+        let mut selected_primitives = Vec::new();
+        selected.append_paint(&mut selected_primitives, bounds, &layout, &theme);
+        assert_eq!(
+            fill(&selected_primitives),
+            Some(theme.surface_raised.with_alpha(224)),
+            "active fill keeps precedence over hover"
+        );
+
+        let help_bounds = Rect::from_xy_size(0.0, 0.0, 28.0, TIMING_CONTROL_HEIGHT);
+        let mut help = HotkeyHelpButtonWidget::new();
+        help.handle_input(
+            help_bounds,
+            WidgetInput::PointerMove {
+                position: Point::new(8.0, 8.0),
+            },
+        );
+        let mut help_primitives = Vec::new();
+        help.append_paint(&mut help_primitives, help_bounds, &layout, &theme);
+        assert!(help.common().state.hovered);
+        assert_eq!(
+            fill(&help_primitives),
+            Some(header_button_hover_fill(&theme))
+        );
+        assert_eq!(
+            text_rect(&help_primitives),
+            Some(header_button_text_rect(help_bounds))
+        );
+        help.handle_input(help_bounds, WidgetInput::FocusChanged(true));
+        let mut focused_primitives = Vec::new();
+        help.append_paint(&mut focused_primitives, help_bounds, &layout, &theme);
+        assert!(focused_primitives.iter().any(|primitive| matches!(
+            primitive,
+            PaintPrimitive::StrokeRect(stroke) if stroke.color == theme.accent_warning
+        )));
     }
 
     #[test]
