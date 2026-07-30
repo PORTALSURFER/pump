@@ -2,10 +2,11 @@
 
 `Smooth` is a host-automatable continuous control from `0%` to `100%`,
 defaulting to `0%`. It is a dimensionless amount: `0%` is an exact identity
-path, while `100%` selects a 100 ms one-pole time constant. Positive values
-scale that time constant linearly in seconds, including sub-sample values, so
-the response approaches the exact identity continuously as the control returns
-to `0%`.
+path. The compatibility boundary is `75%`: from `0%` through `75%`, the
+one-pole time constant is exactly the legacy mapping `tau = amount * 100 ms`,
+including sub-sample values. From `75%` to `100%`, a continuous smoothstep tail
+extends the time constant from `75 ms` to `250 ms`; therefore `100%` selects a
+250 ms one-pole time constant.
 
 Pump samples the editable curve and maps it through `Depth` and `Floor` first.
 Smooth then filters that evaluated wet gain, before `Mix` blends it with the

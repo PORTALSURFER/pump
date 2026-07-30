@@ -4901,7 +4901,7 @@ impl CurvePreviewWidget {
         if self.smooth <= f32::EPSILON {
             return sample_editable_curve(&self.curve, phase);
         }
-        let radius = (self.smooth * 8.0).round() as i32;
+        let radius = Self::smooth_preview_radius(self.smooth);
         let sample_step = 1.0 / CURVE_SAMPLE_COUNT as f32;
         let mut total = 0.0;
         let mut count = 0.0;
@@ -4910,6 +4910,22 @@ impl CurvePreviewWidget {
             count += 1.0;
         }
         (total / count).clamp(0.0, 1.0)
+    }
+
+    fn smooth_preview_radius(amount: f32) -> i32 {
+        let amount = if amount.is_finite() {
+            amount.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if amount <= crate::dsp::SMOOTH_COMPATIBILITY_KNEE {
+            return (amount * 8.0).round() as i32;
+        }
+
+        let t = (amount - crate::dsp::SMOOTH_COMPATIBILITY_KNEE)
+            / (1.0 - crate::dsp::SMOOTH_COMPATIBILITY_KNEE);
+        let smoothstep = t * t * (3.0 - 2.0 * t);
+        (amount * 8.0 + (20.0 - 8.0) * smoothstep).round() as i32
     }
 
     fn sample_smoothed_curve_points(&self, bounds: Rect) -> Vec<Point> {
@@ -9587,6 +9603,25 @@ mod tests {
                         && polyline.points.len() == CURVE_SAMPLE_COUNT + 1
             )
         }));
+    }
+
+    #[test]
+    fn smooth_preview_radius_preserves_legacy_range_and_reaches_stronger_tail() {
+        assert_eq!(CurvePreviewWidget::smooth_preview_radius(0.0), 0);
+        assert_eq!(CurvePreviewWidget::smooth_preview_radius(0.5), 4);
+        assert_eq!(CurvePreviewWidget::smooth_preview_radius(0.75), 6);
+        assert_eq!(CurvePreviewWidget::smooth_preview_radius(1.0), 20);
+
+        let mut previous = CurvePreviewWidget::smooth_preview_radius(0.75);
+        for step in 1..=100 {
+            let amount = 0.75 + 0.25 * step as f32 / 100.0;
+            let current = CurvePreviewWidget::smooth_preview_radius(amount);
+            assert!(
+                current >= previous,
+                "preview radius must be monotonic at {amount}"
+            );
+            previous = current;
+        }
     }
 
     #[test]
