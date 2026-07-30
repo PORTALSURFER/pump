@@ -2833,18 +2833,16 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             command_held,
         } => {
             let curve = state.params.editable_curve_snapshot();
-            let selected_indices = state
-                .selected_curve_nodes
-                .contains(&index)
-                .then(|| {
-                    state
-                        .selected_curve_nodes
-                        .iter()
-                        .copied()
-                        .filter(|selected| *selected < curve.nodes.len())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let selected_indices = if state.selected_curve_nodes.contains(&index) {
+                state
+                    .selected_curve_nodes
+                    .iter()
+                    .copied()
+                    .filter(|selected| *selected < curve.nodes.len())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             if selected_indices.is_empty() {
                 state.clear_curve_selection();
             }
