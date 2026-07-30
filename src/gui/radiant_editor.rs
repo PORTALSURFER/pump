@@ -1210,6 +1210,9 @@ fn resolve_curve_offset(
 struct ActiveCurveNodeDrag {
     origin_index: usize,
     origin_curve: EditableCurve,
+    /// Marquee selection retained for a grouped node drag. An empty list is
+    /// the ordinary single-node gesture.
+    selected_indices: Vec<usize>,
     horizontal_gain_anchor: Option<f32>,
     vertical_time_anchor: Option<f32>,
     last_pointer_x: f32,
@@ -2582,6 +2585,7 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                     | CurvePreviewMessage::ResetCurveOffset
                     | CurvePreviewMessage::InsertNode { .. }
                     | CurvePreviewMessage::DeleteNode { .. }
+                    | CurvePreviewMessage::DeleteSelectedNodes
                     | CurvePreviewMessage::PressSegment { .. }
                     | CurvePreviewMessage::PressSegmentMove { .. }
             ) {
@@ -2829,10 +2833,25 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             command_held,
         } => {
             let curve = state.params.editable_curve_snapshot();
-            state.clear_curve_selection();
-            if let Some(drag) =
+            let selected_indices = state
+                .selected_curve_nodes
+                .contains(&index)
+                .then(|| {
+                    state
+                        .selected_curve_nodes
+                        .iter()
+                        .copied()
+                        .filter(|selected| *selected < curve.nodes.len())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if selected_indices.is_empty() {
+                state.clear_curve_selection();
+            }
+            if let Some(mut drag) =
                 start_curve_node_drag(&curve, index, pointer, shift_held, option_held)
             {
+                drag.selected_indices = selected_indices;
                 state.option_hover_held = option_held;
                 state.command_hover_held = command_held;
                 state.active_curve_node = Some(index);
@@ -2971,12 +2990,28 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
         }
+        CurvePreviewMessage::DeleteSelectedNodes => {
+            let mut curve = state.params.editable_curve_snapshot();
+            let deleted = delete_selected_curve_nodes(&mut curve, &state.selected_curve_nodes);
+            if deleted {
+                state.params.set_editable_curve(&curve);
+            }
+            state.active_curve_node = None;
+            state.active_curve_node_drag = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.active_curve_marquee = None;
+            state.preview_curve_offset = None;
+            state.selected_curve_nodes.clear();
+            state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.hover_curve_segment = None;
+        }
         CurvePreviewMessage::DragNode {
             index,
             node,
             push_through_threshold_x,
         } => {
-            state.clear_curve_selection();
             let current_curve = state.params.editable_curve_snapshot();
             let current = state
                 .active_curve_node
@@ -3088,7 +3123,13 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             option_held,
             command_held,
         } => {
-            state.clear_curve_selection();
+            let grouped_drag = state
+                .active_curve_node_drag
+                .as_ref()
+                .is_some_and(|drag| !drag.selected_indices.is_empty());
+            if !grouped_drag {
+                state.clear_curve_selection();
+            }
             let current_curve = state.params.editable_curve_snapshot();
             let current = state
                 .active_curve_node
@@ -3239,6 +3280,7 @@ fn start_curve_node_drag(
     Some(ActiveCurveNodeDrag {
         origin_index: index,
         origin_curve: normalized,
+        selected_indices: Vec::new(),
         horizontal_gain_anchor: horizontal_active.then_some(origin.y),
         vertical_time_anchor: vertical_active.then_some(origin.x),
         last_pointer_x: pointer.x.clamp(0.0, 1.0),
@@ -3254,6 +3296,9 @@ fn curve_with_dragged_node(
     target: CurveNode,
     push_through_threshold_x: f32,
 ) -> (EditableCurve, usize) {
+    if !drag.selected_indices.is_empty() {
+        return curve_with_dragged_selected_nodes(drag, target);
+    }
     let mut curve = drag.origin_curve.clone();
     let moved_index = move_curve_node_with_push_through(
         &mut curve,
@@ -3263,6 +3308,86 @@ fn curve_with_dragged_node(
     );
     curve.normalize_in_place();
     (curve, moved_index)
+}
+
+/// Apply one pointer delta to all nodes in a retained marquee selection.
+///
+/// Unlike the single-node gesture, grouped movement never pushes through or
+/// removes neighbours. The common x delta is clipped against every unselected
+/// node (and the fixed endpoints), so the original ordering and minimum
+/// spacing remain intact for the duration of the gesture.
+fn curve_with_dragged_selected_nodes(
+    drag: &ActiveCurveNodeDrag,
+    target: CurveNode,
+) -> (EditableCurve, usize) {
+    let mut curve = drag.origin_curve.clone();
+    let Some(anchor) = drag.origin_curve.nodes.get(drag.origin_index).copied() else {
+        return (curve, drag.origin_index);
+    };
+    let selected: std::collections::HashSet<usize> = drag
+        .selected_indices
+        .iter()
+        .copied()
+        .filter(|index| *index < drag.origin_curve.nodes.len())
+        .collect();
+    if selected.is_empty() {
+        return (curve, drag.origin_index);
+    }
+
+    let mut min_delta = -1.0_f32;
+    let mut max_delta = 1.0_f32;
+    for (index, node) in drag.origin_curve.nodes.iter().enumerate() {
+        if !selected.contains(&index) || index == 0 || index + 1 == drag.origin_curve.nodes.len() {
+            continue;
+        }
+        min_delta = min_delta.max(-node.x + CURVE_NODE_MIN_SPACING_X);
+        max_delta = max_delta.min(1.0 - node.x - CURVE_NODE_MIN_SPACING_X);
+        for (other_index, other) in drag.origin_curve.nodes.iter().enumerate() {
+            // Endpoints are always fixed in x, even when marquee-selected.
+            let other_selected = selected.contains(&other_index)
+                && other_index > 0
+                && other_index + 1 < drag.origin_curve.nodes.len();
+            if other_selected {
+                continue;
+            }
+            if other_index < index {
+                min_delta = min_delta.max(other.x + CURVE_NODE_MIN_SPACING_X - node.x);
+            } else if other_index > index {
+                max_delta = max_delta.min(other.x - CURVE_NODE_MIN_SPACING_X - node.x);
+            }
+        }
+    }
+    let delta_x = (target.x - anchor.x).clamp(min_delta, max_delta);
+    let delta_y = target.y - anchor.y;
+    for index in selected.iter().copied() {
+        let Some(origin) = drag.origin_curve.nodes.get(index).copied() else {
+            continue;
+        };
+        let x = if index == 0 {
+            0.0
+        } else if index + 1 == drag.origin_curve.nodes.len() {
+            1.0
+        } else {
+            (origin.x + delta_x).clamp(0.0, 1.0)
+        };
+        curve.nodes[index] = CurveNode {
+            x,
+            y: (origin.y + delta_y).clamp(0.0, 1.0),
+        };
+    }
+    if selected.contains(&0) || selected.contains(&(curve.nodes.len().saturating_sub(1))) {
+        let endpoint_y = selected
+            .iter()
+            .find_map(|index| {
+                (*index == 0 || *index + 1 == curve.nodes.len()).then_some(curve.nodes[*index].y)
+            })
+            .unwrap_or(curve.nodes[0].y);
+        set_wrapped_curve_endpoint_y(&mut curve, endpoint_y);
+    } else {
+        enforce_wrapped_curve_endpoints(&mut curve);
+    }
+    curve.normalize_in_place();
+    (curve, drag.origin_index)
 }
 
 fn move_curve_node_with_push_through(
@@ -3501,6 +3626,21 @@ fn delete_curve_node(curve: &mut EditableCurve, index: usize) -> bool {
     }
     curve.normalize_in_place();
     true
+}
+
+fn delete_selected_curve_nodes(curve: &mut EditableCurve, selected: &[usize]) -> bool {
+    let mut indices: Vec<usize> = selected
+        .iter()
+        .copied()
+        .filter(|index| *index > 0 && *index + 1 < curve.nodes.len())
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    let mut deleted = false;
+    for index in indices.into_iter().rev() {
+        deleted |= delete_curve_node(curve, index);
+    }
+    deleted
 }
 
 fn update_curve_node(curve: &mut EditableCurve, index: usize, node: CurveNode) {
@@ -4157,7 +4297,7 @@ impl CurvePreviewWidget {
                 (WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0).max(1.0),
                 CURVE_PREVIEW_HEIGHT,
             )
-            .with_pointer_focus()
+            .with_keyboard_focus()
             .without_default_chrome(),
             curve: curve.normalized(),
             active_node,
@@ -4990,6 +5130,15 @@ impl Widget for CurvePreviewWidget {
                         .map(|index| CurvePreviewMessage::DeleteNode { index })
                 }
             }
+            WidgetInput::KeyPress(WidgetKey::Delete | WidgetKey::Backspace)
+                if self.common.state.focused
+                    && self
+                        .selected_nodes
+                        .iter()
+                        .any(|index| *index > 0 && *index + 1 < self.curve.nodes.len()) =>
+            {
+                Some(CurvePreviewMessage::DeleteSelectedNodes)
+            }
             WidgetInput::PointerMove { position } => {
                 if self.active_marquee.is_some() {
                     Some(CurvePreviewMessage::DragMarquee {
@@ -5079,17 +5228,21 @@ impl Widget for CurvePreviewWidget {
                         })
                 }
             }
-            WidgetInput::FocusChanged(false) => (self.active_node.is_some()
-                || self.active_segment.is_some()
-                || self.active_curve_offset_start_x.is_some()
-                || self.active_marquee.is_some()
-                || self.hover_node.is_some()
-                || self.preview_node.is_some()
-                || self.hover_segment.is_some()
-                || self.option_hover_held
-                || self.command_hover_held
-                || self.shift_hover_held)
-                .then_some(CurvePreviewMessage::Cancel),
+            WidgetInput::FocusChanged(focused) => {
+                self.common.state.focused = focused;
+                (!focused
+                    && (self.active_node.is_some()
+                        || self.active_segment.is_some()
+                        || self.active_curve_offset_start_x.is_some()
+                        || self.active_marquee.is_some()
+                        || self.hover_node.is_some()
+                        || self.preview_node.is_some()
+                        || self.hover_segment.is_some()
+                        || self.option_hover_held
+                        || self.command_hover_held
+                        || self.shift_hover_held))
+                    .then_some(CurvePreviewMessage::Cancel)
+            }
             _ => None,
         }?;
         Some(WidgetOutput::typed(message))
@@ -5153,6 +5306,7 @@ enum CurvePreviewMessage {
     DeleteNode {
         index: usize,
     },
+    DeleteSelectedNodes,
     DragNode {
         index: usize,
         node: CurveNode,
@@ -7108,6 +7262,128 @@ mod tests {
     }
 
     #[test]
+    fn radiant_editor_selected_nodes_drag_as_group_with_spacing_clamp() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.2, y: 0.2 },
+                CurveNode { x: 0.4, y: 0.4 },
+                CurveNode { x: 0.7, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![1, 2];
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 1,
+                pointer: curve.nodes[1],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        assert_eq!(state.selected_curve_nodes, vec![1, 2]);
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 1,
+                node: CurveNode { x: 0.95, y: 0.8 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let moved = params.editable_curve_snapshot();
+        assert_eq!(moved.nodes.len(), curve.nodes.len());
+        assert!((moved.nodes[1].x - (moved.nodes[2].x - 0.2)).abs() < 1.0e-6);
+        assert!(moved.nodes[2].x <= moved.nodes[3].x - CURVE_NODE_MIN_SPACING_X);
+        assert!((moved.nodes[1].y - 0.8).abs() < 1.0e-6);
+        assert!((moved.nodes[2].y - 1.0).abs() < 1.0e-6);
+        assert_eq!(moved.nodes[0].x, 0.0);
+        assert_eq!(moved.nodes[4].x, 1.0);
+        assert_eq!(state.selected_curve_nodes, vec![1, 2]);
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::ReleaseNode {
+                index: 1,
+                node: moved.nodes[1],
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        assert_eq!(state.selected_curve_nodes, vec![1, 2]);
+    }
+
+    #[test]
+    fn radiant_editor_pressing_unselected_node_clears_group_selection() {
+        let params = Arc::new(PumpParams::new());
+        let curve = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![1];
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 2,
+                pointer: curve.nodes[2],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+
+        assert!(state.selected_curve_nodes.is_empty());
+        assert!(state
+            .active_curve_node_drag
+            .as_ref()
+            .is_some_and(|drag| drag.selected_indices.is_empty()));
+    }
+
+    #[test]
+    fn radiant_editor_delete_selected_nodes_preserves_endpoints_and_clears_state() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.5 },
+                CurveNode { x: 0.3, y: 0.2 },
+                CurveNode { x: 0.6, y: 0.8 },
+                CurveNode { x: 1.0, y: 0.5 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![0, 1, 2, 3];
+        state.active_curve_marquee = Some(ActiveCurveMarquee {
+            start: curve.nodes[1],
+            current: curve.nodes[2],
+        });
+
+        reduce_curve_message(&mut state, CurvePreviewMessage::DeleteSelectedNodes);
+
+        let remaining = params.editable_curve_snapshot();
+        assert_eq!(remaining.nodes.len(), 2);
+        assert_eq!(remaining.segments.len(), 1);
+        assert_eq!(remaining.nodes[0].x, 0.0);
+        assert_eq!(remaining.nodes[1].x, 1.0);
+        assert!(state.selected_curve_nodes.is_empty());
+        assert!(state.active_curve_marquee.is_none());
+        assert!(state.active_curve_node_drag.is_none());
+    }
+
+    #[test]
     fn radiant_editor_curve_drag_reverse_restores_buffered_neighbors() {
         let params = Arc::new(PumpParams::new());
         let curve = EditableCurve {
@@ -8758,6 +9034,37 @@ mod tests {
             widget.handle_input(bounds, WidgetInput::primary_double_click(position)),
             None
         );
+    }
+
+    #[test]
+    fn curve_preview_widget_emits_delete_for_focused_selection() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.5 },
+                CurveNode { x: 0.4, y: 0.3 },
+                CurveNode { x: 1.0, y: 0.5 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 2],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_selected_curve_nodes(&[1]);
+        assert!(widget
+            .handle_input(bounds, WidgetInput::FocusChanged(true))
+            .is_none());
+        assert!(widget.common().state.focused);
+
+        for key in [WidgetKey::Delete, WidgetKey::Backspace] {
+            let output = widget
+                .handle_input(bounds, WidgetInput::KeyPress(key))
+                .expect("focused selected curve should handle deletion");
+            assert_eq!(
+                output.typed_copied(),
+                Some(CurvePreviewMessage::DeleteSelectedNodes)
+            );
+        }
     }
 
     #[test]
