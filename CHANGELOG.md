@@ -424,6 +424,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (d5d7e9a)
 
+- (changelog) Update changelog [skip ci] (352689d)
+
 
 ### Features
 
@@ -1377,6 +1379,8 @@ Remove the hidden half-cycle Sync phase bias so raw Offset 0 follows the DAW tra
 - Add curve-mapped waveform preview (#67)
 
 Add a GUI-only processed waveform preview using the existing input envelope and authoritative Depth/Floor curve mapping. Preserve phase alignment and enforce the production screenshot fixture. (b2af460)
+
+- Make global curve slots empty by default (#68) (74453ad)
 
 
 ### Refactoring
