@@ -28,8 +28,10 @@ use super::{
     WINDOW_HEIGHT, WINDOW_WIDTH,
 };
 use crate::{
-    curve_presets::quick_slot_seeds,
-    params::{sync_division_label, with_test_curve_slot_path, PumpParams, SoundSide},
+    params::{
+        sync_division_label, with_test_curve_slot_path, PumpParams, SoundSide,
+        GLOBAL_CURVE_SLOT_COUNT,
+    },
     GuiStatus,
 };
 
@@ -211,9 +213,6 @@ fn render_case_with_bypass(
     let (plan, pixels) = with_test_curve_slot_path(store_path.clone(), || {
         let params = Arc::new(PumpParams::new());
         params.set_bypass(f32::from(bypassed));
-        for (index, seed) in quick_slot_seeds().iter().take(8).enumerate() {
-            assert!(params.set_global_curve_slot_curve(index, &seed.curve));
-        }
         let mut editor = RadiantPumpEditor::new(
             params,
             Arc::new(GuiStatus::default()),
@@ -253,6 +252,28 @@ fn render_case_with_bypass(
     )
     .expect("screenshot PNG should be writable");
     (plan, pixels)
+}
+
+fn assert_default_curve_slot_previews_are_empty(plan: &SurfacePaintPlan) {
+    let theme = pump_theme();
+    let empty_slot_previews = plan
+        .primitives
+        .iter()
+        .filter(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(stroke)
+                    if stroke.points.len() == 2
+                        && (stroke.points[0].y - stroke.points[1].y).abs() < f32::EPSILON
+                        && stroke.color == theme.text_muted
+                        && (stroke.width - 1.4875).abs() < f32::EPSILON
+            )
+        })
+        .count();
+    assert_eq!(
+        empty_slot_previews, GLOBAL_CURVE_SLOT_COUNT,
+        "default global curve slots should paint one flat muted preview each"
+    );
 }
 
 fn render_non_default_active_meter_case(
@@ -872,7 +893,6 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
         sync_division_label(crate::params::DEFAULT_SYNC_DIVISION_INDEX)
     );
     let mut curve_points = 0;
-    let mut shaped_curve_slots = 0;
     let mut frame_paths = 0;
     for primitive in &plan.primitives {
         let rect = match primitive {
@@ -914,23 +934,6 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
             }
             PaintPrimitive::StrokePolyline(polyline) => {
                 curve_points = curve_points.max(polyline.points.len());
-                let (min_y, max_y) = polyline
-                    .points
-                    .iter()
-                    .map(|point| point.y)
-                    .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), y| {
-                        (min.min(y), max.max(y))
-                    });
-                let (min_x, max_x) = polyline
-                    .points
-                    .iter()
-                    .map(|point| point.x)
-                    .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), x| {
-                        (min.min(x), max.max(x))
-                    });
-                if polyline.points.len() >= 8 && max_y - min_y > 8.0 && max_x - min_x > 40.0 {
-                    shaped_curve_slots += 1;
-                }
                 None
             }
             _ => None,
@@ -949,10 +952,6 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
     assert!(
         frame_paths >= 1,
         "editor should paint a rounded outer frame and card surfaces"
-    );
-    assert!(
-        shaped_curve_slots >= 8,
-        "all eight global curve slots must paint seeded curves instead of flat empty tiles"
     );
     for label in [
         "PUMP",
@@ -1020,6 +1019,9 @@ fn pump_editor_screenshots_cover_supported_sizes_and_fractional_scale() {
         let (plan, pixels) = render_case(name, width, height, DpiScale::ONE);
         assert!(!pixels.iter().all(|byte| *byte == plan.clear_color.r));
         assert_layout_contract(&plan, width, height);
+        if name == "pump-default-640x400" {
+            assert_default_curve_slot_previews_are_empty(&plan);
+        }
     }
 
     let (fractional_plan, fractional_pixels) = render_case(
