@@ -2322,7 +2322,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "radiant"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/radiant.git?rev=4b29c3a83120034c02c8dde44fc231ddd40b016c#4b29c3a83120034c02c8dde44fc231ddd40b016c"
+source = "git+https://github.com/PORTALSURFER/radiant.git?rev=8cbcd7ea76f8c6d9408734cb4a8f446f77a02fa4#8cbcd7ea76f8c6d9408734cb4a8f446f77a02fa4"
 dependencies = [
  "arboard",
  "block2 0.5.1",
@@ -2981,7 +2981,7 @@ dependencies = [
 [[package]]
 name = "toybox"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=06c1b80c41eab0fd086c97ad69338d2a4f69fa1a#06c1b80c41eab0fd086c97ad69338d2a4f69fa1a"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=b53d856879403adc76b7dab186112cc5b53ea60a#b53d856879403adc76b7dab186112cc5b53ea60a"
 dependencies = [
  "clack-common",
  "clack-extensions",
@@ -2998,12 +2998,12 @@ dependencies = [
 [[package]]
 name = "toybox-process-log"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=06c1b80c41eab0fd086c97ad69338d2a4f69fa1a#06c1b80c41eab0fd086c97ad69338d2a4f69fa1a"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=b53d856879403adc76b7dab186112cc5b53ea60a#b53d856879403adc76b7dab186112cc5b53ea60a"
 
 [[package]]
 name = "toybox-vst3-ffi"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=06c1b80c41eab0fd086c97ad69338d2a4f69fa1a#06c1b80c41eab0fd086c97ad69338d2a4f69fa1a"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=b53d856879403adc76b7dab186112cc5b53ea60a#b53d856879403adc76b7dab186112cc5b53ea60a"
 dependencies = [
  "vst3",
 ]

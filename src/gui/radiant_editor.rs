@@ -147,6 +147,8 @@ const HEADER_TO_CURVE_GAP: f32 = PUMP_VISUAL_METRICS.space_4;
 const TIMING_MODE_TOGGLE_WIDTH: f32 = 54.4;
 const TIMING_DROPDOWN_WIDTH: f32 = 95.2;
 const HEADER_BRAND_WIDTH: f32 = 153.0;
+// Leave room for the wider native fallback used by offscreen captures.
+const HEADER_BRAND_WORDMARK_WIDTH: f32 = 98.0;
 const HEADER_BRAND_TITLE_HEIGHT: f32 = 27.2;
 const HEADER_BRAND_META_HEIGHT: f32 = 13.6;
 const CURVE_PREVIEW_HEIGHT: f32 = 153.0;
@@ -2060,7 +2062,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         row([
             text("PORTALSURFER")
                 .muted_text()
-                .width(93.5)
+                .width(HEADER_BRAND_WORDMARK_WIDTH)
                 .align_text(TextAlign::Right),
             text("/")
                 .muted_text()
@@ -10565,6 +10567,33 @@ mod tests {
             .collect();
         assert_eq!(pump_labels.len(), 1, "header should paint one wordmark");
         assert_eq!(pump_labels[0].align, PaintTextAlign::Right);
+        let brand_labels: Vec<_> = frame
+            .paint_plan
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::Text(text)
+                    if matches!(text.text.as_str(), "PORTALSURFER" | "/" | "PUMP") =>
+                {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            brand_labels.len(),
+            3,
+            "header should paint one complete brand"
+        );
+        let [vendor, separator, wordmark] = brand_labels.as_slice() else {
+            unreachable!("header brand should contain exactly three text cells")
+        };
+        assert_eq!(vendor.rect.width(), HEADER_BRAND_WORDMARK_WIDTH);
+        assert!(
+            vendor.rect.max.x <= separator.rect.min.x
+                && separator.rect.max.x <= wordmark.rect.min.x,
+            "header brand cells must be ordered and non-overlapping"
+        );
         assert!(
             frame.paint_plan.primitives.iter().any(
                 |primitive| matches!(primitive, PaintPrimitive::Text(text) if text.text == "?")
