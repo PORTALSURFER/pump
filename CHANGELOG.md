@@ -420,6 +420,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (d2c3ba7)
 
+- (changelog) Update changelog [skip ci] (cc89cd8)
+
 
 ### Features
 
@@ -1365,6 +1367,10 @@ Adopt Radiant hover-wheel knob automation (85d4209)
 - Fix screenshots and adopt shared Radiant font policy
 
 Merged after exact-head Terra review APPROVE, passing Pump CI, and successful release preflight with CLAP/VST3 bundle audit. (81a8ccf)
+
+- Fix Sync Offset transport origin (#65)
+
+Remove the hidden half-cycle Sync phase bias so raw Offset 0 follows the DAW transport origin 1:1. Preserve nonzero cyclic offsets, Swing ordering, Free timing, and add focused DSP/transport regressions. (7c94d07)
 
 
 ### Refactoring
