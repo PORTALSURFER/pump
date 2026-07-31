@@ -418,6 +418,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (82680d7)
 
+- (changelog) Update changelog [skip ci] (d2c3ba7)
+
 
 ### Features
 
@@ -1359,6 +1361,10 @@ Fix A/B command-copy switching (863d5d0)
 - Merge pull request #61 from PORTALSURFER/codex/pump-knob-wheel
 
 Adopt Radiant hover-wheel knob automation (85d4209)
+
+- Fix screenshots and adopt shared Radiant font policy
+
+Merged after exact-head Terra review APPROVE, passing Pump CI, and successful release preflight with CLAP/VST3 bundle audit. (81a8ccf)
 
 
 ### Refactoring
