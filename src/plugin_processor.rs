@@ -22,6 +22,8 @@ pub struct PumpAudioProcessor<'a> {
     param_schedule: ParamEventSchedule,
     /// Bounded audio-owned peak aggregator for optional GUI visualization.
     waveform_writer: IncomingWaveformWriter,
+    /// Activation sample rate used to convert CLAP input latency to beats.
+    sample_rate: f64,
 }
 
 impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioProcessor<'a> {
@@ -72,7 +74,14 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         self.param_schedule
             .apply_through(0, self.shared.params.as_ref(), &mut settings);
 
-        let transport = transport_state_from_transport(process.transport.copied());
+        let input_latency_samples = audio
+            .port_pair(0)
+            .and_then(|port_pair| port_pair.latencies().0);
+        let transport = crate::transport::compensate_input_presentation_latency(
+            transport_state_from_transport(process.transport.copied()),
+            input_latency_samples,
+            self.sample_rate,
+        );
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
         self.shared.status.update_transport(
             gui_phase,
@@ -160,6 +169,7 @@ impl<'a> PumpAudioProcessor<'a> {
             automation_drain,
             param_schedule,
             waveform_writer: IncomingWaveformWriter::default(),
+            sample_rate: audio_config.sample_rate,
         })
     }
 }
@@ -566,6 +576,23 @@ mod tests {
         assert!(!channel_pair_has_input(&ChannelPair::OutputOnly(
             &mut output
         )));
+    }
+
+    #[test]
+    fn clap_input_latency_propagates_to_the_block_transport() {
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            song_pos_beats: Some(4.0),
+            ..TransportState::default()
+        };
+
+        let compensated = crate::transport::compensate_input_presentation_latency(
+            transport,
+            Some(24_000),
+            48_000.0,
+        );
+
+        assert!((compensated.song_pos_beats.unwrap_or_default() - 3.0).abs() < 1.0e-6);
     }
 
     #[test]

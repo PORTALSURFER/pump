@@ -503,6 +503,88 @@ fn processor_declares_single_stereo_main_bus() {
 }
 
 #[test]
+fn processor_accepts_input_presentation_latency_and_ignores_output_latency() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+
+    assert_eq!(unsafe { processor.getLatencySamples() }, 0);
+    assert_eq!(
+        unsafe {
+            processor.setAudioPresentationLatencySamples(
+                BusDirections_::kInput as BusDirection,
+                0,
+                512,
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(
+        processor
+            .runtime_handoff
+            .input_presentation_latency_samples(),
+        512
+    );
+
+    assert_eq!(
+        unsafe {
+            processor.setAudioPresentationLatencySamples(
+                BusDirections_::kOutput as BusDirection,
+                0,
+                1024,
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(
+        processor
+            .runtime_handoff
+            .input_presentation_latency_samples(),
+        512
+    );
+}
+
+#[test]
+fn processor_rejects_invalid_presentation_latency_buses_without_mutation() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+    processor
+        .runtime_handoff
+        .publish_input_presentation_latency(512);
+
+    for (direction, bus_index) in [
+        (BusDirections_::kInput as BusDirection, 1),
+        (BusDirections_::kOutput as BusDirection, 1),
+        (999, 0),
+    ] {
+        assert_eq!(
+            unsafe { processor.setAudioPresentationLatencySamples(direction, bus_index, 1024) },
+            kInvalidArgument
+        );
+        assert_eq!(
+            processor
+                .runtime_handoff
+                .input_presentation_latency_samples(),
+            512
+        );
+    }
+}
+
+#[test]
+fn processor_resets_input_presentation_latency_when_deactivated() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+    processor
+        .runtime_handoff
+        .publish_input_presentation_latency(512);
+
+    assert_eq!(unsafe { processor.setActive(0) }, kResultOk);
+    assert_eq!(
+        processor
+            .runtime_handoff
+            .input_presentation_latency_samples(),
+        0
+    );
+}
+
+#[test]
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 fn controller_creates_editor_view_for_host_editor_request() {
