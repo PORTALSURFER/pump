@@ -116,6 +116,10 @@ All notable changes to this project are documented in this file.
 
 - (release) Bump patch version on every release (5b3fca7)
 
+- (release) Handle concurrent main updates (a4b46e1)
+
+- (release) Prevent bytecode drift (58a2c22)
+
 
 ### Chores
 
@@ -194,6 +198,8 @@ All notable changes to this project are documented in this file.
 - Repin canonical Radiant and Toybox merges (1fb2078)
 
 - Repin corrected knob wheel dependencies (0750e93)
+
+- (release) Bump Pump to v0.2.1 [skip ci] (aa7e48e)
 
 
 ### Documentation
@@ -433,6 +439,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (a2d84d4)
 
 - (changelog) Update changelog [skip ci] (9e697d3)
+
+- (changelog) Update changelog [skip ci] (de0d9b2)
 
 
 ### Features
