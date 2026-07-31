@@ -101,6 +101,8 @@ All notable changes to this project are documented in this file.
 
 - Switch after copying A/B sound (7460bee)
 
+- Compensate reported input presentation latency (2062c6a)
+
 
 ### CI
 
@@ -425,6 +427,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (d5d7e9a)
 
 - (changelog) Update changelog [skip ci] (352689d)
+
+- (changelog) Update changelog [skip ci] (a2d84d4)
 
 
 ### Features
