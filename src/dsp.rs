@@ -487,10 +487,10 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        curve_value_to_gain, db_to_linear, smooth_time_constant_seconds, DspSettings, PumpEngine,
-        MAX_SMOOTH_TIME_SECONDS, SMOOTH_COMPATIBILITY_KNEE,
+        curve_value_to_gain, db_to_linear, smooth_time_constant_seconds, swing_warp_phase,
+        DspSettings, PumpEngine, MAX_SMOOTH_TIME_SECONDS, SMOOTH_COMPATIBILITY_KNEE,
     };
-    use crate::curve::{default_editable_curve, editable_curve_to_table};
+    use crate::curve::{default_editable_curve, editable_curve_to_table, sample_curve};
     use toybox::dsp::TransportState;
 
     #[test]
@@ -810,6 +810,31 @@ mod tests {
     }
 
     #[test]
+    fn free_phase_keeps_raw_offset_origin_after_smoothing() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.2,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: crate::params::TIMING_MODE_FREE,
+            free_rate_hz: 10.0,
+            bypassed: false,
+        };
+        let mut engine = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
+        for _ in 0..1_000 {
+            engine.process_sample(&mut 1.0, &mut 1.0, settings, TransportState::default());
+        }
+
+        let telemetry =
+            engine.process_sample(&mut 1.0, &mut 1.0, settings, TransportState::default());
+        assert!((telemetry.phase - settings.phase_offset).abs() < 1.0e-4);
+    }
+
+    #[test]
     fn switching_out_of_free_timing_resets_phase_for_next_free_run() {
         let free = DspSettings {
             mix: 1.0,
@@ -1072,5 +1097,92 @@ mod tests {
         assert!((super::swing_warp_phase(0.5, 1.0) - 0.375).abs() < 1.0e-6);
         assert!((super::swing_warp_phase(2.0 / 3.0, 1.0) - 0.5).abs() < 1.0e-6);
         assert!((super::swing_warp_phase(1.0, 1.0) - 0.0).abs() < 1.0e-6);
+    }
+
+    fn sync_test_settings(phase_offset: f32, swing: f32) -> DspSettings {
+        DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing,
+            timing_mode: crate::params::TIMING_MODE_SYNC,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        }
+    }
+
+    fn settled_sync_telemetry(
+        host_beats: f64,
+        phase_offset: f32,
+        swing: f32,
+    ) -> super::DspTelemetry {
+        let settings = sync_test_settings(phase_offset, swing);
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(host_beats),
+        };
+        let mut engine = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
+        let mut telemetry = engine.process_sample(&mut 1.0, &mut 1.0, settings, transport);
+        for _ in 0..256 {
+            telemetry = engine.process_sample(&mut 1.0, &mut 1.0, settings, transport);
+        }
+        telemetry
+    }
+
+    #[test]
+    fn sync_raw_zero_follows_host_phase_and_samples_authored_curve() {
+        let mut curve = [0.5; crate::curve::CURVE_TABLE_LEN];
+        curve[0] = 0.13;
+        curve[255] = 0.27;
+        curve[256] = 0.41;
+        curve[511] = 0.59;
+        curve[512] = 0.73;
+        curve[767] = 0.86;
+        curve[768] = 0.32;
+        curve[1022] = 0.91;
+        curve[1023] = 0.18;
+        let settings = sync_test_settings(0.0, 0.0);
+
+        for host_beats in [0.0, 0.25, 0.5, 0.75, 1022.0 / 1023.0] {
+            let expected_phase = toybox::dsp::phase_from_beats(host_beats, 1.0, 0.0);
+            let transport = TransportState {
+                tempo_bpm: 120.0,
+                is_playing: true,
+                song_pos_beats: Some(host_beats),
+            };
+            let mut engine = PumpEngine::new(48_000.0, curve);
+            let telemetry = engine.process_sample(&mut 1.0, &mut 1.0, settings, transport);
+            assert!((telemetry.phase - expected_phase).abs() < 1.0e-6);
+            assert!((telemetry.gain - sample_curve(&curve, expected_phase)).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn sync_nonzero_offsets_keep_cyclic_relative_displacement_and_wrapping() {
+        let base = settled_sync_telemetry(0.875, 0.0, 0.0).phase;
+        let positive = settled_sync_telemetry(0.875, 0.2, 0.0).phase;
+        let wrapped = settled_sync_telemetry(0.875, 0.8, 0.0).phase;
+
+        assert!((base - 0.875).abs() < 1.0e-6);
+        assert!(((positive - base).rem_euclid(1.0) - 0.2).abs() < 1.0e-6);
+        assert!((wrapped - 0.675).abs() < 1.0e-6);
+        assert!(((wrapped - base).rem_euclid(1.0) - 0.8).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn sync_swing_warps_host_phase_before_adding_raw_offset() {
+        let raw_phase = 0.5_f32;
+        let raw_offset = 0.2;
+        let actual = settled_sync_telemetry(raw_phase as f64, raw_offset, 1.0).phase;
+        let expected = (swing_warp_phase(raw_phase, 1.0) + raw_offset).rem_euclid(1.0);
+        let offset_before_warp = swing_warp_phase(raw_phase + raw_offset, 1.0);
+
+        assert!((actual - expected).abs() < 1.0e-6);
+        assert!((actual - offset_before_warp).abs() > 1.0e-3);
     }
 }

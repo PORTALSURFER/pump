@@ -123,6 +123,73 @@ mod tests {
     }
 
     #[test]
+    fn gui_sync_phase_matches_raw_transport_boundaries_and_offset_wrap() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: crate::params::TIMING_MODE_SYNC,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        for (host_beats, expected) in [(0.0, 0.0), (0.25, 0.25), (0.5, 0.5), (0.75, 0.75)] {
+            let phase = gui_phase_from_transport(
+                TransportState {
+                    song_pos_beats: Some(host_beats),
+                    ..TransportState::default()
+                },
+                settings,
+                0.0,
+            );
+            assert!((phase - expected).abs() < 1.0e-6);
+        }
+
+        let wrapped = gui_phase_from_transport(
+            TransportState {
+                song_pos_beats: Some(0.875),
+                ..TransportState::default()
+            },
+            DspSettings {
+                phase_offset: 0.2,
+                ..settings
+            },
+            0.0,
+        );
+        assert!((wrapped - 0.075).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gui_free_phase_keeps_raw_offset_origin() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.2,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: crate::params::TIMING_MODE_FREE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        let resolved = gui_phase_from_transport(
+            TransportState {
+                song_pos_beats: Some(0.0),
+                ..TransportState::default()
+            },
+            settings,
+            0.0,
+        );
+        assert!((resolved - settings.phase_offset).abs() < 1.0e-6);
+    }
+
+    #[test]
     fn gui_phase_from_transport_uses_fallback_without_song_position() {
         let settings = DspSettings {
             mix: 1.0,
