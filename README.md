@@ -47,6 +47,11 @@ run:
 bash scripts/release.sh --package-only --channel stable
 ```
 
+Every production Actions release selects the next unused global patch version
+across stable, RC, and nightly releases, commits that version to `main`, and
+builds from the resulting exact commit. Nightlies use the same serialized
+release path, so a published nightly also advances the patch version.
+
 This creates `dist/releases/pump-v<version>-<12-char HEAD>/` containing only the
 two host-installable ZIP bundles, `pump-default-640x400.png`, `CHANGELOG.md`, and
 `release-manifest.json` schema 2. Add `--publish` and set

@@ -25,6 +25,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 TEAM_ID = re.compile(r"[A-Z0-9]{10}\Z")
 NOTARY_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\Z")
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\Z")
+CORE_SEMVER = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)\Z")
 GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -83,6 +84,53 @@ def should_release(*, source_sha: str, document: Any = None, channel: str = "nig
         return True
     latest = latest_release_source_sha(document, channel=channel)
     return latest is None or latest != source_sha
+
+
+def _parse_core_version(version: Any, *, field: str) -> tuple[int, int, int]:
+    if not isinstance(version, str):
+        raise ValueError(f"{field} must be a numeric semver")
+    match = CORE_SEMVER.fullmatch(version)
+    if match is None:
+        raise ValueError(f"{field} must be a numeric semver")
+    return tuple(int(part) for part in match.groups())
+
+
+def _format_core_version(version: tuple[int, int, int]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def latest_release_version(document: Any) -> Optional[str]:
+    """Return the highest numeric version published on any release channel."""
+    if not isinstance(document, dict) or not isinstance(document.get("releases"), list):
+        raise ValueError("release history must contain a releases array")
+
+    latest: tuple[int, int, int] | None = None
+    for release in document["releases"]:
+        if not isinstance(release, dict):
+            raise ValueError("release history contains a non-object release")
+        if release.get("channel") not in {"stable", "rc", "nightly"}:
+            raise ValueError("release history contains an invalid channel")
+        candidate = _parse_core_version(release.get("version"), field="release version")
+        if latest is None or candidate > latest:
+            latest = candidate
+    return _format_core_version(latest) if latest is not None else None
+
+
+def next_release_version(package_version: str, document: Any) -> str:
+    """Select one globally increasing patch version for the next release.
+
+    A package version already ahead of public history is treated as a pending
+    bump from a previously interrupted release.  Reusing it avoids consuming
+    another patch number on retry; otherwise every successful release advances
+    the highest published version by exactly one patch.
+    """
+    current = _parse_core_version(package_version, field="package version")
+    latest_text = latest_release_version(document)
+    latest = _parse_core_version(latest_text, field="latest release version") if latest_text else None
+    if latest is not None and current > latest:
+        return _format_core_version(current)
+    base = latest if latest is not None and latest > current else current
+    return _format_core_version((base[0], base[1], base[2] + 1))
 
 
 def validate_release_fields(version: str, released_at: str, names: list[str], hashes: list[str], sizes: list[int]) -> None:

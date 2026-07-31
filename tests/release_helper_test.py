@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import release_helper
+import bump_version
 
 
 def png(width=640, height=400):
@@ -73,6 +74,41 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertEqual(release_helper.latest_release_source_sha(document, channel="nightly"), sha_b)
         self.assertIsNone(release_helper.latest_release_source_sha({"releases": []}, channel="nightly"))
         self.assertTrue(release_helper.should_release(source_sha=sha_a, document={"releases": []}))
+
+    def test_release_version_advances_globally_across_channels(self):
+        document = {
+            "releases": [
+                {"channel": "nightly", "version": "0.2.3", "released_at": "2026-07-29T20:00:00Z"},
+                {"channel": "stable", "version": "0.2.5", "released_at": "2026-07-30T20:00:00Z"},
+            ]
+        }
+        self.assertEqual(release_helper.latest_release_version(document), "0.2.5")
+        self.assertEqual(release_helper.next_release_version("0.2.0", document), "0.2.6")
+        self.assertEqual(release_helper.next_release_version("0.2.6", document), "0.2.6")
+
+    def test_release_version_rejects_malformed_history(self):
+        with self.assertRaisesRegex(ValueError, "release version"):
+            release_helper.latest_release_version({"releases": [{"channel": "nightly", "version": "0.2.x"}]})
+
+    def test_bump_version_updates_manifest_and_lockfile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "Cargo.toml"
+            lockfile = root / "Cargo.lock"
+            manifest.write_text('[package]\nname = "pump"\nversion = "0.2.0"\n\n[dependencies]\n', encoding="utf-8")
+            lockfile.write_text('[[package]]\nname = "pump"\nversion = "0.2.0"\n', encoding="utf-8")
+            self.assertEqual(bump_version.bump_package_version(manifest, lockfile, "0.2.1"), "0.2.0")
+            self.assertIn('version = "0.2.1"', manifest.read_text(encoding="utf-8"))
+            self.assertIn('version = "0.2.1"', lockfile.read_text(encoding="utf-8"))
+
+    def test_release_workflow_commits_version_before_build(self):
+        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("contents: write", workflow)
+        self.assertIn("group: pump-release", workflow)
+        self.assertIn("release_helper.next_release_version", workflow)
+        self.assertIn("python3 scripts/bump_version.py", workflow)
+        self.assertIn("git push origin HEAD:main", workflow)
+        self.assertIn("name: pump-release-${{ inputs.channel }}-${{ steps.release_source.outputs.sha }}", workflow)
 
     def test_release_decision_preserves_requested_channel(self):
         sha_a = "a" * 40
@@ -138,27 +174,29 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertIn("channel=channel", gate_block)
         self.assertNotIn('channel="nightly"', gate_block)
         self.assertIn("if: steps.gate.outputs.should_release == 'true'", workflow)
-        self.assertEqual(workflow.count("if: steps.gate.outputs.should_release == 'true'"), 5)
-        self.assertIn("group: pump-release-${{ inputs.channel }}", workflow)
+        self.assertEqual(workflow.count("if: steps.gate.outputs.should_release == 'true'"), 7)
+        self.assertIn("group: pump-release", workflow)
 
     def test_release_preflight_covers_workflow_and_helper_changes(self):
         workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release-preflight.yml").read_text(encoding="utf-8")
-        for path in (".github/workflows/release.yml", ".github/workflows/nightly.yml", "scripts/release_helper.py", "tests/release_helper_test.py"):
+        for path in (".github/workflows/release.yml", ".github/workflows/nightly.yml", "scripts/release_helper.py", "scripts/bump_version.py", "tests/release_helper_test.py"):
             self.assertIn(path, workflow)
         self.assertIn("python3 tests/release_helper_test.py", workflow)
 
-    def test_release_workflow_artifact_uses_checked_out_source_sha(self):
+    def test_release_workflow_artifact_uses_released_source_sha(self):
         workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         checkout = workflow.index("- name: Checkout exact main source")
         capture = workflow.index("- name: Capture checked-out source SHA")
+        release_capture = workflow.index("- name: Capture release source SHA")
         upload = workflow.index("- name: Upload immutable bundle for inspection")
         self.assertLess(checkout, capture)
+        self.assertLess(capture, release_capture)
         self.assertLess(capture, upload)
-        capture_block = workflow[capture:upload]
+        capture_block = workflow[capture:release_capture]
         self.assertIn("id: source_sha", capture_block)
         self.assertIn('git rev-parse HEAD', capture_block)
         upload_block = workflow[upload:]
-        self.assertIn("name: pump-release-${{ inputs.channel }}-${{ steps.source_sha.outputs.sha }}", upload_block)
+        self.assertIn("name: pump-release-${{ inputs.channel }}-${{ steps.release_source.outputs.sha }}", upload_block)
         self.assertNotIn("${{ github.sha }}", upload_block)
 
     def test_manifest_and_png_contract(self):

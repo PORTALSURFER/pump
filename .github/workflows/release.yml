@@ -21,10 +21,10 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: pump-release-${{ inputs.channel }}
+  group: pump-release
   cancel-in-progress: false
 
 jobs:
@@ -52,39 +52,62 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${ONLY_IF_CHANGED}" != "true" ]]; then
-            echo "only_if_changed=false; preserving immediate release behavior"
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "latest_source_sha=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           releases_json="${RUNNER_TEMP}/pump-releases.json"
           curl --fail --silent --show-error --location --max-time 30 "${RELEASES_URL}" > "${releases_json}"
           PYTHONPATH=scripts python3 - "${SOURCE_SHA}" "${releases_json}" "$GITHUB_OUTPUT" "${RELEASE_CHANNEL}" <<'PY'
           import json
+          import os
           import sys
           from pathlib import Path
+          import tomllib
 
           import release_helper
 
           source_sha, releases_path, output_path, channel = sys.argv[1:]
           try:
               document = json.loads(Path(releases_path).read_text(encoding="utf-8"))
-              latest_source_sha = release_helper.latest_release_source_sha(document, channel=channel)
-              should_release = release_helper.should_release(
-                  source_sha=source_sha,
-                  document=document,
-                  channel=channel,
-                  only_if_changed=True,
-              )
+              only_if_changed = os.environ["ONLY_IF_CHANGED"] == "true"
+              latest_source_sha = release_helper.latest_release_source_sha(document, channel=channel) if only_if_changed else None
+              should_release = release_helper.should_release(source_sha=source_sha, document=document, channel=channel, only_if_changed=only_if_changed)
+              package_version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+              release_version = release_helper.next_release_version(package_version, document)
           except (OSError, json.JSONDecodeError, ValueError) as error:
               print(f"::error::Could not validate public release history: {error}", file=sys.stderr)
               raise SystemExit(1)
           with open(output_path, "a", encoding="utf-8") as output:
               output.write(f"should_release={str(should_release).lower()}\n")
               output.write(f"latest_source_sha={latest_source_sha or ''}\n")
+              output.write(f"release_version={release_version}\n")
           print(f"latest source SHA decision: {'publish' if should_release else 'no-op'}")
+          print(f"selected release version: {release_version}")
           PY
+
+      - name: Bump package patch version
+        if: steps.gate.outputs.should_release == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.gate.outputs.release_version }}
+          SOURCE_SHA: ${{ steps.source_sha.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_version="$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"])')"
+          if [[ "${current_version}" == "${RELEASE_VERSION}" ]]; then
+            echo "release version v${RELEASE_VERSION} is already present; resuming a pending release bump"
+            exit 0
+          fi
+          python3 scripts/bump_version.py "${RELEASE_VERSION}"
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): bump Pump to v${RELEASE_VERSION} [skip ci]"
+          test "$(git rev-parse HEAD^1)" = "${SOURCE_SHA}"
+          git push origin HEAD:main
+
+      - name: Capture release source SHA
+        id: release_source
+        if: steps.gate.outputs.should_release == 'true'
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Configure private git dependencies
         if: steps.gate.outputs.should_release == 'true'
@@ -132,7 +155,7 @@ jobs:
         if: steps.gate.outputs.should_release == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: pump-release-${{ inputs.channel }}-${{ steps.source_sha.outputs.sha }}
+          name: pump-release-${{ inputs.channel }}-${{ steps.release_source.outputs.sha }}
           path: dist/releases/*
           if-no-files-found: error
           retention-days: 3
