@@ -390,6 +390,20 @@ mod tests {
     }
 
     #[test]
+    fn missing_curve_slot_store_loads_all_slots_empty() {
+        let path = temp_path("missing");
+        assert!(!path.exists());
+
+        with_test_curve_slot_path(path.clone(), || {
+            let slots = load_global_curve_slots().expect("missing curve slot store should load");
+            assert_eq!(slots.len(), GLOBAL_CURVE_SLOT_COUNT);
+            assert!(slots.iter().all(|slot| slot.curve.is_none()));
+        });
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn store_global_curve_slot_updates_only_target_slot() {
         let path = temp_path("store-one");
         with_test_curve_slot_path(path.clone(), || {
