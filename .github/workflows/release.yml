@@ -23,6 +23,9 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
 concurrency:
   group: pump-release
   cancel-in-progress: false
