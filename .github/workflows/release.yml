@@ -101,8 +101,20 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml Cargo.lock
           git commit -m "chore(release): bump Pump to v${RELEASE_VERSION} [skip ci]"
-          test "$(git rev-parse HEAD^1)" = "${SOURCE_SHA}"
-          git push origin HEAD:main
+          test "$(git merge-base "${SOURCE_SHA}" HEAD)" = "${SOURCE_SHA}"
+          for attempt in 1 2 3; do
+            git fetch origin main --quiet
+            if [[ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD)" ]]; then
+              git rebase origin/main
+            fi
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            if [[ "${attempt}" == 3 ]]; then
+              echo "could not publish the release version commit after ${attempt} attempts" >&2
+              exit 1
+            fi
+          done
 
       - name: Capture release source SHA
         id: release_source
