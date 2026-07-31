@@ -114,6 +114,8 @@ All notable changes to this project are documented in this file.
 
 - Add release preflight (#53) (fee51ea)
 
+- (release) Bump patch version on every release (5b3fca7)
+
 
 ### Chores
 
@@ -429,6 +431,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (352689d)
 
 - (changelog) Update changelog [skip ci] (a2d84d4)
+
+- (changelog) Update changelog [skip ci] (9e697d3)
 
 
 ### Features
