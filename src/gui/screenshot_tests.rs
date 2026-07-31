@@ -3,6 +3,7 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
 use crate::automation_queue::PumpAutomationQueue;
+use crate::incoming_waveform::{IncomingWaveformWriter, INCOMING_WAVEFORM_BIN_COUNT};
 use image::{ColorType, ImageFormat};
 use radiant::{
     gui::{
@@ -329,6 +330,74 @@ fn render_non_default_active_meter_case(
         ImageFormat::Png,
     )
     .expect("screenshot PNG should be writable");
+    (plan, pixels)
+}
+
+fn render_waveform_layers_case(
+    name: &str,
+    width: u32,
+    height: u32,
+    dpi: DpiScale,
+) -> (SurfacePaintPlan, Vec<u8>) {
+    let store_path = std::env::temp_dir().join(format!(
+        "pump-waveform-layers-{}-{}.bin",
+        std::process::id(),
+        name
+    ));
+    let (plan, pixels) = with_test_curve_slot_path(store_path.clone(), || {
+        let params = Arc::new(PumpParams::new());
+        params.set_depth_db(48.0);
+        params.set_floor_db(-18.0);
+        params.set_phase_offset(0.23);
+        let status = Arc::new(GuiStatus::default());
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(status.incoming_waveform_buffer());
+        for index in 0..INCOMING_WAVEFORM_BIN_COUNT {
+            let phase = index as f32 / INCOMING_WAVEFORM_BIN_COUNT as f32;
+            let peak = (0.10
+                + 0.42 * (phase * 6.2831855).sin().abs()
+                + 0.24 * (phase * 12.566371 + 0.7).cos().max(0.0))
+            .clamp(0.0, 1.0);
+            writer.record(status.incoming_waveform_buffer(), phase, peak, 0.0);
+        }
+        writer.record(status.incoming_waveform_buffer(), 0.0, 0.0, 0.0);
+        writer.finish_block(status.incoming_waveform_buffer());
+        assert!(status.incoming_waveform_snapshot().is_some());
+
+        let mut editor = RadiantPumpEditor::new(
+            params,
+            status,
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        editor.resize(width, height);
+        let plan = editor.paint_plan().clone();
+        let mut renderer = toybox::radiant_gui::bundled_offscreen_capture(
+            Vector2::new(width as f32, height as f32),
+            dpi,
+        )
+        .expect("Vello offscreen adapter should be available for screenshot tests");
+        let pixels = renderer
+            .capture(&plan)
+            .expect("waveform-layer paint plan should render through Vello");
+        (plan, pixels)
+    });
+    let _ = fs::remove_file(store_path);
+    let (physical_width, physical_height) = (
+        (width as f32 * dpi.factor()).ceil() as u32,
+        (height as f32 * dpi.factor()).ceil() as u32,
+    );
+    image::save_buffer_with_format(
+        screenshot_root().join(format!("{name}.png")),
+        &pixels,
+        physical_width,
+        physical_height,
+        ColorType::Rgba8,
+        ImageFormat::Png,
+    )
+    .expect("waveform-layer screenshot PNG should be writable");
     (plan, pixels)
 }
 
@@ -1066,6 +1135,34 @@ fn pump_editor_screenshot_fixture_renders_non_default_deck_and_active_meter() {
             primitive,
             PaintPrimitive::FillRect(fill)
                 if fill.color == meter.nominal || fill.color == meter.hot
+        )
+    }));
+}
+
+#[test]
+fn pump_editor_screenshot_fixture_renders_waveform_layers() {
+    let (plan, pixels) = render_waveform_layers_case(
+        "pump-waveform-layers-640x400",
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        DpiScale::ONE,
+    );
+    assert!(!pixels.is_empty());
+    for expected in ["OFFSET"] {
+        assert!(
+            plan.primitives.iter().any(
+                |primitive| matches!(primitive, PaintPrimitive::Text(text) if text.text.contains(expected))
+            ),
+            "waveform-layer screenshot should expose {expected}"
+        );
+    }
+    let theme = pump_theme();
+    assert!(plan.primitives.iter().any(|primitive| {
+        matches!(
+            primitive,
+            PaintPrimitive::StrokePolyline(stroke)
+                if stroke.color == theme.accent_copper.with_alpha(96)
+                    && (stroke.width - 2.0).abs() < 1.0e-6
         )
     }));
 }
