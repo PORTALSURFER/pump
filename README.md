@@ -78,8 +78,7 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 
 - `Mix`: dry/wet blend of ducking intensity.
 - `Phase Offset`: shifts where the curve starts in the sync cycle. In Sync,
-  raw Offset 0 is the transport-aligned origin; relative cyclic movement and
-  persisted parameter values are unchanged.
+  raw Offset 0 is the host-cycle/transport origin.
 - `Output Gain`: level trim after ducking.
 - The curve always follows the host beat/transport timeline.
 

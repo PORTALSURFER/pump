@@ -574,7 +574,7 @@ mod tests {
             None,
         );
 
-        for (actual, expected) in left.iter().zip([0.9, 0.91, 0.92, 0.715, 0.72, 0.725]) {
+        for (actual, expected) in left.iter().zip([0.4, 0.41, 0.42, 0.215, 0.22, 0.225]) {
             assert!((actual - expected).abs() < 1.0e-4, "{actual} != {expected}");
         }
         assert_eq!(left, right);
