@@ -86,7 +86,12 @@ impl Drop for PumpVst3Processor {
 }
 
 impl Class for PumpVst3Processor {
-    type Interfaces = (IComponent, IAudioProcessor, IProcessContextRequirements);
+    type Interfaces = (
+        IComponent,
+        IAudioProcessor,
+        IAudioPresentationLatency,
+        IProcessContextRequirements,
+    );
 }
 
 impl IPluginBaseTrait for PumpVst3Processor {
@@ -189,7 +194,10 @@ impl IComponentTrait for PumpVst3Processor {
         kResultOk
     }
 
-    unsafe fn setActive(&self, _state: TBool) -> tresult {
+    unsafe fn setActive(&self, state: TBool) -> tresult {
+        if state == 0 {
+            self.runtime_handoff.reset_input_presentation_latency();
+        }
         self.runtime_handoff.publish_processing_reset();
         kResultOk
     }
@@ -391,6 +399,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             runtime.last_curve_revision = self.shared.params.curve_revision();
         }
 
+        // Presentation latency is a host-side input property. Load it once
+        // for the block so GUI, DSP, and waveform publication share one
+        // compensated transport snapshot.
+        let input_latency_samples = self.runtime_handoff.input_presentation_latency_samples();
+
         let revision = self.shared.params.curve_revision();
         if revision != runtime.last_curve_revision {
             runtime
@@ -403,7 +416,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         runtime
             .param_schedule
             .apply_through(0, self.shared.params.as_ref(), &mut settings);
-        let transport = transport_state_from_vst3_process_context(process_data.processContext);
+        let transport = crate::transport::compensate_input_presentation_latency(
+            transport_state_from_vst3_process_context(process_data.processContext),
+            Some(input_latency_samples),
+            runtime.sample_rate.into(),
+        );
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
         self.shared.status.update_transport(
             gui_phase,
@@ -455,6 +472,27 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
     unsafe fn getTailSamples(&self) -> u32 {
         0
+    }
+}
+
+impl IAudioPresentationLatencyTrait for PumpVst3Processor {
+    unsafe fn setAudioPresentationLatencySamples(
+        &self,
+        dir: BusDirection,
+        bus_index: int32,
+        latency_in_samples: uint32,
+    ) -> tresult {
+        match dir as BusDirections {
+            BusDirections_::kInput if bus_index == 0 => {
+                self.runtime_handoff
+                    .publish_input_presentation_latency(latency_in_samples);
+                kResultOk
+            }
+            // Pump does not report or use output presentation latency, but a
+            // valid main output bus is still accepted per the VST3 contract.
+            BusDirections_::kOutput if bus_index == 0 => kResultOk,
+            _ => kInvalidArgument,
+        }
     }
 }
 

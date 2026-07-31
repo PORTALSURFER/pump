@@ -4,6 +4,45 @@ use crate::dsp::{swing_warp_phase, DspSettings};
 use crate::GuiTransportTelemetry;
 use toybox::dsp::{phase_from_beats, TransportState};
 
+/// Compensate a host beat timeline for input presentation latency.
+///
+/// The host timeline is expressed at the block's presentation point, while
+/// audio entering the plugin may represent an earlier point by the input
+/// latency. Keep invalid or unavailable timing inputs unchanged so callers
+/// retain the existing fallback behavior.
+pub(crate) fn compensate_input_presentation_latency(
+    transport: TransportState,
+    latency_samples: Option<u32>,
+    sample_rate: f64,
+) -> TransportState {
+    let Some(latency_samples) = latency_samples.filter(|&samples| samples != 0) else {
+        return transport;
+    };
+    let Some(song_pos_beats) = transport.song_pos_beats else {
+        return transport;
+    };
+    let tempo_bpm = f64::from(transport.tempo_bpm);
+    if !song_pos_beats.is_finite()
+        || !tempo_bpm.is_finite()
+        || tempo_bpm <= 0.0
+        || !sample_rate.is_finite()
+        || sample_rate <= 0.0
+    {
+        return transport;
+    }
+
+    let latency_beats = f64::from(latency_samples) * tempo_bpm / (60.0 * sample_rate);
+    let compensated_song_pos_beats = song_pos_beats - latency_beats;
+    if !latency_beats.is_finite() || !compensated_song_pos_beats.is_finite() {
+        return transport;
+    }
+
+    TransportState {
+        song_pos_beats: Some(compensated_song_pos_beats),
+        ..transport
+    }
+}
+
 /// Resolve GUI phase from the latest host transport snapshot.
 ///
 /// Uses host beat timeline when available so the curve marker remains aligned to
@@ -65,9 +104,86 @@ mod tests {
     use toybox::dsp::{phase_from_beats, TransportState};
 
     use super::{
-        gui_phase_from_transport, gui_transport_telemetry, host_beat_phase,
-        phase_running_from_transport,
+        compensate_input_presentation_latency, gui_phase_from_transport, gui_transport_telemetry,
+        host_beat_phase, phase_running_from_transport,
     };
+
+    #[test]
+    fn input_presentation_latency_compensation_uses_samples_and_tempo_units() {
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            song_pos_beats: Some(4.0),
+            ..TransportState::default()
+        };
+
+        let compensated = compensate_input_presentation_latency(transport, Some(24_000), 48_000.0);
+
+        assert!((compensated.song_pos_beats.unwrap_or_default() - 3.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn input_presentation_latency_compensation_preserves_zero_missing_and_invalid_inputs() {
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            song_pos_beats: Some(4.0),
+            ..TransportState::default()
+        };
+
+        for (latency_samples, sample_rate) in [
+            (None, 48_000.0),
+            (Some(0), 48_000.0),
+            (Some(24), 0.0),
+            (Some(24), f64::NAN),
+        ] {
+            assert_eq!(
+                compensate_input_presentation_latency(transport, latency_samples, sample_rate),
+                transport
+            );
+        }
+
+        assert_eq!(
+            compensate_input_presentation_latency(
+                TransportState {
+                    tempo_bpm: 0.0,
+                    ..transport
+                },
+                Some(24),
+                48_000.0,
+            ),
+            TransportState {
+                tempo_bpm: 0.0,
+                ..transport
+            }
+        );
+
+        assert_eq!(
+            compensate_input_presentation_latency(
+                TransportState {
+                    song_pos_beats: None,
+                    ..transport
+                },
+                Some(24),
+                48_000.0,
+            ),
+            TransportState {
+                song_pos_beats: None,
+                ..transport
+            }
+        );
+    }
+
+    #[test]
+    fn input_presentation_latency_compensation_allows_negative_beats() {
+        let transport = TransportState {
+            tempo_bpm: 60.0,
+            song_pos_beats: Some(-0.25),
+            ..TransportState::default()
+        };
+
+        let compensated = compensate_input_presentation_latency(transport, Some(24_000), 48_000.0);
+
+        assert!((compensated.song_pos_beats.unwrap_or_default() + 0.75).abs() < 1.0e-6);
+    }
 
     #[test]
     fn gui_phase_from_transport_prefers_host_song_position() {

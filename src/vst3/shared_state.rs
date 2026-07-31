@@ -20,6 +20,7 @@ pub(super) struct PendingRuntimeChanges {
 /// audio thread or waiting for another thread to release a lock.
 pub(super) struct RuntimeHandoff {
     sample_rate_bits: AtomicU32,
+    input_presentation_latency_samples: AtomicU32,
     pending: AtomicU8,
 }
 
@@ -27,6 +28,7 @@ impl RuntimeHandoff {
     pub(super) fn new() -> Self {
         Self {
             sample_rate_bits: AtomicU32::new(48_000.0_f32.to_bits()),
+            input_presentation_latency_samples: AtomicU32::new(0),
             pending: AtomicU8::new(0),
         }
     }
@@ -51,6 +53,21 @@ impl RuntimeHandoff {
     pub(super) fn publish_processing_reset(&self) {
         self.pending
             .fetch_or(PENDING_PROCESSING_RESET, Ordering::Release);
+    }
+
+    pub(super) fn publish_input_presentation_latency(&self, latency_samples: u32) {
+        self.input_presentation_latency_samples
+            .store(latency_samples, Ordering::Release);
+    }
+
+    pub(super) fn reset_input_presentation_latency(&self) {
+        self.input_presentation_latency_samples
+            .store(0, Ordering::Release);
+    }
+
+    pub(super) fn input_presentation_latency_samples(&self) -> u32 {
+        self.input_presentation_latency_samples
+            .load(Ordering::Acquire)
     }
 
     pub(super) fn take_pending(&self) -> PendingRuntimeChanges {
