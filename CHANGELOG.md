@@ -189,6 +189,8 @@ All notable changes to this project are documented in this file.
 
 - Repin canonical Radiant and Toybox merges (1fb2078)
 
+- Repin corrected knob wheel dependencies (0750e93)
+
 
 ### Documentation
 
@@ -414,6 +416,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (5a8e8c9)
 
+- (changelog) Update changelog [skip ci] (82680d7)
+
 
 ### Features
 
@@ -442,6 +446,8 @@ All notable changes to this project are documented in this file.
 - Simplify Pump to clock-synced curve shaping (10a033c)
 
 - Add free timing editor workflow (#48) (3958f4a)
+
+- (gui) Adopt hover wheel knob automation (0adad6e)
 
 
 ### Other
@@ -1349,6 +1355,10 @@ Extend high-end smoothing (f3b3309)
 - Merge pull request #63 from PORTALSURFER/codex/pump-ab-command-switch
 
 Fix A/B command-copy switching (863d5d0)
+
+- Merge pull request #61 from PORTALSURFER/codex/pump-knob-wheel
+
+Adopt Radiant hover-wheel knob automation (85d4209)
 
 
 ### Refactoring
