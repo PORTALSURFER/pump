@@ -422,6 +422,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (cc89cd8)
 
+- (changelog) Update changelog [skip ci] (d5d7e9a)
+
 
 ### Features
 
@@ -1371,6 +1373,10 @@ Merged after exact-head Terra review APPROVE, passing Pump CI, and successful re
 - Fix Sync Offset transport origin (#65)
 
 Remove the hidden half-cycle Sync phase bias so raw Offset 0 follows the DAW transport origin 1:1. Preserve nonzero cyclic offsets, Swing ordering, Free timing, and add focused DSP/transport regressions. (7c94d07)
+
+- Add curve-mapped waveform preview (#67)
+
+Add a GUI-only processed waveform preview using the existing input envelope and authoritative Depth/Floor curve mapping. Preserve phase alignment and enforce the production screenshot fixture. (b2af460)
 
 
 ### Refactoring
