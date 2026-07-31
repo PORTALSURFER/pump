@@ -93,6 +93,7 @@ if [[ "${want_screenshots}" == "1" ]]; then
     target/ui-screenshots/pump/pump-header-disabled-640x400.png
     target/ui-screenshots/pump/pump-header-a-active-640x400.png
     target/ui-screenshots/pump/pump-header-b-active-640x400.png
+    target/ui-screenshots/pump/pump-waveform-layers-640x400.png
   )
   for capture in "${required_captures[@]}"; do
     if [[ ! -f "${capture}" ]]; then

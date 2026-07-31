@@ -4848,6 +4848,60 @@ impl CurvePreviewWidget {
         let Some(waveform) = self.incoming_waveform.as_ref() else {
             return;
         };
+        self.push_waveform_layer(
+            primitives,
+            bounds,
+            waveform,
+            theme.text_muted.with_alpha(88),
+            1.0,
+        );
+    }
+
+    fn processed_waveform(&self) -> Option<IncomingWaveformSnapshot> {
+        self.incoming_waveform.as_ref().map(|waveform| {
+            std::array::from_fn(|index| {
+                let viewport_phase = index as f32 / (waveform.len() - 1) as f32;
+                let gain = crate::dsp::curve_value_to_gain(
+                    self.sample_display_curve(viewport_phase),
+                    self.depth_db,
+                    self.floor_db,
+                );
+                let input = if waveform[index].is_finite() {
+                    waveform[index]
+                } else {
+                    0.0
+                };
+                (input * gain).clamp(0.0, 1.0)
+            })
+        })
+    }
+
+    fn push_processed_waveform(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        theme: &ThemeTokens,
+    ) {
+        let Some(waveform) = self.processed_waveform() else {
+            return;
+        };
+        self.push_waveform_layer(
+            primitives,
+            bounds,
+            &waveform,
+            theme.accent_copper.with_alpha(96),
+            2.0,
+        );
+    }
+
+    fn push_waveform_layer(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        waveform: &[f32],
+        color: Rgba8,
+        width: f32,
+    ) {
         let curve_bounds = Self::curve_bounds(bounds);
         let center_y = curve_bounds.min.y + curve_bounds.height() * 0.5;
         let amplitude_scale = curve_bounds.height() * 0.43;
@@ -4859,25 +4913,24 @@ impl CurvePreviewWidget {
                     .enumerate()
                     .map(|(index, amplitude)| {
                         let phase = index as f32 / (waveform.len() - 1) as f32;
-                        let x = curve_bounds.min.x + phase * curve_bounds.width();
+                        let x = curve_bounds.min.x + phase * (curve_bounds.width().max(1.0) - 1.0);
                         let offset = amplitude.clamp(0.0, 1.0) * amplitude_scale;
                         Point::new(x, center_y + if upper { -offset } else { offset })
                     })
                     .collect::<Vec<_>>(),
             )
         };
-        let color = theme.text_muted.with_alpha(88);
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
             points: points_for(true),
             color,
-            width: 1.0,
+            width,
         }));
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
             points: points_for(false),
             color,
-            width: 1.0,
+            width,
         }));
     }
 
@@ -5382,6 +5435,7 @@ impl Widget for CurvePreviewWidget {
         theme: &ThemeTokens,
     ) {
         self.push_grid(primitives, bounds, theme);
+        self.push_processed_waveform(primitives, bounds, theme);
         self.push_incoming_waveform(primitives, bounds, theme);
         self.push_gain_references(primitives, bounds, theme);
         self.push_curve(primitives, bounds, theme);
@@ -10138,7 +10192,113 @@ mod tests {
     }
 
     #[test]
-    fn curve_preview_widget_paints_incoming_waveform_before_curve_and_nodes() {
+    fn curve_preview_widget_maps_processed_waveform_with_display_phase_and_gain() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.0 },
+                CurveNode { x: 0.3, y: 0.8 },
+                CurveNode { x: 0.7, y: 0.1 },
+                CurveNode { x: 1.0, y: 0.2 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let mut waveform = [0.0; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
+        waveform[0] = 0.8;
+        waveform[48] = 0.9;
+        let phase_offset = 0.25;
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_phase_offset(phase_offset)
+            .with_gain_mapping(120.0, -60.0);
+
+        let processed = widget
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+        assert!(
+            (processed[0] - waveform[0] * sample_editable_curve(&curve, -phase_offset)).abs()
+                < 1.0e-6
+        );
+        assert!(
+            (processed[48]
+                - waveform[48]
+                    * sample_editable_curve(
+                        &curve,
+                        48.0 / (waveform.len() - 1) as f32 - phase_offset,
+                    ))
+            .abs()
+                < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn curve_preview_widget_processed_waveform_preserves_unity_and_zero_gain() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.0 },
+                CurveNode { x: 0.5, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 2],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let waveform = [0.73; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
+        let unity = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_gain_mapping(0.0, -60.0)
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+        assert!(unity.iter().all(|sample| (*sample - 0.73).abs() < 1.0e-6));
+
+        let zero = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_gain_mapping(120.0, -60.0)
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+        assert!(zero[0].abs() < 1.0e-6);
+        assert!(zero[48] > 0.0);
+    }
+
+    #[test]
+    fn curve_preview_widget_processed_waveform_clamps_finite_floor_and_input() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.0 },
+                CurveNode { x: 0.5, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 2],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let mut waveform = [0.25; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
+        waveform[1] = 1.5;
+        waveform[2] = -0.5;
+        waveform[3] = f32::NAN;
+
+        let finite_floor =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                .with_incoming_waveform(Some(waveform))
+                .with_gain_mapping(120.0, -6.0)
+                .processed_waveform()
+                .expect("incoming waveform should produce a wet preview");
+        assert!((finite_floor[0] - 0.25 * crate::dsp::db_to_linear(-6.0)).abs() < 1.0e-6);
+
+        let clamped_input = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_gain_mapping(0.0, 0.0)
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+        assert_eq!(clamped_input[1], 1.0);
+        assert_eq!(clamped_input[2], 0.0);
+        assert_eq!(clamped_input[3], 0.0);
+        assert!(clamped_input.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_waveform_layers_with_shared_geometry_and_z_order() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut waveform = [0.0; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
         waveform[crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT / 2] = 1.0;
@@ -10150,18 +10310,69 @@ mod tests {
 
         widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
 
-        let waveform_color = theme.text_muted.with_alpha(88);
-        let waveform_indices: Vec<_> = primitives
+        let processed_color = theme.accent_copper.with_alpha(96);
+        let incoming_color = theme.text_muted.with_alpha(88);
+        let processed_indices: Vec<_> = primitives
             .iter()
             .enumerate()
             .filter_map(|(index, primitive)| match primitive {
-                PaintPrimitive::StrokePolyline(stroke) if stroke.color == waveform_color => {
+                PaintPrimitive::StrokePolyline(stroke)
+                    if stroke.color == processed_color && (stroke.width - 2.0).abs() < 1.0e-6 =>
+                {
                     Some(index)
                 }
                 _ => None,
             })
             .collect();
-        assert_eq!(waveform_indices.len(), 2);
+        let incoming_indices: Vec<_> = primitives
+            .iter()
+            .enumerate()
+            .filter_map(|(index, primitive)| match primitive {
+                PaintPrimitive::StrokePolyline(stroke)
+                    if stroke.color == incoming_color && (stroke.width - 1.0).abs() < 1.0e-6 =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(processed_indices.len(), 2);
+        assert_eq!(incoming_indices.len(), 2);
+        for (processed_index, incoming_index) in
+            processed_indices.iter().zip(incoming_indices.iter())
+        {
+            let processed = match &primitives[*processed_index] {
+                PaintPrimitive::StrokePolyline(stroke) => stroke,
+                _ => unreachable!(),
+            };
+            let incoming = match &primitives[*incoming_index] {
+                PaintPrimitive::StrokePolyline(stroke) => stroke,
+                _ => unreachable!(),
+            };
+            assert_eq!(processed.points.len(), waveform.len());
+            assert_eq!(processed.points.len(), incoming.points.len());
+            let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+            let endpoint_scale = curve_bounds.width().max(1.0) - 1.0;
+            assert!((processed.points[0].x - curve_bounds.min.x).abs() < 1.0e-6);
+            assert!((incoming.points[0].x - curve_bounds.min.x).abs() < 1.0e-6);
+            assert!(
+                (processed.points[processed.points.len() - 1].x
+                    - (curve_bounds.min.x + endpoint_scale))
+                    .abs()
+                    < 1.0e-6
+            );
+            assert!(
+                (incoming.points[incoming.points.len() - 1].x
+                    - (curve_bounds.min.x + endpoint_scale))
+                    .abs()
+                    < 1.0e-6
+            );
+            assert!(processed
+                .points
+                .iter()
+                .zip(incoming.points.iter())
+                .all(|(processed, incoming)| (processed.x - incoming.x).abs() < 1.0e-6));
+        }
         let curve_index = primitives
             .iter()
             .position(|primitive| {
@@ -10172,6 +10383,16 @@ mod tests {
                 )
             })
             .expect("editable curve stroke should be present");
+        let guide_index = primitives
+            .iter()
+            .position(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::StrokePolyline(stroke)
+                        if stroke.color == theme.text_muted.with_alpha(72)
+                )
+            })
+            .expect("curve gain guide should be present");
         let node_index = primitives
             .iter()
             .rposition(|primitive| {
@@ -10181,8 +10402,17 @@ mod tests {
                 )
             })
             .expect("curve nodes should be present");
-        assert!(waveform_indices.iter().all(|index| *index < curve_index));
-        assert!(waveform_indices.iter().all(|index| *index < node_index));
+        assert!(processed_indices.iter().all(|index| *index < curve_index));
+        assert!(incoming_indices.iter().all(|index| *index < curve_index));
+        assert!(incoming_indices.iter().all(|index| *index < guide_index));
+        assert!(guide_index < curve_index);
+        assert!(processed_indices
+            .iter()
+            .chain(incoming_indices.iter())
+            .all(|index| *index < node_index));
+        assert!(processed_indices
+            .iter()
+            .all(|index| *index < incoming_indices[0]));
     }
 
     #[test]
