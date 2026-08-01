@@ -162,6 +162,8 @@ pub(crate) struct StrokeRecorder {
     runs: Vec<PaintRun>,
     point_count: usize,
     truncated: bool,
+    // Left/right exits stay pinned until an interior observation resumes them.
+    side_exit_lock: Option<PaintPoint>,
     last: Option<LastObservation>,
 }
 
@@ -172,6 +174,7 @@ impl StrokeRecorder {
             runs: Vec::new(),
             point_count: 0,
             truncated: false,
+            side_exit_lock: None,
             last: None,
         }
     }
@@ -221,7 +224,9 @@ impl StrokeRecorder {
             (false, true) => self.capture_exit(previous, raw, point),
             (true, false) => self.capture_reentry(previous, raw, point),
             (true, true) => {
-                if !self.capture_perimeter_step(previous.point, point) {
+                if self.side_exit_lock.is_none()
+                    && !self.capture_perimeter_step(previous.point, point)
+                {
                     // A sparse jump between non-adjacent perimeter locations
                     // has no uniquely recoverable path.
                     self.start_run(point);
@@ -245,6 +250,10 @@ impl StrokeRecorder {
         };
 
         self.append_to_current(intersection);
+        if is_left_or_right_edge(intersection.contact) {
+            self.side_exit_lock = Some(intersection);
+            return;
+        }
         if !self.capture_perimeter_step(intersection, point) {
             // A sparse jump to a non-adjacent perimeter location is
             // ambiguous.  Preserve the endpoint, but never invent a chord
@@ -254,8 +263,9 @@ impl StrokeRecorder {
     }
 
     fn capture_reentry(&mut self, previous: LastObservation, raw: RectPoint, point: PaintPoint) {
-        let intersection =
-            segment_boundary_intersection(self.bounds, previous.raw, raw, IntersectionOrder::Last);
+        let intersection = self.side_exit_lock.take().or_else(|| {
+            segment_boundary_intersection(self.bounds, previous.raw, raw, IntersectionOrder::Last)
+        });
 
         // Re-entry is always a run break.  Starting the new run at the exact
         // intersection keeps the visible stroke faithful without joining an
@@ -508,6 +518,19 @@ fn paint_contact_kind(contact: BoundaryContact) -> PaintContactKind {
         BoundaryContact::Edge(parameter) => PaintContactKind::Edge(parameter.edge),
         BoundaryContact::Corner(corner) => PaintContactKind::Corner(corner),
     }
+}
+
+fn is_left_or_right_edge(contact: BoundaryContact) -> bool {
+    matches!(
+        contact,
+        BoundaryContact::Edge(EdgeParameter {
+            edge: BoundaryEdge::Left,
+            ..
+        }) | BoundaryContact::Edge(EdgeParameter {
+            edge: BoundaryEdge::Right,
+            ..
+        })
+    )
 }
 
 fn meaningful_horizontal_reversal(
@@ -2579,7 +2602,7 @@ mod tests {
         assert_eq!(recorder.runs().len(), 1);
         assert_eq!(
             positions(&recorder.runs()[0]),
-            vec![point(0.25, 0.5), point(1.0, 0.65), point(1.0, 0.75)]
+            vec![point(0.25, 0.5), point(1.0, 0.65)]
         );
         assert!(matches!(
             recorder.runs()[0].points().last().unwrap().contact,
@@ -2588,6 +2611,68 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn left_side_exit_retains_first_contact_through_outside_motion_and_reentry() {
+        let mut recorder = StrokeRecorder::new(bounds());
+        recorder.observe(point(0.5, 0.25));
+        recorder.observe_outside(point(-0.5, 0.75));
+        recorder.observe_outside(point(-0.5, 2.5));
+        recorder.observe_outside(point(1.5, -1.5));
+
+        assert_eq!(recorder.runs().len(), 1);
+        assert_eq!(
+            positions(&recorder.runs()[0]),
+            vec![point(0.5, 0.25), point(0.0, 0.5)]
+        );
+        assert_eq!(
+            recorder.runs()[0].points().last().unwrap().contact,
+            BoundaryContact::Edge(EdgeParameter {
+                edge: BoundaryEdge::Left,
+                parameter: 0.5,
+            })
+        );
+
+        recorder.observe(point(0.75, 0.25));
+
+        assert_eq!(recorder.runs().len(), 2);
+        assert_eq!(
+            positions(&recorder.runs()[1]),
+            vec![point(0.0, 0.5), point(0.75, 0.25)]
+        );
+        assert!(recorder.side_exit_lock.is_none());
+    }
+
+    #[test]
+    fn right_side_exit_retains_first_contact_through_outside_motion_and_reentry() {
+        let mut recorder = StrokeRecorder::new(bounds());
+        recorder.observe(point(0.5, 0.25));
+        recorder.observe_outside(point(1.5, 0.75));
+        recorder.observe_outside(point(1.5, 2.5));
+        recorder.observe_outside(point(-1.5, -1.5));
+
+        assert_eq!(recorder.runs().len(), 1);
+        assert_eq!(
+            positions(&recorder.runs()[0]),
+            vec![point(0.5, 0.25), point(1.0, 0.5)]
+        );
+        assert_eq!(
+            recorder.runs()[0].points().last().unwrap().contact,
+            BoundaryContact::Edge(EdgeParameter {
+                edge: BoundaryEdge::Right,
+                parameter: 0.5,
+            })
+        );
+
+        recorder.observe(point(0.25, 0.75));
+
+        assert_eq!(recorder.runs().len(), 2);
+        assert_eq!(
+            positions(&recorder.runs()[1]),
+            vec![point(1.0, 0.5), point(0.25, 0.75)]
+        );
+        assert!(recorder.side_exit_lock.is_none());
     }
 
     #[test]

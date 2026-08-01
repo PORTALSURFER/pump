@@ -1213,6 +1213,109 @@ fn curve_width_from_push_through_threshold_x(threshold_x: f32) -> f32 {
     }
 }
 
+fn interactive_curve_node_survivors(
+    curve: &EditableCurve,
+    phase_offset: f32,
+    active_node: Option<usize>,
+) -> Vec<usize> {
+    if curve.nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let phase_offset = if phase_offset.is_finite() {
+        phase_offset.rem_euclid(1.0)
+    } else {
+        0.0
+    };
+    let display_x: Vec<f32> = curve
+        .nodes
+        .iter()
+        .map(|node| CurvePreviewWidget::display_phase(node.x, phase_offset))
+        .collect();
+    let left_survivor = select_interactive_edge_survivor(&display_x, active_node, true);
+    let right_survivor = select_interactive_edge_survivor(&display_x, active_node, false);
+
+    (0..curve.nodes.len())
+        .filter(|index| {
+            let x = display_x[*index];
+            let in_left_band = x <= CURVE_NODE_MIN_SPACING_X;
+            let in_right_band = x >= 1.0 - CURVE_NODE_MIN_SPACING_X;
+            (!in_left_band && !in_right_band)
+                || Some(*index) == left_survivor
+                || Some(*index) == right_survivor
+        })
+        .collect()
+}
+
+fn select_interactive_edge_survivor(
+    display_x: &[f32],
+    active_node: Option<usize>,
+    left_side: bool,
+) -> Option<usize> {
+    let last_index = display_x.len().saturating_sub(1);
+    let in_band = |x: f32| {
+        if left_side {
+            x <= CURVE_NODE_MIN_SPACING_X
+        } else {
+            x >= 1.0 - CURVE_NODE_MIN_SPACING_X
+        }
+    };
+
+    if let Some(active) =
+        active_node.filter(|index| display_x.get(*index).copied().is_some_and(&in_band))
+    {
+        return Some(active);
+    }
+
+    let structural = if left_side { 0 } else { last_index };
+    if display_x.get(structural).copied().is_some_and(|x| {
+        in_band(x)
+            && if left_side {
+                x <= CURVE_DISPLAY_SEAM_EPSILON
+            } else {
+                x >= 1.0 - CURVE_DISPLAY_SEAM_EPSILON
+            }
+    }) {
+        return Some(structural);
+    }
+
+    display_x
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, x)| in_band(*x))
+        .min_by(|(left_index, left_x), (right_index, right_x)| {
+            let left_distance = if left_side { *left_x } else { 1.0 - *left_x };
+            let right_distance = if left_side { *right_x } else { 1.0 - *right_x };
+            left_distance
+                .total_cmp(&right_distance)
+                .then_with(|| left_index.cmp(right_index))
+        })
+        .map(|(index, _)| index)
+}
+
+fn feasible_delta_interval_including_zero(min_delta: f32, max_delta: f32) -> (f32, f32) {
+    if min_delta <= max_delta && min_delta <= 0.0 && max_delta >= 0.0 {
+        (min_delta, max_delta)
+    } else {
+        // Legacy topology can make the preferred spacing interval empty or
+        // exclude the current group position. Keep zero movement available so
+        // a vertical-only edit remains a valid gesture.
+        (min_delta.min(0.0), max_delta.max(0.0))
+    }
+}
+
+fn feasible_node_x_interval_including_origin(min_x: f32, max_x: f32, origin_x: f32) -> (f32, f32) {
+    if min_x <= max_x && min_x <= origin_x && origin_x <= max_x {
+        (min_x, max_x)
+    } else {
+        // Preserve the legacy node's current x when the newer interactive
+        // spacing policy cannot contain it. This also guarantees clamp bounds
+        // stay ordered when the preferred interval is contradictory.
+        (min_x.min(origin_x), max_x.max(origin_x))
+    }
+}
+
 fn resolve_curve_offset(
     sync_division: usize,
     width: f32,
@@ -3014,12 +3117,21 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             command_held,
         } => {
             let curve = state.params.editable_curve_snapshot();
+            let survivors = interactive_curve_node_survivors(
+                &curve,
+                state.params.phase_offset(),
+                state.active_curve_node,
+            );
+            if !survivors.contains(&index) {
+                state.clear_curve_selection();
+                return;
+            }
             let selected_indices = if state.selected_curve_nodes.contains(&index) {
                 state
                     .selected_curve_nodes
                     .iter()
                     .copied()
-                    .filter(|selected| *selected < curve.nodes.len())
+                    .filter(|selected| survivors.contains(selected))
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
@@ -3069,17 +3181,26 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             let Some(marquee) = state.active_curve_marquee.take() else {
                 return;
             };
-            let min_x = marquee.start.x.min(current.x);
-            let max_x = marquee.start.x.max(current.x);
             let min_y = marquee.start.y.min(current.y);
             let max_y = marquee.start.y.max(current.y);
             let curve = state.params.editable_curve_snapshot();
+            let phase_offset = state.params.phase_offset();
+            let survivors = interactive_curve_node_survivors(&curve, phase_offset, None);
+            let start_x = CurvePreviewWidget::display_phase(marquee.start.x, phase_offset);
+            let current_x = CurvePreviewWidget::display_phase(current.x, phase_offset);
+            let min_display_x = start_x.min(current_x);
+            let max_display_x = start_x.max(current_x);
             state.selected_curve_nodes = curve
                 .nodes
                 .iter()
                 .enumerate()
                 .filter_map(|(index, node)| {
-                    (node.x >= min_x && node.x <= max_x && node.y >= min_y && node.y <= max_y)
+                    let display_x = CurvePreviewWidget::display_phase(node.x, phase_offset);
+                    (survivors.contains(&index)
+                        && display_x >= min_display_x
+                        && display_x <= max_display_x
+                        && node.y >= min_y
+                        && node.y <= max_y)
                         .then_some(index)
                 })
                 .collect();
@@ -3161,6 +3282,11 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         }
         CurvePreviewMessage::DeleteNode { index } => {
             let mut curve = state.params.editable_curve_snapshot();
+            if !interactive_curve_node_survivors(&curve, state.params.phase_offset(), None)
+                .contains(&index)
+            {
+                return;
+            }
             state.clear_curve_selection();
             if delete_curve_node(&mut curve, index) {
                 state.params.set_editable_curve(&curve);
@@ -3177,7 +3303,11 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         }
         CurvePreviewMessage::DeleteSelectedNodes => {
             let mut curve = state.params.editable_curve_snapshot();
-            let deleted = delete_selected_curve_nodes(&mut curve, &state.selected_curve_nodes);
+            let deleted = delete_selected_curve_nodes(
+                &mut curve,
+                &state.selected_curve_nodes,
+                state.params.phase_offset(),
+            );
             if deleted {
                 state.params.set_editable_curve(&curve);
             }
@@ -3561,6 +3691,7 @@ fn curve_with_dragged_selected_nodes(
             }
         }
     }
+    let (min_delta, max_delta) = feasible_delta_interval_including_zero(min_delta, max_delta);
     let delta_x = (target.x - anchor.x).clamp(min_delta, max_delta);
     let delta_y = target.y - anchor.y;
     for index in selected.iter().copied() {
@@ -3627,8 +3758,11 @@ fn move_curve_node_with_push_through(
         moved_index = moved_index.saturating_sub(1);
     }
 
-    let min_x = curve.nodes[moved_index - 1].x + CURVE_NODE_MIN_SPACING_X;
-    let max_x = curve.nodes[moved_index + 1].x - CURVE_NODE_MIN_SPACING_X;
+    let origin_x = curve.nodes[moved_index].x;
+    let preferred_min_x = curve.nodes[moved_index - 1].x + CURVE_NODE_MIN_SPACING_X;
+    let preferred_max_x = curve.nodes[moved_index + 1].x - CURVE_NODE_MIN_SPACING_X;
+    let (min_x, max_x) =
+        feasible_node_x_interval_including_origin(preferred_min_x, preferred_max_x, origin_x);
     curve.nodes[moved_index] = CurveNode {
         x: target.x.clamp(min_x, max_x),
         y,
@@ -3832,11 +3966,16 @@ fn delete_curve_node(curve: &mut EditableCurve, index: usize) -> bool {
     true
 }
 
-fn delete_selected_curve_nodes(curve: &mut EditableCurve, selected: &[usize]) -> bool {
+fn delete_selected_curve_nodes(
+    curve: &mut EditableCurve,
+    selected: &[usize],
+    phase_offset: f32,
+) -> bool {
+    let survivors = interactive_curve_node_survivors(curve, phase_offset, None);
     let mut indices: Vec<usize> = selected
         .iter()
         .copied()
-        .filter(|index| *index > 0 && *index + 1 < curve.nodes.len())
+        .filter(|index| survivors.contains(index) && *index > 0 && *index + 1 < curve.nodes.len())
         .collect();
     indices.sort_unstable();
     indices.dedup();
@@ -4753,6 +4892,17 @@ impl CurvePreviewWidget {
         }
     }
 
+    fn interactive_node_survivors(&self) -> Vec<usize> {
+        interactive_curve_node_survivors(&self.curve, self.phase_offset, self.active_node)
+    }
+
+    fn has_interactive_deletable_selection(&self) -> bool {
+        let survivors = self.interactive_node_survivors();
+        self.selected_nodes.iter().any(|index| {
+            survivors.contains(index) && *index > 0 && *index + 1 < self.curve.nodes.len()
+        })
+    }
+
     fn display_curve_point(&self, bounds: Rect, node: CurveNode) -> Point {
         Self::curve_point(bounds, self.display_node(node))
     }
@@ -4776,12 +4926,16 @@ impl CurvePreviewWidget {
             return None;
         }
         let radius_squared = radius.max(0.0) * radius.max(0.0);
+        let survivors = self.interactive_node_survivors();
         self.curve
             .nodes
             .iter()
             .copied()
             .enumerate()
             .filter_map(|(index, node)| {
+                if !survivors.contains(&index) {
+                    return None;
+                }
                 let center = self.display_curve_point(bounds, node);
                 let dx = center.x - position.x;
                 let dy = center.y - position.y;
@@ -5412,7 +5566,11 @@ impl CurvePreviewWidget {
             }));
         }
 
+        let survivors = self.interactive_node_survivors();
         for (index, node) in self.curve.nodes.iter().copied().enumerate() {
+            if !survivors.contains(&index) {
+                continue;
+            }
             let center = self.display_curve_point(bounds, node);
             let active = self.active_node == Some(index);
             let selected = self.selected_nodes.contains(&index);
@@ -5617,11 +5775,7 @@ impl Widget for CurvePreviewWidget {
                 }
             }
             WidgetInput::KeyPress(WidgetKey::Delete | WidgetKey::Backspace)
-                if self.common.state.focused
-                    && self
-                        .selected_nodes
-                        .iter()
-                        .any(|index| *index > 0 && *index + 1 < self.curve.nodes.len()) =>
+                if self.common.state.focused && self.has_interactive_deletable_selection() =>
             {
                 Some(CurvePreviewMessage::DeleteSelectedNodes)
             }
@@ -5995,6 +6149,232 @@ mod tests {
             option_held: false,
             command_held: false,
         }
+    }
+
+    fn legacy_edge_curve() -> EditableCurve {
+        EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.75 },
+                CurveNode { x: 0.0001, y: 0.2 },
+                CurveNode { x: 0.5, y: 0.45 },
+                CurveNode { x: 0.9999, y: 0.15 },
+                CurveNode { x: 1.0, y: 0.75 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+            ..EditableCurve::default()
+        }
+        .normalized()
+    }
+
+    fn painted_node_centers(widget: &CurvePreviewWidget, bounds: Rect) -> Vec<Point> {
+        let mut primitives = Vec::new();
+        widget.append_paint(
+            &mut primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &ThemeTokens::default(),
+        );
+        primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill)
+                    if fill.rect.width() > CURVE_NODE_SIZE - 1.0e-5
+                        && fill.rect.width() < CURVE_NODE_SIZE + 1.7 + 1.0e-3
+                        && (fill.rect.width() - fill.rect.height()).abs() < 1.0e-3 =>
+                {
+                    Some(fill.rect.center())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn legacy_edge_nodes_have_one_painted_hit_and_marquee_survivor_per_side() {
+        let curve = legacy_edge_curve();
+        assert_eq!(curve.nodes.len(), 5);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let survivors = interactive_curve_node_survivors(&curve, 0.0, None);
+        assert_eq!(survivors, vec![0, 2, 4]);
+
+        let painted = painted_node_centers(&widget, bounds);
+        assert_eq!(painted.len(), survivors.len());
+        for index in survivors.iter().copied() {
+            let center = widget.display_curve_point(bounds, curve.nodes[index]);
+            assert!(painted.iter().any(|painted| {
+                (painted.x - center.x).abs() < 1.0e-5 && (painted.y - center.y).abs() < 1.0e-5
+            }));
+            assert_eq!(widget.hit_node(bounds, center), Some(index));
+        }
+        for index in [1, 3] {
+            let center = widget.display_curve_point(bounds, curve.nodes[index]);
+            assert!(!painted.iter().any(|painted| {
+                (painted.x - center.x).abs() < 1.0e-5 && (painted.y - center.y).abs() < 1.0e-5
+            }));
+            assert_eq!(widget.hit_node(bounds, center), None);
+        }
+
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&curve);
+        let before = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressMarquee {
+                start: CurveNode { x: 0.0, y: 1.0 },
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::ReleaseMarquee {
+                current: CurveNode { x: 1.0, y: 0.0 },
+            },
+        );
+        assert_eq!(state.selected_curve_nodes, survivors);
+        assert_eq!(params.editable_curve_snapshot(), before);
+    }
+
+    #[test]
+    fn legacy_edge_active_node_wins_deterministically_for_paint_and_hit() {
+        let curve = legacy_edge_curve();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+
+        let left_active =
+            CurvePreviewWidget::new(curve.clone(), Some(1), None, None, None, None, false);
+        assert_eq!(
+            interactive_curve_node_survivors(&curve, 0.0, Some(1)),
+            vec![1, 2, 4]
+        );
+        let left_center = left_active.display_curve_point(bounds, curve.nodes[1]);
+        assert_eq!(left_active.hit_node(bounds, left_center), Some(1));
+        assert!(painted_node_centers(&left_active, bounds)
+            .iter()
+            .any(|center| *center == left_center));
+
+        let right_active =
+            CurvePreviewWidget::new(curve.clone(), Some(3), None, None, None, None, false);
+        assert_eq!(
+            interactive_curve_node_survivors(&curve, 0.0, Some(3)),
+            vec![0, 2, 3]
+        );
+        let right_center = right_active.display_curve_point(bounds, curve.nodes[3]);
+        assert_eq!(right_active.hit_node(bounds, right_center), Some(3));
+        let right_painted = painted_node_centers(&right_active, bounds);
+        assert!(right_painted.iter().any(|center| {
+            (center.x - right_center.x).abs() < 1.0e-5 && (center.y - right_center.y).abs() < 1.0e-5
+        }));
+    }
+
+    #[test]
+    fn legacy_edge_hidden_selection_is_not_deleted() {
+        let params = Arc::new(PumpParams::new());
+        let curve = legacy_edge_curve();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = (0..curve.nodes.len()).collect();
+
+        reduce_curve_message(&mut state, CurvePreviewMessage::DeleteSelectedNodes);
+
+        let remaining = params.editable_curve_snapshot();
+        assert_eq!(remaining.nodes.len(), 4);
+        assert!(remaining
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.0001).abs() < 1.0e-6));
+        assert!(remaining
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.9999).abs() < 1.0e-6));
+        assert!(!remaining
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.5).abs() < 1.0e-6));
+    }
+
+    #[test]
+    fn legacy_edge_node_drag_preserves_origin_for_vertical_movement() {
+        let params = Arc::new(PumpParams::new());
+        let curve = legacy_edge_curve();
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(0.0001);
+        let origin = curve.nodes[3];
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 3,
+                pointer: origin,
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        assert_eq!(state.active_curve_node, Some(3));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 3,
+                node: CurveNode {
+                    x: origin.x,
+                    y: 0.35,
+                },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        assert_eq!(dragged.nodes.len(), curve.nodes.len());
+        assert!((dragged.nodes[3].x - origin.x).abs() < 1.0e-6);
+        assert!((dragged.nodes[3].y - 0.35).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn legacy_edge_group_drag_keeps_zero_delta_feasible_for_vertical_movement() {
+        let params = Arc::new(PumpParams::new());
+        let curve = legacy_edge_curve();
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(0.0001);
+        let origin = curve.nodes[3];
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![0, 3];
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 3,
+                pointer: origin,
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        assert_eq!(
+            state
+                .active_curve_node_drag
+                .as_ref()
+                .map(|drag| drag.selected_indices.clone()),
+            Some(vec![0, 3])
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 3,
+                node: CurveNode {
+                    x: origin.x,
+                    y: 0.35,
+                },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        assert_eq!(dragged.nodes.len(), curve.nodes.len());
+        assert!((dragged.nodes[3].x - origin.x).abs() < 1.0e-6);
+        assert!((dragged.nodes[3].y - 0.35).abs() < 1.0e-6);
+        assert!((dragged.nodes[0].y - 0.95).abs() < 1.0e-6);
+        assert!((dragged.nodes[4].y - 0.95).abs() < 1.0e-6);
     }
 
     #[test]
@@ -9054,7 +9434,7 @@ mod tests {
         }));
         assert_eq!(
             points.last().map(|point| point.position),
-            Some(replacement.raw_position())
+            Some(first.raw_position())
         );
     }
 
