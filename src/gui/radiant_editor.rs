@@ -6248,9 +6248,7 @@ mod tests {
         );
         let left_center = left_active.display_curve_point(bounds, curve.nodes[1]);
         assert_eq!(left_active.hit_node(bounds, left_center), Some(1));
-        assert!(painted_node_centers(&left_active, bounds)
-            .iter()
-            .any(|center| *center == left_center));
+        assert!(painted_node_centers(&left_active, bounds).contains(&left_center));
 
         let right_active =
             CurvePreviewWidget::new(curve.clone(), Some(3), None, None, None, None, false);
