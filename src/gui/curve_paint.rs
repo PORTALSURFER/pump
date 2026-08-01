@@ -1225,6 +1225,18 @@ fn collect_display_geometry(runs: &[PaintRun]) -> (Vec<DisplayFragment>, Vec<Dis
             };
 
             if let Some(display_x) = boundary_constraint_x(point.contact) {
+                // A retained left/right exit is both a protected seam
+                // constraint and the observed endpoint of the interior
+                // fragment.  Perimeter-only travel and the boundary point at
+                // the start of a re-entry run must remain constraints only;
+                // attaching either would invent an unobserved chord.
+                let retain_as_fragment_endpoint = is_left_or_right_boundary_contact(point.contact)
+                    && current.last().is_some_and(|previous: &DisplayGraphPoint| {
+                        matches!(previous.contact, BoundaryContact::Interior)
+                    });
+                if retain_as_fragment_endpoint {
+                    current.push(sample);
+                }
                 if let Some(fragment) = finish_display_fragment(&mut current) {
                     fragments.push(fragment);
                 }
@@ -2806,6 +2818,68 @@ mod tests {
             positions(&recorder.runs()[1]),
             vec![point(0.625, 0.0), point(0.75, 0.5)]
         );
+    }
+
+    #[test]
+    fn retained_side_crossing_is_a_fragment_endpoint_and_protected_constraint() {
+        for (start_x, outside_x, seam_x) in [(0.25, 1.5, 1.0), (0.75, -0.5, 0.0)] {
+            let mut recorder = StrokeRecorder::new(bounds());
+            recorder.observe(point(start_x, 0.2));
+            recorder.observe_outside(point(outside_x, 0.8));
+            recorder.observe_outside(point(outside_x, 0.1));
+
+            let run = recorder.runs().first().expect("exit should retain one run");
+            let crossing = *run.points().last().expect("exit should retain crossing");
+            let (fragments, display_constraints) = collect_display_geometry(recorder.runs());
+
+            assert_eq!(fragments.len(), 1);
+            let fragment = &fragments[0];
+            assert!(fragment.points.iter().any(|sample| {
+                (sample.x - seam_x).abs() <= GEOMETRY_EPSILON
+                    && (sample.y - crossing.position.y).abs() <= GEOMETRY_EPSILON
+            }));
+            assert_eq!(display_constraints.len(), 1);
+            assert_eq!(display_constraints[0].display_x, seam_x);
+            assert!((display_constraints[0].y - crossing.position.y).abs() <= GEOMETRY_EPSILON);
+            assert!(display_constraints[0].viewport_seam);
+
+            let (patches, constraints) = raw_geometry(&fragments, &display_constraints, 0.0);
+            assert!(patches.iter().any(|patch| {
+                patch.samples.iter().any(|sample| {
+                    (sample.x - seam_x).abs() <= GEOMETRY_EPSILON
+                        && (sample.y - crossing.position.y).abs() <= GEOMETRY_EPSILON
+                })
+            }));
+            assert!(constraints.iter().any(|constraint| {
+                constraint.seam
+                    && constraint.viewport_seam
+                    && (constraint.x - seam_x).abs() <= GEOMETRY_EPSILON
+                    && (constraint.y - crossing.position.y).abs() <= GEOMETRY_EPSILON
+            }));
+            assert!(
+                mandatory_anchor_xs(&flat_curve(0.5), &patches, &constraints)
+                    .iter()
+                    .any(|x| (*x - seam_x).abs() <= GEOMETRY_EPSILON)
+            );
+        }
+    }
+
+    #[test]
+    fn reentry_boundary_contact_does_not_fabricate_an_interior_fragment() {
+        let run = PaintRun {
+            points: vec![
+                classify_point(bounds(), point(0.0, 0.6)).unwrap(),
+                PaintPoint {
+                    position: point(0.75, 0.4),
+                    contact: BoundaryContact::Interior,
+                },
+            ],
+        };
+
+        let (fragments, constraints) = collect_display_geometry(&[run]);
+        assert!(fragments.is_empty());
+        assert_eq!(constraints.len(), 1);
+        assert!(constraints[0].viewport_seam);
     }
 
     #[test]

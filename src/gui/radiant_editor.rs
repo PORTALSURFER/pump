@@ -1563,27 +1563,12 @@ impl CurvePaintSample {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ViewportSeamContact {
-    y: f32,
-    order: usize,
-}
-
-#[derive(Clone, Copy)]
-enum ViewportSeamSide {
-    Left,
-    Right,
-}
-
 #[derive(Clone)]
 struct ActiveCurvePaint {
     origin_snapshot: RadiantHistorySnapshot,
     origin_curve: EditableCurve,
     phase_offset: f32,
     recorder: StrokeRecorder,
-    last_left_contact: Option<ViewportSeamContact>,
-    last_right_contact: Option<ViewportSeamContact>,
-    next_contact_order: usize,
 }
 
 impl ActiveCurvePaint {
@@ -1597,9 +1582,6 @@ impl ActiveCurvePaint {
                 min: RectPoint { x: 0.0, y: 0.0 },
                 max: RectPoint { x: 1.0, y: 1.0 },
             }),
-            last_left_contact: None,
-            last_right_contact: None,
-            next_contact_order: 0,
         }
     }
 
@@ -1609,44 +1591,10 @@ impl ActiveCurvePaint {
         } else {
             self.recorder.observe(sample.raw_position());
         }
-        self.record_viewport_seam_contact(sample);
     }
 
     fn push_boundary_sample(&mut self, sample: CurvePaintSample) {
         self.recorder.observe_outside(sample.raw_position());
-        self.record_viewport_seam_contact(sample);
-    }
-
-    fn record_viewport_seam_contact(&mut self, sample: CurvePaintSample) {
-        let side = if sample.display_position.x <= 0.0 {
-            Some(ViewportSeamSide::Left)
-        } else if sample.display_position.x >= 1.0 {
-            Some(ViewportSeamSide::Right)
-        } else {
-            None
-        };
-        let Some(side) = side else {
-            return;
-        };
-        let contact = ViewportSeamContact {
-            y: sample.display_position.y.clamp(0.0, 1.0),
-            order: self.next_contact_order,
-        };
-        self.next_contact_order = self.next_contact_order.saturating_add(1);
-        match side {
-            ViewportSeamSide::Left => self.last_left_contact = Some(contact),
-            ViewportSeamSide::Right => self.last_right_contact = Some(contact),
-        }
-    }
-
-    fn last_viewport_seam_contact(&self) -> Option<ViewportSeamContact> {
-        match (self.last_left_contact, self.last_right_contact) {
-            (Some(left), Some(right)) if left.order >= right.order => Some(left),
-            (Some(_), Some(right)) => Some(right),
-            (Some(left), None) => Some(left),
-            (None, Some(right)) => Some(right),
-            (None, None) => None,
-        }
     }
 
     fn preview_runs(&self) -> Vec<PaintRun> {
@@ -3827,11 +3775,6 @@ fn commit_active_curve_paint(state: &mut RadiantEditorState, paint: ActiveCurveP
             candidate
         }
     };
-    let candidate = canonicalize_viewport_seam_candidate(
-        &candidate,
-        paint.phase_offset,
-        paint.last_viewport_seam_contact(),
-    );
     if candidate == paint.origin_curve {
         return;
     }
@@ -3840,48 +3783,6 @@ fn commit_active_curve_paint(state: &mut RadiantEditorState, paint: ActiveCurveP
     let mut origin_snapshot = paint.origin_snapshot;
     origin_snapshot.curve = paint.origin_curve;
     state.push_history_snapshot(origin_snapshot);
-}
-
-fn canonicalize_viewport_seam_candidate(
-    candidate: &EditableCurve,
-    phase_offset: f32,
-    contact: Option<ViewportSeamContact>,
-) -> EditableCurve {
-    let Some(contact) = contact else {
-        return candidate.clone();
-    };
-
-    let mut curve = candidate.clone().normalized();
-    if let Some(owner) = canonical_seam_owner(&curve, phase_offset) {
-        set_canonical_seam_y(&mut curve, owner, contact.y);
-        curve.normalize_in_place();
-        return curve;
-    }
-
-    let seam = seam_raw(phase_offset);
-    if curve.nodes.len() < MAX_EDITABLE_NODES {
-        let insert_at = curve
-            .nodes
-            .partition_point(|node| node.x < seam)
-            .clamp(1, curve.nodes.len().saturating_sub(1));
-        let inherited = curve
-            .segments
-            .get(insert_at.saturating_sub(1))
-            .copied()
-            .unwrap_or(CurveSegment { tension: 0.0 });
-        curve.nodes.insert(
-            insert_at,
-            CurveNode {
-                x: seam,
-                y: contact.y.clamp(0.0, 1.0),
-            },
-        );
-        curve
-            .segments
-            .insert(insert_at.saturating_sub(1), inherited);
-        curve.normalize_in_place();
-    }
-    curve
 }
 
 fn start_curve_node_drag(
@@ -10763,67 +10664,298 @@ mod tests {
             .active_curve_paint
             .as_ref()
             .expect("edge paint remains active before release");
-        assert!(paint.last_left_contact.is_some());
-        assert!(paint.last_right_contact.is_none());
+        let preview_runs = paint.preview_runs();
+        let points = preview_runs[0].points();
+        assert_eq!(
+            points.last().map(|point| point.position),
+            Some(RectPoint { x: 0.0, y: 0.7 })
+        );
+        assert!(matches!(
+            points.last().map(|point| point.contact),
+            Some(BoundaryContact::Edge(EdgeParameter {
+                edge: BoundaryEdge::Left,
+                ..
+            }))
+        ));
         assert_eq!(params.editable_curve_snapshot(), origin);
     }
 
     #[test]
-    fn released_edge_paint_uses_the_last_left_or_right_contact() {
-        for (right_last, expected_y) in [(true, 0.8), (false, 0.2)] {
-            let params = Arc::new(PumpParams::new());
-            let origin = EditableCurve {
-                nodes: vec![
-                    CurveNode { x: 0.0, y: 0.8 },
-                    CurveNode { x: 0.2, y: 0.2 },
-                    CurveNode { x: 0.5, y: 0.4 },
-                    CurveNode { x: 1.0, y: 0.8 },
-                ],
-                segments: vec![
-                    CurveSegment { tension: 0.1 },
-                    CurveSegment { tension: 0.2 },
-                    CurveSegment { tension: 0.3 },
-                ],
-                ..EditableCurve::default()
-            }
-            .normalized();
-            params.set_editable_curve(&origin);
-            params.set_phase_offset(0.25);
-            let mut state = editor_state(Arc::clone(&params));
+    fn released_edge_paint_uses_the_first_retained_crossing() {
+        for first_right in [false, true] {
+            for continued_outside in [false, true] {
+                let params = Arc::new(PumpParams::new());
+                let origin = EditableCurve {
+                    nodes: vec![
+                        CurveNode { x: 0.0, y: 0.8 },
+                        CurveNode { x: 0.2, y: 0.2 },
+                        CurveNode { x: 0.5, y: 0.4 },
+                        CurveNode { x: 1.0, y: 0.8 },
+                    ],
+                    segments: vec![
+                        CurveSegment { tension: 0.1 },
+                        CurveSegment { tension: 0.2 },
+                        CurveSegment { tension: 0.3 },
+                    ],
+                    ..EditableCurve::default()
+                }
+                .normalized();
+                params.set_editable_curve(&origin);
+                params.set_phase_offset(0.25);
+                let mut state = editor_state(Arc::clone(&params));
 
-            reduce_editor_message(
-                &mut state,
-                RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
-                    sample: paint_sample(0.4, 0.35),
-                }),
-            );
-            let left = boundary_paint_sample(0.0, 0.2);
-            let right = boundary_paint_sample(1.0, 0.8);
-            let samples = if right_last {
-                [left, right]
-            } else {
-                [right, left]
-            };
-            for sample in samples {
                 reduce_editor_message(
                     &mut state,
-                    RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint { sample }),
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                        sample: paint_sample(0.4, 0.35),
+                    }),
                 );
-            }
-            reduce_editor_message(
-                &mut state,
-                RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
-            );
+                let first_x = if first_right { 1.0 } else { 0.0 };
+                let first_y = if first_right { 0.8 } else { 0.2 };
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                        sample: boundary_paint_sample(first_x, first_y),
+                    }),
+                );
+                if continued_outside {
+                    reduce_editor_message(
+                        &mut state,
+                        RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                            sample: boundary_paint_sample(
+                                first_x,
+                                if first_right { 0.2 } else { 0.8 },
+                            ),
+                        }),
+                    );
+                }
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+                );
 
-            let committed = params.editable_curve_snapshot();
-            let seam = committed
-                .nodes
-                .iter()
-                .find(|node| (node.x - 0.75).abs() <= CURVE_PAINT_ASSERT_EPSILON)
-                .expect("released edge paint should own the offset seam");
-            assert!((seam.y - expected_y).abs() <= CURVE_PAINT_ASSERT_EPSILON);
-            assert_eq!(state.undo_history.len(), 1);
+                let committed = params.editable_curve_snapshot();
+                let seam_nodes = committed
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| (node.x - 0.75).abs() <= CURVE_PAINT_ASSERT_EPSILON)
+                    .collect::<Vec<_>>();
+                assert_eq!(seam_nodes.len(), 1);
+                let (seam_index, seam) = seam_nodes[0];
+                assert_eq!(
+                    canonical_seam_owner(&committed, 0.25),
+                    Some(CanonicalSeamOwner::Interior(seam_index))
+                );
+                assert!((seam.y - first_y).abs() <= CURVE_PAINT_ASSERT_EPSILON);
+                let painted_segment_index = if first_right {
+                    seam_index.saturating_sub(1)
+                } else {
+                    seam_index
+                };
+                assert!(
+                    committed.segments[painted_segment_index].tension.abs() <= 0.05,
+                    "painted seam incident tension leaked: nodes={:?}, segments={:?}",
+                    committed.nodes,
+                    committed.segments
+                );
+                assert_eq!(state.undo_history.len(), 1);
+            }
         }
+    }
+
+    #[test]
+    fn straight_edge_paint_has_one_seam_owner_and_fits_the_retained_line() {
+        let start_x = 0.4;
+        let start_y = 0.35;
+        for phase_offset in [0.0, 0.25, 0.73] {
+            for first_right in [false, true] {
+                let first_x = if first_right { 1.0 } else { 0.0 };
+                let first_y = if first_right { 0.8 } else { 0.2 };
+                let params = Arc::new(PumpParams::new());
+                let origin = EditableCurve {
+                    nodes: vec![
+                        CurveNode { x: 0.0, y: 0.8 },
+                        CurveNode { x: 0.2, y: 0.2 },
+                        CurveNode { x: 0.5, y: 0.4 },
+                        CurveNode { x: 1.0, y: 0.8 },
+                    ],
+                    segments: vec![
+                        CurveSegment { tension: 0.72 },
+                        CurveSegment { tension: -0.63 },
+                        CurveSegment { tension: 0.58 },
+                    ],
+                    ..EditableCurve::default()
+                }
+                .normalized();
+                params.set_editable_curve(&origin);
+                params.set_phase_offset(phase_offset);
+                let mut state = editor_state(Arc::clone(&params));
+
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                        sample: paint_sample(start_x, start_y),
+                    }),
+                );
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                        sample: boundary_paint_sample(first_x, first_y),
+                    }),
+                );
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                        sample: boundary_paint_sample(first_x, if first_right { 0.2 } else { 0.8 }),
+                    }),
+                );
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+                );
+
+                let candidate = params.editable_curve_snapshot();
+                assert_curve_paint_topology_is_bounded(&candidate);
+                let seam = seam_raw(phase_offset);
+                match canonical_seam_owner(&candidate, phase_offset) {
+                    Some(CanonicalSeamOwner::Endpoints) => {
+                        assert!(seam_uses_wrapped_endpoints(phase_offset));
+                        assert!(
+                            (candidate.nodes[0].y - first_y).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                        );
+                        assert_eq!(candidate.nodes[0].y, candidate.nodes.last().unwrap().y);
+                        assert!(candidate.nodes[1..candidate.nodes.len() - 1]
+                            .iter()
+                            .all(|node| node.x > CURVE_SEAM_OWNER_RAW_EPSILON
+                                && node.x < 1.0 - CURVE_SEAM_OWNER_RAW_EPSILON));
+                    }
+                    Some(CanonicalSeamOwner::Interior(index)) => {
+                        assert!(!seam_uses_wrapped_endpoints(phase_offset));
+                        let seam_nodes = candidate
+                            .nodes
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, node)| {
+                                (node.x - seam).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON
+                            })
+                            .collect::<Vec<_>>();
+                        assert_eq!(seam_nodes.len(), 1);
+                        assert_eq!(seam_nodes[0].0, index);
+                        assert!((seam_nodes[0].1.y - first_y).abs() <= CURVE_PAINT_ASSERT_EPSILON);
+                    }
+                    None => panic!("painted edge must establish a seam owner: {candidate:?}"),
+                }
+
+                let painted_segment_index = if seam_uses_wrapped_endpoints(phase_offset) {
+                    if first_right {
+                        candidate.segments.len().saturating_sub(1)
+                    } else {
+                        0
+                    }
+                } else {
+                    let seam_index = candidate
+                        .nodes
+                        .iter()
+                        .position(|node| (node.x - seam).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+                        .expect("interior seam owner should be present");
+                    if first_right {
+                        seam_index.saturating_sub(1)
+                    } else {
+                        seam_index
+                    }
+                };
+                assert!(
+                    candidate.segments[painted_segment_index].tension.abs() <= 0.05,
+                    "straight edge paint inherited tension: offset={phase_offset}, right={first_right}, candidate={candidate:?}"
+                );
+
+                for fraction in [0.25, 0.5, 0.75] {
+                    let display_x = if first_right {
+                        start_x + (1.0 - start_x) * fraction
+                    } else {
+                        start_x * (1.0 - fraction)
+                    };
+                    let expected_y = start_y + (first_y - start_y) * fraction;
+                    let raw_x = if phase_offset <= CURVE_DISPLAY_SEAM_EPSILON {
+                        display_x
+                    } else if display_x < phase_offset {
+                        1.0 - phase_offset + display_x
+                    } else {
+                        display_x - phase_offset
+                    };
+                    let actual_y = sample_editable_curve(&candidate, raw_x);
+                    assert!(
+                        (actual_y - expected_y).abs() <= 0.018 + CURVE_PAINT_ASSERT_EPSILON,
+                        "straight edge paint drifted: offset={phase_offset}, right={first_right}, display_x={display_x}, expected={expected_y}, actual={actual_y}, candidate={candidate:?}"
+                    );
+                }
+                assert_eq!(state.undo_history.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn edge_paint_keeps_an_untouched_authored_tension_exact() {
+        let origin = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.2, y: 0.2 },
+                CurveNode { x: 0.5, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.72 },
+                CurveSegment { tension: -0.63 },
+                CurveSegment { tension: 0.58 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let run = recorded_run([RectPoint { x: 0.4, y: 0.35 }, RectPoint { x: 0.0, y: 0.2 }]);
+
+        let candidate = reconstruct_paint(&origin, 0.25, &[run]).candidate().clone();
+        let untouched_segment = candidate
+            .nodes
+            .windows(2)
+            .zip(&candidate.segments)
+            .find(|(nodes, _)| {
+                (nodes[0].x - 0.2).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                    && (nodes[1].x - 0.5).abs() <= CURVE_PAINT_ASSERT_EPSILON
+            })
+            .map(|(_, segment)| segment)
+            .expect("untouched authored segment should remain present");
+        assert_eq!(untouched_segment.tension, origin.segments[1].tension);
+    }
+
+    #[test]
+    fn curved_stroke_exiting_right_edge_keeps_nonzero_fitted_tension() {
+        let origin = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.5 }, CurveNode { x: 1.0, y: 0.5 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let left = CurveNode { x: 0.2, y: 0.15 };
+        let right = CurveNode { x: 1.0, y: 0.85 };
+        let source_tension = 0.65;
+        let run = sampled_segment_run(left, right, source_tension, 16);
+
+        let outcome = reconstruct_paint(&origin, 0.0, &[run]);
+        assert!(matches!(&outcome, PaintCommitOutcome::Applied { .. }));
+        let candidate = outcome.candidate();
+        let painted_segment = candidate
+            .nodes
+            .windows(2)
+            .zip(&candidate.segments)
+            .find(|(nodes, _)| {
+                (nodes[0].x - left.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                    && (nodes[1].x - right.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+            })
+            .map(|(_, segment)| segment)
+            .expect("painted edge endpoints should remain adjacent");
+        assert!(painted_segment.tension.abs() > 0.2);
+        assert!((painted_segment.tension - source_tension).abs() <= 0.08);
     }
 
     #[test]
@@ -10856,10 +10988,13 @@ mod tests {
                 sample: paint_sample(0.6, 0.75),
             }),
         );
-        assert!(state
-            .active_curve_paint
-            .as_ref()
-            .is_some_and(|paint| paint.last_viewport_seam_contact().is_none()));
+        assert!(state.active_curve_paint.as_ref().is_some_and(|paint| {
+            paint.preview_runs().iter().all(|run| {
+                run.points()
+                    .iter()
+                    .all(|point| matches!(point.contact, BoundaryContact::Interior))
+            })
+        }));
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
