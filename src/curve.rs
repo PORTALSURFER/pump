@@ -349,19 +349,24 @@ pub fn curve_table_to_editable(curve: &[f32; CURVE_TABLE_LEN]) -> EditableCurve 
 fn sample_segment(curve: &EditableCurve, segment_index: usize, x: f32) -> f32 {
     let left = curve.nodes[segment_index];
     let right = curve.nodes[(segment_index + 1).min(curve.nodes.len() - 1)];
-    let span = (right.x - left.x).max(1.0e-6);
-    let local = ((x - left.x) / span).clamp(0.0, 1.0);
-
-    let shaped_local = shape_with_tension(
-        local,
+    sample_curve_segment(
+        left,
+        right,
         curve
             .segments
             .get(segment_index)
             .copied()
             .unwrap_or(CurveSegment { tension: 0.0 })
             .tension,
-    );
+        x,
+    )
+}
 
+/// Sample one editable curve edge using its node endpoints and tension.
+pub(crate) fn sample_curve_segment(left: CurveNode, right: CurveNode, tension: f32, x: f32) -> f32 {
+    let span = (right.x - left.x).max(1.0e-6);
+    let local = ((x - left.x) / span).clamp(0.0, 1.0);
+    let shaped_local = shape_with_tension(local, tension);
     lerp(left.y, right.y, shaped_local).clamp(0.0, 1.0)
 }
 

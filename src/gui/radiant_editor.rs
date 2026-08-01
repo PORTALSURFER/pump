@@ -52,6 +52,9 @@ use crate::params::{
 };
 use crate::GuiStatus;
 
+use super::curve_paint::{
+    reconstruct_paint, PaintCommitOutcome, PaintRun, RectBounds, RectPoint, StrokeRecorder,
+};
 use super::visual_system::{pump_meter_colors, pump_theme, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS};
 #[cfg(test)]
 use super::WINDOW_HEIGHT;
@@ -183,12 +186,25 @@ const CURVE_SEGMENT_HOVER_RADIUS: f32 = 7.0;
 const CURVE_SEGMENT_TENSION_PIXEL_SCALE: f32 = 120.0;
 const CURVE_NODE_PUSH_THROUGH_MARGIN_PX: f32 = 10.0;
 const CURVE_NODE_MIN_SPACING_X: f32 = 1.0e-3;
+// Keep cyclic phase seams stable when a pointer is exactly on a viewport edge
+// or the active offset point. The right edge must remain distinguishable from
+// the left edge while a node is being dragged across a seam.
+const CURVE_DISPLAY_SEAM_EPSILON: f32 = 1.0e-5;
+// A viewport seam that is close enough to the serialized endpoints keeps the
+// existing wrapped endpoint pair. This is structural endpoint equivalence,
+// not interior-node ownership, so it retains the interactive spacing floor.
+const CURVE_STRUCTURAL_ENDPOINT_RAW_EPSILON: f32 = CURVE_NODE_MIN_SPACING_X;
+// An interior node is mirrored only when its raw coordinate is the seam, up to
+// ordinary floating-point geometry noise. Do not use the interactive spacing
+// floor here: nearby authored nodes must remain ordinary movable nodes.
+const CURVE_SEAM_OWNER_RAW_EPSILON: f32 = 1.0e-6;
 const CURVE_PLAYHEAD_MARKER_HEIGHT: f32 = 4.25;
 const CURVE_PLAYHEAD_MARKER_WIDTH: f32 = 7.65;
 const CURVE_PLAYHEAD_CORE_COLOR: Rgba8 = Rgba8::new(128, 132, 132, 255);
 const CURVE_SEGMENT_MOVE_COLOR: Rgba8 = Rgba8::new(96, 176, 255, 255);
 const CURVE_OFFSET_MOVE_COLOR: Rgba8 = Rgba8::new(255, 168, 88, 255);
 const CURVE_OFFSET_HOVER_COLOR: Rgba8 = CURVE_OFFSET_MOVE_COLOR.with_alpha(224);
+const CURVE_PAINT_PREVIEW_WIDTH: f32 = 2.25;
 const CURVE_REFERENCE_LABEL_HEIGHT: f32 = 10.2;
 const CURVE_REFERENCE_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.meta.0;
 const CURVE_SLOT_PREVIEW_STEPS: usize = 24;
@@ -1205,6 +1221,223 @@ fn curve_width_from_push_through_threshold_x(threshold_x: f32) -> f32 {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanonicalSeamOwner {
+    Endpoints,
+    Interior(usize),
+}
+
+#[derive(Clone)]
+struct CanonicalSeamDrag {
+    owner: CanonicalSeamOwner,
+    template_curve: EditableCurve,
+}
+
+fn seam_raw(phase_offset: f32) -> f32 {
+    if phase_offset.is_finite() {
+        (-phase_offset).rem_euclid(1.0)
+    } else {
+        0.0
+    }
+}
+
+fn seam_uses_wrapped_endpoints(phase_offset: f32) -> bool {
+    let raw = seam_raw(phase_offset);
+    raw <= CURVE_STRUCTURAL_ENDPOINT_RAW_EPSILON
+        || raw >= 1.0 - CURVE_STRUCTURAL_ENDPOINT_RAW_EPSILON
+}
+
+fn canonical_seam_owner(curve: &EditableCurve, phase_offset: f32) -> Option<CanonicalSeamOwner> {
+    if curve.nodes.len() < 2 {
+        return None;
+    }
+    if seam_uses_wrapped_endpoints(phase_offset) {
+        return Some(CanonicalSeamOwner::Endpoints);
+    }
+
+    let seam = seam_raw(phase_offset);
+    curve
+        .nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(curve.nodes.len().saturating_sub(2))
+        .filter(|(_, node)| (node.x - seam).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+        .min_by(|(left_index, left), (right_index, right)| {
+            (left.x - seam)
+                .abs()
+                .total_cmp(&(right.x - seam).abs())
+                .then_with(|| left_index.cmp(right_index))
+        })
+        .map(|(index, _)| CanonicalSeamOwner::Interior(index))
+}
+
+fn seam_owner_indices(curve: &EditableCurve, owner: CanonicalSeamOwner) -> Vec<usize> {
+    match owner {
+        CanonicalSeamOwner::Endpoints => {
+            let last = curve.nodes.len().saturating_sub(1);
+            if last == 0 {
+                Vec::new()
+            } else {
+                vec![0, last]
+            }
+        }
+        CanonicalSeamOwner::Interior(index) => vec![index],
+    }
+}
+
+fn seam_owner_contains_index(
+    curve: &EditableCurve,
+    owner: CanonicalSeamOwner,
+    index: usize,
+) -> bool {
+    seam_owner_indices(curve, owner).contains(&index)
+}
+
+fn display_x_is_in_edge_zone(raw_x: f32, phase_offset: f32, threshold_x: f32) -> bool {
+    let display_x = CurvePreviewWidget::display_phase(raw_x, phase_offset);
+    let threshold_x = threshold_x.max(0.0);
+    display_x <= threshold_x || display_x >= 1.0 - threshold_x
+}
+
+fn preferred_seam_active_index(
+    curve: &EditableCurve,
+    owner: CanonicalSeamOwner,
+    target: CurveNode,
+    phase_offset: f32,
+) -> usize {
+    match owner {
+        CanonicalSeamOwner::Interior(index) => index,
+        CanonicalSeamOwner::Endpoints => {
+            let last = curve.nodes.len().saturating_sub(1);
+            if CurvePreviewWidget::display_phase(target.x, phase_offset) >= 0.5 {
+                last
+            } else {
+                0
+            }
+        }
+    }
+}
+
+fn interactive_curve_node_survivors(
+    curve: &EditableCurve,
+    phase_offset: f32,
+    active_node: Option<usize>,
+) -> Vec<usize> {
+    if curve.nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let phase_offset = if phase_offset.is_finite() {
+        phase_offset.rem_euclid(1.0)
+    } else {
+        0.0
+    };
+    let display_x: Vec<f32> = curve
+        .nodes
+        .iter()
+        .map(|node| CurvePreviewWidget::display_phase(node.x, phase_offset))
+        .collect();
+    let seam_owner = canonical_seam_owner(curve, phase_offset);
+    let seam_indices = seam_owner
+        .map(|owner| seam_owner_indices(curve, owner))
+        .unwrap_or_default();
+    let left_survivor = select_interactive_edge_survivor(&display_x, active_node, true)
+        .or_else(|| seam_indices.first().copied());
+    let right_survivor = select_interactive_edge_survivor(&display_x, active_node, false)
+        .or_else(|| seam_indices.last().copied());
+    let left_seam_replaced = seam_indices
+        .first()
+        .is_some_and(|index| Some(*index) != left_survivor);
+    let right_seam_replaced = seam_indices
+        .last()
+        .is_some_and(|index| Some(*index) != right_survivor);
+
+    (0..curve.nodes.len())
+        .filter(|index| {
+            let x = display_x[*index];
+            let in_left_band = x <= CURVE_NODE_MIN_SPACING_X;
+            let in_right_band = x >= 1.0 - CURVE_NODE_MIN_SPACING_X;
+            let canonical_seam_survivor = seam_indices.contains(index)
+                && !(left_seam_replaced && seam_indices.first() == Some(index))
+                && !(right_seam_replaced && seam_indices.last() == Some(index));
+            (!in_left_band && !in_right_band)
+                || canonical_seam_survivor
+                || Some(*index) == left_survivor
+                || Some(*index) == right_survivor
+        })
+        .collect()
+}
+
+fn select_interactive_edge_survivor(
+    display_x: &[f32],
+    active_node: Option<usize>,
+    left_side: bool,
+) -> Option<usize> {
+    let last_index = display_x.len().saturating_sub(1);
+    let in_band = |x: f32| {
+        if left_side {
+            x <= CURVE_NODE_MIN_SPACING_X
+        } else {
+            x >= 1.0 - CURVE_NODE_MIN_SPACING_X
+        }
+    };
+
+    if let Some(active) =
+        active_node.filter(|index| display_x.get(*index).copied().is_some_and(&in_band))
+    {
+        return Some(active);
+    }
+
+    let structural = if left_side { 0 } else { last_index };
+    if display_x.get(structural).copied().is_some_and(|x| {
+        in_band(x)
+            && if left_side {
+                x <= CURVE_DISPLAY_SEAM_EPSILON
+            } else {
+                x >= 1.0 - CURVE_DISPLAY_SEAM_EPSILON
+            }
+    }) {
+        return Some(structural);
+    }
+
+    display_x
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, x)| in_band(*x))
+        .min_by(|(left_index, left_x), (right_index, right_x)| {
+            let left_distance = if left_side { *left_x } else { 1.0 - *left_x };
+            let right_distance = if left_side { *right_x } else { 1.0 - *right_x };
+            left_distance
+                .total_cmp(&right_distance)
+                .then_with(|| left_index.cmp(right_index))
+        })
+        .map(|(index, _)| index)
+}
+
+fn feasible_delta_interval_including_zero(min_delta: f32, max_delta: f32) -> (f32, f32) {
+    if min_delta <= max_delta && min_delta <= 0.0 && max_delta >= 0.0 {
+        (min_delta, max_delta)
+    } else {
+        // Legacy topology can make the preferred spacing interval empty or
+        // exclude the current group position. Keep zero movement available so
+        // a vertical-only edit remains a valid gesture.
+        (min_delta.min(0.0), max_delta.max(0.0))
+    }
+}
+
+fn feasible_node_x_interval_including_origin(min_x: f32, max_x: f32, origin_x: f32) -> (f32, f32) {
+    if min_x <= max_x && min_x <= origin_x && origin_x <= max_x {
+        (min_x, max_x)
+    } else {
+        // Preserve the legacy node's current x when the newer interactive
+        // spacing policy cannot contain it. This also guarantees clamp bounds
+        // stay ordered when the preferred interval is contradictory.
+        (min_x.min(origin_x), max_x.max(origin_x))
+    }
+}
+
 fn resolve_curve_offset(
     sync_division: usize,
     width: f32,
@@ -1228,6 +1461,7 @@ struct ActiveCurveNodeDrag {
     /// Marquee selection retained for a grouped node drag. An empty list is
     /// the ordinary single-node gesture.
     selected_indices: Vec<usize>,
+    seam_drag: Option<CanonicalSeamDrag>,
     horizontal_gain_anchor: Option<f32>,
     vertical_time_anchor: Option<f32>,
     last_pointer_x: f32,
@@ -1282,6 +1516,15 @@ impl ActiveCurveNodeDrag {
     ) -> CurveNode {
         self.last_pointer_x = target.x;
         self.last_pointer_y = target.y;
+        if self.seam_drag.is_some() {
+            // A seam owner is one logical node even though it has two display
+            // instances. Keep the raw phase selected at gesture start and use
+            // only the pointer's vertical coordinate for every update.
+            return CurveNode {
+                x: current.x,
+                y: target.y.clamp(0.0, 1.0),
+            };
+        }
         self.set_constraints(modifiers.shift_held, modifiers.option_held, current);
         let suppress_command_snap = self.suppress_command_snap_once;
         self.suppress_command_snap_once = false;
@@ -1304,6 +1547,67 @@ impl ActiveCurveNodeDrag {
             );
         }
         effective
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CurvePaintSample {
+    node: CurveNode,
+    display_position: RectPoint,
+    outside: bool,
+}
+
+impl CurvePaintSample {
+    fn raw_position(self) -> RectPoint {
+        self.display_position
+    }
+}
+
+#[derive(Clone)]
+struct ActiveCurvePaint {
+    origin_snapshot: RadiantHistorySnapshot,
+    origin_curve: EditableCurve,
+    phase_offset: f32,
+    recorder: StrokeRecorder,
+}
+
+impl ActiveCurvePaint {
+    fn new(origin_snapshot: RadiantHistorySnapshot, phase_offset: f32) -> Self {
+        let origin_curve = origin_snapshot.curve.clone().normalized();
+        Self {
+            origin_snapshot,
+            origin_curve,
+            phase_offset,
+            recorder: StrokeRecorder::new(RectBounds {
+                min: RectPoint { x: 0.0, y: 0.0 },
+                max: RectPoint { x: 1.0, y: 1.0 },
+            }),
+        }
+    }
+
+    fn push_sample(&mut self, sample: CurvePaintSample) {
+        if sample.outside {
+            self.recorder.observe_outside(sample.raw_position());
+        } else {
+            self.recorder.observe(sample.raw_position());
+        }
+    }
+
+    fn push_boundary_sample(&mut self, sample: CurvePaintSample) {
+        self.recorder.observe_outside(sample.raw_position());
+    }
+
+    fn preview_runs(&self) -> Vec<PaintRun> {
+        self.recorder.runs().to_vec()
+    }
+
+    fn finished_curve(&self) -> PaintCommitOutcome {
+        reconstruct_paint(&self.origin_curve, self.phase_offset, self.recorder.runs())
+    }
+
+    #[cfg(test)]
+    fn preview_candidate(&self) -> EditableCurve {
+        self.finished_curve().candidate().clone()
     }
 }
 
@@ -1457,6 +1761,7 @@ struct RadiantEditorState {
     automation_flush_count: usize,
     active_curve_node: Option<usize>,
     active_curve_node_drag: Option<ActiveCurveNodeDrag>,
+    active_curve_paint: Option<ActiveCurvePaint>,
     active_curve_segment: Option<ActiveCurveSegmentDrag>,
     active_curve_offset: Option<ActiveCurveOffsetDrag>,
     active_curve_marquee: Option<ActiveCurveMarquee>,
@@ -1837,6 +2142,7 @@ impl RadiantEditorState {
             automation_flush_count: 0,
             active_curve_node: None,
             active_curve_node_drag: None,
+            active_curve_paint: None,
             active_curve_segment: None,
             active_curve_offset: None,
             active_curve_marquee: None,
@@ -2118,6 +2424,13 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 )
                 .with_command_hover_held(state.command_hover_held)
                 .with_shift_hover_held(state.shift_hover_held)
+                .with_active_curve_paint(state.active_curve_paint.is_some())
+                .with_curve_paint_runs(
+                    state
+                        .active_curve_paint
+                        .as_ref()
+                        .map(ActiveCurvePaint::preview_runs),
+                )
                 .with_active_segment_move(
                     state
                         .active_curve_segment
@@ -2515,8 +2828,14 @@ fn value_label_node(
 
 fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorMessage) {
     match message {
-        RadiantEditorMessage::Undo => state.undo(),
-        RadiantEditorMessage::Redo => state.redo(),
+        RadiantEditorMessage::Undo => {
+            state.active_curve_paint = None;
+            state.undo();
+        }
+        RadiantEditorMessage::Redo => {
+            state.active_curve_paint = None;
+            state.redo();
+        }
         RadiantEditorMessage::ToggleTimingMode => {
             state.push_history();
             state.timing_dropdown_open = false;
@@ -2865,6 +3184,63 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 state.hover_curve_segment = None;
             }
         }
+        CurvePreviewMessage::PressPaint { sample } => {
+            let mut paint = ActiveCurvePaint::new(state.snapshot(), state.params.phase_offset());
+            paint.push_sample(sample);
+            state.clear_curve_selection();
+            state.active_curve_node = None;
+            state.active_curve_node_drag = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.active_curve_marquee = None;
+            state.preview_curve_offset = None;
+            state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.hover_curve_segment = None;
+            state.active_curve_paint = Some(paint);
+        }
+        CurvePreviewMessage::DragPaint { sample } => {
+            if let Some(paint) = state.active_curve_paint.as_mut() {
+                paint.push_sample(sample);
+            }
+        }
+        CurvePreviewMessage::DragPaintOutside { sample } => {
+            if let Some(paint) = state.active_curve_paint.as_mut() {
+                paint.push_boundary_sample(sample);
+            }
+        }
+        CurvePreviewMessage::ReleasePaint { sample } => {
+            if let Some(mut paint) = state.active_curve_paint.take() {
+                if let Some(sample) = sample {
+                    paint.push_sample(sample);
+                }
+                commit_active_curve_paint(state, paint);
+            }
+            state.active_curve_node = None;
+            state.active_curve_node_drag = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.active_curve_marquee = None;
+            state.preview_curve_offset = None;
+            state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.hover_curve_segment = None;
+        }
+        CurvePreviewMessage::ReleasePaintOutside { sample } => {
+            if let Some(mut paint) = state.active_curve_paint.take() {
+                paint.push_boundary_sample(sample);
+                commit_active_curve_paint(state, paint);
+            }
+            state.active_curve_node = None;
+            state.active_curve_node_drag = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.active_curve_marquee = None;
+            state.preview_curve_offset = None;
+            state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.hover_curve_segment = None;
+        }
         CurvePreviewMessage::PressNode {
             index,
             pointer,
@@ -2873,12 +3249,21 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             command_held,
         } => {
             let curve = state.params.editable_curve_snapshot();
+            let survivors = interactive_curve_node_survivors(
+                &curve,
+                state.params.phase_offset(),
+                state.active_curve_node,
+            );
+            if !survivors.contains(&index) {
+                state.clear_curve_selection();
+                return;
+            }
             let selected_indices = if state.selected_curve_nodes.contains(&index) {
                 state
                     .selected_curve_nodes
                     .iter()
                     .copied()
-                    .filter(|selected| *selected < curve.nodes.len())
+                    .filter(|selected| survivors.contains(selected))
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
@@ -2886,14 +3271,35 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             if selected_indices.is_empty() {
                 state.clear_curve_selection();
             }
-            if let Some(mut drag) =
-                start_curve_node_drag(&curve, index, pointer, shift_held, option_held)
-            {
+            if let Some(mut drag) = start_curve_node_drag(
+                &curve,
+                index,
+                pointer,
+                shift_held,
+                option_held,
+                state.params.phase_offset(),
+            ) {
                 drag.selected_indices = selected_indices;
+                if drag.seam_drag.is_none() {
+                    if let Some(owner) = canonical_seam_owner(&curve, state.params.phase_offset()) {
+                        let selected_seam = drag
+                            .selected_indices
+                            .iter()
+                            .copied()
+                            .any(|selected| seam_owner_contains_index(&curve, owner, selected));
+                        if selected_seam {
+                            drag.seam_drag = Some(CanonicalSeamDrag {
+                                owner,
+                                template_curve: curve.clone().normalized(),
+                            });
+                        }
+                    }
+                }
                 state.option_hover_held = option_held;
                 state.command_hover_held = command_held;
                 state.active_curve_node = Some(index);
                 state.active_curve_node_drag = Some(drag);
+                state.active_curve_paint = None;
                 state.active_curve_segment = None;
                 state.active_curve_offset = None;
                 state.preview_curve_offset = None;
@@ -2910,6 +3316,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             });
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
             state.active_curve_segment = None;
             state.active_curve_offset = None;
             state.preview_curve_offset = None;
@@ -2926,22 +3333,32 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             let Some(marquee) = state.active_curve_marquee.take() else {
                 return;
             };
-            let min_x = marquee.start.x.min(current.x);
-            let max_x = marquee.start.x.max(current.x);
             let min_y = marquee.start.y.min(current.y);
             let max_y = marquee.start.y.max(current.y);
             let curve = state.params.editable_curve_snapshot();
+            let phase_offset = state.params.phase_offset();
+            let survivors = interactive_curve_node_survivors(&curve, phase_offset, None);
+            let start_x = CurvePreviewWidget::display_phase(marquee.start.x, phase_offset);
+            let current_x = CurvePreviewWidget::display_phase(current.x, phase_offset);
+            let min_display_x = start_x.min(current_x);
+            let max_display_x = start_x.max(current_x);
             state.selected_curve_nodes = curve
                 .nodes
                 .iter()
                 .enumerate()
                 .filter_map(|(index, node)| {
-                    (node.x >= min_x && node.x <= max_x && node.y >= min_y && node.y <= max_y)
+                    let display_x = CurvePreviewWidget::display_phase(node.x, phase_offset);
+                    (survivors.contains(&index)
+                        && display_x >= min_display_x
+                        && display_x <= max_display_x
+                        && node.y >= min_y
+                        && node.y <= max_y)
                         .then_some(index)
                 })
                 .collect();
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
             state.active_curve_segment = None;
             state.active_curve_offset = None;
             state.preview_curve_offset = None;
@@ -2968,6 +3385,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             });
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
             state.active_curve_segment = None;
             state.hover_curve_node = None;
             state.preview_curve_node = None;
@@ -2999,6 +3417,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.clear_curve_selection();
             state.command_hover_held = command_held;
             state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
             state.active_curve_segment = None;
             state.active_curve_offset = None;
             state.preview_curve_offset = None;
@@ -3008,19 +3427,31 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             if let Some(index) = insert_curve_node(&mut curve, node) {
                 state.params.set_editable_curve(&curve);
                 state.active_curve_node = Some(index);
-                state.active_curve_node_drag =
-                    start_curve_node_drag(&curve, index, node, false, false);
+                state.active_curve_node_drag = start_curve_node_drag(
+                    &curve,
+                    index,
+                    node,
+                    false,
+                    false,
+                    state.params.phase_offset(),
+                );
                 state.hover_curve_node = Some(index);
             }
         }
         CurvePreviewMessage::DeleteNode { index } => {
             let mut curve = state.params.editable_curve_snapshot();
+            if !interactive_curve_node_survivors(&curve, state.params.phase_offset(), None)
+                .contains(&index)
+            {
+                return;
+            }
             state.clear_curve_selection();
             if delete_curve_node(&mut curve, index) {
                 state.params.set_editable_curve(&curve);
             }
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
             state.active_curve_segment = None;
             state.active_curve_offset = None;
             state.preview_curve_offset = None;
@@ -3030,12 +3461,17 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         }
         CurvePreviewMessage::DeleteSelectedNodes => {
             let mut curve = state.params.editable_curve_snapshot();
-            let deleted = delete_selected_curve_nodes(&mut curve, &state.selected_curve_nodes);
+            let deleted = delete_selected_curve_nodes(
+                &mut curve,
+                &state.selected_curve_nodes,
+                state.params.phase_offset(),
+            );
             if deleted {
                 state.params.set_editable_curve(&curve);
             }
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
             state.active_curve_segment = None;
             state.active_curve_offset = None;
             state.active_curve_marquee = None;
@@ -3059,35 +3495,49 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             let shift_held = state.shift_hover_held;
             let option_held = state.option_hover_held;
             let command_held = state.command_hover_held;
-            let (curve, moved_index) = if let Some(drag) = state.active_curve_node_drag.as_mut() {
-                let target = drag.target_for_pointer(
-                    node,
-                    CurvePointDragModifiers {
-                        shift_held,
-                        option_held,
-                        command_held,
-                    },
-                    state.params.sync_division(),
-                    curve_width_from_push_through_threshold_x(push_through_threshold_x),
-                    state.params.swing(),
-                    current,
-                );
-                curve_with_dragged_node(drag, target, push_through_threshold_x)
-            } else {
-                let mut curve = current_curve;
-                let mut target = node;
-                if command_held {
-                    target.x = snap_curve_time_to_beat_grid_with_swing(
+            let (curve, moved_index, seam_latched) =
+                if let Some(drag) = state.active_curve_node_drag.as_mut() {
+                    let target = drag.target_for_pointer(
+                        node,
+                        CurvePointDragModifiers {
+                            shift_held,
+                            option_held,
+                            command_held,
+                        },
                         state.params.sync_division(),
                         curve_width_from_push_through_threshold_x(push_through_threshold_x),
-                        target.x,
                         state.params.swing(),
+                        current,
                     );
-                }
-                update_curve_node(&mut curve, index, target);
-                (curve, index)
-            };
+                    curve_with_dragged_node(
+                        drag,
+                        target,
+                        push_through_threshold_x,
+                        state.params.phase_offset(),
+                    )
+                } else {
+                    let mut curve = current_curve;
+                    let mut target = node;
+                    if command_held {
+                        target.x = snap_curve_time_to_beat_grid_with_swing(
+                            state.params.sync_division(),
+                            curve_width_from_push_through_threshold_x(push_through_threshold_x),
+                            target.x,
+                            state.params.swing(),
+                        );
+                    }
+                    update_curve_node(&mut curve, index, target);
+                    (curve, index, false)
+                };
             state.params.set_editable_curve(&curve);
+            if seam_latched
+                && state
+                    .active_curve_node_drag
+                    .as_ref()
+                    .is_some_and(|drag| drag.selected_indices.is_empty())
+            {
+                state.clear_curve_selection();
+            }
             state.active_curve_node = Some(moved_index);
             state.active_curve_segment = None;
             state.preview_curve_offset = None;
@@ -3148,6 +3598,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.option_hover_held = option_held;
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
             state.active_curve_segment = None;
             state.hover_curve_node = None;
             state.preview_curve_node = None;
@@ -3174,40 +3625,50 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 .and_then(|active_index| current_curve.nodes.get(active_index))
                 .copied()
                 .unwrap_or(node);
-            let (curve, moved_index) = if let Some(drag) = state.active_curve_node_drag.as_mut() {
-                let target = drag.target_for_pointer(
-                    node,
-                    CurvePointDragModifiers {
-                        shift_held,
-                        option_held,
-                        command_held,
-                    },
-                    state.params.sync_division(),
-                    curve_width_from_push_through_threshold_x(push_through_threshold_x),
-                    state.params.swing(),
-                    current,
-                );
-                curve_with_dragged_node(drag, target, push_through_threshold_x)
-            } else {
-                let mut curve = current_curve;
-                let mut target = node;
-                if command_held {
-                    target.x = snap_curve_time_to_beat_grid_with_swing(
+            let (curve, moved_index, seam_latched) =
+                if let Some(drag) = state.active_curve_node_drag.as_mut() {
+                    let target = drag.target_for_pointer(
+                        node,
+                        CurvePointDragModifiers {
+                            shift_held,
+                            option_held,
+                            command_held,
+                        },
                         state.params.sync_division(),
                         curve_width_from_push_through_threshold_x(push_through_threshold_x),
-                        target.x,
                         state.params.swing(),
+                        current,
                     );
-                }
-                update_curve_node(&mut curve, index, target);
-                (curve, index)
-            };
+                    curve_with_dragged_node(
+                        drag,
+                        target,
+                        push_through_threshold_x,
+                        state.params.phase_offset(),
+                    )
+                } else {
+                    let mut curve = current_curve;
+                    let mut target = node;
+                    if command_held {
+                        target.x = snap_curve_time_to_beat_grid_with_swing(
+                            state.params.sync_division(),
+                            curve_width_from_push_through_threshold_x(push_through_threshold_x),
+                            target.x,
+                            state.params.swing(),
+                        );
+                    }
+                    update_curve_node(&mut curve, index, target);
+                    (curve, index, false)
+                };
             state.params.set_editable_curve(&curve);
+            if seam_latched {
+                state.clear_curve_selection();
+            }
             state.option_hover_held = option_held;
             state.command_hover_held = command_held;
             state.shift_hover_held = shift_held;
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
             state.active_curve_segment = None;
             state.preview_curve_offset = None;
             state.hover_curve_node = Some(moved_index);
@@ -3219,6 +3680,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             if let Some(drag) = start_curve_segment_tension_drag(&curve, index, position) {
                 state.active_curve_node = None;
                 state.active_curve_node_drag = None;
+                state.active_curve_paint = None;
                 state.active_curve_offset = None;
                 state.preview_curve_offset = None;
                 state.active_curve_segment = Some(drag);
@@ -3232,6 +3694,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             if let Some(drag) = start_curve_segment_move_drag(&curve, index, position) {
                 state.active_curve_node = None;
                 state.active_curve_node_drag = None;
+                state.active_curve_paint = None;
                 state.active_curve_offset = None;
                 state.preview_curve_offset = None;
                 state.active_curve_segment = Some(drag);
@@ -3275,6 +3738,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             }
         }
         CurvePreviewMessage::Cancel => {
+            state.active_curve_paint = None;
             if let Some(drag) = state.active_curve_offset.take() {
                 if state.params.phase_offset() != drag.origin_phase_offset
                     && state.host_param_edit_sink.gesture_value(
@@ -3291,6 +3755,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             }
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
             state.active_curve_segment = None;
             state.active_curve_marquee = None;
             state.preview_curve_offset = None;
@@ -3304,12 +3769,29 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
     }
 }
 
+fn commit_active_curve_paint(state: &mut RadiantEditorState, paint: ActiveCurvePaint) {
+    let candidate = match paint.finished_curve() {
+        PaintCommitOutcome::Applied { candidate } | PaintCommitOutcome::NoOp { candidate } => {
+            candidate
+        }
+    };
+    if candidate == paint.origin_curve {
+        return;
+    }
+
+    state.params.set_editable_curve(&candidate);
+    let mut origin_snapshot = paint.origin_snapshot;
+    origin_snapshot.curve = paint.origin_curve;
+    state.push_history_snapshot(origin_snapshot);
+}
+
 fn start_curve_node_drag(
     curve: &EditableCurve,
     index: usize,
     pointer: CurveNode,
     shift_held: bool,
     option_held: bool,
+    phase_offset: f32,
 ) -> Option<ActiveCurveNodeDrag> {
     let normalized = curve.clone().normalized();
     let origin = *normalized.nodes.get(index)?;
@@ -3319,6 +3801,12 @@ fn start_curve_node_drag(
         origin_index: index,
         origin_curve: normalized,
         selected_indices: Vec::new(),
+        seam_drag: canonical_seam_owner(curve, phase_offset).and_then(|owner| {
+            seam_owner_contains_index(curve, owner, index).then(|| CanonicalSeamDrag {
+                owner,
+                template_curve: curve.clone().normalized(),
+            })
+        }),
         horizontal_gain_anchor: horizontal_active.then_some(origin.y),
         vertical_time_anchor: vertical_active.then_some(origin.x),
         last_pointer_x: pointer.x.clamp(0.0, 1.0),
@@ -3330,14 +3818,57 @@ fn start_curve_node_drag(
 }
 
 fn curve_with_dragged_node(
-    drag: &ActiveCurveNodeDrag,
+    drag: &mut ActiveCurveNodeDrag,
     target: CurveNode,
     push_through_threshold_x: f32,
-) -> (EditableCurve, usize) {
-    if !drag.selected_indices.is_empty() {
-        return curve_with_dragged_selected_nodes(drag, target);
+    phase_offset: f32,
+) -> (EditableCurve, usize, bool) {
+    let single_selected_source = drag.selected_indices.len() == 1
+        && drag.selected_indices.first().copied() == Some(drag.origin_index);
+    if !drag.selected_indices.is_empty() && !single_selected_source {
+        let (curve, index) = curve_with_dragged_selected_nodes(drag, target, phase_offset);
+        return (curve, index, false);
     }
+
+    if let Some(seam_drag) = drag.seam_drag.as_mut() {
+        let mut curve = seam_drag.template_curve.clone();
+        let moved_index =
+            preferred_seam_active_index(&curve, seam_drag.owner, target, phase_offset);
+        set_canonical_seam_y(&mut curve, seam_drag.owner, target.y);
+        curve.normalize_in_place();
+        return (curve, moved_index, false);
+    }
+
     let mut curve = drag.origin_curve.clone();
+    if drag.origin_index > 0
+        && drag.origin_index + 1 < curve.nodes.len()
+        && !display_x_is_in_edge_zone(
+            curve.nodes[drag.origin_index].x,
+            phase_offset,
+            push_through_threshold_x,
+        )
+        && display_x_is_in_edge_zone(target.x, phase_offset, push_through_threshold_x)
+    {
+        let (curve, owner) = take_over_viewport_seam(
+            &curve,
+            drag.origin_index,
+            target.y,
+            phase_offset,
+            push_through_threshold_x,
+        );
+        let moved_index = preferred_seam_active_index(&curve, owner, target, phase_offset);
+        drag.seam_drag = Some(CanonicalSeamDrag {
+            owner,
+            template_curve: curve.clone(),
+        });
+        if single_selected_source {
+            // A selected source becomes one logical seam node after takeover;
+            // the old index and marquee selection must not survive the remap.
+            drag.selected_indices.clear();
+        }
+        return (curve, moved_index, true);
+    }
+
     let moved_index = move_curve_node_with_push_through(
         &mut curve,
         drag.origin_index,
@@ -3345,7 +3876,121 @@ fn curve_with_dragged_node(
         push_through_threshold_x,
     );
     curve.normalize_in_place();
-    (curve, moved_index)
+    (curve, moved_index, false)
+}
+
+fn set_canonical_seam_y(curve: &mut EditableCurve, owner: CanonicalSeamOwner, y: f32) {
+    let y = y.clamp(0.0, 1.0);
+    match owner {
+        CanonicalSeamOwner::Endpoints => set_wrapped_curve_endpoint_y(curve, y),
+        CanonicalSeamOwner::Interior(index) => {
+            if let Some(node) = curve.nodes.get_mut(index) {
+                node.y = y;
+            }
+        }
+    }
+}
+
+fn take_over_viewport_seam(
+    origin: &EditableCurve,
+    source_index: usize,
+    y: f32,
+    phase_offset: f32,
+    push_through_threshold_x: f32,
+) -> (EditableCurve, CanonicalSeamOwner) {
+    let mut curve = origin.clone().normalized();
+    let seam = seam_raw(phase_offset);
+    let source_left_tension = curve
+        .segments
+        .get(source_index.saturating_sub(1))
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let source_right_tension = curve
+        .segments
+        .get(source_index)
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let owner = if let Some(existing_owner) = canonical_seam_owner(&curve, phase_offset) {
+        existing_owner
+    } else {
+        if let Some(node) = curve.nodes.get_mut(source_index) {
+            node.x = seam;
+            node.y = y.clamp(0.0, 1.0);
+        }
+        // Re-evaluate only after the source has been put at the exact raw
+        // seam. Nearby interior nodes must not become owners by tolerance.
+        canonical_seam_owner(&curve, phase_offset)
+            .unwrap_or(CanonicalSeamOwner::Interior(source_index))
+    };
+
+    let owner_index = match owner {
+        CanonicalSeamOwner::Interior(index) => Some(index),
+        CanonicalSeamOwner::Endpoints => None,
+    };
+    let mut removals: Vec<usize> = curve
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            if index == 0 || index + 1 == curve.nodes.len() {
+                return None;
+            }
+            if owner_index == Some(index) {
+                return None;
+            }
+            let edge_competitor =
+                display_x_is_in_edge_zone(node.x, phase_offset, push_through_threshold_x);
+            (edge_competitor || index == source_index).then_some(index)
+        })
+        .collect();
+    let removed_before_owner = owner_index
+        .map(|index| removals.iter().filter(|remove| **remove < index).count())
+        .unwrap_or_else(|| {
+            removals
+                .iter()
+                .filter(|remove| **remove < source_index)
+                .count()
+        });
+    removals.sort_unstable_by(|left, right| right.cmp(left));
+    for remove_index in removals {
+        remove_interior_curve_node(&mut curve, remove_index);
+    }
+
+    let owner = match owner {
+        CanonicalSeamOwner::Endpoints => CanonicalSeamOwner::Endpoints,
+        CanonicalSeamOwner::Interior(mut index) => {
+            index = index.saturating_sub(removed_before_owner);
+            CanonicalSeamOwner::Interior(index)
+        }
+    };
+
+    match owner {
+        CanonicalSeamOwner::Endpoints => {
+            set_wrapped_curve_endpoint_y(&mut curve, y);
+            if let Some(first) = curve.segments.first_mut() {
+                first.tension = source_right_tension;
+            }
+            if let Some(last) = curve.segments.last_mut() {
+                last.tension = source_left_tension;
+            }
+        }
+        CanonicalSeamOwner::Interior(index) => {
+            if let Some(node) = curve.nodes.get_mut(index) {
+                node.x = seam;
+                node.y = y.clamp(0.0, 1.0);
+            }
+            if let Some(left) = curve.segments.get_mut(index.saturating_sub(1)) {
+                left.tension = source_left_tension;
+            }
+            if let Some(right) = curve.segments.get_mut(index) {
+                right.tension = source_right_tension;
+            }
+        }
+    }
+    curve.normalize_in_place();
+    (curve, owner)
 }
 
 /// Apply one pointer delta to all nodes in a retained marquee selection.
@@ -3357,6 +4002,7 @@ fn curve_with_dragged_node(
 fn curve_with_dragged_selected_nodes(
     drag: &ActiveCurveNodeDrag,
     target: CurveNode,
+    phase_offset: f32,
 ) -> (EditableCurve, usize) {
     let mut curve = drag.origin_curve.clone();
     let Some(anchor) = drag.origin_curve.nodes.get(drag.origin_index).copied() else {
@@ -3395,7 +4041,20 @@ fn curve_with_dragged_selected_nodes(
             }
         }
     }
-    let delta_x = (target.x - anchor.x).clamp(min_delta, max_delta);
+    let (min_delta, max_delta) = feasible_delta_interval_including_zero(min_delta, max_delta);
+    let delta_x = if drag.seam_drag.is_some() {
+        0.0
+    } else {
+        (target.x - anchor.x).clamp(min_delta, max_delta)
+    };
+    let delta_x = group_delta_preserving_canonical_seam(
+        &drag.origin_curve,
+        &selected,
+        phase_offset,
+        delta_x,
+        min_delta,
+        max_delta,
+    );
     let delta_y = target.y - anchor.y;
     for index in selected.iter().copied() {
         let Some(origin) = drag.origin_curve.nodes.get(index).copied() else {
@@ -3426,6 +4085,65 @@ fn curve_with_dragged_selected_nodes(
     }
     curve.normalize_in_place();
     (curve, drag.origin_index)
+}
+
+fn group_delta_preserving_canonical_seam(
+    curve: &EditableCurve,
+    selected: &std::collections::HashSet<usize>,
+    phase_offset: f32,
+    requested_delta: f32,
+    min_delta: f32,
+    max_delta: f32,
+) -> f32 {
+    let Some(owner) = canonical_seam_owner(curve, phase_offset) else {
+        return requested_delta;
+    };
+    if seam_owner_indices(curve, owner)
+        .iter()
+        .any(|index| selected.contains(index))
+    {
+        return 0.0;
+    }
+
+    let seam = seam_raw(phase_offset);
+    let can_use_delta = |delta: f32| {
+        selected.iter().all(|index| {
+            if *index == 0 || *index + 1 == curve.nodes.len() {
+                return true;
+            }
+            (curve.nodes[*index].x + delta - seam).abs() > CURVE_SEAM_OWNER_RAW_EPSILON
+        })
+    };
+    if can_use_delta(requested_delta) {
+        return requested_delta;
+    }
+
+    // Keep the group gesture intact, but do not let a selected member land on
+    // an already-owned seam. The spacing clamp normally makes this redundant;
+    // the explicit guard also covers legacy/epsilon-close topology.
+    let seam_gap = CURVE_SEAM_OWNER_RAW_EPSILON * 2.0;
+    let mut candidates = vec![min_delta, max_delta];
+    for index in selected.iter().copied() {
+        if index == 0 || index + 1 == curve.nodes.len() {
+            continue;
+        }
+        let origin_x = curve.nodes[index].x;
+        candidates.push(seam - seam_gap - origin_x);
+        candidates.push(seam + seam_gap - origin_x);
+    }
+    candidates
+        .into_iter()
+        .filter(|delta| {
+            delta.is_finite() && *delta >= min_delta && *delta <= max_delta && can_use_delta(*delta)
+        })
+        .min_by(|left, right| {
+            (left - requested_delta)
+                .abs()
+                .total_cmp(&(right - requested_delta).abs())
+                .then_with(|| left.total_cmp(right))
+        })
+        .or_else(|| can_use_delta(0.0).then_some(0.0))
+        .unwrap_or(requested_delta)
 }
 
 fn move_curve_node_with_push_through(
@@ -3461,8 +4179,11 @@ fn move_curve_node_with_push_through(
         moved_index = moved_index.saturating_sub(1);
     }
 
-    let min_x = curve.nodes[moved_index - 1].x + CURVE_NODE_MIN_SPACING_X;
-    let max_x = curve.nodes[moved_index + 1].x - CURVE_NODE_MIN_SPACING_X;
+    let origin_x = curve.nodes[moved_index].x;
+    let preferred_min_x = curve.nodes[moved_index - 1].x + CURVE_NODE_MIN_SPACING_X;
+    let preferred_max_x = curve.nodes[moved_index + 1].x - CURVE_NODE_MIN_SPACING_X;
+    let (min_x, max_x) =
+        feasible_node_x_interval_including_origin(preferred_min_x, preferred_max_x, origin_x);
     curve.nodes[moved_index] = CurveNode {
         x: target.x.clamp(min_x, max_x),
         y,
@@ -3666,11 +4387,16 @@ fn delete_curve_node(curve: &mut EditableCurve, index: usize) -> bool {
     true
 }
 
-fn delete_selected_curve_nodes(curve: &mut EditableCurve, selected: &[usize]) -> bool {
+fn delete_selected_curve_nodes(
+    curve: &mut EditableCurve,
+    selected: &[usize],
+    phase_offset: f32,
+) -> bool {
+    let survivors = interactive_curve_node_survivors(curve, phase_offset, None);
     let mut indices: Vec<usize> = selected
         .iter()
         .copied()
-        .filter(|index| *index > 0 && *index + 1 < curve.nodes.len())
+        .filter(|index| survivors.contains(index) && *index > 0 && *index + 1 < curve.nodes.len())
         .collect();
     indices.sort_unstable();
     indices.dedup();
@@ -4306,6 +5032,8 @@ struct CurvePreviewWidget {
     command_hover_held: bool,
     shift_hover_held: bool,
     active_segment_move: bool,
+    active_curve_paint: bool,
+    curve_paint_runs: Vec<PaintRun>,
     active_curve_offset_start_x: Option<f32>,
     selected_nodes: Vec<usize>,
     active_marquee: Option<ActiveCurveMarquee>,
@@ -4347,6 +5075,8 @@ impl CurvePreviewWidget {
             command_hover_held: false,
             shift_hover_held: false,
             active_segment_move: false,
+            active_curve_paint: false,
+            curve_paint_runs: Vec::new(),
             active_curve_offset_start_x: None,
             selected_nodes: Vec::new(),
             active_marquee: None,
@@ -4378,6 +5108,16 @@ impl CurvePreviewWidget {
 
     fn with_active_segment_move(mut self, active_segment_move: bool) -> Self {
         self.active_segment_move = active_segment_move;
+        self
+    }
+
+    fn with_active_curve_paint(mut self, active_curve_paint: bool) -> Self {
+        self.active_curve_paint = active_curve_paint;
+        self
+    }
+
+    fn with_curve_paint_runs(mut self, runs: Option<Vec<PaintRun>>) -> Self {
+        self.curve_paint_runs = runs.unwrap_or_default();
         self
     }
 
@@ -4481,16 +5221,145 @@ impl CurvePreviewWidget {
     }
 
     fn raw_node_from_display_point(&self, bounds: Rect, position: Point) -> CurveNode {
-        let mut node = Self::node_from_point(bounds, position);
-        node.x = (node.x - self.phase_offset).rem_euclid(1.0);
-        node
+        let display_node = Self::node_from_point(bounds, position);
+        let mut raw_x = (display_node.x - self.phase_offset).rem_euclid(1.0);
+        let at_viewport_seam = display_node.x <= CURVE_DISPLAY_SEAM_EPSILON
+            || display_node.x >= 1.0 - CURVE_DISPLAY_SEAM_EPSILON;
+        if at_viewport_seam
+            && matches!(
+                canonical_seam_owner(&self.curve, self.phase_offset),
+                Some(CanonicalSeamOwner::Interior(_))
+            )
+        {
+            raw_x = seam_raw(self.phase_offset);
+        }
+        let at_offset_seam = self.phase_offset > CURVE_DISPLAY_SEAM_EPSILON
+            && (display_node.x - self.phase_offset).abs() <= CURVE_DISPLAY_SEAM_EPSILON;
+        if at_offset_seam && self.active_node.is_some() {
+            let current_display_x = self
+                .active_node
+                .and_then(|index| self.curve.nodes.get(index).copied())
+                .map(|node| Self::display_phase(node.x, self.phase_offset))
+                .unwrap_or(self.phase_offset);
+            raw_x = if current_display_x > self.phase_offset {
+                1.0 - CURVE_DISPLAY_SEAM_EPSILON
+            } else {
+                CURVE_DISPLAY_SEAM_EPSILON
+            };
+        } else if display_node.x <= CURVE_DISPLAY_SEAM_EPSILON
+            && self.phase_offset.abs() > CURVE_DISPLAY_SEAM_EPSILON
+        {
+            raw_x = (raw_x + CURVE_DISPLAY_SEAM_EPSILON).rem_euclid(1.0);
+        } else if display_node.x >= 1.0 - CURVE_DISPLAY_SEAM_EPSILON {
+            raw_x = (raw_x - CURVE_DISPLAY_SEAM_EPSILON).rem_euclid(1.0);
+        }
+        CurveNode {
+            x: raw_x,
+            y: display_node.y,
+        }
+    }
+
+    fn paint_sample_from_display_point(&self, bounds: Rect, position: Point) -> CurvePaintSample {
+        CurvePaintSample {
+            node: self.raw_node_from_display_point(bounds, position),
+            display_position: Self::normalized_display_position(bounds, position),
+            outside: false,
+        }
+    }
+
+    fn paint_sample_from_boundary(&self, bounds: Rect, position: Point) -> CurvePaintSample {
+        let curve_bounds = Self::curve_bounds(bounds);
+        let display_position = Self::normalized_display_position(bounds, position);
+        let projected = Point::new(
+            if position.x.is_finite() {
+                position.x.clamp(curve_bounds.min.x, curve_bounds.max.x)
+            } else {
+                curve_bounds.center().x
+            },
+            if position.y.is_finite() {
+                position.y.clamp(curve_bounds.min.y, curve_bounds.max.y)
+            } else {
+                curve_bounds.center().y
+            },
+        );
+        let mut sample = self.paint_sample_from_display_point(bounds, projected);
+        sample.display_position = display_position;
+        sample.outside = true;
+        sample
+    }
+
+    fn normalized_display_position(bounds: Rect, position: Point) -> RectPoint {
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let height = (curve_bounds.height().max(1.0) - 1.0).max(1.0);
+        RectPoint {
+            x: if position.x.is_finite() {
+                (position.x - curve_bounds.min.x) / width
+            } else {
+                0.5
+            },
+            y: if position.y.is_finite() {
+                1.0 - (position.y - curve_bounds.min.y) / height
+            } else {
+                0.5
+            },
+        }
+    }
+
+    fn display_phase(raw_x: f32, phase_offset: f32) -> f32 {
+        let shifted = raw_x + phase_offset;
+        let wrapped = shifted.rem_euclid(1.0);
+        if shifted > CURVE_DISPLAY_SEAM_EPSILON && wrapped <= CURVE_DISPLAY_SEAM_EPSILON {
+            1.0
+        } else {
+            wrapped
+        }
     }
 
     fn display_node(&self, node: CurveNode) -> CurveNode {
         CurveNode {
-            x: (node.x + self.phase_offset).rem_euclid(1.0),
+            x: Self::display_phase(node.x, self.phase_offset),
             y: node.y,
         }
+    }
+
+    fn display_node_instances(&self, index: usize, node: CurveNode) -> Vec<CurveNode> {
+        match canonical_seam_owner(&self.curve, self.phase_offset) {
+            Some(CanonicalSeamOwner::Endpoints) if index == 0 => {
+                vec![CurveNode { x: 0.0, y: node.y }]
+            }
+            Some(CanonicalSeamOwner::Endpoints) if index + 1 == self.curve.nodes.len() => {
+                vec![CurveNode { x: 1.0, y: node.y }]
+            }
+            Some(CanonicalSeamOwner::Interior(owner)) if owner == index => vec![
+                CurveNode { x: 0.0, y: node.y },
+                CurveNode { x: 1.0, y: node.y },
+            ],
+            _ => vec![self.display_node(node)],
+        }
+    }
+
+    fn display_curve_points_for_index(
+        &self,
+        bounds: Rect,
+        index: usize,
+        node: CurveNode,
+    ) -> Vec<Point> {
+        self.display_node_instances(index, node)
+            .into_iter()
+            .map(|display| Self::curve_point(bounds, display))
+            .collect()
+    }
+
+    fn interactive_node_survivors(&self) -> Vec<usize> {
+        interactive_curve_node_survivors(&self.curve, self.phase_offset, self.active_node)
+    }
+
+    fn has_interactive_deletable_selection(&self) -> bool {
+        let survivors = self.interactive_node_survivors();
+        self.selected_nodes.iter().any(|index| {
+            survivors.contains(index) && *index > 0 && *index + 1 < self.curve.nodes.len()
+        })
     }
 
     fn display_curve_point(&self, bounds: Rect, node: CurveNode) -> Point {
@@ -4516,16 +5385,25 @@ impl CurvePreviewWidget {
             return None;
         }
         let radius_squared = radius.max(0.0) * radius.max(0.0);
+        let survivors = self.interactive_node_survivors();
         self.curve
             .nodes
             .iter()
             .copied()
             .enumerate()
             .filter_map(|(index, node)| {
-                let center = self.display_curve_point(bounds, node);
-                let dx = center.x - position.x;
-                let dy = center.y - position.y;
-                let distance_squared = dx * dx + dy * dy;
+                if !survivors.contains(&index) {
+                    return None;
+                }
+                let distance_squared = self
+                    .display_curve_points_for_index(bounds, index, node)
+                    .into_iter()
+                    .map(|center| {
+                        let dx = center.x - position.x;
+                        let dy = center.y - position.y;
+                        dx * dx + dy * dy
+                    })
+                    .min_by(f32::total_cmp)?;
                 (distance_squared <= radius_squared).then_some((index, distance_squared))
             })
             .min_by(|(_, left), (_, right)| left.total_cmp(right))
@@ -4600,7 +5478,7 @@ impl CurvePreviewWidget {
         let curve_point = Self::curve_point(
             bounds,
             CurveNode {
-                x: (raw.x + self.phase_offset).rem_euclid(1.0),
+                x: Self::display_phase(raw.x, self.phase_offset),
                 y: sample_editable_curve(&self.curve, raw.x),
             },
         );
@@ -4789,6 +5667,42 @@ impl CurvePreviewWidget {
                 }));
             }
         }
+        self.push_curve_paint_preview(primitives, bounds, theme);
+    }
+
+    fn push_curve_paint_preview(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        theme: &ThemeTokens,
+    ) {
+        if !self.active_curve_paint {
+            return;
+        }
+        for run in &self.curve_paint_runs {
+            if run.points().len() < 2 {
+                continue;
+            }
+            let points: Vec<Point> = run
+                .points()
+                .iter()
+                .map(|point| {
+                    Self::curve_point(
+                        bounds,
+                        CurveNode {
+                            x: point.position.x,
+                            y: point.position.y,
+                        },
+                    )
+                })
+                .collect();
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from(points),
+                color: theme.accent_copper,
+                width: CURVE_PAINT_PREVIEW_WIDTH,
+            }));
+        }
     }
 
     fn push_offset_bar(
@@ -4941,9 +5855,10 @@ impl CurvePreviewWidget {
 
         // Keep authored nodes in the rendered polyline. A uniform phase grid
         // can otherwise land on neither side of a narrow or steep segment.
-        for node in self.curve.nodes.iter().copied() {
-            let display = self.display_node(node);
-            samples.push((display.x, Self::curve_point(bounds, display)));
+        for (index, node) in self.curve.nodes.iter().copied().enumerate() {
+            for display in self.display_node_instances(index, node) {
+                samples.push((display.x, Self::curve_point(bounds, display)));
+            }
         }
 
         // Sample each authored segment in proportion to its displayed width.
@@ -5116,8 +6031,11 @@ impl CurvePreviewWidget {
             }));
         }
 
+        let survivors = self.interactive_node_survivors();
         for (index, node) in self.curve.nodes.iter().copied().enumerate() {
-            let center = self.display_curve_point(bounds, node);
+            if !survivors.contains(&index) {
+                continue;
+            }
             let active = self.active_node == Some(index);
             let selected = self.selected_nodes.contains(&index);
             let hovered = self.hover_node == Some(index);
@@ -5129,30 +6047,39 @@ impl CurvePreviewWidget {
                 CURVE_NODE_SIZE
             };
             let radius = size * 0.5;
-            let rect = Rect::from_xy_size(center.x - radius, center.y - radius, size, size);
-            primitives.push(PaintPrimitive::FillRect(PaintFillRect {
-                widget_id: self.common.id,
-                rect,
-                color: if active || selected {
-                    theme.accent_warning
-                } else if hovered {
-                    theme.accent_mint
-                } else {
-                    theme.surface_raised
-                },
-            }));
-            primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
-                widget_id: self.common.id,
-                rect,
-                color: if selected || (active && hovered) {
-                    theme.accent_mint
-                } else if hovered {
-                    theme.accent_warning
-                } else {
-                    theme.accent_copper
-                },
-                width: if hovered { 1.275 } else { 1.0 },
-            }));
+            let logically_active = active
+                || self.active_node.is_some_and(|active_index| {
+                    canonical_seam_owner(&self.curve, self.phase_offset).is_some_and(|owner| {
+                        seam_owner_contains_index(&self.curve, owner, active_index)
+                            && seam_owner_contains_index(&self.curve, owner, index)
+                    })
+                });
+            for center in self.display_curve_points_for_index(bounds, index, node) {
+                let rect = Rect::from_xy_size(center.x - radius, center.y - radius, size, size);
+                primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+                    widget_id: self.common.id,
+                    rect,
+                    color: if logically_active || selected {
+                        theme.accent_warning
+                    } else if hovered {
+                        theme.accent_mint
+                    } else {
+                        theme.surface_raised
+                    },
+                }));
+                primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+                    widget_id: self.common.id,
+                    rect,
+                    color: if selected || (logically_active && hovered) {
+                        theme.accent_mint
+                    } else if hovered {
+                        theme.accent_warning
+                    } else {
+                        theme.accent_copper
+                    },
+                    width: if hovered { 1.275 } else { 1.0 },
+                }));
+            }
         }
     }
 
@@ -5232,6 +6159,17 @@ impl Widget for CurvePreviewWidget {
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         let message = match input {
+            // Radiant projects both right-click and macOS Control-click into
+            // the secondary gesture, so both paths share the paint behavior.
+            WidgetInput::PointerPress {
+                position,
+                button: PointerButton::Secondary,
+                ..
+            } if Self::curve_bounds(bounds).contains(position) => {
+                Some(CurvePreviewMessage::PressPaint {
+                    sample: self.paint_sample_from_display_point(bounds, position),
+                })
+            }
             WidgetInput::PointerPress {
                 position,
                 button: PointerButton::Primary,
@@ -5310,11 +6248,7 @@ impl Widget for CurvePreviewWidget {
                 }
             }
             WidgetInput::KeyPress(WidgetKey::Delete | WidgetKey::Backspace)
-                if self.common.state.focused
-                    && self
-                        .selected_nodes
-                        .iter()
-                        .any(|index| *index > 0 && *index + 1 < self.curve.nodes.len()) =>
+                if self.common.state.focused && self.has_interactive_deletable_selection() =>
             {
                 Some(CurvePreviewMessage::DeleteSelectedNodes)
             }
@@ -5323,6 +6257,16 @@ impl Widget for CurvePreviewWidget {
                     Some(CurvePreviewMessage::DragMarquee {
                         current: self.raw_node_from_display_point(bounds, position),
                     })
+                } else if self.active_curve_paint {
+                    if Self::curve_bounds(bounds).contains(position) {
+                        Some(CurvePreviewMessage::DragPaint {
+                            sample: self.paint_sample_from_display_point(bounds, position),
+                        })
+                    } else {
+                        Some(CurvePreviewMessage::DragPaintOutside {
+                            sample: self.paint_sample_from_boundary(bounds, position),
+                        })
+                    }
                 } else if let Some(index) = self.active_node {
                     Some(CurvePreviewMessage::DragNode {
                         index,
@@ -5365,6 +6309,26 @@ impl Widget for CurvePreviewWidget {
                     command_held: modifiers.command,
                     shift_held: modifiers.shift,
                 }),
+            WidgetInput::PointerRelease {
+                position,
+                button: PointerButton::Secondary,
+                ..
+            }
+            | WidgetInput::PointerDrop {
+                position,
+                button: PointerButton::Secondary,
+                ..
+            } if self.active_curve_paint => {
+                if Self::curve_bounds(bounds).contains(position) {
+                    Some(CurvePreviewMessage::ReleasePaint {
+                        sample: Some(self.paint_sample_from_display_point(bounds, position)),
+                    })
+                } else {
+                    Some(CurvePreviewMessage::ReleasePaintOutside {
+                        sample: self.paint_sample_from_boundary(bounds, position),
+                    })
+                }
+            }
             WidgetInput::PointerRelease {
                 position,
                 button: PointerButton::Primary,
@@ -5412,6 +6376,7 @@ impl Widget for CurvePreviewWidget {
                 (!focused
                     && (self.active_node.is_some()
                         || self.active_segment.is_some()
+                        || self.active_curve_paint
                         || self.active_curve_offset_start_x.is_some()
                         || self.active_marquee.is_some()
                         || self.hover_node.is_some()
@@ -5464,6 +6429,21 @@ enum CurvePreviewMessage {
         shift_held: bool,
         option_held: bool,
         command_held: bool,
+    },
+    PressPaint {
+        sample: CurvePaintSample,
+    },
+    DragPaint {
+        sample: CurvePaintSample,
+    },
+    DragPaintOutside {
+        sample: CurvePaintSample,
+    },
+    ReleasePaint {
+        sample: Option<CurvePaintSample>,
+    },
+    ReleasePaintOutside {
+        sample: CurvePaintSample,
     },
     PressMarquee {
         start: CurveNode,
@@ -5537,7 +6517,9 @@ struct CurveHoverState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::curve_paint::{BoundaryContact, BoundaryEdge, EdgeParameter};
     use super::*;
+    use crate::curve::sample_curve_segment;
     #[cfg(feature = "vst3")]
     use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
@@ -5550,6 +6532,8 @@ mod tests {
     use toybox::clack_plugin::events::Event;
     use toybox::clap::automation::{AutomationDropPolicy, AutomationQueueConfig};
 
+    const CURVE_PAINT_ASSERT_EPSILON: f32 = 1.0e-4;
+
     fn editor_state(params: Arc<PumpParams>) -> RadiantEditorState {
         RadiantEditorState::new(
             params,
@@ -5559,6 +6543,71 @@ mod tests {
                 requester: None,
             }),
         )
+    }
+
+    fn paint_sample(x: f32, y: f32) -> CurvePaintSample {
+        CurvePaintSample {
+            node: CurveNode { x, y },
+            display_position: RectPoint { x, y },
+            outside: false,
+        }
+    }
+
+    fn boundary_paint_sample(x: f32, y: f32) -> CurvePaintSample {
+        CurvePaintSample {
+            node: CurveNode { x, y },
+            display_position: RectPoint { x, y },
+            outside: true,
+        }
+    }
+
+    fn recorded_run(points: impl IntoIterator<Item = RectPoint>) -> PaintRun {
+        let mut recorder = StrokeRecorder::new(RectBounds {
+            min: RectPoint { x: 0.0, y: 0.0 },
+            max: RectPoint { x: 1.0, y: 1.0 },
+        });
+        for point in points {
+            recorder.observe(point);
+        }
+        assert_eq!(recorder.runs().len(), 1);
+        recorder
+            .runs()
+            .first()
+            .cloned()
+            .expect("recorded points should produce one paint run")
+    }
+
+    fn sampled_segment_run(
+        left: CurveNode,
+        right: CurveNode,
+        tension: f32,
+        steps: usize,
+    ) -> PaintRun {
+        recorded_run((0..=steps).map(|step| {
+            let fraction = step as f32 / steps as f32;
+            let x = left.x + (right.x - left.x) * fraction;
+            RectPoint {
+                x,
+                y: sample_curve_segment(left, right, tension, x),
+            }
+        }))
+    }
+
+    fn assert_curve_paint_topology_is_bounded(curve: &EditableCurve) {
+        assert!(curve.nodes.len() <= MAX_EDITABLE_NODES);
+        assert_eq!(curve.segments.len(), curve.nodes.len().saturating_sub(1));
+        assert_eq!(curve.nodes.first().map(|node| node.x), Some(0.0));
+        assert_eq!(curve.nodes.last().map(|node| node.x), Some(1.0));
+        assert!(curve.nodes.iter().all(|node| {
+            node.x.is_finite()
+                && node.y.is_finite()
+                && (0.0..=1.0).contains(&node.x)
+                && (0.0..=1.0).contains(&node.y)
+        }));
+        assert!(curve
+            .nodes
+            .windows(2)
+            .all(|pair| pair[1].x - pair[0].x >= CURVE_PAINT_ASSERT_EPSILON));
     }
 
     fn test_curve_push_through_threshold_x() -> f32 {
@@ -5573,6 +6622,924 @@ mod tests {
             option_held: false,
             command_held: false,
         }
+    }
+
+    fn legacy_edge_curve() -> EditableCurve {
+        EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.75 },
+                CurveNode { x: 0.0001, y: 0.2 },
+                CurveNode { x: 0.5, y: 0.45 },
+                CurveNode { x: 0.9999, y: 0.15 },
+                CurveNode { x: 1.0, y: 0.75 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+            ..EditableCurve::default()
+        }
+        .normalized()
+    }
+
+    fn interior_seam_curve() -> EditableCurve {
+        EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.2, y: 0.2 },
+                CurveNode { x: 0.75, y: 0.4 },
+                CurveNode { x: 0.9, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.11 },
+                CurveSegment { tension: 0.22 },
+                CurveSegment { tension: 0.33 },
+                CurveSegment { tension: 0.44 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized()
+    }
+
+    fn interior_seam_curve_with_raw_x(raw_x: f32) -> EditableCurve {
+        let mut curve = interior_seam_curve();
+        curve.nodes[2].x = raw_x;
+        curve.normalized()
+    }
+
+    fn occupied_interior_seam_curve(edge_competitor_raw_x: f32) -> EditableCurve {
+        EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.2, y: 0.2 },
+                CurveNode { x: 0.75, y: 0.4 },
+                CurveNode {
+                    x: edge_competitor_raw_x,
+                    y: 0.3,
+                },
+                CurveNode { x: 0.9, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.11 },
+                CurveSegment { tension: 0.22 },
+                CurveSegment { tension: 0.33 },
+                CurveSegment { tension: 0.44 },
+                CurveSegment { tension: 0.55 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized()
+    }
+
+    fn assert_marquee_selected_single_source_takes_over_occupied_edge(edge_x: f32) {
+        let phase_offset = 0.25;
+        let threshold = test_curve_push_through_threshold_x();
+        let edge_competitor_raw_x = if edge_x <= 0.0 { 0.77 } else { 0.73 };
+        let curve = occupied_interior_seam_curve(edge_competitor_raw_x);
+        assert!(matches!(
+            canonical_seam_owner(&curve, phase_offset),
+            Some(CanonicalSeamOwner::Interior(_))
+        ));
+        assert!(display_x_is_in_edge_zone(
+            edge_competitor_raw_x,
+            phase_offset,
+            threshold,
+        ));
+
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(curve.clone(), Some(1), None, None, None, None, false)
+            .with_phase_offset(phase_offset);
+        let target = widget.raw_node_from_display_point(
+            bounds,
+            CurvePreviewWidget::curve_point(bounds, CurveNode { x: edge_x, y: 0.55 }),
+        );
+        assert!(display_x_is_in_edge_zone(target.x, phase_offset, threshold,));
+
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(phase_offset);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![1];
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 1,
+                pointer: curve.nodes[1],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            }),
+        );
+        assert_eq!(
+            state
+                .active_curve_node_drag
+                .as_ref()
+                .map(|drag| drag.selected_indices.clone()),
+            Some(vec![1])
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
+                index: 1,
+                node: target,
+                push_through_threshold_x: threshold,
+            }),
+        );
+
+        let taken_over = params.editable_curve_snapshot();
+        let seam_indices: Vec<_> = taken_over
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                ((node.x - seam_raw(phase_offset)).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+                    .then_some(index)
+            })
+            .collect();
+        assert_eq!(taken_over.nodes.len(), curve.nodes.len() - 2);
+        assert_eq!(seam_indices, vec![1]);
+        assert_eq!(taken_over.nodes[1].x, seam_raw(phase_offset));
+        assert!(!taken_over
+            .nodes
+            .iter()
+            .any(|node| (node.x - curve.nodes[1].x).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON));
+        assert!(!taken_over
+            .nodes
+            .iter()
+            .any(|node| (node.x - edge_competitor_raw_x).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON));
+        assert_eq!(state.active_curve_node, Some(1));
+        assert!(state.selected_curve_nodes.is_empty());
+        assert!(state
+            .active_curve_node_drag
+            .as_ref()
+            .is_some_and(|drag| drag.selected_indices.is_empty() && drag.seam_drag.is_some()));
+        assert!((taken_over.nodes[1].y - 0.55).abs() < 1.0e-6);
+        assert!((taken_over.segments[0].tension - 0.11).abs() < 1.0e-6);
+        assert!((taken_over.segments[1].tension - 0.22).abs() < 1.0e-6);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
+                index: 1,
+                node: CurveNode { x: 0.2, y: 0.65 },
+                push_through_threshold_x: threshold,
+            }),
+        );
+        let latched = params.editable_curve_snapshot();
+        assert_eq!(latched.nodes[1].x, seam_raw(phase_offset));
+        assert!((latched.nodes[1].y - 0.65).abs() < 1.0e-6);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseNode {
+                index: 1,
+                node: CurveNode { x: 0.2, y: 0.7 },
+                push_through_threshold_x: threshold,
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            }),
+        );
+        let released = params.editable_curve_snapshot();
+        assert_eq!(released.nodes[1].x, seam_raw(phase_offset));
+        assert!((released.nodes[1].y - 0.7).abs() < 1.0e-6);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.selected_curve_nodes.is_empty());
+    }
+
+    #[test]
+    fn canonical_seam_owner_uses_wrapped_endpoints_at_offset_zero_and_interior_at_offset_quarter() {
+        let curve = interior_seam_curve();
+
+        assert_eq!(
+            canonical_seam_owner(&curve, 0.0),
+            Some(CanonicalSeamOwner::Endpoints)
+        );
+        assert_eq!(
+            canonical_seam_owner(&curve, 0.25),
+            Some(CanonicalSeamOwner::Interior(2))
+        );
+        assert_eq!(
+            canonical_seam_owner(&curve, 0.0005),
+            Some(CanonicalSeamOwner::Endpoints)
+        );
+    }
+
+    #[test]
+    fn near_interior_seam_nodes_are_ordinary_and_horizontally_movable() {
+        for raw_x in [0.7495, 0.7505] {
+            let curve = interior_seam_curve_with_raw_x(raw_x);
+            assert_eq!(canonical_seam_owner(&curve, 0.25), None);
+
+            let widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(0.25);
+            assert_eq!(
+                widget.display_node_instances(2, curve.nodes[2]).len(),
+                1,
+                "near-seam node {raw_x} must not be mirrored"
+            );
+
+            let params = Arc::new(PumpParams::new());
+            params.set_editable_curve(&curve);
+            params.set_phase_offset(0.25);
+            let mut state = editor_state(Arc::clone(&params));
+            reduce_curve_message(
+                &mut state,
+                CurvePreviewMessage::PressNode {
+                    index: 2,
+                    pointer: curve.nodes[2],
+                    shift_held: false,
+                    option_held: false,
+                    command_held: false,
+                },
+            );
+            reduce_curve_message(
+                &mut state,
+                CurvePreviewMessage::DragNode {
+                    index: 2,
+                    node: CurveNode { x: 0.6, y: 0.65 },
+                    push_through_threshold_x: test_curve_push_through_threshold_x(),
+                },
+            );
+
+            let dragged = params.editable_curve_snapshot();
+            assert!((dragged.nodes[2].x - 0.6).abs() < 1.0e-6);
+            assert!((dragged.nodes[2].y - 0.65).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn mirrored_seam_hit_targets_return_the_same_interior_owner() {
+        let curve = interior_seam_curve();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_phase_offset(0.25);
+        let seam_y = curve.nodes[2].y;
+        let left = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.0, y: seam_y });
+        let right = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 1.0, y: seam_y });
+
+        assert_eq!(widget.hit_node(bounds, left), Some(2));
+        assert_eq!(widget.hit_node(bounds, right), Some(2));
+    }
+
+    #[test]
+    fn exact_interior_seam_is_one_vertical_only_owner_from_both_display_sides() {
+        let curve = interior_seam_curve();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_phase_offset(0.25);
+        let seam_y = curve.nodes[2].y;
+
+        for (display_x, target_x) in [(0.0, 0.1), (1.0, 0.9)] {
+            let displayed = CurvePreviewWidget::curve_point(
+                bounds,
+                CurveNode {
+                    x: display_x,
+                    y: seam_y,
+                },
+            );
+            assert_eq!(widget.hit_node(bounds, displayed), Some(2));
+
+            let params = Arc::new(PumpParams::new());
+            params.set_editable_curve(&curve);
+            params.set_phase_offset(0.25);
+            let mut state = editor_state(Arc::clone(&params));
+            reduce_curve_message(
+                &mut state,
+                CurvePreviewMessage::PressNode {
+                    index: 2,
+                    pointer: curve.nodes[2],
+                    shift_held: false,
+                    option_held: false,
+                    command_held: false,
+                },
+            );
+            reduce_curve_message(
+                &mut state,
+                CurvePreviewMessage::DragNode {
+                    index: 2,
+                    node: CurveNode {
+                        x: target_x,
+                        y: 0.65,
+                    },
+                    push_through_threshold_x: test_curve_push_through_threshold_x(),
+                },
+            );
+
+            let dragged = params.editable_curve_snapshot();
+            assert_eq!(dragged.nodes[2].x, 0.75);
+            assert!((dragged.nodes[2].y - 0.65).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn existing_interior_seam_drag_ignores_horizontal_excursions() {
+        let params = Arc::new(PumpParams::new());
+        let curve = interior_seam_curve();
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 2,
+                pointer: curve.nodes[2],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        for target_x in [0.0, 1.0] {
+            reduce_curve_message(
+                &mut state,
+                CurvePreviewMessage::DragNode {
+                    index: 2,
+                    node: CurveNode {
+                        x: target_x,
+                        y: 0.65,
+                    },
+                    push_through_threshold_x: test_curve_push_through_threshold_x(),
+                },
+            );
+        }
+
+        let dragged = params.editable_curve_snapshot();
+        assert_eq!(dragged.nodes.len(), curve.nodes.len());
+        assert!((dragged.nodes[2].x - 0.75).abs() < 1.0e-6);
+        assert!((dragged.nodes[2].y - 0.65).abs() < 1.0e-6);
+        assert_eq!(dragged.nodes[0], curve.nodes[0]);
+        assert_eq!(dragged.nodes[1], curve.nodes[1]);
+        assert_eq!(dragged.nodes[3], curve.nodes[3]);
+        assert_eq!(dragged.nodes[4], curve.nodes[4]);
+    }
+
+    #[test]
+    fn marquee_selected_single_source_takes_over_occupied_left_edge() {
+        assert_marquee_selected_single_source_takes_over_occupied_edge(0.0);
+    }
+
+    #[test]
+    fn marquee_selected_single_source_takes_over_occupied_right_edge() {
+        assert_marquee_selected_single_source_takes_over_occupied_edge(1.0);
+    }
+
+    #[test]
+    fn marquee_selected_single_source_clears_selection_on_direct_edge_release() {
+        let phase_offset = 0.25;
+        let curve = occupied_interior_seam_curve(0.77);
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(phase_offset);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![1];
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 1,
+                pointer: curve.nodes[1],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseNode {
+                index: 1,
+                node: CurveNode {
+                    x: seam_raw(phase_offset),
+                    y: 0.55,
+                },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            }),
+        );
+
+        let released = params.editable_curve_snapshot();
+        assert_eq!(released.nodes[1].x, seam_raw(phase_offset));
+        assert!(state.selected_curve_nodes.is_empty());
+        assert_eq!(state.undo_history.len(), 1);
+    }
+
+    #[test]
+    fn incoming_node_takes_over_at_inclusive_edge_threshold_but_not_just_outside() {
+        let threshold = test_curve_push_through_threshold_x();
+        let origin = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.2, y: 0.3 },
+                CurveNode { x: 0.5, y: 0.5 },
+                CurveNode { x: 0.8, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+            ..EditableCurve::default()
+        }
+        .normalized();
+
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&origin);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_curve_message(&mut state, unconstrained_press(2));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode {
+                    x: threshold,
+                    y: 0.35,
+                },
+                push_through_threshold_x: threshold,
+            },
+        );
+        let taken_over = params.editable_curve_snapshot();
+        assert_eq!(taken_over.nodes.len(), origin.nodes.len() - 1);
+        assert!((taken_over.nodes[0].y - 0.35).abs() < 1.0e-6);
+        assert!((taken_over.nodes.last().unwrap().y - 0.35).abs() < 1.0e-6);
+        assert!(!taken_over
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.5).abs() < 1.0e-6));
+        assert_eq!(state.active_curve_node, Some(0));
+
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&origin);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_curve_message(&mut state, unconstrained_press(2));
+        let just_outside = threshold + 1.0e-3;
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode {
+                    x: just_outside,
+                    y: 0.35,
+                },
+                push_through_threshold_x: threshold,
+            },
+        );
+        let ordinary = params.editable_curve_snapshot();
+        assert!((ordinary.nodes[1].x - just_outside).abs() < 1.0e-6);
+        assert!((ordinary.nodes[0].y - origin.nodes[0].y).abs() < 1.0e-6);
+        assert!((ordinary.nodes.last().unwrap().y - origin.nodes.last().unwrap().y).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn edge_takeover_snaps_near_seam_source_before_it_becomes_owner() {
+        let curve = interior_seam_curve_with_raw_x(0.7495);
+        assert_eq!(canonical_seam_owner(&curve, 0.25), None);
+
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 2,
+                pointer: curve.nodes[2],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode { x: 0.75, y: 0.55 },
+                push_through_threshold_x: 1.0e-4,
+            },
+        );
+
+        let taken_over = params.editable_curve_snapshot();
+        assert_eq!(taken_over.nodes[2].x, 0.75);
+        assert_eq!(taken_over.nodes[2].x, seam_raw(0.25));
+        assert_eq!(
+            canonical_seam_owner(&taken_over, 0.25),
+            Some(CanonicalSeamOwner::Interior(2))
+        );
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode { x: 0.2, y: 0.65 },
+                push_through_threshold_x: 1.0e-4,
+            },
+        );
+        let dragged_owner = params.editable_curve_snapshot();
+        assert_eq!(dragged_owner.nodes[2].x, 0.75);
+        assert!((dragged_owner.nodes[2].y - 0.65).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn seam_takeover_removes_competitors_remaps_active_index_and_inherits_incident_tension() {
+        let params = Arc::new(PumpParams::new());
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.4, y: 0.2 },
+                CurveNode { x: 0.74, y: 0.3 },
+                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 0.9, y: 0.6 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.11 },
+                CurveSegment { tension: 0.22 },
+                CurveSegment { tension: 0.33 },
+                CurveSegment { tension: 0.44 },
+                CurveSegment { tension: 0.55 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 1,
+                pointer: curve.nodes[1],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 1,
+                node: CurveNode { x: 0.75, y: 0.55 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let taken_over = params.editable_curve_snapshot();
+        assert_eq!(taken_over.nodes.len(), 4);
+        assert_eq!(taken_over.nodes[0].x, 0.0);
+        assert!((taken_over.nodes[1].x - 0.75).abs() < 1.0e-6);
+        assert_eq!(taken_over.nodes[3].x, 1.0);
+        assert!(!taken_over
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.4).abs() < 1.0e-6));
+        assert!(!taken_over
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.74).abs() < 1.0e-6));
+        assert_eq!(state.active_curve_node, Some(1));
+        assert!((taken_over.segments[0].tension - 0.11).abs() < 1.0e-6);
+        assert!((taken_over.segments[1].tension - 0.22).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn group_containing_interior_seam_keeps_zero_horizontal_delta() {
+        let params = Arc::new(PumpParams::new());
+        let curve = interior_seam_curve();
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![2, 3];
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 2,
+                pointer: curve.nodes[2],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode { x: 0.1, y: 0.6 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        assert!((dragged.nodes[2].x - curve.nodes[2].x).abs() < 1.0e-6);
+        assert!((dragged.nodes[3].x - curve.nodes[3].x).abs() < 1.0e-6);
+        assert!((dragged.nodes[2].y - 0.6).abs() < 1.0e-6);
+        assert!((dragged.nodes[3].y - 0.8).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn multi_node_group_does_not_duplicate_an_occupied_interior_seam() {
+        let params = Arc::new(PumpParams::new());
+        let curve = interior_seam_curve();
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![1, 3];
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 1,
+                pointer: curve.nodes[1],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 1,
+                node: CurveNode { x: 0.75, y: 0.7 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        let seam_indices: Vec<_> = dragged
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                ((node.x - seam_raw(0.25)).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON).then_some(index)
+            })
+            .collect();
+        assert_eq!(seam_indices, vec![2]);
+        assert_eq!(
+            canonical_seam_owner(&dragged, 0.25),
+            Some(CanonicalSeamOwner::Interior(2))
+        );
+        assert_eq!(dragged.nodes.len(), curve.nodes.len());
+        assert_eq!(state.selected_curve_nodes, vec![1, 3]);
+    }
+
+    #[test]
+    fn seam_drag_has_one_undo_entry_and_roundtrips_through_redo() {
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
+                index: 0,
+                pointer: origin.nodes[0],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
+                index: 0,
+                node: CurveNode { x: 0.8, y: 0.25 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseNode {
+                index: 0,
+                node: CurveNode { x: 0.8, y: 0.25 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            }),
+        );
+
+        let changed = params.editable_curve_snapshot();
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+        assert_ne!(changed, origin);
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert_eq!(state.redo_history.len(), 1);
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
+        assert_eq!(params.editable_curve_snapshot(), changed);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+    }
+
+    fn painted_node_centers(widget: &CurvePreviewWidget, bounds: Rect) -> Vec<Point> {
+        let mut primitives = Vec::new();
+        widget.append_paint(
+            &mut primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &ThemeTokens::default(),
+        );
+        primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill)
+                    if fill.rect.width() > CURVE_NODE_SIZE - 1.0e-5
+                        && fill.rect.width() < CURVE_NODE_SIZE + 1.7 + 1.0e-3
+                        && (fill.rect.width() - fill.rect.height()).abs() < 1.0e-3 =>
+                {
+                    Some(fill.rect.center())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn legacy_edge_nodes_have_one_painted_hit_and_marquee_survivor_per_side() {
+        let curve = legacy_edge_curve();
+        assert_eq!(curve.nodes.len(), 5);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let survivors = interactive_curve_node_survivors(&curve, 0.0, None);
+        assert_eq!(survivors, vec![0, 2, 4]);
+
+        let painted = painted_node_centers(&widget, bounds);
+        assert_eq!(painted.len(), survivors.len());
+        for index in survivors.iter().copied() {
+            let center = widget.display_curve_point(bounds, curve.nodes[index]);
+            assert!(painted.iter().any(|painted| {
+                (painted.x - center.x).abs() < 1.0e-5 && (painted.y - center.y).abs() < 1.0e-5
+            }));
+            assert_eq!(widget.hit_node(bounds, center), Some(index));
+        }
+        for index in [1, 3] {
+            let center = widget.display_curve_point(bounds, curve.nodes[index]);
+            assert!(!painted.iter().any(|painted| {
+                (painted.x - center.x).abs() < 1.0e-5 && (painted.y - center.y).abs() < 1.0e-5
+            }));
+            assert_eq!(widget.hit_node(bounds, center), None);
+        }
+
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&curve);
+        let before = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressMarquee {
+                start: CurveNode { x: 0.0, y: 1.0 },
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::ReleaseMarquee {
+                current: CurveNode { x: 1.0, y: 0.0 },
+            },
+        );
+        assert_eq!(state.selected_curve_nodes, survivors);
+        assert_eq!(params.editable_curve_snapshot(), before);
+    }
+
+    #[test]
+    fn legacy_edge_active_node_wins_deterministically_for_paint_and_hit() {
+        let curve = legacy_edge_curve();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+
+        let left_active =
+            CurvePreviewWidget::new(curve.clone(), Some(1), None, None, None, None, false);
+        assert_eq!(
+            interactive_curve_node_survivors(&curve, 0.0, Some(1)),
+            vec![1, 2, 4]
+        );
+        let left_center = left_active.display_curve_point(bounds, curve.nodes[1]);
+        assert_eq!(left_active.hit_node(bounds, left_center), Some(1));
+        assert!(painted_node_centers(&left_active, bounds).contains(&left_center));
+
+        let right_active =
+            CurvePreviewWidget::new(curve.clone(), Some(3), None, None, None, None, false);
+        assert_eq!(
+            interactive_curve_node_survivors(&curve, 0.0, Some(3)),
+            vec![0, 2, 3]
+        );
+        let right_center = right_active.display_curve_point(bounds, curve.nodes[3]);
+        assert_eq!(right_active.hit_node(bounds, right_center), Some(3));
+        let right_painted = painted_node_centers(&right_active, bounds);
+        assert!(right_painted.iter().any(|center| {
+            (center.x - right_center.x).abs() < 1.0e-5 && (center.y - right_center.y).abs() < 1.0e-5
+        }));
+    }
+
+    #[test]
+    fn legacy_edge_hidden_selection_is_not_deleted() {
+        let params = Arc::new(PumpParams::new());
+        let curve = legacy_edge_curve();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = (0..curve.nodes.len()).collect();
+
+        reduce_curve_message(&mut state, CurvePreviewMessage::DeleteSelectedNodes);
+
+        let remaining = params.editable_curve_snapshot();
+        assert_eq!(remaining.nodes.len(), 4);
+        assert!(remaining
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.0001).abs() < 1.0e-6));
+        assert!(remaining
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.9999).abs() < 1.0e-6));
+        assert!(!remaining
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.5).abs() < 1.0e-6));
+    }
+
+    #[test]
+    fn legacy_edge_node_drag_preserves_origin_for_vertical_movement() {
+        let params = Arc::new(PumpParams::new());
+        let curve = legacy_edge_curve();
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(0.0001);
+        let origin = curve.nodes[3];
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 3,
+                pointer: origin,
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        assert_eq!(state.active_curve_node, Some(3));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 3,
+                node: CurveNode {
+                    x: origin.x,
+                    y: 0.35,
+                },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        assert_eq!(dragged.nodes.len(), curve.nodes.len());
+        assert!((dragged.nodes[3].x - origin.x).abs() < 1.0e-6);
+        assert!((dragged.nodes[3].y - 0.35).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn legacy_edge_group_drag_keeps_zero_delta_feasible_for_vertical_movement() {
+        let params = Arc::new(PumpParams::new());
+        let curve = legacy_edge_curve();
+        params.set_editable_curve(&curve);
+        params.set_phase_offset(0.0001);
+        let origin = curve.nodes[3];
+        let mut state = editor_state(Arc::clone(&params));
+        state.selected_curve_nodes = vec![0, 3];
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 3,
+                pointer: origin,
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        assert_eq!(
+            state
+                .active_curve_node_drag
+                .as_ref()
+                .map(|drag| drag.selected_indices.clone()),
+            Some(vec![0, 3])
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 3,
+                node: CurveNode {
+                    x: origin.x,
+                    y: 0.35,
+                },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        assert_eq!(dragged.nodes.len(), curve.nodes.len());
+        assert!((dragged.nodes[3].x - origin.x).abs() < 1.0e-6);
+        assert!((dragged.nodes[3].y - 0.35).abs() < 1.0e-6);
+        assert!((dragged.nodes[0].y - 0.95).abs() < 1.0e-6);
+        assert!((dragged.nodes[4].y - 0.95).abs() < 1.0e-6);
     }
 
     #[test]
@@ -7296,16 +9263,16 @@ mod tests {
     }
 
     #[test]
-    fn radiant_editor_shift_drag_preserves_wrapped_endpoint_gain() {
+    fn radiant_editor_shift_drag_preserves_gain_for_non_seam_node() {
         let params = Arc::new(PumpParams::new());
         let curve = params.editable_curve_snapshot();
-        let origin = curve.nodes[0];
+        let origin = curve.nodes[1];
         let mut state = editor_state(Arc::clone(&params));
 
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Curve(CurvePreviewMessage::PressNode {
-                index: 0,
+                index: 1,
                 pointer: origin,
                 shift_held: true,
                 option_held: false,
@@ -7315,18 +9282,54 @@ mod tests {
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
-                index: 0,
-                node: CurveNode { x: 0.8, y: 0.2 },
+                index: 1,
+                node: CurveNode { x: 0.2, y: 0.2 },
                 push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
 
         let dragged = params.editable_curve_snapshot();
-        let last = dragged.nodes.len() - 1;
-        assert_eq!(dragged.nodes[0].x, 0.0);
-        assert_eq!(dragged.nodes[last].x, 1.0);
-        assert!((dragged.nodes[0].y - origin.y).abs() < 1.0e-6);
-        assert!((dragged.nodes[last].y - origin.y).abs() < 1.0e-6);
+        assert!((dragged.nodes[1].x - 0.2).abs() < 1.0e-6);
+        assert!((dragged.nodes[1].y - origin.y).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn radiant_editor_canonical_seam_press_is_vertical_only_for_both_instances() {
+        for index in [0, 3] {
+            let params = Arc::new(PumpParams::new());
+            let curve = params.editable_curve_snapshot();
+            let origin = curve.nodes[index];
+            let mut state = editor_state(Arc::clone(&params));
+
+            reduce_curve_message(
+                &mut state,
+                CurvePreviewMessage::PressNode {
+                    index,
+                    pointer: origin,
+                    shift_held: true,
+                    option_held: false,
+                    command_held: false,
+                },
+            );
+            reduce_curve_message(
+                &mut state,
+                CurvePreviewMessage::DragNode {
+                    index,
+                    node: CurveNode {
+                        x: if index == 0 { 0.8 } else { 0.2 },
+                        y: 0.2,
+                    },
+                    push_through_threshold_x: test_curve_push_through_threshold_x(),
+                },
+            );
+
+            let dragged = params.editable_curve_snapshot();
+            let last = dragged.nodes.len() - 1;
+            assert_eq!(dragged.nodes[0].x, 0.0);
+            assert_eq!(dragged.nodes[last].x, 1.0);
+            assert!((dragged.nodes[0].y - 0.2).abs() < 1.0e-6);
+            assert!((dragged.nodes[last].y - 0.2).abs() < 1.0e-6);
+        }
     }
 
     #[test]
@@ -7857,7 +9860,7 @@ mod tests {
             &mut state,
             RadiantEditorMessage::Curve(CurvePreviewMessage::DragNode {
                 index: 1,
-                node: CurveNode { x: 0.98, y: 0.45 },
+                node: CurveNode { x: 0.9, y: 0.45 },
                 push_through_threshold_x: test_curve_push_through_threshold_x(),
             }),
         );
@@ -7865,7 +9868,7 @@ mod tests {
         let dragged = params.editable_curve_snapshot();
         assert_eq!(dragged.nodes.len(), 3);
         assert_eq!(dragged.nodes[0].x, 0.0);
-        assert!((dragged.nodes[1].x - 0.98).abs() < 1.0e-6);
+        assert!((dragged.nodes[1].x - 0.9).abs() < 1.0e-6);
         assert_eq!(dragged.nodes[2].x, 1.0);
         assert_eq!(state.active_curve_node, Some(1));
     }
@@ -8414,6 +10417,1343 @@ mod tests {
                 command_held: false,
             })
         );
+    }
+
+    #[test]
+    fn curve_preview_widget_emits_paint_for_secondary_gesture() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.42, y: 0.34 });
+        let mut press_widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let sample = press_widget.paint_sample_from_display_point(bounds, position);
+        assert_eq!(
+            press_widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerPress {
+                        position,
+                        button: PointerButton::Secondary,
+                        modifiers: Default::default(),
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::PressPaint { sample })
+        );
+
+        let mut drag_widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_active_curve_paint(true);
+        let drag_position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.58, y: 0.72 });
+        assert!(matches!(
+            drag_widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerMove {
+                        position: drag_position
+                    }
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::DragPaint { .. })
+        ));
+        assert!(matches!(
+            drag_widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerRelease {
+                        position: drag_position,
+                        button: PointerButton::Secondary,
+                        modifiers: Default::default(),
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::ReleasePaint { .. })
+        ));
+    }
+
+    #[test]
+    fn curve_preview_widget_projects_captured_paint_motion_to_nearest_boundary() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+        let outside_positions = [
+            Point::new(curve_bounds.min.x - 1.0, curve_bounds.center().y),
+            Point::new(curve_bounds.max.x + 1.0, curve_bounds.center().y),
+            Point::new(curve_bounds.center().x, curve_bounds.min.y - 1.0),
+            Point::new(curve_bounds.center().x, curve_bounds.max.y + 1.0),
+            Point::new(curve_bounds.min.x - 1.0, curve_bounds.min.y - 1.0),
+            Point::new(curve_bounds.max.x + 1.0, curve_bounds.max.y + 1.0),
+        ];
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        for position in outside_positions {
+            let projected = Point::new(
+                position.x.clamp(curve_bounds.min.x, curve_bounds.max.x),
+                position.y.clamp(curve_bounds.min.y, curve_bounds.max.y),
+            );
+            let expected_boundary_conversion =
+                widget.paint_sample_from_display_point(bounds, projected);
+            let actual = widget.paint_sample_from_boundary(bounds, position);
+            assert_eq!(actual.node, expected_boundary_conversion.node);
+            assert_eq!(
+                actual.display_position,
+                CurvePreviewWidget::normalized_display_position(bounds, position)
+            );
+            assert!(actual.outside);
+
+            let mut active_widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_active_curve_paint(true);
+            assert_eq!(
+                active_widget
+                    .handle_input(bounds, WidgetInput::PointerMove { position })
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::DragPaintOutside { sample: actual }),
+                "captured outside motion must preserve the raw observation at {position:?}"
+            );
+            assert_eq!(
+                active_widget
+                    .handle_input(
+                        bounds,
+                        WidgetInput::PointerRelease {
+                            position,
+                            button: PointerButton::Secondary,
+                            modifiers: Default::default(),
+                        },
+                    )
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::ReleasePaintOutside { sample: actual })
+            );
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_to_reducer_preserves_diagonal_exit_intersection() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let height = (curve_bounds.height().max(1.0) - 1.0).max(1.0);
+        let start_position =
+            CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.25, y: 0.25 });
+        let outside_position = Point::new(
+            curve_bounds.min.x + width * 1.5,
+            curve_bounds.min.y + height * (1.0 - 1.35),
+        );
+
+        let mut press_widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let start_sample = match press_widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: start_position,
+                    button: PointerButton::Secondary,
+                    modifiers: Default::default(),
+                },
+            )
+            .and_then(|output| output.typed_copied())
+        {
+            Some(CurvePreviewMessage::PressPaint { sample }) => sample,
+            other => panic!("expected paint press, got {other:?}"),
+        };
+
+        let mut drag_widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_active_curve_paint(true);
+        let outside_sample = match drag_widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerMove {
+                    position: outside_position,
+                },
+            )
+            .and_then(|output| output.typed_copied())
+        {
+            Some(CurvePreviewMessage::DragPaintOutside { sample }) => sample,
+            other => panic!("expected outside paint drag, got {other:?}"),
+        };
+        assert!(outside_sample.outside);
+        assert!(outside_sample.display_position.x > 1.0);
+        assert!(outside_sample.display_position.y > 1.0);
+
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                sample: start_sample,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaintOutside {
+                sample: outside_sample,
+            }),
+        );
+
+        let points = state
+            .active_curve_paint
+            .as_ref()
+            .expect("paint remains active")
+            .preview_runs()[0]
+            .points()
+            .to_vec();
+        assert_eq!(points[0].position, start_sample.raw_position());
+        let t = (1.0 - start_sample.display_position.x)
+            / (outside_sample.display_position.x - start_sample.display_position.x);
+        let expected_exit_y = start_sample.display_position.y
+            + (outside_sample.display_position.y - start_sample.display_position.y) * t;
+        assert!((points[1].position.x - 1.0).abs() <= CURVE_PAINT_ASSERT_EPSILON);
+        assert!((points[1].position.y - expected_exit_y).abs() <= CURVE_PAINT_ASSERT_EPSILON);
+    }
+
+    #[test]
+    fn active_curve_paint_preserves_ordered_boundary_observations() {
+        let origin_snapshot = editor_state(Arc::new(PumpParams::new())).snapshot();
+        let mut paint = ActiveCurvePaint::new(origin_snapshot, 0.0);
+        let start = paint_sample(0.35, 0.4);
+        let first = boundary_paint_sample(0.0, 0.7);
+        let replacement = boundary_paint_sample(0.0, 0.2);
+        paint.push_sample(start);
+        paint.push_boundary_sample(first);
+        paint.push_boundary_sample(replacement);
+
+        let runs = paint.preview_runs();
+        assert_eq!(runs.len(), 1);
+        let points = runs[0].points();
+        assert_eq!(
+            points.first().map(|point| point.position),
+            Some(start.raw_position())
+        );
+        assert!(points.iter().any(|point| {
+            point.position == first.raw_position()
+                && matches!(
+                    point.contact,
+                    BoundaryContact::Edge(EdgeParameter {
+                        edge: BoundaryEdge::Left,
+                        ..
+                    })
+                )
+        }));
+        assert_eq!(
+            points.last().map(|point| point.position),
+            Some(first.raw_position())
+        );
+    }
+
+    #[test]
+    fn edge_paint_preview_keeps_authored_topology_until_release() {
+        let params = Arc::new(PumpParams::new());
+        let origin = interior_seam_curve();
+        params.set_editable_curve(&origin);
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressPaint {
+                sample: paint_sample(0.4, 0.35),
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragPaint {
+                sample: boundary_paint_sample(0.0, 0.7),
+            },
+        );
+
+        let paint = state
+            .active_curve_paint
+            .as_ref()
+            .expect("edge paint remains active before release");
+        let preview_runs = paint.preview_runs();
+        let points = preview_runs[0].points();
+        assert_eq!(
+            points.last().map(|point| point.position),
+            Some(RectPoint { x: 0.0, y: 0.7 })
+        );
+        assert!(matches!(
+            points.last().map(|point| point.contact),
+            Some(BoundaryContact::Edge(EdgeParameter {
+                edge: BoundaryEdge::Left,
+                ..
+            }))
+        ));
+        assert_eq!(params.editable_curve_snapshot(), origin);
+    }
+
+    #[test]
+    fn released_edge_paint_uses_the_first_retained_crossing() {
+        for first_right in [false, true] {
+            for continued_outside in [false, true] {
+                let params = Arc::new(PumpParams::new());
+                let origin = EditableCurve {
+                    nodes: vec![
+                        CurveNode { x: 0.0, y: 0.8 },
+                        CurveNode { x: 0.2, y: 0.2 },
+                        CurveNode { x: 0.5, y: 0.4 },
+                        CurveNode { x: 1.0, y: 0.8 },
+                    ],
+                    segments: vec![
+                        CurveSegment { tension: 0.1 },
+                        CurveSegment { tension: 0.2 },
+                        CurveSegment { tension: 0.3 },
+                    ],
+                    ..EditableCurve::default()
+                }
+                .normalized();
+                params.set_editable_curve(&origin);
+                params.set_phase_offset(0.25);
+                let mut state = editor_state(Arc::clone(&params));
+
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                        sample: paint_sample(0.4, 0.35),
+                    }),
+                );
+                let first_x = if first_right { 1.0 } else { 0.0 };
+                let first_y = if first_right { 0.8 } else { 0.2 };
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                        sample: boundary_paint_sample(first_x, first_y),
+                    }),
+                );
+                if continued_outside {
+                    reduce_editor_message(
+                        &mut state,
+                        RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                            sample: boundary_paint_sample(
+                                first_x,
+                                if first_right { 0.2 } else { 0.8 },
+                            ),
+                        }),
+                    );
+                }
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+                );
+
+                let committed = params.editable_curve_snapshot();
+                let seam_nodes = committed
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| (node.x - 0.75).abs() <= CURVE_PAINT_ASSERT_EPSILON)
+                    .collect::<Vec<_>>();
+                assert_eq!(seam_nodes.len(), 1);
+                let (seam_index, seam) = seam_nodes[0];
+                assert_eq!(
+                    canonical_seam_owner(&committed, 0.25),
+                    Some(CanonicalSeamOwner::Interior(seam_index))
+                );
+                assert!((seam.y - first_y).abs() <= CURVE_PAINT_ASSERT_EPSILON);
+                let painted_segment_index = if first_right {
+                    seam_index.saturating_sub(1)
+                } else {
+                    seam_index
+                };
+                assert!(
+                    committed.segments[painted_segment_index].tension.abs() <= 0.05,
+                    "painted seam incident tension leaked: nodes={:?}, segments={:?}",
+                    committed.nodes,
+                    committed.segments
+                );
+                assert_eq!(state.undo_history.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn straight_edge_paint_has_one_seam_owner_and_fits_the_retained_line() {
+        let start_x = 0.4;
+        let start_y = 0.35;
+        for phase_offset in [0.0, 0.25, 0.73] {
+            for first_right in [false, true] {
+                let first_x = if first_right { 1.0 } else { 0.0 };
+                let first_y = if first_right { 0.8 } else { 0.2 };
+                let params = Arc::new(PumpParams::new());
+                let origin = EditableCurve {
+                    nodes: vec![
+                        CurveNode { x: 0.0, y: 0.8 },
+                        CurveNode { x: 0.2, y: 0.2 },
+                        CurveNode { x: 0.5, y: 0.4 },
+                        CurveNode { x: 1.0, y: 0.8 },
+                    ],
+                    segments: vec![
+                        CurveSegment { tension: 0.72 },
+                        CurveSegment { tension: -0.63 },
+                        CurveSegment { tension: 0.58 },
+                    ],
+                    ..EditableCurve::default()
+                }
+                .normalized();
+                params.set_editable_curve(&origin);
+                params.set_phase_offset(phase_offset);
+                let mut state = editor_state(Arc::clone(&params));
+
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                        sample: paint_sample(start_x, start_y),
+                    }),
+                );
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                        sample: boundary_paint_sample(first_x, first_y),
+                    }),
+                );
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                        sample: boundary_paint_sample(first_x, if first_right { 0.2 } else { 0.8 }),
+                    }),
+                );
+                reduce_editor_message(
+                    &mut state,
+                    RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+                );
+
+                let candidate = params.editable_curve_snapshot();
+                assert_curve_paint_topology_is_bounded(&candidate);
+                let seam = seam_raw(phase_offset);
+                match canonical_seam_owner(&candidate, phase_offset) {
+                    Some(CanonicalSeamOwner::Endpoints) => {
+                        assert!(seam_uses_wrapped_endpoints(phase_offset));
+                        assert!(
+                            (candidate.nodes[0].y - first_y).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                        );
+                        assert_eq!(candidate.nodes[0].y, candidate.nodes.last().unwrap().y);
+                        assert!(candidate.nodes[1..candidate.nodes.len() - 1]
+                            .iter()
+                            .all(|node| node.x > CURVE_SEAM_OWNER_RAW_EPSILON
+                                && node.x < 1.0 - CURVE_SEAM_OWNER_RAW_EPSILON));
+                    }
+                    Some(CanonicalSeamOwner::Interior(index)) => {
+                        assert!(!seam_uses_wrapped_endpoints(phase_offset));
+                        let seam_nodes = candidate
+                            .nodes
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, node)| {
+                                (node.x - seam).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON
+                            })
+                            .collect::<Vec<_>>();
+                        assert_eq!(seam_nodes.len(), 1);
+                        assert_eq!(seam_nodes[0].0, index);
+                        assert!((seam_nodes[0].1.y - first_y).abs() <= CURVE_PAINT_ASSERT_EPSILON);
+                    }
+                    None => panic!("painted edge must establish a seam owner: {candidate:?}"),
+                }
+
+                let painted_segment_index = if seam_uses_wrapped_endpoints(phase_offset) {
+                    if first_right {
+                        candidate.segments.len().saturating_sub(1)
+                    } else {
+                        0
+                    }
+                } else {
+                    let seam_index = candidate
+                        .nodes
+                        .iter()
+                        .position(|node| (node.x - seam).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+                        .expect("interior seam owner should be present");
+                    if first_right {
+                        seam_index.saturating_sub(1)
+                    } else {
+                        seam_index
+                    }
+                };
+                assert!(
+                    candidate.segments[painted_segment_index].tension.abs() <= 0.05,
+                    "straight edge paint inherited tension: offset={phase_offset}, right={first_right}, candidate={candidate:?}"
+                );
+
+                for fraction in [0.25, 0.5, 0.75] {
+                    let display_x = if first_right {
+                        start_x + (1.0 - start_x) * fraction
+                    } else {
+                        start_x * (1.0 - fraction)
+                    };
+                    let expected_y = start_y + (first_y - start_y) * fraction;
+                    let raw_x = if phase_offset <= CURVE_DISPLAY_SEAM_EPSILON {
+                        display_x
+                    } else if display_x < phase_offset {
+                        1.0 - phase_offset + display_x
+                    } else {
+                        display_x - phase_offset
+                    };
+                    let actual_y = sample_editable_curve(&candidate, raw_x);
+                    assert!(
+                        (actual_y - expected_y).abs() <= 0.018 + CURVE_PAINT_ASSERT_EPSILON,
+                        "straight edge paint drifted: offset={phase_offset}, right={first_right}, display_x={display_x}, expected={expected_y}, actual={actual_y}, candidate={candidate:?}"
+                    );
+                }
+                assert_eq!(state.undo_history.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn edge_paint_keeps_an_untouched_authored_tension_exact() {
+        let origin = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.2, y: 0.2 },
+                CurveNode { x: 0.5, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.72 },
+                CurveSegment { tension: -0.63 },
+                CurveSegment { tension: 0.58 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let run = recorded_run([RectPoint { x: 0.4, y: 0.35 }, RectPoint { x: 0.0, y: 0.2 }]);
+
+        let candidate = reconstruct_paint(&origin, 0.25, &[run]).candidate().clone();
+        let untouched_segment = candidate
+            .nodes
+            .windows(2)
+            .zip(&candidate.segments)
+            .find(|(nodes, _)| {
+                (nodes[0].x - 0.2).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                    && (nodes[1].x - 0.5).abs() <= CURVE_PAINT_ASSERT_EPSILON
+            })
+            .map(|(_, segment)| segment)
+            .expect("untouched authored segment should remain present");
+        assert_eq!(untouched_segment.tension, origin.segments[1].tension);
+    }
+
+    #[test]
+    fn curved_stroke_exiting_right_edge_keeps_nonzero_fitted_tension() {
+        let origin = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.5 }, CurveNode { x: 1.0, y: 0.5 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let left = CurveNode { x: 0.2, y: 0.15 };
+        let right = CurveNode { x: 1.0, y: 0.85 };
+        let source_tension = 0.65;
+        let run = sampled_segment_run(left, right, source_tension, 16);
+
+        let outcome = reconstruct_paint(&origin, 0.0, &[run]);
+        assert!(matches!(&outcome, PaintCommitOutcome::Applied { .. }));
+        let candidate = outcome.candidate();
+        let painted_segment = candidate
+            .nodes
+            .windows(2)
+            .zip(&candidate.segments)
+            .find(|(nodes, _)| {
+                (nodes[0].x - left.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                    && (nodes[1].x - right.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+            })
+            .map(|(_, segment)| segment)
+            .expect("painted edge endpoints should remain adjacent");
+        assert!(painted_segment.tension.abs() > 0.2);
+        assert!((painted_segment.tension - source_tension).abs() <= 0.08);
+    }
+
+    #[test]
+    fn released_non_edge_paint_does_not_canonicalize_the_viewport_seam() {
+        let params = Arc::new(PumpParams::new());
+        let origin = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.2, y: 0.2 },
+                CurveNode { x: 0.5, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&origin);
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                sample: paint_sample(0.4, 0.25),
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                sample: paint_sample(0.6, 0.75),
+            }),
+        );
+        assert!(state.active_curve_paint.as_ref().is_some_and(|paint| {
+            paint.preview_runs().iter().all(|run| {
+                run.points()
+                    .iter()
+                    .all(|point| matches!(point.contact, BoundaryContact::Interior))
+            })
+        }));
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+        );
+
+        let committed = params.editable_curve_snapshot();
+        assert!(!committed
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.75).abs() <= CURVE_PAINT_ASSERT_EPSILON));
+    }
+
+    #[test]
+    fn truncated_active_curve_paint_preview_and_release_use_retained_geometry() {
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                sample: paint_sample(0.1, 0.2),
+            }),
+        );
+        for index in 1..=128 {
+            let (x, y) = if index % 2 == 0 {
+                (0.1, 0.2)
+            } else {
+                (0.9, 0.8)
+            };
+            reduce_editor_message(
+                &mut state,
+                RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                    sample: paint_sample(x, y),
+                }),
+            );
+        }
+
+        let paint = state
+            .active_curve_paint
+            .as_ref()
+            .expect("truncated paint remains active until release");
+        assert!(paint.recorder.is_truncated());
+        assert_ne!(paint.preview_candidate(), origin);
+        assert!(matches!(
+            paint.finished_curve(),
+            PaintCommitOutcome::Applied { .. }
+        ));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint {
+                sample: Some(paint_sample(0.1, 0.2)),
+            }),
+        );
+        assert_ne!(params.editable_curve_snapshot(), origin);
+        assert_eq!(state.undo_history.len(), 1);
+    }
+
+    #[test]
+    fn curve_paint_reconstructor_preserves_order_and_boundary_seams() {
+        let origin = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.5 }, CurveNode { x: 1.0, y: 0.5 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let run = recorded_run([
+            RectPoint { x: 0.0, y: 0.4 },
+            RectPoint { x: 0.25, y: 0.2 },
+            RectPoint { x: 0.5, y: 0.8 },
+            RectPoint { x: 0.75, y: 0.2 },
+            RectPoint { x: 1.0, y: 0.6 },
+        ]);
+
+        let outcome = reconstruct_paint(&origin, 0.0, &[run]);
+        let candidate = match outcome {
+            PaintCommitOutcome::Applied { candidate } => candidate,
+            other => panic!("boundary paint should apply, got {other:?}"),
+        };
+        assert_curve_paint_topology_is_bounded(&candidate);
+        assert!(candidate.nodes.iter().any(|node| {
+            (node.x - 0.25).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                && (node.y - 0.2).abs() <= CURVE_PAINT_ASSERT_EPSILON
+        }));
+        assert!(candidate.nodes.iter().any(|node| {
+            (node.x - 0.5).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                && (node.y - 0.8).abs() <= CURVE_PAINT_ASSERT_EPSILON
+        }));
+        assert!(candidate.nodes.iter().any(|node| {
+            (node.x - 0.75).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                && (node.y - 0.2).abs() <= CURVE_PAINT_ASSERT_EPSILON
+        }));
+    }
+
+    #[test]
+    fn curve_paint_prefers_one_curved_segment_over_an_overfit_sampled_stroke() {
+        let origin = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.5 }, CurveNode { x: 1.0, y: 0.5 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let left = CurveNode { x: 0.1, y: 0.15 };
+        let right = CurveNode { x: 0.9, y: 0.85 };
+        let source_tension = 0.65;
+        let run = sampled_segment_run(left, right, source_tension, 16);
+
+        let outcome = reconstruct_paint(&origin, 0.0, &[run]);
+        assert!(matches!(&outcome, PaintCommitOutcome::Applied { .. }));
+        let candidate = outcome.candidate();
+        let interval_nodes = candidate
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.x >= left.x - CURVE_PAINT_ASSERT_EPSILON
+                    && node.x <= right.x + CURVE_PAINT_ASSERT_EPSILON
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(interval_nodes.len(), 2, "candidate: {candidate:?}");
+        assert!((interval_nodes[0].x - left.x).abs() <= CURVE_PAINT_ASSERT_EPSILON);
+        assert!((interval_nodes[1].x - right.x).abs() <= CURVE_PAINT_ASSERT_EPSILON);
+
+        let painted_segment = candidate
+            .nodes
+            .windows(2)
+            .zip(candidate.segments.iter())
+            .find(|(nodes, _)| {
+                (nodes[0].x - left.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                    && (nodes[1].x - right.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+            })
+            .map(|(_, segment)| segment)
+            .expect("painted endpoints should remain adjacent");
+        assert!(painted_segment.tension.abs() > 0.2);
+        assert!((painted_segment.tension - source_tension).abs() <= 0.08);
+    }
+
+    #[test]
+    fn curve_paint_keeps_a_sampled_linear_stroke_near_zero_tension() {
+        let origin = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.5 }, CurveNode { x: 1.0, y: 0.5 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let left = CurveNode { x: 0.1, y: 0.15 };
+        let right = CurveNode { x: 0.9, y: 0.85 };
+        let run = sampled_segment_run(left, right, 0.0, 16);
+
+        let outcome = reconstruct_paint(&origin, 0.0, &[run]);
+        assert!(matches!(&outcome, PaintCommitOutcome::Applied { .. }));
+        let candidate = outcome.candidate();
+        let interval_nodes = candidate
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.x >= left.x - CURVE_PAINT_ASSERT_EPSILON
+                    && node.x <= right.x + CURVE_PAINT_ASSERT_EPSILON
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(interval_nodes.len(), 2, "candidate: {candidate:?}");
+
+        let painted_segment = candidate
+            .nodes
+            .windows(2)
+            .zip(candidate.segments.iter())
+            .find(|(nodes, _)| {
+                (nodes[0].x - left.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                    && (nodes[1].x - right.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+            })
+            .map(|(_, segment)| segment)
+            .expect("painted endpoints should remain adjacent");
+        assert!(painted_segment.tension.abs() <= 0.05);
+    }
+
+    #[test]
+    fn curve_paint_keeps_origin_until_release_and_commits_candidate_once() {
+        let params = Arc::new(PumpParams::new());
+        let origin = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.5 }, CurveNode { x: 1.0, y: 0.5 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&origin);
+        let mut state = editor_state(Arc::clone(&params));
+        let first = paint_sample(0.2, 0.2);
+        let second = paint_sample(0.8, 0.8);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample: first }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint { sample: second }),
+        );
+
+        let paint = state
+            .active_curve_paint
+            .as_ref()
+            .expect("paint remains active before release");
+        let preview = paint.preview_candidate();
+        let release = paint.finished_curve();
+        assert!(matches!(&release, PaintCommitOutcome::Applied { .. }));
+        assert_eq!(preview, *release.candidate());
+        assert_ne!(preview, origin);
+
+        let runs = paint.preview_runs();
+        let widget = CurvePreviewWidget::new(origin.clone(), None, None, None, None, None, false)
+            .with_active_curve_paint(true)
+            .with_curve_paint_runs(Some(runs));
+        assert_eq!(widget.curve, origin);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == theme.accent_mint
+                        && (polyline.width - 1.7).abs() <= 1.0e-6
+            )
+        }));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+        );
+        assert_eq!(params.editable_curve_snapshot(), preview);
+        assert_eq!(state.undo_history.len(), 1);
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+    }
+
+    #[test]
+    fn undo_discards_active_curve_paint_before_restoring_history() {
+        let params = Arc::new(PumpParams::new());
+        let origin = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.5 }, CurveNode { x: 1.0, y: 0.5 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&origin);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                sample: paint_sample(0.2, 0.2),
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                sample: paint_sample(0.8, 0.8),
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+        );
+        let painted = params.editable_curve_snapshot();
+        assert_ne!(painted, origin);
+        assert_eq!(state.undo_history.len(), 1);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                sample: paint_sample(0.3, 0.9),
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                sample: paint_sample(0.7, 0.1),
+            }),
+        );
+        assert!(state.active_curve_paint.is_some());
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert!(state.active_curve_paint.is_none());
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint {
+                sample: Some(paint_sample(0.7, 0.1)),
+            }),
+        );
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+        assert_ne!(painted, origin);
+    }
+
+    #[test]
+    fn redo_discards_active_curve_paint_before_restoring_history() {
+        let params = Arc::new(PumpParams::new());
+        let origin = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.5 }, CurveNode { x: 1.0, y: 0.5 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&origin);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                sample: paint_sample(0.2, 0.2),
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                sample: paint_sample(0.8, 0.8),
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+        );
+        let painted = params.editable_curve_snapshot();
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert_eq!(state.redo_history.len(), 1);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                sample: paint_sample(0.3, 0.9),
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                sample: paint_sample(0.7, 0.1),
+            }),
+        );
+        assert!(state.active_curve_paint.is_some());
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
+        assert!(state.active_curve_paint.is_none());
+        assert_eq!(params.editable_curve_snapshot(), painted);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint {
+                sample: Some(paint_sample(0.7, 0.1)),
+            }),
+        );
+        assert_eq!(params.editable_curve_snapshot(), painted);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+    }
+
+    #[test]
+    fn curve_paint_reentry_splits_preview_and_commit_without_an_unobserved_chord() {
+        let params = Arc::new(PumpParams::new());
+        let origin = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.2, y: 0.2 },
+                CurveNode { x: 0.5, y: 0.8 },
+                CurveNode { x: 0.8, y: 0.3 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&origin);
+        let mut state = editor_state(Arc::clone(&params));
+        let first = paint_sample(0.2, 0.75);
+        let second = paint_sample(0.3, 0.25);
+        let outside = boundary_paint_sample(1.0, 0.55);
+        let reentry = paint_sample(0.7, 0.65);
+        let final_sample = paint_sample(0.8, 0.35);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample: first }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint { sample: second }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaintOutside { sample: outside }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint { sample: reentry }),
+        );
+        let paint = state
+            .active_curve_paint
+            .as_ref()
+            .expect("re-entry keeps painting active");
+        let runs = paint.preview_runs();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(
+            runs[0].points().first().map(|point| point.position),
+            Some(first.raw_position())
+        );
+        assert!(runs[0]
+            .points()
+            .iter()
+            .any(|point| point.position == outside.raw_position()));
+        assert_eq!(
+            runs[1].points().first().map(|point| point.position),
+            Some(outside.raw_position())
+        );
+        assert!(runs[1]
+            .points()
+            .iter()
+            .any(|point| point.position == reentry.raw_position()));
+        assert!(matches!(
+            runs[1].points().first().map(|point| point.contact),
+            Some(BoundaryContact::Edge(EdgeParameter {
+                edge: BoundaryEdge::Right,
+                ..
+            }))
+        ));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                sample: final_sample,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaintOutside {
+                sample: outside,
+            }),
+        );
+
+        let painted = params.editable_curve_snapshot();
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(painted.nodes.iter().any(|node| {
+            (node.x - outside.node.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                && (node.y - outside.node.y).abs() <= 0.08
+        }));
+        assert!(painted.nodes.iter().any(|node| {
+            (node.x - reentry.node.x).abs() <= CURVE_PAINT_ASSERT_EPSILON
+                && (node.y - reentry.node.y).abs() <= 0.08
+        }));
+        assert_curve_paint_topology_is_bounded(&painted);
+    }
+
+    #[test]
+    fn curve_paint_full_capacity_boundary_extension_applies_boundary_candidate() {
+        let params = Arc::new(PumpParams::new());
+        let origin = EditableCurve {
+            nodes: (0..MAX_EDITABLE_NODES)
+                .map(|index| {
+                    let x = index as f32 / (MAX_EDITABLE_NODES - 1) as f32;
+                    CurveNode {
+                        x,
+                        y: 0.3 + 0.4 * x,
+                    }
+                })
+                .collect(),
+            segments: vec![CurveSegment { tension: 0.0 }; MAX_EDITABLE_NODES - 1],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        assert_eq!(origin.nodes.len(), MAX_EDITABLE_NODES);
+        params.set_editable_curve(&origin);
+        let mut state = editor_state(Arc::clone(&params));
+        let in_bounds = paint_sample(0.005, 0.2);
+        let boundary = boundary_paint_sample(0.0, 0.8);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample: in_bounds }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaintOutside { sample: boundary }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaintOutside {
+                sample: boundary,
+            }),
+        );
+
+        let painted = params.editable_curve_snapshot();
+        assert_curve_paint_topology_is_bounded(&painted);
+        assert_ne!(painted, origin);
+        assert_eq!(
+            painted.nodes.first().map(|node| node.y),
+            Some(boundary.node.y)
+        );
+        assert_eq!(
+            painted.nodes.last().map(|node| node.y),
+            Some(boundary.node.y)
+        );
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+        assert!(state.active_curve_paint.is_none());
+    }
+
+    #[test]
+    fn curve_paint_effective_boundary_release_has_one_undo_and_cancel_has_none() {
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        let start = paint_sample(0.35, 0.2);
+        let outside = boundary_paint_sample(0.0, 0.75);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample: start }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaintOutside { sample: outside }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+        );
+        assert_ne!(params.editable_curve_snapshot(), origin);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample: start }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaintOutside { sample: outside }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::Cancel),
+        );
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert!(state.undo_history.is_empty());
+        assert!(state.redo_history.is_empty());
+        assert!(state.active_curve_paint.is_none());
+    }
+
+    #[test]
+    fn radiant_editor_curve_paint_commits_one_localized_gesture() {
+        let params = Arc::new(PumpParams::new());
+        let origin = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.25, y: 0.7 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 0.75, y: 0.7 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 4],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&origin);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint {
+                sample: paint_sample(0.3, 0.15),
+            }),
+        );
+        assert!(state.active_curve_paint.is_some());
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                sample: paint_sample(0.45, 0.85),
+            }),
+        );
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint {
+                sample: Some(paint_sample(0.6, 0.2)),
+            }),
+        );
+
+        let painted = params.editable_curve_snapshot();
+        assert!(state.active_curve_paint.is_none());
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(painted
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.25).abs() < 1.0e-6));
+        assert!(painted
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.75).abs() < 1.0e-6));
+        assert!(!painted
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.5).abs() < 1.0e-6));
+        assert!(painted
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.3).abs() < 1.0e-6));
+        assert!(painted
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.6).abs() < 1.0e-6));
+    }
+
+    #[test]
+    fn radiant_editor_curve_paint_commits_prior_samples_when_release_is_outside() {
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        let first = paint_sample(0.3, 0.15);
+        let second = paint_sample(0.55, 0.8);
+        let outside = boundary_paint_sample(1.0, 0.45);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample: first }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint { sample: second }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaintOutside {
+                sample: outside,
+            }),
+        );
+
+        assert_ne!(params.editable_curve_snapshot(), origin);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+        assert!(state.active_curve_paint.is_none());
+    }
+
+    #[test]
+    fn radiant_editor_curve_paint_cancellation_and_noop_keep_history_unchanged() {
+        let params = Arc::new(PumpParams::new());
+        let origin = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+        let sample = paint_sample(0.4, 0.2);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+        );
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert!(state.undo_history.is_empty());
+        assert!(state.redo_history.is_empty());
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint {
+                sample: Some(sample),
+            }),
+        );
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert!(state.undo_history.is_empty());
+        assert!(state.redo_history.is_empty());
+    }
+
+    #[test]
+    fn radiant_editor_curve_paint_noop_and_capacity_use_expected_history() {
+        let params = Arc::new(PumpParams::new());
+        let origin = EditableCurve {
+            nodes: vec![CurveNode { x: 0.0, y: 0.5 }, CurveNode { x: 1.0, y: 0.5 }],
+            segments: vec![CurveSegment { tension: 0.0 }],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        params.set_editable_curve(&origin);
+        let mut state = editor_state(Arc::clone(&params));
+        let seed_start = paint_sample(0.2, 0.2);
+        let seed_end = paint_sample(0.8, 0.8);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample: seed_start }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint { sample: seed_end }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+        );
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+
+        let no_op = paint_sample(0.4, 0.2);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample: no_op }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint {
+                sample: Some(no_op),
+            }),
+        );
+        assert_eq!(params.editable_curve_snapshot(), origin);
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+
+        let first = paint_sample(0.1, 0.1);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressPaint { sample: first }),
+        );
+        for index in 1..70 {
+            let x = 0.1 + index as f32 * 0.8 / 69.0;
+            let y = if index % 2 == 0 { 0.1 } else { 0.9 };
+            reduce_editor_message(
+                &mut state,
+                RadiantEditorMessage::Curve(CurvePreviewMessage::DragPaint {
+                    sample: paint_sample(x, y),
+                }),
+            );
+        }
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleasePaint { sample: None }),
+        );
+        assert_ne!(params.editable_curve_snapshot(), origin);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+        assert!(state.active_curve_paint.is_none());
     }
 
     #[test]
@@ -9702,6 +13042,91 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_paints_the_active_ordered_run() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let samples = vec![
+            paint_sample(0.18, 0.22),
+            paint_sample(0.33, 0.76),
+            paint_sample(0.51, 0.42),
+        ];
+        let mut recorder = StrokeRecorder::new(RectBounds {
+            min: RectPoint { x: 0.0, y: 0.0 },
+            max: RectPoint { x: 1.0, y: 1.0 },
+        });
+        for sample in &samples {
+            recorder.observe(sample.raw_position());
+        }
+        let runs = recorder.runs().to_vec();
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_active_curve_paint(true)
+            .with_curve_paint_runs(Some(runs.clone()));
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let preview = primitives.iter().find_map(|primitive| match primitive {
+            PaintPrimitive::StrokePolyline(polyline)
+                if polyline.color == theme.accent_copper
+                    && (polyline.width - CURVE_PAINT_PREVIEW_WIDTH).abs() < 1.0e-6 =>
+            {
+                Some(polyline)
+            }
+            _ => None,
+        });
+        let preview = preview.expect("active paint should render a freehand stroke");
+        assert_ne!(preview.color, theme.accent_mint);
+        assert_eq!(preview.points.len(), runs[0].points().len());
+        for (point, captured) in preview.points.iter().zip(runs[0].points()) {
+            assert_eq!(
+                *point,
+                CurvePreviewWidget::curve_point(
+                    bounds,
+                    CurveNode {
+                        x: captured.position.x,
+                        y: captured.position.y,
+                    },
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_ordered_runs_as_separate_polylines() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let runs = vec![
+            recorded_run([RectPoint { x: 0.2, y: 0.2 }, RectPoint { x: 0.35, y: 0.8 }]),
+            recorded_run([RectPoint { x: 0.35, y: 0.8 }, RectPoint { x: 0.0, y: 0.6 }]),
+            recorded_run([RectPoint { x: 0.7, y: 0.4 }]),
+        ];
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_active_curve_paint(true)
+            .with_curve_paint_runs(Some(runs));
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let previews = primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.color == theme.accent_copper
+                        && (polyline.width - CURVE_PAINT_PREVIEW_WIDTH).abs() < 1.0e-6 =>
+                {
+                    Some(polyline)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(previews.len(), 2);
+        assert_eq!(previews[0].points.len(), 2);
+        assert_eq!(previews[1].points.len(), 2);
+    }
+
+    #[test]
     fn curve_preview_widget_paints_option_hovered_segment() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let widget = CurvePreviewWidget::new(curve, None, None, None, None, Some(1), true);
@@ -9997,6 +13422,87 @@ mod tests {
                 "authored node {node:?} should be represented exactly"
             );
         }
+    }
+
+    #[test]
+    fn curve_preview_widget_keeps_dragged_nodes_on_the_selected_seam_edge() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+        let right_bottom = Point::new(curve_bounds.max.x, curve_bounds.max.y);
+        let left_bottom = Point::new(curve_bounds.min.x, curve_bounds.max.y);
+        let midpoint = (curve_bounds.min.x + curve_bounds.max.x) * 0.5;
+
+        for phase_offset in [0.0, 0.25] {
+            let curve = PumpParams::new().editable_curve_snapshot();
+            let widget = CurvePreviewWidget::new(curve, Some(1), None, None, None, None, false)
+                .with_phase_offset(phase_offset);
+            let right_node = widget.raw_node_from_display_point(bounds, right_bottom);
+            let left_node = widget.raw_node_from_display_point(bounds, left_bottom);
+            let right_point = widget.display_curve_point(bounds, right_node);
+            let left_point = widget.display_curve_point(bounds, left_node);
+
+            assert!(
+                right_point.x > midpoint,
+                "a node dragged to the bottom-right must remain on the right side at phase offset {phase_offset}: raw={right_node:?}, display={right_point:?}"
+            );
+            assert!(
+                left_point.x < midpoint,
+                "a node dragged to the bottom-left must remain on the left side at phase offset {phase_offset}: raw={left_node:?}, display={left_point:?}"
+            );
+            assert!((right_point.y - left_point.y).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_crosses_the_active_offset_seam_without_locking() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let phase_offset = 0.25;
+        let seam_position = CurvePreviewWidget::curve_point(
+            bounds,
+            CurveNode {
+                x: phase_offset,
+                y: 0.0,
+            },
+        );
+
+        let right_side_curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.1, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 2],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let right_side_widget =
+            CurvePreviewWidget::new(right_side_curve, Some(1), None, None, None, None, false)
+                .with_phase_offset(phase_offset);
+        let right_side_target =
+            right_side_widget.raw_node_from_display_point(bounds, seam_position);
+        assert!(
+            right_side_target.x > 0.5,
+            "crossing the offset seam from the right must continue toward raw phase 1: {right_side_target:?}"
+        );
+
+        let left_side_curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 1.0 },
+                CurveNode { x: 0.9, y: 0.5 },
+                CurveNode { x: 1.0, y: 1.0 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 2],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let left_side_widget =
+            CurvePreviewWidget::new(left_side_curve, Some(1), None, None, None, None, false)
+                .with_phase_offset(phase_offset);
+        let left_side_target = left_side_widget.raw_node_from_display_point(bounds, seam_position);
+        assert!(
+            left_side_target.x < 0.5,
+            "crossing the offset seam from the left must continue toward raw phase 0: {left_side_target:?}"
+        );
     }
 
     #[test]
