@@ -533,6 +533,21 @@ fn is_left_or_right_edge(contact: BoundaryContact) -> bool {
     )
 }
 
+fn is_left_or_right_boundary_contact(contact: BoundaryContact) -> bool {
+    matches!(
+        contact,
+        BoundaryContact::Edge(EdgeParameter {
+            edge: BoundaryEdge::Left | BoundaryEdge::Right,
+            ..
+        }) | BoundaryContact::Corner(
+            BoundaryCorner::TopLeft
+                | BoundaryCorner::BottomLeft
+                | BoundaryCorner::TopRight
+                | BoundaryCorner::BottomRight,
+        )
+    )
+}
+
 fn meaningful_horizontal_reversal(
     direction: i8,
     monotonic_extreme_x: f32,
@@ -984,6 +999,7 @@ struct DisplayFragment {
 struct DisplayConstraint {
     display_x: f32,
     y: f32,
+    viewport_seam: bool,
     priority: PaintPriority,
 }
 
@@ -1006,6 +1022,7 @@ struct RawConstraint {
     x: f32,
     y: f32,
     seam: bool,
+    viewport_seam: bool,
     priority: PaintPriority,
 }
 
@@ -1216,6 +1233,7 @@ fn collect_display_geometry(runs: &[PaintRun]) -> (Vec<DisplayFragment>, Vec<Dis
                 constraints.push(DisplayConstraint {
                     display_x,
                     y: sample.y,
+                    viewport_seam: is_left_or_right_boundary_contact(point.contact),
                     priority: PaintPriority { chronology, tie: 0 },
                 });
                 continue;
@@ -1238,6 +1256,7 @@ fn collect_display_geometry(runs: &[PaintRun]) -> (Vec<DisplayFragment>, Vec<Dis
                     constraints.push(DisplayConstraint {
                         display_x: sample.x,
                         y: sample.y,
+                        viewport_seam: false,
                         priority: PaintPriority { chronology, tie: 0 },
                     });
                     direction = 0;
@@ -1512,6 +1531,7 @@ fn raw_geometry(
                 x,
                 y: constraint.y.clamp(0.0, 1.0),
                 seam: is_raw_seam(x),
+                viewport_seam: constraint.viewport_seam,
                 priority: constraint.priority,
             }
         })
@@ -1624,9 +1644,8 @@ fn retain_raw_constraints(mut constraints: Vec<RawConstraint>) -> Vec<RawConstra
 
     let mut ranked = constraints.drain(..).enumerate().collect::<Vec<_>>();
     ranked.sort_by(|(left_index, left), (right_index, right)| {
-        right
-            .seam
-            .cmp(&left.seam)
+        (right.seam || right.viewport_seam)
+            .cmp(&(left.seam || left.viewport_seam))
             .then_with(|| right.priority.cmp(&left.priority))
             .then_with(|| right_index.cmp(left_index))
     });
@@ -1698,15 +1717,22 @@ fn raw_seam_y(origin: &EditableCurve, patches: &[RawPatch], constraints: &[RawCo
         tie: 0,
     };
     let mut best_y = origin.nodes.first().map(|node| node.y).unwrap_or(1.0);
-    for patch in patches {
-        for sample in &patch.samples {
-            if is_raw_seam(sample.x) && patch.priority >= best_priority {
-                best_priority = patch.priority;
-                best_y = sample.y;
+    let has_explicit_viewport_seam = constraints
+        .iter()
+        .any(|constraint| constraint.seam && constraint.viewport_seam);
+    if !has_explicit_viewport_seam {
+        for patch in patches {
+            for sample in &patch.samples {
+                if is_raw_seam(sample.x) && patch.priority >= best_priority {
+                    best_priority = patch.priority;
+                    best_y = sample.y;
+                }
             }
         }
     }
-    for constraint in constraints.iter().filter(|constraint| constraint.seam) {
+    for constraint in constraints.iter().filter(|constraint| {
+        constraint.seam && (!has_explicit_viewport_seam || constraint.viewport_seam)
+    }) {
         if constraint.priority >= best_priority {
             best_priority = constraint.priority;
             best_y = constraint.y;
