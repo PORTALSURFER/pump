@@ -1077,6 +1077,9 @@ pub(crate) fn reconstruct_paint(
     };
     let mandatory_xs = mandatory_anchor_xs(&origin, &patches, &constraints);
     let optional_xs = optional_anchor_xs(&mandatory_xs, &patches);
+    // Coalescing can discard the just-selected x, so selection progress must
+    // not depend on the mutable selected set retaining it.
+    let mut attempted_optional_xs = vec![false; optional_xs.len()];
     let mut selected_xs = mandatory_xs.clone();
     let mut fitted = fit_candidate(&origin, &selected_xs, seam_y, &patches, &constraints);
     let mut best = candidate_is_valid(&fitted.curve)
@@ -1086,10 +1089,11 @@ pub(crate) fn reconstruct_paint(
         let Some((optional_index, _)) = optional_xs
             .iter()
             .enumerate()
-            .filter(|(_, x)| {
-                !selected_xs
-                    .iter()
-                    .any(|selected| same_raw_x(**x, *selected))
+            .filter(|(index, x)| {
+                !attempted_optional_xs[*index]
+                    && !selected_xs
+                        .iter()
+                        .any(|selected| same_raw_x(**x, *selected))
             })
             .filter_map(|(index, x)| {
                 let error = candidate_error_at(&fitted.curve, *x, fit_context);
@@ -1103,6 +1107,7 @@ pub(crate) fn reconstruct_paint(
         else {
             break;
         };
+        attempted_optional_xs[optional_index] = true;
         selected_xs.push(optional_xs[optional_index]);
         selected_xs.sort_by(f32::total_cmp);
         selected_xs = coalesce_selected_xs(
@@ -3027,6 +3032,28 @@ mod tests {
         assert!(matches!(&best_effort, PaintCommitOutcome::Applied { .. }));
         assert!(candidate_is_valid(best_effort.candidate()));
         assert_ne!(best_effort.candidate(), &origin);
+    }
+
+    #[test]
+    fn release_fit_terminates_when_coalescing_removes_an_optional_anchor() {
+        let origin = flat_curve(0.5);
+        // This stroke makes the highest-error optional anchor coalesce away.
+        // Before release tracked attempted anchors, the same candidate stayed
+        // eligible forever because optional_xs is immutable.
+        let run = interior_run([
+            (0.5484174, 0.90177536),
+            (0.555112, 0.12531574),
+            (0.5618067, 0.17531161),
+            (0.5685013, 0.94877195),
+        ]);
+
+        let first = reconstruct_paint(&origin, 0.0, std::slice::from_ref(&run));
+        let second = reconstruct_paint(&origin, 0.0, &[run]);
+
+        assert_eq!(first, second);
+        assert!(matches!(&first, PaintCommitOutcome::Applied { .. }));
+        assert!(candidate_is_valid(first.candidate()));
+        assert_ne!(first.candidate(), &origin);
     }
 
     #[test]
