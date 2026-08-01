@@ -103,6 +103,12 @@ All notable changes to this project are documented in this file.
 
 - Compensate reported input presentation latency (2062c6a)
 
+- (gui) Bound curve paint fitting progress (05d337a)
+
+- (gui) Stabilize curve edge interactions (dead5d9)
+
+- (gui) Fit painted edge crossings before release (173d974)
+
 
 ### CI
 
@@ -200,6 +206,10 @@ All notable changes to this project are documented in this file.
 - Repin corrected knob wheel dependencies (0750e93)
 
 - (release) Bump Pump to v0.2.1 [skip ci] (aa7e48e)
+
+- (release) Bump Pump to v0.2.2 [skip ci] (d277bc7)
+
+- (deps) Repin Toybox to merged main (2b73014)
 
 
 ### Documentation
@@ -442,6 +452,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (de0d9b2)
 
+- (changelog) Update changelog [skip ci] (26bb549)
+
 
 ### Features
 
@@ -472,6 +484,10 @@ All notable changes to this project are documented in this file.
 - Add free timing editor workflow (#48) (3958f4a)
 
 - (gui) Adopt hover wheel knob automation (0adad6e)
+
+- (gui) Rebuild curve painting on release (ae89355)
+
+- (gui) Canonicalize viewport seam ownership (80da0ca)
 
 
 ### Other
@@ -1398,6 +1414,10 @@ Add a GUI-only processed waveform preview using the existing input envelope and 
 
 - Make global curve slots empty by default (#68) (74453ad)
 
+- Merge pull request #70 from PORTALSURFER/codex/curve-paint-reconstruction
+
+feat(gui): rebuild curve painting on release (3d20e4b)
+
 
 ### Refactoring
 
@@ -1443,4 +1463,6 @@ Add a GUI-only processed waveform preview using the existing input envelope and 
 - (gui) Add non-windows dropdown-over-curve coverage (dd87705)
 
 - Cover Pump header action states (2aa67d2)
+
+- (gui) Satisfy edge interaction lint (18b85be)
 
