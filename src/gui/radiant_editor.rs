@@ -1227,8 +1227,15 @@ enum CanonicalSeamOwner {
     Interior(usize),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanonicalSeamDragKind {
+    ExistingOwner,
+    Takeover,
+}
+
 #[derive(Clone)]
 struct CanonicalSeamDrag {
+    kind: CanonicalSeamDragKind,
     owner: CanonicalSeamOwner,
     template_curve: EditableCurve,
 }
@@ -1298,6 +1305,15 @@ fn display_x_is_in_edge_zone(raw_x: f32, phase_offset: f32, threshold_x: f32) ->
     let display_x = CurvePreviewWidget::display_phase(raw_x, phase_offset);
     let threshold_x = threshold_x.max(0.0);
     display_x <= threshold_x || display_x >= 1.0 - threshold_x
+}
+
+fn display_x_is_at_viewport_boundary(raw_x: f32, phase_offset: f32) -> bool {
+    let display_x = CurvePreviewWidget::display_phase(raw_x, phase_offset);
+    // raw_node_from_display_point offsets exact edge contacts by the seam
+    // epsilon to preserve which display side was selected. Allow one float
+    // ulp for that offset when recognizing the physical boundary.
+    let epsilon = CURVE_DISPLAY_SEAM_EPSILON + f32::EPSILON;
+    display_x <= epsilon || display_x >= 1.0 - epsilon
 }
 
 fn preferred_seam_active_index(
@@ -1516,7 +1532,11 @@ impl ActiveCurveNodeDrag {
     ) -> CurveNode {
         self.last_pointer_x = target.x;
         self.last_pointer_y = target.y;
-        if self.seam_drag.is_some() {
+        if self
+            .seam_drag
+            .as_ref()
+            .is_some_and(|drag| drag.kind == CanonicalSeamDragKind::ExistingOwner)
+        {
             // A seam owner is one logical node even though it has two display
             // instances. Keep the raw phase selected at gesture start and use
             // only the pointer's vertical coordinate for every update.
@@ -3289,6 +3309,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                             .any(|selected| seam_owner_contains_index(&curve, owner, selected));
                         if selected_seam {
                             drag.seam_drag = Some(CanonicalSeamDrag {
+                                kind: CanonicalSeamDragKind::ExistingOwner,
                                 owner,
                                 template_curve: curve.clone().normalized(),
                             });
@@ -3511,6 +3532,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                     );
                     curve_with_dragged_node(
                         drag,
+                        node,
                         target,
                         push_through_threshold_x,
                         state.params.phase_offset(),
@@ -3641,6 +3663,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                     );
                     curve_with_dragged_node(
                         drag,
+                        node,
                         target,
                         push_through_threshold_x,
                         state.params.phase_offset(),
@@ -3803,6 +3826,7 @@ fn start_curve_node_drag(
         selected_indices: Vec::new(),
         seam_drag: canonical_seam_owner(curve, phase_offset).and_then(|owner| {
             seam_owner_contains_index(curve, owner, index).then(|| CanonicalSeamDrag {
+                kind: CanonicalSeamDragKind::ExistingOwner,
                 owner,
                 template_curve: curve.clone().normalized(),
             })
@@ -3819,6 +3843,7 @@ fn start_curve_node_drag(
 
 fn curve_with_dragged_node(
     drag: &mut ActiveCurveNodeDrag,
+    pointer: CurveNode,
     target: CurveNode,
     push_through_threshold_x: f32,
     phase_offset: f32,
@@ -3831,12 +3856,22 @@ fn curve_with_dragged_node(
     }
 
     if let Some(seam_drag) = drag.seam_drag.as_mut() {
-        let mut curve = seam_drag.template_curve.clone();
-        let moved_index =
-            preferred_seam_active_index(&curve, seam_drag.owner, target, phase_offset);
-        set_canonical_seam_y(&mut curve, seam_drag.owner, target.y);
-        curve.normalize_in_place();
-        return (curve, moved_index, false);
+        if seam_drag.kind == CanonicalSeamDragKind::Takeover
+            && !display_x_is_in_edge_zone(pointer.x, phase_offset, push_through_threshold_x)
+        {
+            // A takeover is reversible while the pointer remains captured.
+            // Rebuild from the gesture origin so removed neighbours and every
+            // original segment tension return before following the inward
+            // pointer position.
+            drag.seam_drag = None;
+        } else {
+            let mut curve = seam_drag.template_curve.clone();
+            let moved_index =
+                preferred_seam_active_index(&curve, seam_drag.owner, target, phase_offset);
+            set_canonical_seam_y(&mut curve, seam_drag.owner, target.y);
+            curve.normalize_in_place();
+            return (curve, moved_index, false);
+        }
     }
 
     let mut curve = drag.origin_curve.clone();
@@ -3847,7 +3882,7 @@ fn curve_with_dragged_node(
             phase_offset,
             push_through_threshold_x,
         )
-        && display_x_is_in_edge_zone(target.x, phase_offset, push_through_threshold_x)
+        && display_x_is_at_viewport_boundary(pointer.x, phase_offset)
     {
         let (curve, owner) = take_over_viewport_seam(
             &curve,
@@ -3856,8 +3891,9 @@ fn curve_with_dragged_node(
             phase_offset,
             push_through_threshold_x,
         );
-        let moved_index = preferred_seam_active_index(&curve, owner, target, phase_offset);
+        let moved_index = preferred_seam_active_index(&curve, owner, pointer, phase_offset);
         drag.seam_drag = Some(CanonicalSeamDrag {
+            kind: CanonicalSeamDragKind::Takeover,
             owner,
             template_curve: curve.clone(),
         });
@@ -6785,9 +6821,17 @@ mod tests {
                 push_through_threshold_x: threshold,
             }),
         );
-        let latched = params.editable_curve_snapshot();
-        assert_eq!(latched.nodes[1].x, seam_raw(phase_offset));
-        assert!((latched.nodes[1].y - 0.65).abs() < 1.0e-6);
+        let unsnapped = params.editable_curve_snapshot();
+        assert_eq!(unsnapped.nodes.len(), curve.nodes.len());
+        assert_eq!(unsnapped.nodes[1].x, curve.nodes[1].x);
+        assert!((unsnapped.nodes[1].y - 0.65).abs() < 1.0e-6);
+        assert_eq!(unsnapped.nodes[3], curve.nodes[3]);
+        assert_eq!(unsnapped.segments, curve.segments);
+        assert_eq!(state.active_curve_node, Some(1));
+        assert!(state
+            .active_curve_node_drag
+            .as_ref()
+            .is_some_and(|drag| drag.seam_drag.is_none()));
 
         reduce_editor_message(
             &mut state,
@@ -6801,7 +6845,8 @@ mod tests {
             }),
         );
         let released = params.editable_curve_snapshot();
-        assert_eq!(released.nodes[1].x, seam_raw(phase_offset));
+        assert_eq!(released.nodes.len(), curve.nodes.len());
+        assert_eq!(released.nodes[1].x, curve.nodes[1].x);
         assert!((released.nodes[1].y - 0.7).abs() < 1.0e-6);
         assert_eq!(state.undo_history.len(), 1);
         assert!(state.selected_curve_nodes.is_empty());
@@ -7027,7 +7072,7 @@ mod tests {
     }
 
     #[test]
-    fn incoming_node_takes_over_at_inclusive_edge_threshold_but_not_just_outside() {
+    fn incoming_node_waits_for_viewport_boundary_before_takeover() {
         let threshold = test_curve_push_through_threshold_x();
         let origin = EditableCurve {
             nodes: vec![
@@ -7045,15 +7090,33 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         params.set_editable_curve(&origin);
         let mut state = editor_state(Arc::clone(&params));
-        reduce_curve_message(&mut state, unconstrained_press(2));
+        reduce_curve_message(&mut state, unconstrained_press(1));
         reduce_curve_message(
             &mut state,
             CurvePreviewMessage::DragNode {
-                index: 2,
+                index: 1,
                 node: CurveNode {
                     x: threshold,
                     y: 0.35,
                 },
+                push_through_threshold_x: threshold,
+            },
+        );
+        let ordinary = params.editable_curve_snapshot();
+        assert_eq!(ordinary.nodes.len(), origin.nodes.len());
+        assert_eq!(state.active_curve_node, Some(1));
+        assert!((ordinary.nodes[0].y - origin.nodes[0].y).abs() < 1.0e-6);
+        assert!((ordinary.nodes.last().unwrap().y - origin.nodes.last().unwrap().y).abs() < 1.0e-6);
+        assert!(state
+            .active_curve_node_drag
+            .as_ref()
+            .is_some_and(|drag| drag.seam_drag.is_none()));
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 1,
+                node: CurveNode { x: 0.0, y: 0.35 },
                 push_through_threshold_x: threshold,
             },
         );
@@ -7064,33 +7127,12 @@ mod tests {
         assert!(!taken_over
             .nodes
             .iter()
-            .any(|node| (node.x - 0.5).abs() < 1.0e-6));
+            .any(|node| (node.x - 0.2).abs() < 1.0e-6));
         assert_eq!(state.active_curve_node, Some(0));
-
-        let params = Arc::new(PumpParams::new());
-        params.set_editable_curve(&origin);
-        let mut state = editor_state(Arc::clone(&params));
-        reduce_curve_message(&mut state, unconstrained_press(2));
-        let just_outside = threshold + 1.0e-3;
-        reduce_curve_message(
-            &mut state,
-            CurvePreviewMessage::DragNode {
-                index: 2,
-                node: CurveNode {
-                    x: just_outside,
-                    y: 0.35,
-                },
-                push_through_threshold_x: threshold,
-            },
-        );
-        let ordinary = params.editable_curve_snapshot();
-        assert!((ordinary.nodes[1].x - just_outside).abs() < 1.0e-6);
-        assert!((ordinary.nodes[0].y - origin.nodes[0].y).abs() < 1.0e-6);
-        assert!((ordinary.nodes.last().unwrap().y - origin.nodes.last().unwrap().y).abs() < 1.0e-6);
     }
 
     #[test]
-    fn edge_takeover_snaps_near_seam_source_before_it_becomes_owner() {
+    fn edge_takeover_unsnaps_restores_origin_resnaps_and_releases_inside_zone() {
         let curve = interior_seam_curve_with_raw_x(0.7495);
         assert_eq!(canonical_seam_owner(&curve, 0.25), None);
 
@@ -7133,9 +7175,54 @@ mod tests {
                 push_through_threshold_x: 1.0e-4,
             },
         );
-        let dragged_owner = params.editable_curve_snapshot();
-        assert_eq!(dragged_owner.nodes[2].x, 0.75);
-        assert!((dragged_owner.nodes[2].y - 0.65).abs() < 1.0e-6);
+        let restored = params.editable_curve_snapshot();
+        assert_eq!(restored.nodes.len(), curve.nodes.len());
+        assert!(restored.nodes[2].x > curve.nodes[1].x);
+        assert!(restored.nodes[2].x < curve.nodes[2].x);
+        assert!((restored.nodes[2].y - 0.65).abs() < 1.0e-6);
+        assert_eq!(restored.nodes[3], curve.nodes[3]);
+        assert_eq!(restored.segments, curve.segments);
+        assert!(state
+            .active_curve_node_drag
+            .as_ref()
+            .is_some_and(|drag| drag.seam_drag.is_none()));
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 2,
+                node: CurveNode { x: 0.75, y: 0.7 },
+                push_through_threshold_x: 1.0e-4,
+            },
+        );
+        let resnapped = params.editable_curve_snapshot();
+        assert_eq!(resnapped.nodes[2].x, seam_raw(0.25));
+        assert!((resnapped.nodes[2].y - 0.7).abs() < 1.0e-6);
+        assert_eq!(
+            canonical_seam_owner(&resnapped, 0.25),
+            Some(CanonicalSeamOwner::Interior(2))
+        );
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::ReleaseNode {
+                index: 2,
+                node: CurveNode { x: 0.2, y: 0.8 },
+                push_through_threshold_x: 1.0e-4,
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        let released = params.editable_curve_snapshot();
+        assert_eq!(released.nodes.len(), curve.nodes.len());
+        assert!(released.nodes[2].x > curve.nodes[1].x);
+        assert!(released.nodes[2].x < curve.nodes[2].x);
+        assert!((released.nodes[2].y - 0.8).abs() < 1.0e-6);
+        assert_eq!(released.nodes[3], curve.nodes[3]);
+        assert_eq!(released.segments, curve.segments);
+        assert!(state.active_curve_node.is_none());
+        assert!(state.active_curve_node_drag.is_none());
     }
 
     #[test]
