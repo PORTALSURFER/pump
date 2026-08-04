@@ -3857,12 +3857,13 @@ fn curve_with_dragged_node(
 
     if let Some(seam_drag) = drag.seam_drag.as_mut() {
         if seam_drag.kind == CanonicalSeamDragKind::Takeover
-            && !display_x_is_in_edge_zone(pointer.x, phase_offset, push_through_threshold_x)
+            && !display_x_is_at_viewport_boundary(pointer.x, phase_offset)
         {
-            // A takeover is reversible while the pointer remains captured.
-            // Rebuild from the gesture origin so removed neighbours and every
-            // original segment tension return before following the inward
-            // pointer position.
+            // A takeover remains active only at the exact viewport boundary.
+            // Rebuild from the gesture origin as soon as the pointer moves
+            // inward, even if it is still within the push-through edge zone,
+            // so removed neighbours and every original segment tension return
+            // before following the pointer position.
             drag.seam_drag = None;
         } else {
             let mut curve = seam_drag.template_curve.clone();
@@ -7132,13 +7133,15 @@ mod tests {
     }
 
     #[test]
-    fn edge_takeover_unsnaps_restores_origin_resnaps_and_releases_inside_zone() {
+    fn edge_takeover_unsnaps_inside_edge_zone_restores_origin_and_resnaps_at_boundary() {
+        let threshold = 1.0e-4;
         let curve = interior_seam_curve_with_raw_x(0.7495);
-        assert_eq!(canonical_seam_owner(&curve, 0.25), None);
+        let phase_offset = 0.25;
+        assert_eq!(canonical_seam_owner(&curve, phase_offset), None);
 
         let params = Arc::new(PumpParams::new());
         params.set_editable_curve(&curve);
-        params.set_phase_offset(0.25);
+        params.set_phase_offset(phase_offset);
         let mut state = editor_state(Arc::clone(&params));
         reduce_curve_message(
             &mut state,
@@ -7154,31 +7157,47 @@ mod tests {
             &mut state,
             CurvePreviewMessage::DragNode {
                 index: 2,
-                node: CurveNode { x: 0.75, y: 0.55 },
-                push_through_threshold_x: 1.0e-4,
+                node: CurveNode {
+                    x: seam_raw(phase_offset),
+                    y: 0.55,
+                },
+                push_through_threshold_x: threshold,
             },
         );
 
         let taken_over = params.editable_curve_snapshot();
         assert_eq!(taken_over.nodes[2].x, 0.75);
-        assert_eq!(taken_over.nodes[2].x, seam_raw(0.25));
+        assert_eq!(taken_over.nodes[2].x, seam_raw(phase_offset));
         assert_eq!(
-            canonical_seam_owner(&taken_over, 0.25),
+            canonical_seam_owner(&taken_over, phase_offset),
             Some(CanonicalSeamOwner::Interior(2))
         );
 
+        let just_inside_edge_zone = seam_raw(phase_offset) - threshold * 0.5;
+        assert!(display_x_is_in_edge_zone(
+            just_inside_edge_zone,
+            phase_offset,
+            threshold
+        ));
+        assert!(!display_x_is_at_viewport_boundary(
+            just_inside_edge_zone,
+            phase_offset
+        ));
         reduce_curve_message(
             &mut state,
             CurvePreviewMessage::DragNode {
                 index: 2,
-                node: CurveNode { x: 0.2, y: 0.65 },
-                push_through_threshold_x: 1.0e-4,
+                node: CurveNode {
+                    x: just_inside_edge_zone,
+                    y: 0.65,
+                },
+                push_through_threshold_x: threshold,
             },
         );
         let restored = params.editable_curve_snapshot();
         assert_eq!(restored.nodes.len(), curve.nodes.len());
         assert!(restored.nodes[2].x > curve.nodes[1].x);
-        assert!(restored.nodes[2].x < curve.nodes[2].x);
+        assert!((restored.nodes[2].x - just_inside_edge_zone).abs() < 1.0e-6);
         assert!((restored.nodes[2].y - 0.65).abs() < 1.0e-6);
         assert_eq!(restored.nodes[3], curve.nodes[3]);
         assert_eq!(restored.segments, curve.segments);
@@ -7191,15 +7210,18 @@ mod tests {
             &mut state,
             CurvePreviewMessage::DragNode {
                 index: 2,
-                node: CurveNode { x: 0.75, y: 0.7 },
-                push_through_threshold_x: 1.0e-4,
+                node: CurveNode {
+                    x: seam_raw(phase_offset),
+                    y: 0.7,
+                },
+                push_through_threshold_x: threshold,
             },
         );
         let resnapped = params.editable_curve_snapshot();
-        assert_eq!(resnapped.nodes[2].x, seam_raw(0.25));
+        assert_eq!(resnapped.nodes[2].x, seam_raw(phase_offset));
         assert!((resnapped.nodes[2].y - 0.7).abs() < 1.0e-6);
         assert_eq!(
-            canonical_seam_owner(&resnapped, 0.25),
+            canonical_seam_owner(&resnapped, phase_offset),
             Some(CanonicalSeamOwner::Interior(2))
         );
 
@@ -7208,7 +7230,7 @@ mod tests {
             CurvePreviewMessage::ReleaseNode {
                 index: 2,
                 node: CurveNode { x: 0.2, y: 0.8 },
-                push_through_threshold_x: 1.0e-4,
+                push_through_threshold_x: threshold,
                 shift_held: false,
                 option_held: false,
                 command_held: false,
