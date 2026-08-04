@@ -3883,6 +3883,7 @@ fn curve_with_dragged_node(
             phase_offset,
             push_through_threshold_x,
         )
+        && drag.vertical_time_anchor.is_none()
         && display_x_is_at_viewport_boundary(pointer.x, phase_offset)
     {
         let (curve, owner) = take_over_viewport_seam(
@@ -9548,6 +9549,69 @@ mod tests {
             .active_curve_node_drag
             .as_ref()
             .is_some_and(|drag| drag.horizontal_gain_anchor.is_none()));
+    }
+
+    #[test]
+    fn radiant_editor_shift_option_drag_does_not_take_over_viewport_boundaries() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.0001, y: 0.2 },
+                CurveNode { x: 0.25, y: 0.6 },
+                CurveNode { x: 0.53, y: 0.3 },
+                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 0.9999, y: 0.15 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.11 },
+                CurveSegment { tension: 0.22 },
+                CurveSegment { tension: 0.33 },
+                CurveSegment { tension: 0.44 },
+                CurveSegment { tension: 0.55 },
+                CurveSegment { tension: 0.66 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let origin = curve.nodes[3];
+
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index: 3,
+                pointer: origin,
+                shift_held: true,
+                option_held: true,
+                command_held: false,
+            },
+        );
+
+        for (boundary_x, y) in [(0.0, 0.05), (1.0, 0.15)] {
+            reduce_curve_message(
+                &mut state,
+                CurvePreviewMessage::DragNode {
+                    index: 3,
+                    node: CurveNode { x: boundary_x, y },
+                    push_through_threshold_x: test_curve_push_through_threshold_x(),
+                },
+            );
+
+            let dragged = params.editable_curve_snapshot();
+            assert_eq!(dragged.nodes.len(), curve.nodes.len());
+            assert_eq!(dragged.segments, curve.segments);
+            for (dragged_node, origin_node) in dragged.nodes.iter().zip(&curve.nodes) {
+                assert!((dragged_node.x - origin_node.x).abs() < 1.0e-6);
+            }
+            assert!((dragged.nodes[3].y - y).abs() < 1.0e-6);
+            assert!(state
+                .active_curve_node_drag
+                .as_ref()
+                .is_some_and(|drag| drag.seam_drag.is_none()));
+        }
     }
 
     #[test]
