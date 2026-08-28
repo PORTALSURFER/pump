@@ -460,6 +460,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (8e5c1fb)
 
+- (changelog) Update changelog [skip ci] (a9e50f2)
+
 
 ### Features
 
@@ -1423,6 +1425,8 @@ Add a GUI-only processed waveform preview using the existing input envelope and 
 - Merge pull request #70 from PORTALSURFER/codex/curve-paint-reconstruction
 
 feat(gui): rebuild curve painting on release (3d20e4b)
+
+- Directly manipulate curve segments by proximity (#72) (af2a06c)
 
 
 ### Refactoring
