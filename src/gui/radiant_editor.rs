@@ -1679,6 +1679,7 @@ struct ActiveCurveSegmentDrag {
     start_pointer: Point,
     mode: CurveSegmentDragMode,
     source: CurveSegmentDragSource,
+    history_origin: Option<RadiantHistorySnapshot>,
 }
 
 #[derive(Clone)]
@@ -3024,7 +3025,6 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                     | CurvePreviewMessage::DeleteSelectedNodes
                     | CurvePreviewMessage::PressSegment { .. }
                     | CurvePreviewMessage::PressSegmentMove { .. }
-                    | CurvePreviewMessage::PressDirectProximitySegment { .. }
             ) {
                 state.push_history();
             }
@@ -3796,7 +3796,10 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         }
         CurvePreviewMessage::PressDirectProximitySegment { index, position } => {
             let curve = state.params.editable_curve_snapshot();
-            if let Some(drag) = start_curve_segment_direct_proximity_drag(&curve, index, position) {
+            if let Some(mut drag) =
+                start_curve_segment_direct_proximity_drag(&curve, index, position)
+            {
+                drag.history_origin = Some(state.snapshot());
                 state.active_curve_node = None;
                 state.active_curve_node_drag = None;
                 state.active_curve_paint = None;
@@ -3831,6 +3834,7 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             if let Some(drag) = state.active_curve_segment.take() {
                 let curve = curve_with_dragged_segment(&drag, position, curve_size);
                 state.params.set_editable_curve(&curve);
+                commit_direct_curve_segment_history_if_changed(state, &drag);
                 state.hover_curve_node = None;
                 state.preview_curve_node = None;
                 state.hover_curve_segment = match drag.source {
@@ -3861,10 +3865,12 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                     .host_param_edit_sink
                     .gesture_ended(&state.automation_config, PARAM_PHASE_OFFSET_ID);
             }
+            if let Some(drag) = state.active_curve_segment.take() {
+                commit_direct_curve_segment_history_if_changed(state, &drag);
+            }
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
             state.active_curve_paint = None;
-            state.active_curve_segment = None;
             state.active_curve_marquee = None;
             state.preview_curve_offset = None;
             state.hover_curve_node = None;
@@ -3891,6 +3897,26 @@ fn commit_active_curve_paint(state: &mut RadiantEditorState, paint: ActiveCurveP
     state.params.set_editable_curve(&candidate);
     let mut origin_snapshot = paint.origin_snapshot;
     origin_snapshot.curve = paint.origin_curve;
+    state.push_history_snapshot(origin_snapshot);
+}
+
+fn commit_direct_curve_segment_history_if_changed(
+    state: &mut RadiantEditorState,
+    drag: &ActiveCurveSegmentDrag,
+) {
+    if drag.source != CurveSegmentDragSource::DirectProximity {
+        return;
+    }
+
+    let applied_curve = state.params.editable_curve_snapshot();
+    if applied_curve == drag.origin_curve {
+        return;
+    }
+
+    let Some(mut origin_snapshot) = drag.history_origin.clone() else {
+        return;
+    };
+    origin_snapshot.curve = drag.origin_curve.clone();
     state.push_history_snapshot(origin_snapshot);
 }
 
@@ -4384,6 +4410,7 @@ fn start_curve_segment_tension_drag(
         start_pointer,
         mode: CurveSegmentDragMode::AdjustTension { start_tension },
         source: CurveSegmentDragSource::OptionTension,
+        history_origin: None,
     })
 }
 
@@ -4399,6 +4426,7 @@ fn start_curve_segment_move_drag(
         start_pointer,
         mode: CurveSegmentDragMode::MovePair,
         source: CurveSegmentDragSource::Command,
+        history_origin: None,
     })
 }
 
@@ -4414,6 +4442,7 @@ fn start_curve_segment_direct_proximity_drag(
         start_pointer,
         mode: CurveSegmentDragMode::MovePair,
         source: CurveSegmentDragSource::DirectProximity,
+        history_origin: None,
     })
 }
 
@@ -6458,25 +6487,29 @@ impl Widget for CurvePreviewWidget {
                             })
                         }
                         (false, true, None, _) => None,
-                        _ => hover
-                            .preview_node
-                            .or_else(|| self.insert_node_at(bounds, position))
-                            .map(|node| CurvePreviewMessage::InsertNode {
-                                node: if command_held {
-                                    CurveNode {
-                                        x: snap_curve_time_to_beat_grid_with_swing(
-                                            self.sync_division,
-                                            Self::curve_bounds(bounds).width(),
-                                            node.x,
-                                            self.swing,
-                                        ),
-                                        ..node
-                                    }
-                                } else {
-                                    node
+                        (true, _, None, _) => self.insert_node_at(bounds, position).map(|node| {
+                            CurvePreviewMessage::InsertNode {
+                                node: CurveNode {
+                                    x: snap_curve_time_to_beat_grid_with_swing(
+                                        self.sync_division,
+                                        Self::curve_bounds(bounds).width(),
+                                        node.x,
+                                        self.swing,
+                                    ),
+                                    ..node
                                 },
-                                command_held,
-                            }),
+                                command_held: true,
+                            }
+                        }),
+                        (false, false, Some(_), _) => {
+                            hover
+                                .preview_node
+                                .map(|node| CurvePreviewMessage::InsertNode {
+                                    node,
+                                    command_held: false,
+                                })
+                        }
+                        (false, false, None, _) => None,
                     }
                 }
             }
@@ -10846,14 +10879,19 @@ mod tests {
     }
 
     #[test]
-    fn radiant_editor_direct_proximity_drag_locks_pair_origin_and_keeps_node_count() {
+    fn radiant_editor_direct_proximity_drag_is_transactional_and_locks_pair_origin() {
         let params = Arc::new(PumpParams::new());
         let curve = flat_segment_hit_curve();
         params.set_editable_curve(&curve);
         let mut state = editor_state(Arc::clone(&params));
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let curve_size = Vector2::new(
+            CurvePreviewWidget::curve_bounds(bounds).width(),
+            CurvePreviewWidget::curve_bounds(bounds).height(),
+        );
         let (_, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
         let start = flat_segment_point(bounds, 0.375, proximity_radius * 0.8);
+        let moved_pointer = Point::new(start.x + 24.0, start.y - 12.0);
 
         reduce_editor_message(
             &mut state,
@@ -10862,7 +10900,11 @@ mod tests {
                 position: start,
             }),
         );
-        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.undo_history.is_empty());
+        assert!(state
+            .active_curve_segment
+            .as_ref()
+            .is_some_and(|drag| drag.history_origin.is_some()));
         assert!(state
             .active_curve_segment
             .as_ref()
@@ -10872,11 +10914,8 @@ mod tests {
             &mut state,
             CurvePreviewMessage::DragSegment {
                 index: 0,
-                position: Point::new(start.x + 24.0, start.y - 12.0),
-                curve_size: Vector2::new(
-                    CurvePreviewWidget::curve_bounds(bounds).width(),
-                    CurvePreviewWidget::curve_bounds(bounds).height(),
-                ),
+                position: moved_pointer,
+                curve_size,
             },
         );
 
@@ -10898,6 +10937,94 @@ mod tests {
         assert!(left_delta.0 > 0.0);
         assert!(left_delta.1 > 0.0);
         assert!((moved.nodes[2].y - moved.nodes[1].y).abs() < 1.0e-6);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseSegment {
+                index: 0,
+                position: moved_pointer,
+                curve_size,
+            }),
+        );
+        assert!(state.active_curve_segment.is_none());
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert_eq!(params.editable_curve_snapshot(), curve);
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+
+        reduce_editor_message(&mut state, RadiantEditorMessage::Redo);
+        assert_eq!(params.editable_curve_snapshot(), moved);
+        assert_eq!(state.undo_history.len(), 1);
+        assert!(state.redo_history.is_empty());
+    }
+
+    #[test]
+    fn radiant_editor_direct_proximity_noop_release_and_cancel_preserve_redo() {
+        let params = Arc::new(PumpParams::new());
+        let curve = flat_segment_hit_curve();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        let bounds = bounds_for_curve_test();
+        let curve_size = Vector2::new(
+            CurvePreviewWidget::curve_bounds(bounds).width(),
+            CurvePreviewWidget::curve_bounds(bounds).height(),
+        );
+        let start = flat_segment_point(bounds, 0.375, 1.0);
+        let moved_pointer = Point::new(start.x + 24.0, start.y - 12.0);
+
+        state.push_history();
+        params.set_mix(0.25);
+        reduce_editor_message(&mut state, RadiantEditorMessage::Undo);
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+
+        let press = RadiantEditorMessage::Curve(CurvePreviewMessage::PressDirectProximitySegment {
+            index: 1,
+            position: start,
+        });
+        reduce_editor_message(&mut state, press.clone());
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseSegment {
+                index: 1,
+                position: start,
+                curve_size,
+            }),
+        );
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+        assert_eq!(params.editable_curve_snapshot(), curve);
+
+        reduce_editor_message(&mut state, press);
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragSegment {
+                index: 1,
+                position: moved_pointer,
+                curve_size,
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragSegment {
+                index: 1,
+                position: start,
+                curve_size,
+            },
+        );
+        assert_eq!(params.editable_curve_snapshot(), curve);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::Cancel),
+        );
+        assert!(state.undo_history.is_empty());
+        assert_eq!(state.redo_history.len(), 1);
+        assert!(state.active_curve_segment.is_none());
     }
 
     #[test]
@@ -12665,19 +12792,16 @@ mod tests {
             None,
             false,
         );
-        assert!(matches!(
-            plain
-                .handle_input(
-                    bounds,
-                    WidgetInput::PointerPress {
-                        position: legacy_only,
-                        button: PointerButton::Primary,
-                        modifiers: Default::default(),
-                    },
-                )
-                .and_then(|output| output.typed_copied()),
-            Some(CurvePreviewMessage::InsertNode { .. })
-        ));
+        assert!(plain
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: legacy_only,
+                    button: PointerButton::Primary,
+                    modifiers: Default::default(),
+                },
+            )
+            .is_none());
     }
 
     #[test]
@@ -12876,7 +13000,7 @@ mod tests {
     }
 
     #[test]
-    fn curve_segment_overlap_uses_lower_index_and_background_keeps_insertion_behavior() {
+    fn curve_segment_overlap_uses_lower_index_and_background_press_is_no_op() {
         let curve = EditableCurve {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.5 },
@@ -12899,19 +13023,16 @@ mod tests {
 
         let mut background = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
         let position = flat_segment_point(bounds, 0.5, proximity_radius + 10.0);
-        assert!(matches!(
-            background
-                .handle_input(
-                    bounds,
-                    WidgetInput::PointerPress {
-                        position,
-                        button: PointerButton::Primary,
-                        modifiers: Default::default(),
-                    },
-                )
-                .and_then(|output| output.typed_copied()),
-            Some(CurvePreviewMessage::InsertNode { .. })
-        ));
+        assert!(background
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: Default::default(),
+                },
+            )
+            .is_none());
     }
 
     #[test]
@@ -13406,14 +13527,13 @@ mod tests {
     }
 
     #[test]
-    fn curve_preview_widget_emits_insert_for_empty_canvas_press() {
+    fn curve_preview_widget_plain_empty_canvas_press_is_no_op() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let expected = CurveNode { x: 0.72, y: 0.18 };
-        let position = CurvePreviewWidget::curve_point(bounds, expected);
+        let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.72, y: 0.18 });
 
-        let output = widget
+        assert!(widget
             .handle_input(
                 bounds,
                 WidgetInput::PointerPress {
@@ -13422,27 +13542,18 @@ mod tests {
                     modifiers: Default::default(),
                 },
             )
-            .expect("empty canvas press should emit an insert message");
-
-        match output.typed_copied() {
-            Some(CurvePreviewMessage::InsertNode { node, .. }) => {
-                assert!((node.x - expected.x).abs() < 1.0e-6);
-                assert!((node.y - expected.y).abs() < 1.0e-6);
-            }
-            other => panic!("unexpected empty canvas press output: {other:?}"),
-        }
+            .is_none());
     }
 
     #[test]
-    fn curve_preview_widget_unmodified_blank_press_ignores_stale_shift_hover() {
+    fn curve_preview_widget_unmodified_blank_press_is_no_op_and_ignores_stale_shift_hover() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
             .with_shift_hover_held(true);
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let expected = CurveNode { x: 0.72, y: 0.18 };
-        let position = CurvePreviewWidget::curve_point(bounds, expected);
+        let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.72, y: 0.18 });
 
-        let output = widget
+        assert!(widget
             .handle_input(
                 bounds,
                 WidgetInput::PointerPress {
@@ -13451,12 +13562,7 @@ mod tests {
                     modifiers: PointerModifiers::default(),
                 },
             )
-            .expect("blank canvas press should emit an insert message");
-
-        assert!(matches!(
-            output.typed_copied(),
-            Some(CurvePreviewMessage::InsertNode { .. })
-        ));
+            .is_none());
     }
 
     #[test]
