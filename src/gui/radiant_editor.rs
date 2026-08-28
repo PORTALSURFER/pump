@@ -184,7 +184,8 @@ const CURVE_NODE_HIT_RADIUS: f32 = 10.0;
 const CURVE_NODE_INSERT_GUARD_RADIUS: f32 = 12.0;
 const CURVE_SEGMENT_HOVER_RADIUS: f32 = 7.0;
 const CURVE_SEGMENT_INSERT_RADIUS_PX: f32 = 3.0;
-const CURVE_SEGMENT_PROXIMITY_RADIUS_PX: f32 = 7.0;
+const CURVE_SEGMENT_NEUTRAL_RADIUS_PX: f32 = 5.0;
+const CURVE_SEGMENT_PROXIMITY_RADIUS_PX: f32 = 14.0;
 const CURVE_SEGMENT_TENSION_PIXEL_SCALE: f32 = 120.0;
 const CURVE_NODE_PUSH_THROUGH_MARGIN_PX: f32 = 10.0;
 const CURVE_NODE_MIN_SPACING_X: f32 = 1.0e-3;
@@ -5587,7 +5588,7 @@ impl CurvePreviewWidget {
             .map(|(index, _)| index)
     }
 
-    fn curve_segment_hit_radii(bounds: Rect) -> (f32, f32) {
+    fn curve_segment_hit_radii(bounds: Rect) -> (f32, f32, f32) {
         let active_curve_bounds = Self::curve_bounds(bounds);
         let active_width = (active_curve_bounds.width().max(1.0) - 1.0).max(1.0);
         let reference_bounds = Self::curve_bounds(Rect::from_xy_size(
@@ -5600,6 +5601,7 @@ impl CurvePreviewWidget {
         let scale = (active_width / reference_width).max(0.0);
         (
             CURVE_SEGMENT_INSERT_RADIUS_PX * scale,
+            CURVE_SEGMENT_NEUTRAL_RADIUS_PX * scale,
             CURVE_SEGMENT_PROXIMITY_RADIUS_PX * scale,
         )
     }
@@ -5637,11 +5639,14 @@ impl CurvePreviewWidget {
     }
 
     fn hit_curve_segment(&self, bounds: Rect, position: Point) -> Option<CurveSegmentHit> {
-        let (insert_radius, proximity_radius) = Self::curve_segment_hit_radii(bounds);
+        let (insert_radius, neutral_radius, proximity_radius) =
+            Self::curve_segment_hit_radii(bounds);
         let (index, distance_squared) =
             self.nearest_curve_segment_distance(bounds, position, proximity_radius)?;
         let zone = if distance_squared <= insert_radius.powi(2) {
             CurveSegmentHitZone::OnLine
+        } else if distance_squared <= neutral_radius.powi(2) {
+            return None;
         } else {
             CurveSegmentHitZone::OuterProximity
         };
@@ -10825,7 +10830,7 @@ mod tests {
     fn curve_preview_widget_outer_hover_uses_move_color_and_is_hover_gated() {
         let curve = flat_segment_hit_curve();
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let (_, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
+        let (_, _, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
         let position = flat_segment_point(bounds, 0.375, proximity_radius * 0.8);
         let mut hover_widget =
             CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
@@ -10916,7 +10921,7 @@ mod tests {
             .get(&curve_widget_id)
             .copied()
             .expect("projected curve widget should have layout bounds");
-        let (_, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(curve_bounds);
+        let (_, _, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(curve_bounds);
         let outer = flat_segment_point(curve_bounds, 0.375, proximity_radius * 0.8);
 
         editor.dispatch_event(radiant::runtime::Event::pointer_move(outer));
@@ -10966,7 +10971,7 @@ mod tests {
             CurvePreviewWidget::curve_bounds(bounds).width(),
             CurvePreviewWidget::curve_bounds(bounds).height(),
         );
-        let (_, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
+        let (_, _, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
         let start = flat_segment_point(bounds, 0.375, proximity_radius * 0.8);
         let moved_pointer = Point::new(start.x + 24.0, start.y - 12.0);
 
@@ -12807,78 +12812,172 @@ mod tests {
     #[test]
     fn curve_segment_hit_zones_follow_sampled_geometry_and_scale_from_reference_viewport() {
         let curve = flat_segment_hit_curve();
-        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
         let reference_bounds = Rect::from_xy_size(
             0.0,
             0.0,
             WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0,
             CURVE_PREVIEW_HEIGHT,
         );
-        let (reference_insert, reference_proximity) =
+        let (reference_insert, reference_neutral, reference_proximity) =
             CurvePreviewWidget::curve_segment_hit_radii(reference_bounds);
         assert!((reference_insert - CURVE_SEGMENT_INSERT_RADIUS_PX).abs() < 1.0e-5);
+        assert!((reference_neutral - CURVE_SEGMENT_NEUTRAL_RADIUS_PX).abs() < 1.0e-5);
         assert!((reference_proximity - CURVE_SEGMENT_PROXIMITY_RADIUS_PX).abs() < 1.0e-5);
-        assert!(reference_insert < reference_proximity);
+        assert!(reference_insert < reference_neutral);
+        assert!(reference_neutral < reference_proximity);
 
-        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let (insert_radius, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
-        assert!(insert_radius < reference_insert);
-        assert!(proximity_radius < reference_proximity);
+        let reference_width = (CurvePreviewWidget::curve_bounds(reference_bounds)
+            .width()
+            .max(1.0)
+            - 1.0)
+            .max(1.0);
+        let host_widths = [
+            super::super::MIN_WINDOW_WIDTH as f32,
+            WINDOW_WIDTH as f32,
+            super::super::MAX_WINDOW_WIDTH as f32,
+        ];
+        let mut scaled_radii = Vec::new();
+        for host_width in host_widths {
+            let bounds = Rect::from_xy_size(
+                0.0,
+                0.0,
+                (host_width - SURFACE_PADDING * 2.0).max(1.0),
+                CURVE_PREVIEW_HEIGHT,
+            );
+            let radii = CurvePreviewWidget::curve_segment_hit_radii(bounds);
+            let active_width =
+                (CurvePreviewWidget::curve_bounds(bounds).width().max(1.0) - 1.0).max(1.0);
+            let scale = active_width / reference_width;
+            assert!((radii.0 - CURVE_SEGMENT_INSERT_RADIUS_PX * scale).abs() < 1.0e-5);
+            assert!((radii.1 - CURVE_SEGMENT_NEUTRAL_RADIUS_PX * scale).abs() < 1.0e-5);
+            assert!((radii.2 - CURVE_SEGMENT_PROXIMITY_RADIUS_PX * scale).abs() < 1.0e-5);
+            scaled_radii.push(radii);
+        }
+        assert!(scaled_radii[0].0 <= scaled_radii[1].0);
+        assert!(scaled_radii[2].0 > scaled_radii[1].0);
 
-        let on_line = widget
-            .hit_curve_segment(bounds, flat_segment_point(bounds, 0.375, 0.0))
-            .expect("curve centerline should hit a segment");
-        assert_eq!(on_line.index, 1);
-        assert_eq!(on_line.zone, CurveSegmentHitZone::OnLine);
+        let epsilon = 0.01;
+        let hit_zone = |distance_from_curve| {
+            widget
+                .hit_curve_segment(
+                    reference_bounds,
+                    flat_segment_point(reference_bounds, 0.375, distance_from_curve),
+                )
+                .map(|hit| hit.zone)
+        };
+        assert_eq!(
+            hit_zone(reference_insert - epsilon),
+            Some(CurveSegmentHitZone::OnLine)
+        );
+        assert_eq!(
+            hit_zone(reference_insert),
+            Some(CurveSegmentHitZone::OnLine)
+        );
+        assert_eq!(hit_zone(reference_insert + epsilon), None);
+        assert_eq!(hit_zone(reference_neutral), None);
+        assert_eq!(
+            hit_zone(reference_neutral + epsilon),
+            Some(CurveSegmentHitZone::OuterProximity)
+        );
+        assert_eq!(
+            hit_zone(reference_proximity),
+            Some(CurveSegmentHitZone::OuterProximity)
+        );
+        assert_eq!(hit_zone(reference_proximity + epsilon), None);
 
-        let at_insert_edge = widget
-            .hit_curve_segment(bounds, flat_segment_point(bounds, 0.375, insert_radius))
-            .expect("the insertion threshold should be inclusive");
-        assert_eq!(at_insert_edge.zone, CurveSegmentHitZone::OnLine);
+        let expanded_plain =
+            flat_segment_point(reference_bounds, 0.375, CURVE_SEGMENT_HOVER_RADIUS + 0.5);
+        let mut plain = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        assert!(matches!(
+            plain
+                .handle_input(
+                    reference_bounds,
+                    WidgetInput::PointerPress {
+                        position: expanded_plain,
+                        button: PointerButton::Primary,
+                        modifiers: Default::default(),
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::PressDirectProximitySegment { index: 1, .. })
+        ));
 
-        let outer = widget
-            .hit_curve_segment(
-                bounds,
-                flat_segment_point(bounds, 0.375, (insert_radius + proximity_radius) * 0.5),
-            )
-            .expect("the outer proximity zone should be hit");
-        assert_eq!(outer.index, 1);
-        assert_eq!(outer.zone, CurveSegmentHitZone::OuterProximity);
+        let mut command =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        assert!(command
+            .hit_segment(reference_bounds, expanded_plain, CURVE_SEGMENT_HOVER_RADIUS)
+            .is_none());
+        assert!(matches!(
+            command
+                .handle_input(
+                    reference_bounds,
+                    WidgetInput::PointerPress {
+                        position: expanded_plain,
+                        button: PointerButton::Primary,
+                        modifiers: PointerModifiers {
+                            command: true,
+                            ..PointerModifiers::default()
+                        },
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::InsertNode {
+                command_held: true,
+                ..
+            })
+        ));
 
-        assert!(widget
-            .hit_curve_segment(
-                bounds,
-                flat_segment_point(bounds, 0.375, proximity_radius + 0.01),
+        let mut option = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+        assert!(option
+            .hit_segment(reference_bounds, expanded_plain, CURVE_SEGMENT_HOVER_RADIUS)
+            .is_none());
+        assert!(option
+            .handle_input(
+                reference_bounds,
+                WidgetInput::PointerPress {
+                    position: expanded_plain,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers {
+                        alt: true,
+                        ..PointerModifiers::default()
+                    },
+                },
             )
             .is_none());
+    }
 
-        let legacy_only_distance = CURVE_SEGMENT_HOVER_RADIUS - 0.5;
-        assert!(proximity_radius < legacy_only_distance);
-        let legacy_only = flat_segment_point(bounds, 0.375, legacy_only_distance);
-        assert_eq!(
-            widget.hit_segment(bounds, legacy_only, CURVE_SEGMENT_HOVER_RADIUS),
-            Some(1)
+    #[test]
+    fn curve_segment_neutral_band_has_no_plain_hover_preview_or_press() {
+        let curve = flat_segment_hit_curve();
+        let bounds = Rect::from_xy_size(
+            0.0,
+            0.0,
+            WINDOW_WIDTH as f32 - SURFACE_PADDING * 2.0,
+            CURVE_PREVIEW_HEIGHT,
         );
-        assert!(widget.hit_curve_segment(bounds, legacy_only).is_none());
-        let mut plain = CurvePreviewWidget::new(
-            flat_segment_hit_curve(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            false,
-        );
-        assert!(plain
+        let (insert_radius, neutral_radius, _) =
+            CurvePreviewWidget::curve_segment_hit_radii(bounds);
+        let position = flat_segment_point(bounds, 0.375, (insert_radius + neutral_radius) * 0.5);
+        let mut widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let before = widget.curve.clone();
+
+        assert!(widget.hit_curve_segment(bounds, position).is_none());
+        assert!(widget
+            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .is_none());
+        assert!(widget
             .handle_input(
                 bounds,
                 WidgetInput::PointerPress {
-                    position: legacy_only,
+                    position,
                     button: PointerButton::Primary,
                     modifiers: Default::default(),
                 },
             )
             .is_none());
+        assert_eq!(widget.curve, before);
     }
 
     #[test]
@@ -12968,7 +13067,7 @@ mod tests {
     fn curve_segment_proximity_preserves_node_and_modifier_precedence() {
         let curve = flat_segment_hit_curve();
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let (_, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
+        let (_, _, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
         let outer = flat_segment_point(bounds, 0.375, proximity_radius * 0.8);
         let on_line = flat_segment_point(bounds, 0.375, 0.0);
         let near_node = flat_segment_point(bounds, 0.5, 5.0);
@@ -13090,7 +13189,7 @@ mod tests {
         .normalized();
         let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let (_, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
+        let (_, _, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(bounds);
         let tie = flat_segment_point(bounds, 0.5, proximity_radius * 0.8);
         let hit = widget
             .hit_curve_segment(bounds, tie)
