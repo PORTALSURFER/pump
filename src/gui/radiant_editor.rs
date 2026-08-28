@@ -6688,6 +6688,13 @@ impl Widget for CurvePreviewWidget {
         Some(WidgetOutput::typed(message))
     }
 
+    fn synchronize_from_previous(&mut self, previous: &dyn Widget) {
+        let Some(previous) = previous.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        self.common.state.hovered = previous.common.state.hovered;
+    }
+
     fn append_paint(
         &self,
         primitives: &mut Vec<PaintPrimitive>,
@@ -10874,6 +10881,76 @@ mod tests {
                 primitive,
                 PaintPrimitive::StrokePolyline(polyline)
                     if polyline.color == CURVE_SEGMENT_MOVE_COLOR
+            )
+        }));
+    }
+
+    #[test]
+    fn hosted_curve_outer_hover_survives_reprojection_and_clears_on_leave() {
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&flat_segment_hit_curve());
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+
+        let initial_frame = editor.runtime.frame(&pump_theme());
+        let curve_widget_id = initial_frame
+            .paint_plan
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::StrokePolyline(polyline) if polyline.points.len() > 16 => {
+                    Some(polyline.widget_id)
+                }
+                _ => None,
+            })
+            .expect("projected curve should paint a sampled polyline");
+        let curve_bounds = initial_frame
+            .layout
+            .rects
+            .get(&curve_widget_id)
+            .copied()
+            .expect("projected curve widget should have layout bounds");
+        let (_, proximity_radius) = CurvePreviewWidget::curve_segment_hit_radii(curve_bounds);
+        let outer = flat_segment_point(curve_bounds, 0.375, proximity_radius * 0.8);
+
+        editor.dispatch_event(radiant::runtime::Event::pointer_move(outer));
+
+        let state = editor.runtime.bridge().state();
+        assert_eq!(state.hover_curve_segment, Some(1));
+        assert_eq!(
+            state.hover_curve_segment_zone,
+            Some(CurveSegmentHitZone::OuterProximity)
+        );
+        let hovered_frame = editor.runtime.frame(&pump_theme());
+        assert!(hovered_frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.widget_id == curve_widget_id
+                        && polyline.color == CURVE_SEGMENT_MOVE_COLOR
+            )
+        }));
+
+        editor.dispatch_event(radiant::runtime::Event::pointer_move(Point::new(
+            -1.0, -1.0,
+        )));
+
+        let state = editor.runtime.bridge().state();
+        assert_eq!(state.hover_curve_segment, None);
+        assert_eq!(state.hover_curve_segment_zone, None);
+        let left_frame = editor.runtime.frame(&pump_theme());
+        assert!(!left_frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(polyline)
+                    if polyline.widget_id == curve_widget_id
+                        && polyline.color == CURVE_SEGMENT_MOVE_COLOR
             )
         }));
     }
