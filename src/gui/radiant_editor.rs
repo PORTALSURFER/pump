@@ -5234,6 +5234,22 @@ impl Widget for GainReductionMeterWidget {
     }
 }
 
+const OPTION_GESTURE_DRAG_START_DISTANCE: f32 = 7.0;
+const OPTION_GESTURE_DRAG_START_DISTANCE_SQUARED: f32 =
+    OPTION_GESTURE_DRAG_START_DISTANCE * OPTION_GESTURE_DRAG_START_DISTANCE;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingOptionTarget {
+    Node(usize),
+    Segment(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PendingOptionGesture {
+    origin: Point,
+    target: PendingOptionTarget,
+}
+
 #[derive(Clone)]
 struct CurvePreviewWidget {
     common: WidgetCommon,
@@ -5244,6 +5260,7 @@ struct CurvePreviewWidget {
     preview_node: Option<CurveNode>,
     hover_segment: Option<usize>,
     hover_segment_zone: Option<CurveSegmentHitZone>,
+    pending_option_gesture: Option<PendingOptionGesture>,
     option_hover_held: bool,
     command_hover_held: bool,
     shift_hover_held: bool,
@@ -5288,6 +5305,7 @@ impl CurvePreviewWidget {
             preview_node,
             hover_segment,
             hover_segment_zone: None,
+            pending_option_gesture: None,
             option_hover_held,
             command_hover_held: false,
             shift_hover_held: false,
@@ -5600,6 +5618,37 @@ impl CurvePreviewWidget {
 
     fn hit_node(&self, bounds: Rect, position: Point) -> Option<usize> {
         self.hit_node_within(bounds, position, CURVE_NODE_HIT_RADIUS)
+    }
+
+    fn deletable_node_at(&self, bounds: Rect, position: Point) -> Option<usize> {
+        self.hit_node(bounds, position)
+            .filter(|index| *index > 0 && *index + 1 < self.curve.nodes.len())
+    }
+
+    fn option_gesture_drag_started(origin: Point, position: Point) -> bool {
+        let delta_x = position.x - origin.x;
+        let delta_y = position.y - origin.y;
+        delta_x * delta_x + delta_y * delta_y >= OPTION_GESTURE_DRAG_START_DISTANCE_SQUARED
+    }
+
+    fn pending_option_handoff_message(
+        &self,
+        bounds: Rect,
+        pending: PendingOptionGesture,
+    ) -> CurvePreviewMessage {
+        match pending.target {
+            PendingOptionTarget::Node(index) => CurvePreviewMessage::PressNode {
+                index,
+                pointer: self.raw_node_from_display_point(bounds, pending.origin),
+                shift_held: false,
+                option_held: true,
+                command_held: false,
+            },
+            PendingOptionTarget::Segment(index) => CurvePreviewMessage::PressSegment {
+                index,
+                position: pending.origin,
+            },
+        }
     }
 
     fn hit_node_within(&self, bounds: Rect, position: Point, radius: f32) -> Option<usize> {
@@ -6503,6 +6552,12 @@ impl Widget for CurvePreviewWidget {
     }
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        if matches!(
+            &input,
+            WidgetInput::PointerPress { .. } | WidgetInput::PointerDoubleClick { .. }
+        ) {
+            self.pending_option_gesture = None;
+        }
         let message = match input {
             // Radiant projects both right-click and macOS Control-click into
             // the secondary gesture, so both paths share the paint behavior.
@@ -6521,6 +6576,26 @@ impl Widget for CurvePreviewWidget {
                 modifiers,
             } => {
                 self.common.state.hovered = bounds.contains(position);
+                if modifiers.alt
+                    && !modifiers.command
+                    && !modifiers.shift
+                    && Self::curve_bounds(bounds).contains(position)
+                {
+                    let target = self
+                        .hit_node(bounds, position)
+                        .map(PendingOptionTarget::Node)
+                        .or_else(|| {
+                            self.hit_segment(bounds, position, CURVE_SEGMENT_HOVER_RADIUS)
+                                .map(PendingOptionTarget::Segment)
+                        });
+                    if let Some(target) = target {
+                        self.pending_option_gesture = Some(PendingOptionGesture {
+                            origin: position,
+                            target,
+                        });
+                        return None;
+                    }
+                }
                 let command_held = self.command_hover_held || modifiers.command;
                 let option_held = self.option_hover_held || modifiers.alt;
                 let shift_held = modifiers.shift;
@@ -6598,8 +6673,7 @@ impl Widget for CurvePreviewWidget {
                 if Self::offset_bar_bounds(bounds).contains(position) {
                     Some(CurvePreviewMessage::ResetCurveOffset)
                 } else {
-                    self.hit_node(bounds, position)
-                        .filter(|index| *index > 0 && *index + 1 < self.curve.nodes.len())
+                    self.deletable_node_at(bounds, position)
                         .map(|index| CurvePreviewMessage::DeleteNode { index })
                 }
             }
@@ -6610,7 +6684,14 @@ impl Widget for CurvePreviewWidget {
             }
             WidgetInput::PointerMove { position } => {
                 self.common.state.hovered = bounds.contains(position);
-                if self.active_marquee.is_some() {
+                if let Some(pending) = self.pending_option_gesture {
+                    if Self::option_gesture_drag_started(pending.origin, position) {
+                        self.pending_option_gesture = None;
+                        Some(self.pending_option_handoff_message(bounds, pending))
+                    } else {
+                        None
+                    }
+                } else if self.active_marquee.is_some() {
                     Some(CurvePreviewMessage::DragMarquee {
                         current: self.raw_node_from_display_point(bounds, position),
                     })
@@ -6675,10 +6756,13 @@ impl Widget for CurvePreviewWidget {
                 != self.option_hover_held
                 || modifiers.command != self.command_hover_held
                 || modifiers.shift != self.shift_hover_held)
-                .then_some(CurvePreviewMessage::ModifiersChanged {
-                    option_held: modifiers.alt,
-                    command_held: modifiers.command,
-                    shift_held: modifiers.shift,
+                .then(|| {
+                    self.pending_option_gesture = None;
+                    CurvePreviewMessage::ModifiersChanged {
+                        option_held: modifiers.alt,
+                        command_held: modifiers.command,
+                        shift_held: modifiers.shift,
+                    }
                 }),
             WidgetInput::PointerRelease {
                 position,
@@ -6699,6 +6783,38 @@ impl Widget for CurvePreviewWidget {
                         sample: self.paint_sample_from_boundary(bounds, position),
                     })
                 }
+            }
+            WidgetInput::PointerRelease {
+                position,
+                button: PointerButton::Primary,
+                modifiers,
+            } if self.pending_option_gesture.is_some() => {
+                let pending = self
+                    .pending_option_gesture
+                    .take()
+                    .expect("pending option gesture is present by match guard");
+                self.common.state.hovered = bounds.contains(position);
+                match pending.target {
+                    PendingOptionTarget::Node(index)
+                        if modifiers.alt
+                            && !modifiers.command
+                            && !modifiers.shift
+                            && !Self::option_gesture_drag_started(pending.origin, position)
+                            && self.deletable_node_at(bounds, position) == Some(index) =>
+                    {
+                        Some(CurvePreviewMessage::DeleteNode { index })
+                    }
+                    _ => None,
+                }
+            }
+            WidgetInput::PointerDrop {
+                position,
+                button: PointerButton::Primary,
+                ..
+            } if self.pending_option_gesture.is_some() => {
+                self.pending_option_gesture = None;
+                self.common.state.hovered = bounds.contains(position);
+                None
             }
             WidgetInput::PointerRelease {
                 position,
@@ -6745,8 +6861,13 @@ impl Widget for CurvePreviewWidget {
             }
             WidgetInput::FocusChanged(focused) => {
                 self.common.state.focused = focused;
+                let pending_option_gesture = self.pending_option_gesture.is_some();
+                if !focused {
+                    self.pending_option_gesture = None;
+                }
                 (!focused
-                    && (self.active_node.is_some()
+                    && (pending_option_gesture
+                        || self.active_node.is_some()
                         || self.active_segment.is_some()
                         || self.active_curve_paint
                         || self.active_curve_offset_start_x.is_some()
@@ -6770,6 +6891,7 @@ impl Widget for CurvePreviewWidget {
             return;
         };
         self.common.state.hovered = previous.common.state.hovered;
+        self.pending_option_gesture = previous.pending_option_gesture;
     }
 
     fn append_paint(
@@ -13129,22 +13251,26 @@ mod tests {
 
             let mut option_press =
                 CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
-            assert!(matches!(
-                option_press
-                    .handle_input(
-                        bounds,
-                        WidgetInput::PointerPress {
-                            position,
-                            button: PointerButton::Primary,
-                            modifiers: PointerModifiers {
-                                alt: true,
-                                ..PointerModifiers::default()
-                            },
+            assert!(option_press
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerPress {
+                        position,
+                        button: PointerButton::Primary,
+                        modifiers: PointerModifiers {
+                            alt: true,
+                            ..PointerModifiers::default()
                         },
-                    )
-                    .and_then(|output| output.typed_copied()),
-                Some(CurvePreviewMessage::PressSegment { index: 1, .. })
-            ));
+                    },
+                )
+                .is_none());
+            assert_eq!(
+                option_press.pending_option_gesture,
+                Some(PendingOptionGesture {
+                    origin: position,
+                    target: PendingOptionTarget::Segment(1),
+                })
+            );
         }
     }
 
@@ -13196,22 +13322,26 @@ mod tests {
 
         let mut option =
             CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
-        assert!(matches!(
-            option
-                .handle_input(
-                    bounds,
-                    WidgetInput::PointerPress {
-                        position: outer,
-                        button: PointerButton::Primary,
-                        modifiers: PointerModifiers {
-                            alt: true,
-                            ..PointerModifiers::default()
-                        },
+        assert!(option
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: outer,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers {
+                        alt: true,
+                        ..PointerModifiers::default()
                     },
-                )
-                .and_then(|output| output.typed_copied()),
-            Some(CurvePreviewMessage::PressSegment { index: 1, .. })
-        ));
+                },
+            )
+            .is_none());
+        assert_eq!(
+            option.pending_option_gesture,
+            Some(PendingOptionGesture {
+                origin: outer,
+                target: PendingOptionTarget::Segment(1),
+            })
+        );
 
         let mut shift = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
         assert!(matches!(
@@ -13383,7 +13513,7 @@ mod tests {
     }
 
     #[test]
-    fn curve_preview_widget_emits_segment_press_when_option_held() {
+    fn curve_preview_widget_hands_option_segment_to_drag_after_threshold() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, true);
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
@@ -13393,7 +13523,7 @@ mod tests {
         };
         let position = CurvePreviewWidget::curve_point(bounds, expected);
 
-        let output = widget
+        assert!(widget
             .handle_input(
                 bounds,
                 WidgetInput::PointerPress {
@@ -13405,12 +13535,22 @@ mod tests {
                     },
                 },
             )
-            .expect("option segment press should begin segment drag");
-
-        assert_eq!(
-            output.typed_copied(),
-            Some(CurvePreviewMessage::PressSegment { index: 1, position })
-        );
+            .is_none());
+        assert!(widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerMove {
+                    position: Point::new(
+                        position.x + OPTION_GESTURE_DRAG_START_DISTANCE,
+                        position.y,
+                    ),
+                },
+            )
+            .is_some_and(|output| {
+                output.typed_copied()
+                    == Some(CurvePreviewMessage::PressSegment { index: 1, position })
+            }));
+        assert!(widget.pending_option_gesture.is_none());
     }
 
     #[test]
@@ -14277,6 +14417,234 @@ mod tests {
             output.typed_copied(),
             Some(CurvePreviewMessage::Hover { node: None, .. })
         ));
+    }
+
+    fn option_only_modifiers() -> PointerModifiers {
+        PointerModifiers {
+            alt: true,
+            ..PointerModifiers::default()
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_option_node_click_rehits_and_deletes_once() {
+        let curve = flat_segment_hit_curve();
+        let mut widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let origin = CurvePreviewWidget::curve_point(bounds, curve.nodes[2]);
+
+        assert!(widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: origin,
+                    button: PointerButton::Primary,
+                    modifiers: option_only_modifiers(),
+                },
+            )
+            .is_none());
+        assert_eq!(
+            widget.pending_option_gesture,
+            Some(PendingOptionGesture {
+                origin,
+                target: PendingOptionTarget::Node(2),
+            })
+        );
+
+        let rehit = Point::new(origin.x + 2.0, origin.y + 1.0);
+        assert_eq!(
+            widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerRelease {
+                        position: rehit,
+                        button: PointerButton::Primary,
+                        modifiers: option_only_modifiers(),
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::DeleteNode { index: 2 })
+        );
+        assert!(widget.pending_option_gesture.is_none());
+        assert!(widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerRelease {
+                    position: rehit,
+                    button: PointerButton::Primary,
+                    modifiers: option_only_modifiers(),
+                },
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn curve_preview_widget_option_node_threshold_preserves_click_and_hands_off_drag() {
+        let curve = flat_segment_hit_curve();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let origin = CurvePreviewWidget::curve_point(bounds, curve.nodes[2]);
+        let below_threshold = Point::new(
+            origin.x + OPTION_GESTURE_DRAG_START_DISTANCE - 0.01,
+            origin.y,
+        );
+
+        let mut click = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        assert!(click
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: origin,
+                    button: PointerButton::Primary,
+                    modifiers: option_only_modifiers(),
+                },
+            )
+            .is_none());
+        assert!(click
+            .handle_input(
+                bounds,
+                WidgetInput::PointerMove {
+                    position: below_threshold,
+                },
+            )
+            .is_none());
+        assert!(click.pending_option_gesture.is_some());
+        assert_eq!(
+            click
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerRelease {
+                        position: origin,
+                        button: PointerButton::Primary,
+                        modifiers: option_only_modifiers(),
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::DeleteNode { index: 2 })
+        );
+
+        let mut drag = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+        assert!(drag
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: origin,
+                    button: PointerButton::Primary,
+                    modifiers: option_only_modifiers(),
+                },
+            )
+            .is_none());
+        let output = drag
+            .handle_input(
+                bounds,
+                WidgetInput::PointerMove {
+                    position: Point::new(origin.x + OPTION_GESTURE_DRAG_START_DISTANCE, origin.y),
+                },
+            )
+            .expect("crossing the click threshold should hand off to node dragging");
+        assert!(matches!(
+            output.typed_copied(),
+            Some(CurvePreviewMessage::PressNode {
+                index: 2,
+                shift_held: false,
+                option_held: true,
+                command_held: false,
+                ..
+            })
+        ));
+        assert!(drag.pending_option_gesture.is_none());
+    }
+
+    #[test]
+    fn curve_preview_widget_option_endpoint_click_is_a_no_op() {
+        let curve = flat_segment_hit_curve();
+        let mut widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let position = CurvePreviewWidget::curve_point(bounds, curve.nodes[0]);
+
+        assert!(widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: option_only_modifiers(),
+                },
+            )
+            .is_none());
+        assert!(widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerRelease {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: option_only_modifiers(),
+                },
+            )
+            .is_none());
+        assert!(widget.pending_option_gesture.is_none());
+    }
+
+    #[test]
+    fn curve_preview_widget_combined_option_modifiers_preserve_node_press() {
+        let curve = flat_segment_hit_curve();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let position = CurvePreviewWidget::curve_point(bounds, curve.nodes[2]);
+
+        let mut command =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let output = command
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers {
+                        alt: true,
+                        command: true,
+                        ..PointerModifiers::default()
+                    },
+                },
+            )
+            .expect("Option+Command should preserve the existing node press");
+        assert!(matches!(
+            output.typed_copied(),
+            Some(CurvePreviewMessage::PressNode {
+                index: 2,
+                option_held: true,
+                command_held: true,
+                ..
+            })
+        ));
+        assert!(command.pending_option_gesture.is_none());
+
+        let mut shift = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+        let output = shift
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers {
+                        alt: true,
+                        shift: true,
+                        ..PointerModifiers::default()
+                    },
+                },
+            )
+            .expect("Option+Shift should preserve the existing node press");
+        assert!(matches!(
+            output.typed_copied(),
+            Some(CurvePreviewMessage::PressNode {
+                index: 2,
+                shift_held: true,
+                option_held: true,
+                command_held: false,
+                ..
+            })
+        ));
+        assert!(shift.pending_option_gesture.is_none());
     }
 
     #[test]
