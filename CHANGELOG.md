@@ -113,6 +113,8 @@ All notable changes to this project are documented in this file.
 
 - (gui) Widen direct segment proximity band (#73) (8e50bbd)
 
+- (gui) Distinguish fixed curve offset edge (#74) (d5aff93)
+
 
 ### CI
 
@@ -465,6 +467,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (a9e50f2)
 
 - (changelog) Update changelog [skip ci] (1719120)
+
+- (changelog) Update changelog [skip ci] (2c81774)
 
 
 ### Features
