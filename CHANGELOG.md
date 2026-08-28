@@ -111,6 +111,8 @@ All notable changes to this project are documented in this file.
 
 - (gui) Make side snapping reversible (#71) (0eba774)
 
+- (gui) Widen direct segment proximity band (#73) (8e50bbd)
+
 
 ### CI
 
@@ -461,6 +463,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (8e5c1fb)
 
 - (changelog) Update changelog [skip ci] (a9e50f2)
+
+- (changelog) Update changelog [skip ci] (1719120)
 
 
 ### Features
