@@ -2095,6 +2095,50 @@ fn rounded_frame_path(viewport: Vector2) -> PaintPath {
     PaintPath::from(commands)
 }
 
+fn circle_path(center: Point, radius: f32) -> PaintPath {
+    let k = 0.552_284_8 * radius;
+    let x = center.x;
+    let y = center.y;
+    PaintPath::from([
+        PaintPathCommand::MoveTo(Point::new(x, y - radius)),
+        PaintPathCommand::CurveTo {
+            control1: Point::new(x + k, y - radius),
+            control2: Point::new(x + radius, y - k),
+            to: Point::new(x + radius, y),
+        },
+        PaintPathCommand::CurveTo {
+            control1: Point::new(x + radius, y + k),
+            control2: Point::new(x + k, y + radius),
+            to: Point::new(x, y + radius),
+        },
+        PaintPathCommand::CurveTo {
+            control1: Point::new(x - k, y + radius),
+            control2: Point::new(x - radius, y + k),
+            to: Point::new(x - radius, y),
+        },
+        PaintPathCommand::CurveTo {
+            control1: Point::new(x - radius, y - k),
+            control2: Point::new(x - k, y - radius),
+            to: Point::new(x, y - radius),
+        },
+        PaintPathCommand::Close,
+    ])
+}
+
+fn circle_points(center: Point, radius: f32) -> Vec<Point> {
+    let mut points = (0..16)
+        .map(|index| {
+            let angle = std::f32::consts::TAU * index as f32 / 16.0;
+            Point::new(
+                center.x + radius * angle.cos(),
+                center.y + radius * angle.sin(),
+            )
+        })
+        .collect::<Vec<_>>();
+    points.push(points[0]);
+    points
+}
+
 fn rounded_rect_commands(rect: Rect, radius: f32) -> Vec<PaintPathCommand> {
     let left = rect.min.x;
     let right = rect.max.x;
@@ -5793,6 +5837,17 @@ impl CurvePreviewWidget {
             color: theme.border_emphasis,
             width: 1.0,
         }));
+        let offset_x = curve_bounds.min.x
+            + self.phase_offset.clamp(0.0, 1.0) * (curve_bounds.width().max(1.0) - 1.0);
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: Arc::from([
+                Point::new(offset_x, curve_bounds.min.y),
+                Point::new(offset_x, curve_bounds.max.y),
+            ]),
+            color: theme.text_muted.with_alpha(64),
+            width: 1.0,
+        }));
         primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
             widget_id: self.common.id,
             rect: bounds,
@@ -6329,29 +6384,46 @@ impl CurvePreviewWidget {
                 });
             for center in self.display_curve_points_for_index(bounds, index, node) {
                 let rect = Rect::from_xy_size(center.x - radius, center.y - radius, size, size);
-                primitives.push(PaintPrimitive::FillRect(PaintFillRect {
-                    widget_id: self.common.id,
-                    rect,
-                    color: if logically_active || selected {
-                        theme.accent_warning
-                    } else if hovered {
-                        theme.accent_mint
-                    } else {
-                        theme.surface_raised
-                    },
-                }));
-                primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
-                    widget_id: self.common.id,
-                    rect,
-                    color: if selected || (logically_active && hovered) {
-                        theme.accent_mint
-                    } else if hovered {
-                        theme.accent_warning
-                    } else {
-                        theme.accent_copper
-                    },
-                    width: if hovered { 1.275 } else { 1.0 },
-                }));
+                let fill = if logically_active || selected {
+                    theme.accent_warning
+                } else if hovered {
+                    theme.accent_mint
+                } else {
+                    theme.surface_raised
+                };
+                let stroke = if selected || (logically_active && hovered) {
+                    theme.accent_mint
+                } else if hovered {
+                    theme.accent_warning
+                } else {
+                    theme.accent_copper
+                };
+                let width = if hovered { 1.275 } else { 1.0 };
+                if index == 0 || index + 1 == self.curve.nodes.len() {
+                    primitives.push(PaintPrimitive::FillPath(PaintFillPath::new(
+                        self.common.id,
+                        circle_path(center, radius),
+                        PaintBrush::solid(fill),
+                    )));
+                    primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                        widget_id: self.common.id,
+                        points: Arc::from(circle_points(center, radius)),
+                        color: stroke,
+                        width,
+                    }));
+                } else {
+                    primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+                        widget_id: self.common.id,
+                        rect,
+                        color: fill,
+                    }));
+                    primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+                        widget_id: self.common.id,
+                        rect,
+                        color: stroke,
+                        width,
+                    }));
+                }
             }
         }
     }
@@ -7758,6 +7830,19 @@ mod tests {
                         && (fill.rect.width() - fill.rect.height()).abs() < 1.0e-3 =>
                 {
                     Some(fill.rect.center())
+                }
+                PaintPrimitive::FillPath(fill) => {
+                    let commands = fill.path.commands();
+                    let (top, right) = match (commands.first(), commands.get(1)) {
+                        (
+                            Some(PaintPathCommand::MoveTo(top)),
+                            Some(PaintPathCommand::CurveTo { to: right, .. }),
+                        ) => (*top, *right),
+                        _ => return None,
+                    };
+                    let center = Point::new(top.x, right.y);
+                    let radius = right.x - center.x;
+                    (radius > 0.0 && fill.path == circle_path(center, radius)).then_some(center)
                 }
                 _ => None,
             })
@@ -15163,6 +15248,135 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_paints_circular_endpoints_and_rectangular_interiors() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.2 },
+                CurveNode { x: 0.5, y: 0.8 },
+                CurveNode { x: 1.0, y: 0.4 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 2],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(0.13);
+        let mut primitives = Vec::new();
+
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+
+        let endpoint_fills = primitives
+            .iter()
+            .filter(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::FillPath(fill)
+                        if fill.path.commands().len() == 6
+                            && fill.brush == PaintBrush::solid(theme.surface_raised)
+                )
+            })
+            .count();
+        let endpoint_outlines = primitives
+            .iter()
+            .filter(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::StrokePolyline(line)
+                        if line.points.len() == 17
+                            && line.color == theme.accent_copper
+                            && (line.width - 1.0).abs() < 1.0e-6
+                )
+            })
+            .count();
+        assert_eq!(endpoint_fills, 2);
+        assert_eq!(endpoint_outlines, 2);
+        assert_eq!(
+            primitives
+                .iter()
+                .filter(|primitive| {
+                    matches!(
+                        primitive,
+                        PaintPrimitive::StrokeRect(stroke)
+                            if stroke.color == theme.accent_copper
+                                && (stroke.rect.width() - CURVE_NODE_SIZE).abs() < 1.0e-6
+                                && (stroke.rect.height() - CURVE_NODE_SIZE).abs() < 1.0e-6
+                    )
+                })
+                .count(),
+            1,
+            "only the interior node should retain a rectangular outline"
+        );
+        assert_eq!(
+            primitives
+                .iter()
+                .filter(|primitive| {
+                    matches!(
+                        primitive,
+                        PaintPrimitive::FillRect(fill)
+                            if fill.color == theme.surface_raised
+                                && (fill.rect.width() - CURVE_NODE_SIZE).abs() < 1.0e-6
+                                && (fill.rect.height() - CURVE_NODE_SIZE).abs() < 1.0e-6
+                    )
+                })
+                .count(),
+            1,
+            "only the interior node should retain a rectangular fill"
+        );
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_offset_guide_at_display_phase() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let theme = ThemeTokens::default();
+        let guide_color = theme.text_muted.with_alpha(64);
+
+        for (bounds, phase_offset) in [
+            (
+                Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT),
+                0.25,
+            ),
+            (Rect::from_xy_size(18.0, 7.0, 212.0, 118.0), 0.75),
+        ] {
+            let widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(phase_offset);
+            let mut primitives = Vec::new();
+            widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+            let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+            let expected_x = curve_bounds.min.x
+                + phase_offset.clamp(0.0, 1.0) * (curve_bounds.width().max(1.0) - 1.0);
+            let guide_index = primitives
+                .iter()
+                .position(|primitive| {
+                    matches!(
+                        primitive,
+                        PaintPrimitive::StrokePolyline(line)
+                            if line.color == guide_color
+                                && line.points.len() == 2
+                                && (line.points[0].x - expected_x).abs() < 1.0e-6
+                                && (line.points[1].x - expected_x).abs() < 1.0e-6
+                                && line.points[0].y == curve_bounds.min.y
+                                && line.points[1].y == curve_bounds.max.y
+                    )
+                })
+                .expect("offset guide should be painted");
+            let curve_index = primitives
+                .iter()
+                .position(|primitive| {
+                    matches!(
+                        primitive,
+                        PaintPrimitive::StrokePolyline(line)
+                            if line.color == theme.accent_mint && (line.width - 1.7).abs() < 1.0e-6
+                    )
+                })
+                .expect("editable curve stroke should be painted");
+            assert!(guide_index < curve_index);
+        }
+    }
+
+    #[test]
     fn curve_preview_widget_paints_hovered_node() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let widget = CurvePreviewWidget::new(curve, None, None, Some(1), None, None, false);
@@ -15355,10 +15569,10 @@ mod tests {
             .iter()
             .enumerate()
             .filter_map(|(index, primitive)| match primitive {
-                PaintPrimitive::StrokeRect(stroke)
+                PaintPrimitive::StrokePolyline(stroke)
                     if stroke.color == theme.accent_copper
-                        && (stroke.rect.width() - CURVE_NODE_SIZE).abs() < 1.0e-6
-                        && (stroke.rect.height() - CURVE_NODE_SIZE).abs() < 1.0e-6 =>
+                        && stroke.points.len() == 17
+                        && (stroke.width - 1.0).abs() < 1.0e-6 =>
                 {
                     Some(index)
                 }
