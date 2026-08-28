@@ -109,6 +109,8 @@ All notable changes to this project are documented in this file.
 
 - (gui) Fit painted edge crossings before release (173d974)
 
+- (gui) Make side snapping reversible (#71) (0eba774)
+
 
 ### CI
 
@@ -210,6 +212,8 @@ All notable changes to this project are documented in this file.
 - (release) Bump Pump to v0.2.2 [skip ci] (d277bc7)
 
 - (deps) Repin Toybox to merged main (2b73014)
+
+- (release) Bump Pump to v0.2.3 [skip ci] (27827ba)
 
 
 ### Documentation
@@ -453,6 +457,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (de0d9b2)
 
 - (changelog) Update changelog [skip ci] (26bb549)
+
+- (changelog) Update changelog [skip ci] (8e5c1fb)
 
 
 ### Features
