@@ -174,8 +174,8 @@ const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
 const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.divider;
 const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_OFFSET_BAR_HEIGHT: f32 = 10.2;
-const CURVE_OFFSET_BAR_INSET: f32 = 2.55;
-const CURVE_OFFSET_HANDLE_WIDTH: f32 = 5.95;
+const CURVE_OFFSET_BAR_INSET: f32 = PUMP_VISUAL_METRICS.space_8;
+const CURVE_OFFSET_HANDLE_WIDTH: f32 = PUMP_VISUAL_METRICS.space_16;
 const CURVE_FILL_TOP_ALPHA: u8 = 96;
 const CURVE_FILL_BOTTOM_ALPHA: u8 = 12;
 const CURVE_NODE_SIZE: f32 = 4.25;
@@ -5268,6 +5268,7 @@ struct CurvePreviewWidget {
     active_curve_paint: bool,
     curve_paint_runs: Vec<PaintRun>,
     active_curve_offset_start_x: Option<f32>,
+    last_pointer_position: Option<Point>,
     selected_nodes: Vec<usize>,
     active_marquee: Option<ActiveCurveMarquee>,
     playhead_phase: Option<f32>,
@@ -5313,6 +5314,7 @@ impl CurvePreviewWidget {
             active_curve_paint: false,
             curve_paint_runs: Vec::new(),
             active_curve_offset_start_x: None,
+            last_pointer_position: None,
             selected_nodes: Vec::new(),
             active_marquee: None,
             playhead_phase: None,
@@ -5428,6 +5430,14 @@ impl CurvePreviewWidget {
             curve_bounds.width(),
             CURVE_OFFSET_BAR_HEIGHT,
         )
+    }
+
+    fn offset_handle_bounds(bounds: Rect, phase_offset: f32) -> Rect {
+        let bar = Self::offset_bar_bounds(bounds);
+        let handle_width = CURVE_OFFSET_HANDLE_WIDTH.min(bar.width());
+        let handle_x =
+            bar.min.x + phase_offset.clamp(0.0, 1.0) * (bar.width() - handle_width).max(0.0);
+        Rect::from_xy_size(handle_x, bar.min.y, handle_width, bar.height())
     }
 
     fn reference_gutter_bounds(bounds: Rect) -> Rect {
@@ -6115,18 +6125,21 @@ impl CurvePreviewWidget {
             align: PaintTextAlign::Right,
             wrap: TextWrap::None,
         }));
-        let handle_x =
-            bar.min.x + self.phase_offset * (bar.width() - CURVE_OFFSET_HANDLE_WIDTH).max(0.0);
-        let handle = Rect::from_xy_size(
-            handle_x,
-            bar.min.y,
-            CURVE_OFFSET_HANDLE_WIDTH.min(bar.width()),
-            bar.height(),
-        );
+        let handle = Self::offset_handle_bounds(bounds, self.phase_offset);
+        let handle_color = if self.active_curve_offset_start_x.is_some() {
+            CURVE_OFFSET_MOVE_COLOR
+        } else if self
+            .last_pointer_position
+            .is_some_and(|position| handle.contains(position))
+        {
+            CURVE_OFFSET_HOVER_COLOR
+        } else {
+            theme.accent_mint
+        };
         primitives.push(PaintPrimitive::FillRect(PaintFillRect {
             widget_id: self.common.id,
             rect: handle,
-            color: theme.accent_mint,
+            color: handle_color,
         }));
     }
 
@@ -6552,6 +6565,16 @@ impl Widget for CurvePreviewWidget {
     }
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        match &input {
+            WidgetInput::PointerMove { position }
+            | WidgetInput::PointerPress { position, .. }
+            | WidgetInput::PointerDoubleClick { position, .. }
+            | WidgetInput::PointerRelease { position, .. }
+            | WidgetInput::PointerDrop { position, .. } => {
+                self.last_pointer_position = Some(*position);
+            }
+            _ => {}
+        }
         if matches!(
             &input,
             WidgetInput::PointerPress { .. } | WidgetInput::PointerDoubleClick { .. }
@@ -6603,7 +6626,9 @@ impl Widget for CurvePreviewWidget {
                     && modifiers.shift
                     && Self::curve_bounds(bounds).contains(position);
                 let hit_node = self.hit_node(bounds, position);
-                if Self::offset_bar_bounds(bounds).contains(position) || offset_gesture {
+                if Self::offset_handle_bounds(bounds, self.phase_offset).contains(position)
+                    || offset_gesture
+                {
                     Some(CurvePreviewMessage::PressCurveOffset {
                         pointer_x: Self::offset_pointer_x(bounds, position),
                         quantized: option_held,
@@ -6670,7 +6695,7 @@ impl Widget for CurvePreviewWidget {
                 button: PointerButton::Primary,
                 ..
             } => {
-                if Self::offset_bar_bounds(bounds).contains(position) {
+                if Self::offset_handle_bounds(bounds, self.phase_offset).contains(position) {
                     Some(CurvePreviewMessage::ResetCurveOffset)
                 } else {
                     self.deletable_node_at(bounds, position)
@@ -6892,6 +6917,7 @@ impl Widget for CurvePreviewWidget {
         };
         self.common.state.hovered = previous.common.state.hovered;
         self.pending_option_gesture = previous.pending_option_gesture;
+        self.last_pointer_position = previous.last_pointer_position;
     }
 
     fn append_paint(
@@ -12931,6 +12957,306 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_widget_keeps_a_gap_and_shared_handle_geometry_at_supported_sizes() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+
+        for bounds in [
+            Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT),
+            Rect::from_xy_size(18.0, 7.0, 212.0, 118.0),
+        ] {
+            let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+            let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+            let handle = CurvePreviewWidget::offset_handle_bounds(bounds, 0.37);
+
+            assert!((bar.min.y - curve_bounds.max.y - CURVE_OFFSET_BAR_INSET).abs() < 1.0e-4);
+            assert!(bar.min.y > curve_bounds.max.y);
+            assert!((handle.width() - CURVE_OFFSET_HANDLE_WIDTH).abs() < 1.0e-4);
+            assert!((handle.height() - bar.height()).abs() < 1.0e-4);
+
+            let widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(0.37);
+            let mut primitives = Vec::new();
+            widget.append_paint(
+                &mut primitives,
+                bounds,
+                &LayoutOutput::default(),
+                &ThemeTokens::default(),
+            );
+            assert!(primitives.iter().any(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::FillRect(fill) if fill.rect == handle
+                )
+            }));
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_starts_offset_only_from_the_handle_on_both_sides() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+
+        for phase_offset in [0.25, 0.75] {
+            let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+            let handle = CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset);
+            let bar_y = (bar.min.y + bar.max.y) * 0.5;
+            let handle_position = handle.center();
+            let track_position = if phase_offset < 0.5 {
+                Point::new((bar.min.x + handle.min.x) * 0.5, bar_y)
+            } else {
+                Point::new((handle.max.x + bar.max.x) * 0.5, bar_y)
+            };
+
+            let mut track_widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(phase_offset);
+            assert!(track_widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerPress {
+                        position: track_position,
+                        button: PointerButton::Primary,
+                        modifiers: Default::default(),
+                    },
+                )
+                .is_none());
+
+            let mut handle_widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(phase_offset);
+            assert_eq!(
+                handle_widget
+                    .handle_input(
+                        bounds,
+                        WidgetInput::PointerPress {
+                            position: handle_position,
+                            button: PointerButton::Primary,
+                            modifiers: Default::default(),
+                        },
+                    )
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::PressCurveOffset {
+                    pointer_x: CurvePreviewWidget::offset_pointer_x(bounds, handle_position),
+                    quantized: false,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_track_press_stays_inert_after_crossing_the_handle() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+
+        for phase_offset in [0.25, 0.75] {
+            let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+            let handle = CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset);
+            let track_position = if phase_offset < 0.5 {
+                Point::new(bar.min.x + 1.0, bar.center().y)
+            } else {
+                Point::new(bar.max.x - 1.0, bar.center().y)
+            };
+            let handle_position = handle.center();
+            let mut widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(phase_offset);
+
+            assert!(widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerPress {
+                        position: track_position,
+                        button: PointerButton::Primary,
+                        modifiers: Default::default(),
+                    },
+                )
+                .is_none());
+            assert!(!matches!(
+                widget
+                    .handle_input(
+                        bounds,
+                        WidgetInput::PointerMove {
+                            position: handle_position
+                        }
+                    )
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::DragCurveOffset { .. })
+            ));
+            assert!(!matches!(
+                widget
+                    .handle_input(
+                        bounds,
+                        WidgetInput::PointerRelease {
+                            position: handle_position,
+                            button: PointerButton::Primary,
+                            modifiers: Default::default(),
+                        },
+                    )
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::ReleaseCurveOffset { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_continues_handle_drag_after_rebuild_and_outside() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+        let phase_offset = 0.37;
+        let handle_position =
+            CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset).center();
+        let start_x = CurvePreviewWidget::offset_pointer_x(bounds, handle_position);
+        let mut previous =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                .with_phase_offset(phase_offset);
+
+        assert!(previous
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: handle_position,
+                    button: PointerButton::Primary,
+                    modifiers: Default::default(),
+                },
+            )
+            .is_some());
+
+        let mut rebuilt = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(phase_offset)
+            .with_active_curve_offset(Some(start_x));
+        rebuilt.synchronize_from_previous(&previous);
+        assert_eq!(rebuilt.last_pointer_position, Some(handle_position));
+
+        let outside = Point::new(bounds.max.x + 24.0, bounds.max.y + 24.0);
+        let drag = rebuilt
+            .handle_input(bounds, WidgetInput::PointerMove { position: outside })
+            .and_then(|output| output.typed_copied());
+        assert_eq!(
+            drag,
+            Some(CurvePreviewMessage::DragCurveOffset {
+                delta: CurvePreviewWidget::offset_pointer_x(bounds, outside) - start_x,
+            })
+        );
+        assert_eq!(
+            rebuilt
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerDrop {
+                        position: outside,
+                        button: PointerButton::Primary,
+                        modifiers: Default::default(),
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::ReleaseCurveOffset {
+                delta: CurvePreviewWidget::offset_pointer_x(bounds, outside) - start_x,
+                option_held: false,
+            })
+        );
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_normal_hovered_and_pressed_handle_colors() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+        let phase_offset = 0.37;
+        let handle = CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset);
+        let theme = ThemeTokens::default();
+        let handle_color = |primitives: &[PaintPrimitive]| {
+            primitives
+                .iter()
+                .find_map(|primitive| match primitive {
+                    PaintPrimitive::FillRect(fill) if fill.rect == handle => Some(fill.color),
+                    _ => None,
+                })
+                .expect("offset handle should be painted")
+        };
+
+        let mut normal_primitives = Vec::new();
+        CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_phase_offset(phase_offset)
+            .append_paint(
+                &mut normal_primitives,
+                bounds,
+                &LayoutOutput::default(),
+                &theme,
+            );
+        assert_eq!(handle_color(&normal_primitives), theme.accent_mint);
+
+        let mut hover_widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                .with_phase_offset(phase_offset);
+        assert!(hover_widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerMove {
+                    position: handle.center()
+                }
+            )
+            .is_none());
+        let mut hover_primitives = Vec::new();
+        hover_widget.append_paint(
+            &mut hover_primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &theme,
+        );
+        assert_eq!(handle_color(&hover_primitives), CURVE_OFFSET_HOVER_COLOR);
+
+        let mut pressed_primitives = Vec::new();
+        CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(phase_offset)
+            .with_active_curve_offset(Some(0.37))
+            .append_paint(
+                &mut pressed_primitives,
+                bounds,
+                &LayoutOutput::default(),
+                &theme,
+            );
+        assert_eq!(handle_color(&pressed_primitives), CURVE_OFFSET_MOVE_COLOR);
+    }
+
+    #[test]
+    fn curve_preview_widget_synchronizes_handle_pointer_hover_without_copying_drag_state() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+        let phase_offset = 0.37;
+        let handle = CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset);
+        let mut previous =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                .with_phase_offset(phase_offset)
+                .with_active_curve_offset(Some(0.37));
+        previous.handle_input(
+            bounds,
+            WidgetInput::PointerMove {
+                position: handle.center(),
+            },
+        );
+
+        let mut rebuilt = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(phase_offset);
+        rebuilt.synchronize_from_previous(&previous);
+        assert_eq!(rebuilt.last_pointer_position, Some(handle.center()));
+        assert!(rebuilt.active_curve_offset_start_x.is_none());
+
+        let mut primitives = Vec::new();
+        rebuilt.append_paint(
+            &mut primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &ThemeTokens::default(),
+        );
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::FillRect(fill)
+                    if fill.rect == handle && fill.color == CURVE_OFFSET_HOVER_COLOR
+            )
+        }));
+    }
+
+    #[test]
     fn curve_preview_widget_reserves_noninteractive_reference_gutter() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget =
@@ -13894,12 +14220,12 @@ mod tests {
     }
 
     #[test]
-    fn offset_bar_double_click_resets_the_automatable_phase_offset() {
+    fn offset_handle_double_click_resets_the_automatable_phase_offset() {
         let params = Arc::new(PumpParams::new());
         params.set_phase_offset(0.43);
         let mut state = editor_state(Arc::clone(&params));
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+        let handle = CurvePreviewWidget::offset_handle_bounds(bounds, 0.43);
         let mut widget = CurvePreviewWidget::new(
             params.editable_curve_snapshot(),
             None,
@@ -13908,14 +14234,15 @@ mod tests {
             None,
             None,
             false,
-        );
+        )
+        .with_phase_offset(0.43);
 
         let message = widget
             .handle_input(
                 bounds,
                 WidgetInput::primary_double_click(Point::new(
-                    (bar.min.x + bar.max.x) * 0.5,
-                    (bar.min.y + bar.max.y) * 0.5,
+                    (handle.min.x + handle.max.x) * 0.5,
+                    (handle.min.y + handle.max.y) * 0.5,
                 )),
             )
             .and_then(|output| output.typed_copied());
@@ -13925,6 +14252,22 @@ mod tests {
             RadiantEditorMessage::Curve(message.expect("offset reset message")),
         );
         assert!(params.phase_offset().abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn offset_track_double_click_is_inert() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+        let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+        let handle = CurvePreviewWidget::offset_handle_bounds(bounds, 0.43);
+        let track_position = Point::new(bar.min.x + 1.0, bar.center().y);
+        assert!(!handle.contains(track_position));
+
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(0.43);
+        assert!(widget
+            .handle_input(bounds, WidgetInput::primary_double_click(track_position),)
+            .is_none());
     }
 
     #[test]
