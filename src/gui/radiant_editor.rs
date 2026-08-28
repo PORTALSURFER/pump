@@ -182,6 +182,7 @@ const CURVE_NODE_SIZE: f32 = 4.25;
 const CURVE_PREVIEW_NODE_SIZE: f32 = 5.95;
 const CURVE_NODE_HIT_RADIUS: f32 = 10.0;
 const CURVE_NODE_INSERT_GUARD_RADIUS: f32 = 12.0;
+const CURVE_SEGMENT_HOVER_RADIUS: f32 = 7.0;
 const CURVE_SEGMENT_INSERT_RADIUS_PX: f32 = 3.0;
 const CURVE_SEGMENT_PROXIMITY_RADIUS_PX: f32 = 7.0;
 const CURVE_SEGMENT_TENSION_PIXEL_SCALE: f32 = 120.0;
@@ -5622,6 +5623,26 @@ impl CurvePreviewWidget {
         })
     }
 
+    fn hit_segment(&self, bounds: Rect, position: Point, radius: f32) -> Option<usize> {
+        let raw = self.raw_node_from_display_point(bounds, position);
+        let curve_point = Self::curve_point(
+            bounds,
+            CurveNode {
+                x: Self::display_phase(raw.x, self.phase_offset),
+                y: sample_editable_curve(&self.curve, raw.x),
+            },
+        );
+        let distance_squared =
+            (curve_point.x - position.x).powi(2) + (curve_point.y - position.y).powi(2);
+        if distance_squared > radius.max(0.0).powi(2) {
+            return None;
+        }
+        self.curve
+            .nodes
+            .windows(2)
+            .position(|nodes| raw.x >= nodes[0].x && raw.x <= nodes[1].x)
+    }
+
     fn insert_node_at(&self, bounds: Rect, position: Point) -> Option<CurveNode> {
         if !Self::curve_bounds(bounds).contains(position)
             || self.curve.nodes.len() < 2
@@ -5633,30 +5654,46 @@ impl CurvePreviewWidget {
         Some(self.raw_node_from_display_point(bounds, position))
     }
 
-    fn hover_at(&self, bounds: Rect, position: Point) -> CurveHoverState {
+    fn hover_at(
+        &self,
+        bounds: Rect,
+        position: Point,
+        command_held: bool,
+        option_held: bool,
+    ) -> CurveHoverState {
         let curve_bounds = Self::curve_bounds(bounds);
         let node = if curve_bounds.contains(position) {
             self.hit_node(bounds, position)
         } else {
             None
         };
-        let segment_hit = if node.is_none() && curve_bounds.contains(position) {
-            self.hit_curve_segment(bounds, position)
+        let (segment, segment_zone) = if node.is_none() && curve_bounds.contains(position) {
+            if command_held || option_held {
+                (
+                    self.hit_segment(bounds, position, CURVE_SEGMENT_HOVER_RADIUS),
+                    None,
+                )
+            } else if let Some(hit) = self.hit_curve_segment(bounds, position) {
+                (Some(hit.index), Some(hit.zone))
+            } else {
+                (None, None)
+            }
         } else {
-            None
+            (None, None)
         };
-        let preview_node = if (self.option_hover_held || self.command_hover_held)
-            || !segment_hit.is_some_and(|hit| hit.zone == CurveSegmentHitZone::OnLine)
+        let preview_node = if command_held
+            || option_held
+            || !segment_zone.is_some_and(|zone| zone == CurveSegmentHitZone::OnLine)
         {
             None
         } else {
-            self.preview_node_at(bounds, position, segment_hit.map(|hit| hit.index))
+            self.preview_node_at(bounds, position, segment)
         };
         CurveHoverState {
             node,
             preview_node,
-            segment: segment_hit.map(|hit| hit.index),
-            segment_zone: segment_hit.map(|hit| hit.zone),
+            segment,
+            segment_zone,
         }
     }
 
@@ -6406,7 +6443,7 @@ impl Widget for CurvePreviewWidget {
                         start: self.raw_node_from_display_point(bounds, position),
                     })
                 } else {
-                    let hover = self.hover_at(bounds, position);
+                    let hover = self.hover_at(bounds, position, command_held, option_held);
                     match (command_held, option_held, hover.segment, hover.segment_zone) {
                         (true, _, Some(index), _) => {
                             Some(CurvePreviewMessage::PressSegmentMove { index, position })
@@ -6499,7 +6536,12 @@ impl Widget for CurvePreviewWidget {
                         ),
                     })
                 } else {
-                    let hover = self.hover_at(bounds, position);
+                    let hover = self.hover_at(
+                        bounds,
+                        position,
+                        self.command_hover_held,
+                        self.option_hover_held,
+                    );
                     let changed = hover.node != self.hover_node
                         || hover.preview_node != self.preview_node
                         || hover.segment != self.hover_segment
@@ -12605,6 +12647,120 @@ mod tests {
                 flat_segment_point(bounds, 0.375, proximity_radius + 0.01),
             )
             .is_none());
+
+        let legacy_only_distance = CURVE_SEGMENT_HOVER_RADIUS - 0.5;
+        assert!(proximity_radius < legacy_only_distance);
+        let legacy_only = flat_segment_point(bounds, 0.375, legacy_only_distance);
+        assert_eq!(
+            widget.hit_segment(bounds, legacy_only, CURVE_SEGMENT_HOVER_RADIUS),
+            Some(1)
+        );
+        assert!(widget.hit_curve_segment(bounds, legacy_only).is_none());
+        let mut plain = CurvePreviewWidget::new(
+            flat_segment_hit_curve(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert!(matches!(
+            plain
+                .handle_input(
+                    bounds,
+                    WidgetInput::PointerPress {
+                        position: legacy_only,
+                        button: PointerButton::Primary,
+                        modifiers: Default::default(),
+                    },
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::InsertNode { .. })
+        ));
+    }
+
+    #[test]
+    fn legacy_modifier_segment_hits_keep_fixed_radius_at_host_layout_sizes() {
+        let curve = flat_segment_hit_curve();
+        let position_offset = CURVE_SEGMENT_HOVER_RADIUS - 0.5;
+        let host_widths = [
+            super::super::MIN_WINDOW_WIDTH as f32,
+            WINDOW_WIDTH as f32,
+            super::super::MAX_WINDOW_WIDTH as f32,
+        ];
+
+        for preview_width in host_widths {
+            let bounds = Rect::from_xy_size(0.0, 0.0, preview_width, CURVE_PREVIEW_HEIGHT);
+            let position = flat_segment_point(bounds, 0.375, position_offset);
+
+            let mut command_hover =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_command_hover_held(true);
+            assert_eq!(
+                command_hover
+                    .handle_input(bounds, WidgetInput::PointerMove { position })
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::Hover {
+                    node: None,
+                    preview_node: None,
+                    segment: Some(1),
+                }),
+                "Command hover must retain the fixed-radius legacy hit at width {preview_width}"
+            );
+
+            let mut command_press =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+            assert!(matches!(
+                command_press
+                    .handle_input(
+                        bounds,
+                        WidgetInput::PointerPress {
+                            position,
+                            button: PointerButton::Primary,
+                            modifiers: PointerModifiers {
+                                command: true,
+                                ..PointerModifiers::default()
+                            },
+                        },
+                    )
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::PressSegmentMove { index: 1, .. })
+            ));
+
+            let mut option_hover =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, true);
+            assert_eq!(
+                option_hover
+                    .handle_input(bounds, WidgetInput::PointerMove { position })
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::Hover {
+                    node: None,
+                    preview_node: None,
+                    segment: Some(1),
+                }),
+                "Option hover must retain the fixed-radius legacy hit at width {preview_width}"
+            );
+
+            let mut option_press =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+            assert!(matches!(
+                option_press
+                    .handle_input(
+                        bounds,
+                        WidgetInput::PointerPress {
+                            position,
+                            button: PointerButton::Primary,
+                            modifiers: PointerModifiers {
+                                alt: true,
+                                ..PointerModifiers::default()
+                            },
+                        },
+                    )
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::PressSegment { index: 1, .. })
+            ));
+        }
     }
 
     #[test]
