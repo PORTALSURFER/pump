@@ -470,6 +470,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (2c81774)
 
+- (changelog) Update changelog [skip ci] (ad776cf)
+
 
 ### Features
 
@@ -504,6 +506,8 @@ All notable changes to this project are documented in this file.
 - (gui) Rebuild curve painting on release (ae89355)
 
 - (gui) Canonicalize viewport seam ownership (80da0ca)
+
+- (gui) Add option-click curve node deletion (e35efbc)
 
 
 ### Other
@@ -1435,6 +1439,10 @@ Add a GUI-only processed waveform preview using the existing input envelope and 
 feat(gui): rebuild curve painting on release (3d20e4b)
 
 - Directly manipulate curve segments by proximity (#72) (af2a06c)
+
+- Merge pull request #75 from PORTALSURFER/wsvasek/opt-1324-pump-add-option-click-as-an-alternate-curve-node-deletion
+
+Pump: add Option-click curve-node deletion (195d2fd)
 
 
 ### Refactoring
