@@ -63,6 +63,16 @@ impl IncomingWaveformBuffer {
         generation
     }
 
+    /// Start a replacement capture without writing into the displayed page.
+    fn begin_next_generation_in_non_displayed_page(&self) -> u32 {
+        let mut generation = self.begin_next_generation();
+        let displayed = self.displayed_generation.load(Ordering::Acquire);
+        if displayed != 0 && (displayed as usize & 1) == (generation as usize & 1) {
+            generation = self.begin_next_generation();
+        }
+        generation
+    }
+
     fn seed_generation_from_display(&self, generation: u32) {
         let displayed = self.displayed_generation.load(Ordering::Acquire);
         if displayed == 0 || displayed == generation {
@@ -221,11 +231,41 @@ impl IncomingWaveformWriter {
             phase + BACKWARD_PHASE_EPSILON < previous
                 || phase - previous > FORWARD_PHASE_DISCONTINUITY
         });
+        let phase_offset_only_mapping_change = self.last_cycle_mapping.is_some_and(|previous| {
+            if previous[0] != cycle_mapping[0] || previous[1] == cycle_mapping[1] {
+                return false;
+            }
+            if !phase_discontinuity {
+                return true;
+            }
+
+            // The DSP smooths the target offset, so a target decrease can make the
+            // observed phase move slightly backward before the remap settles.
+            let previous_phase = self.last_phase.unwrap_or(phase);
+            if phase < previous_phase && previous_phase - phase <= FORWARD_PHASE_DISCONTINUITY {
+                return true;
+            }
+
+            let previous_offset = f32::from_bits(previous[1]);
+            let previous_unoffset_phase = (previous_phase - previous_offset).rem_euclid(1.0);
+            let unoffset_phase = (phase - phase_offset).rem_euclid(1.0);
+            let unoffset_discontinuity = unoffset_phase + BACKWARD_PHASE_EPSILON
+                < previous_unoffset_phase
+                || unoffset_phase - previous_unoffset_phase > FORWARD_PHASE_DISCONTINUITY;
+            let unoffset_cycle_complete = previous_unoffset_phase > 0.5
+                && unoffset_phase < 0.5
+                && unoffset_phase + BACKWARD_PHASE_EPSILON < previous_unoffset_phase;
+            !unoffset_discontinuity || unoffset_cycle_complete
+        });
         let cycle_complete = self.last_phase.is_some_and(|previous| {
             previous > 0.5 && phase < 0.5 && phase + BACKWARD_PHASE_EPSILON < previous
         });
         if cycle_mapping_changed || phase_discontinuity {
-            if cycle_complete && !cycle_mapping_changed {
+            // Offset changes remap the phase without invalidating the last complete display.
+            // The replacement stays hidden until its next cycle completes.
+            if phase_offset_only_mapping_change {
+                self.generation = buffer.begin_next_generation_in_non_displayed_page();
+            } else if cycle_complete && !cycle_mapping_changed {
                 self.flush_current(buffer);
                 if self.cycle_has_signal {
                     buffer.publish_completed_generation(self.generation);
@@ -505,6 +545,66 @@ mod tests {
         assert!(
             buffer.snapshot().is_none(),
             "a mapping change discards the incomplete capture"
+        );
+    }
+
+    #[test]
+    fn phase_offset_remapping_keeps_the_display_until_a_replacement_completes() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.8, 1.0, 0.0, 0.9, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.1, 1.0, 0.0, 0.0, 0.0);
+        writer.finish_block(&buffer);
+
+        let old_bin = (0.8 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize;
+        assert_eq!(buffer.snapshot().unwrap()[old_bin], 0.9);
+
+        for (phase, phase_offset, peak) in [(0.35, 0.25, 0.4), (0.55, 0.45, 0.5), (0.25, 0.15, 0.3)]
+        {
+            writer.begin_block(&buffer);
+            writer.record_with_cycle_mapping(&buffer, phase, 1.0, phase_offset, peak, 0.0);
+            writer.finish_block(&buffer);
+
+            let snapshot = buffer
+                .snapshot()
+                .expect("phase-only remapping must retain the displayed waveform");
+            assert_eq!(snapshot[old_bin], 0.9);
+        }
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.75, 1.0, 0.65, 0.6, 0.0);
+        for phase in [0.78, 0.81, 0.84, 0.87, 0.90, 0.93, 0.96, 0.99, 0.02] {
+            writer.record_with_cycle_mapping(&buffer, phase, 1.0, 0.65, 0.0, 0.0);
+        }
+        writer.finish_block(&buffer);
+
+        let replacement = buffer
+            .snapshot()
+            .expect("a stable remapped cycle should publish atomically");
+        assert_eq!(
+            replacement[(0.75 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize],
+            0.6
+        );
+    }
+
+    #[test]
+    fn phase_offset_remapping_does_not_mask_a_true_phase_discontinuity() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.8, 1.0, 0.0, 0.9, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.1, 1.0, 0.0, 0.0, 0.0);
+        writer.finish_block(&buffer);
+        assert!(buffer.snapshot().is_some());
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.8, 1.0, 0.25, 0.4, 0.0);
+        writer.finish_block(&buffer);
+
+        assert!(
+            buffer.snapshot().is_none(),
+            "an offset change must not preserve a waveform across a real phase seek"
         );
     }
 
