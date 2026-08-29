@@ -251,7 +251,7 @@ pub(crate) struct IncomingWaveformWriter {
     initial_snapshot_done: bool,
     last_raw_cycle_phase: Option<f32>,
     last_phase: Option<f32>,
-    last_cycle_mapping: Option<[u32; 2]>,
+    last_cycle_mapping: Option<[u32; 3]>,
     remap_state: RemapCaptureState,
     live_publication_suppressed: bool,
     current_bin: Option<usize>,
@@ -379,7 +379,7 @@ impl IncomingWaveformWriter {
         left: f32,
         right: f32,
     ) {
-        self.record_with_cycle_mapping(buffer, phase, phase, 1.0, 0.0, left, right);
+        self.record_with_cycle_mapping(buffer, phase, phase, 1.0, 0.0, 0.0, left, right);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -390,12 +390,17 @@ impl IncomingWaveformWriter {
         phase: f32,
         beats_per_cycle: f32,
         phase_offset: f32,
+        swing: f32,
         left: f32,
         right: f32,
     ) {
         let raw_cycle_phase = raw_cycle_phase.rem_euclid(1.0);
         let phase = phase.rem_euclid(1.0);
-        let cycle_mapping = [beats_per_cycle.to_bits(), phase_offset.to_bits()];
+        let cycle_mapping = [
+            beats_per_cycle.to_bits(),
+            phase_offset.to_bits(),
+            swing.to_bits(),
+        ];
         let cycle_mapping_changed = self
             .last_cycle_mapping
             .is_some_and(|previous| previous != cycle_mapping);
@@ -410,7 +415,10 @@ impl IncomingWaveformWriter {
             (moved_backward && !raw_cycle_complete) || moved_forward
         });
         let offset_only_mapping_change = self.last_cycle_mapping.is_some_and(|previous| {
-            previous[0] == cycle_mapping[0] && previous[1] != cycle_mapping[1] && !raw_discontinuity
+            previous[0] == cycle_mapping[0]
+                && previous[1] != cycle_mapping[1]
+                && previous[2] == cycle_mapping[2]
+                && !raw_discontinuity
         });
         let transformed_cycle_wrap = self.last_phase.is_some_and(|previous| {
             previous > 0.5 && phase < 0.5 && phase + BACKWARD_PHASE_EPSILON < previous
@@ -521,12 +529,14 @@ impl<'a> IncomingWaveformCapture<'a> {
         Self { buffer, writer }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record(
         &mut self,
         raw_cycle_phase: f32,
         phase: f32,
         beats_per_cycle: f32,
         phase_offset: f32,
+        swing: f32,
         left: f32,
         right: f32,
     ) {
@@ -536,6 +546,7 @@ impl<'a> IncomingWaveformCapture<'a> {
             phase,
             beats_per_cycle,
             phase_offset,
+            swing,
             left,
             right,
         );
@@ -549,6 +560,7 @@ impl<'a> IncomingWaveformCapture<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::swing_warp_phase;
     use crate::test_alloc::assert_no_alloc;
 
     #[test]
@@ -658,7 +670,7 @@ mod tests {
         let mut writer = IncomingWaveformWriter::default();
 
         writer.begin_block(&buffer);
-        writer.record_with_cycle_mapping(&buffer, 0.25, 0.25, 1.0, 0.0, 0.8, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.25, 0.25, 1.0, 0.0, 0.0, 0.8, 0.0);
         writer.finish_block(&buffer);
         let initial = buffer.snapshot().expect("the initial block should publish");
         assert_eq!(
@@ -667,7 +679,7 @@ mod tests {
         );
 
         writer.begin_block(&buffer);
-        writer.record_with_cycle_mapping(&buffer, 0.26, 0.75, 1.0, 0.0, 0.4, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.26, 0.75, 1.0, 0.0, 0.0, 0.4, 0.0);
         writer.finish_block(&buffer);
         let held = buffer
             .snapshot()
@@ -683,7 +695,7 @@ mod tests {
 
         buffer.set_live_mode(true);
         writer.begin_block(&buffer);
-        writer.record_with_cycle_mapping(&buffer, 0.27, 0.5, 1.0, 0.0, 0.6, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.27, 0.5, 1.0, 0.0, 0.0, 0.6, 0.0);
         writer.finish_block(&buffer);
         let live = buffer
             .snapshot()
@@ -813,9 +825,9 @@ mod tests {
         let mut writer = IncomingWaveformWriter::default();
         writer.begin_block(&buffer);
 
-        writer.record_with_cycle_mapping(&buffer, 0.2, 0.2, 1.0, 0.0, 0.9, 0.0);
-        writer.record_with_cycle_mapping(&buffer, 0.2, 0.2, 8.0, 0.0, 0.6, 0.0);
-        writer.record_with_cycle_mapping(&buffer, 0.2, 0.2, 8.0, 0.25, 0.4, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.2, 0.2, 1.0, 0.0, 0.0, 0.9, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.2, 0.2, 8.0, 0.0, 0.0, 0.6, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.2, 0.2, 8.0, 0.25, 0.0, 0.4, 0.0);
         writer.finish_block(&buffer);
 
         assert!(
@@ -829,8 +841,8 @@ mod tests {
         let buffer = IncomingWaveformBuffer::default();
         let mut writer = IncomingWaveformWriter::default();
         writer.begin_block(&buffer);
-        writer.record_with_cycle_mapping(&buffer, 0.8, 0.8, 1.0, 0.0, 0.9, 0.0);
-        writer.record_with_cycle_mapping(&buffer, 0.01, 0.1, 1.0, 0.0, 0.0, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.8, 0.8, 1.0, 0.0, 0.0, 0.9, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.01, 0.1, 1.0, 0.0, 0.0, 0.0, 0.0);
         writer.finish_block(&buffer);
 
         let old_bin = (0.8 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize;
@@ -843,7 +855,16 @@ mod tests {
             (0.09, 0.75, 0.65, 0.6),
         ] {
             writer.begin_block(&buffer);
-            writer.record_with_cycle_mapping(&buffer, raw, phase, 1.0, phase_offset, peak, 0.0);
+            writer.record_with_cycle_mapping(
+                &buffer,
+                raw,
+                phase,
+                1.0,
+                phase_offset,
+                0.0,
+                peak,
+                0.0,
+            );
             writer.finish_block(&buffer);
             assert_eq!(buffer.snapshot().unwrap()[old_bin], 0.9);
         }
@@ -859,7 +880,7 @@ mod tests {
             (0.23, 0.99),
             (0.25, 0.02),
         ] {
-            writer.record_with_cycle_mapping(&buffer, raw, phase, 1.0, 0.65, 0.0, 0.0);
+            writer.record_with_cycle_mapping(&buffer, raw, phase, 1.0, 0.65, 0.0, 0.0, 0.0);
         }
         writer.finish_block(&buffer);
         assert_eq!(buffer.snapshot().unwrap()[old_bin], 0.9);
@@ -873,7 +894,7 @@ mod tests {
             (0.37, 0.99, 0.0),
             (0.39, 0.02, 0.0),
         ] {
-            writer.record_with_cycle_mapping(&buffer, raw, phase, 1.0, 0.65, peak, 0.0);
+            writer.record_with_cycle_mapping(&buffer, raw, phase, 1.0, 0.65, 0.0, peak, 0.0);
         }
 
         let replacement = buffer
@@ -890,18 +911,48 @@ mod tests {
         let buffer = IncomingWaveformBuffer::default();
         let mut writer = IncomingWaveformWriter::default();
         writer.begin_block(&buffer);
-        writer.record_with_cycle_mapping(&buffer, 0.8, 0.8, 1.0, 0.0, 0.9, 0.0);
-        writer.record_with_cycle_mapping(&buffer, 0.1, 0.1, 1.0, 0.0, 0.0, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.8, 0.8, 1.0, 0.0, 0.0, 0.9, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.1, 0.1, 1.0, 0.0, 0.0, 0.0, 0.0);
         writer.finish_block(&buffer);
         assert!(buffer.snapshot().is_some());
 
         writer.begin_block(&buffer);
-        writer.record_with_cycle_mapping(&buffer, 0.2, 0.12, 1.0, 0.25, 0.4, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.2, 0.12, 1.0, 0.25, 0.0, 0.4, 0.0);
         writer.finish_block(&buffer);
 
         assert!(
             buffer.snapshot().is_none(),
             "an offset change must not preserve a waveform across a real phase seek"
+        );
+    }
+
+    #[test]
+    fn swing_mapping_change_invalidates_instead_of_mixing_generations() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.8, 0.8, 1.0, 0.0, 0.0, 0.9, 0.0);
+        writer.record_with_cycle_mapping(&buffer, 0.01, 0.01, 1.0, 0.0, 0.0, 0.0, 0.0);
+        writer.finish_block(&buffer);
+        assert!(buffer.snapshot().is_some());
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.02, 0.2, 1.0, 0.0, 0.0, 0.4, 0.0);
+        writer.record_with_cycle_mapping(
+            &buffer,
+            0.02,
+            swing_warp_phase(0.2, 1.0),
+            1.0,
+            0.0,
+            1.0,
+            0.6,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+
+        assert!(
+            buffer.snapshot().is_none(),
+            "a swing remap must not expose bins from mixed phase transforms"
         );
     }
 
