@@ -206,6 +206,7 @@ impl PumpEngine {
     }
 
     /// Process one sample pair in-place and return telemetry for the last sample.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn process_sample(
         &mut self,
         left: &mut f32,
@@ -213,6 +214,18 @@ impl PumpEngine {
         settings: DspSettings,
         transport: TransportState,
     ) -> DspTelemetry {
+        self.process_sample_with_raw_cycle_phase(left, right, settings, transport)
+            .0
+    }
+
+    /// Process one sample and return the private raw cycle-phase witness alongside telemetry.
+    pub(crate) fn process_sample_with_raw_cycle_phase(
+        &mut self,
+        left: &mut f32,
+        right: &mut f32,
+        settings: DspSettings,
+        transport: TransportState,
+    ) -> (DspTelemetry, f32) {
         let dry_left = *left;
         let dry_right = *right;
         let frame = self.clock.tick(resolve_effective_transport(transport));
@@ -245,23 +258,25 @@ impl PumpEngine {
         // Keep the zero-swing path byte-for-byte compatible with the legacy
         // phase calculation. Non-zero swing warps the cyclic phase first and
         // then applies phase offset as a pure cyclic translation.
-        let phase = if settings.timing_mode == crate::params::TIMING_MODE_FREE {
+        let raw_cycle_phase = if settings.timing_mode == crate::params::TIMING_MODE_FREE {
             if !self.free_phase_active {
                 self.free_phase = 0.0;
                 self.free_phase_active = true;
             }
-            let phase = (self.free_phase as f32 + phase_offset).rem_euclid(1.0);
+            let raw_cycle_phase = self.free_phase as f32;
             let rate = crate::params::clamp_free_rate_hz(settings.free_rate_hz) as f64;
             self.free_phase = (self.free_phase + rate / self.sample_rate as f64).fract();
-            phase
-        } else if swing <= 0.0 {
-            self.free_phase_active = false;
-            frame.phase_for_cycle(settings.beats_per_cycle, phase_offset)
+            raw_cycle_phase
         } else {
             self.free_phase_active = false;
-            (swing_warp_phase(frame.phase_for_cycle(settings.beats_per_cycle, 0.0), swing)
-                + phase_offset)
-                .rem_euclid(1.0)
+            frame.phase_for_cycle(settings.beats_per_cycle, 0.0)
+        };
+        let phase = if settings.timing_mode == crate::params::TIMING_MODE_FREE {
+            (raw_cycle_phase + phase_offset).rem_euclid(1.0)
+        } else if swing <= 0.0 {
+            frame.phase_for_cycle(settings.beats_per_cycle, phase_offset)
+        } else {
+            (swing_warp_phase(raw_cycle_phase, swing) + phase_offset).rem_euclid(1.0)
         };
         let shape = self.sample_active_curve(phase);
         let wet_gain = curve_value_to_gain(shape, depth_db, floor_db);
@@ -291,13 +306,16 @@ impl PumpEngine {
             *right = lerp(pumped_right, dry_right, bypass_blend);
         }
 
-        DspTelemetry {
-            phase,
-            gain,
-            reduction_gain: blend_gain.clamp(0.0, 1.0),
-            input_active: false,
-            bypassed: self.bypass.fully_bypassed(),
-        }
+        (
+            DspTelemetry {
+                phase,
+                gain,
+                reduction_gain: blend_gain.clamp(0.0, 1.0),
+                input_active: false,
+                bypassed: self.bypass.fully_bypassed(),
+            },
+            raw_cycle_phase,
+        )
     }
 
     fn sample_active_curve(&mut self, phase: f32) -> f32 {
@@ -780,8 +798,8 @@ mod tests {
             let mut first_right = 1.0;
             let mut second_left = 1.0;
             let mut second_right = 1.0;
-            let first_phase = first
-                .process_sample(
+            let (first_telemetry, first_raw_cycle_phase) = first
+                .process_sample_with_raw_cycle_phase(
                     &mut first_left,
                     &mut first_right,
                     settings,
@@ -790,10 +808,9 @@ mod tests {
                         is_playing: true,
                         song_pos_beats: Some(12.0 + index as f64),
                     },
-                )
-                .phase;
-            let second_phase = second
-                .process_sample(
+                );
+            let (second_telemetry, second_raw_cycle_phase) = second
+                .process_sample_with_raw_cycle_phase(
                     &mut second_left,
                     &mut second_right,
                     settings,
@@ -802,10 +819,13 @@ mod tests {
                         is_playing: false,
                         song_pos_beats: Some(-44.0),
                     },
-                )
-                .phase;
+                );
+            let first_phase = first_telemetry.phase;
+            let second_phase = second_telemetry.phase;
             assert!((first_phase - second_phase).abs() < 1.0e-7);
             assert!((first_phase - index as f32 * 0.01).abs() < 1.0e-6);
+            assert!((first_raw_cycle_phase - index as f32 * 0.01).abs() < 1.0e-6);
+            assert!((second_raw_cycle_phase - index as f32 * 0.01).abs() < 1.0e-6);
         }
     }
 
@@ -1184,5 +1204,21 @@ mod tests {
 
         assert!((actual - expected).abs() < 1.0e-6);
         assert!((actual - offset_before_warp).abs() > 1.0e-3);
+    }
+
+    #[test]
+    fn raw_cycle_phase_excludes_swing_and_offset() {
+        let settings = sync_test_settings(0.2, 1.0);
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(0.5),
+        };
+        let mut engine = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
+        let (telemetry, raw_cycle_phase) =
+            engine.process_sample_with_raw_cycle_phase(&mut 1.0, &mut 1.0, settings, transport);
+
+        assert!((raw_cycle_phase - 0.5).abs() < 1.0e-6);
+        assert!((telemetry.phase - (swing_warp_phase(0.5, 1.0) + 0.2)).abs() > 1.0e-3);
     }
 }

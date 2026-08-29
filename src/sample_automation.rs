@@ -183,7 +183,7 @@ pub(crate) fn process_stereo_block(
         }
         let input_left = left[sample_offset];
         let input_right = right[sample_offset];
-        let telemetry = engine.process_sample(
+        let (telemetry, raw_cycle_phase) = engine.process_sample_with_raw_cycle_phase(
             &mut left[sample_offset],
             &mut right[sample_offset],
             *settings,
@@ -195,6 +195,7 @@ pub(crate) fn process_stereo_block(
         }
         if let Some(capture) = waveform.as_mut() {
             capture.record(
+                raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
                 settings.phase_offset,
@@ -283,14 +284,19 @@ pub(crate) unsafe fn process_stereo_block_raw(
         let mut right = unsafe { block.input_right.add(sample_offset).read() };
         let input_left = left;
         let input_right = right;
-        let telemetry =
-            engine.process_sample(&mut left, &mut right, *settings, transport_for_sample);
+        let (telemetry, raw_cycle_phase) = engine.process_sample_with_raw_cycle_phase(
+            &mut left,
+            &mut right,
+            *settings,
+            transport_for_sample,
+        );
         if !telemetry.bypassed && input_left.abs().max(input_right.abs()) > 1.0e-5 {
             input_active = true;
             minimum_reduction_gain = minimum_reduction_gain.min(telemetry.reduction_gain);
         }
         if let Some(capture) = waveform.as_mut() {
             capture.record(
+                raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
                 settings.phase_offset,
