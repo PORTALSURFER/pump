@@ -115,6 +115,8 @@ All notable changes to this project are documented in this file.
 
 - (gui) Distinguish fixed curve offset edge (#74) (d5aff93)
 
+- Make curve offset interaction handle-only (541181e)
+
 
 ### CI
 
@@ -472,6 +474,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (ad776cf)
 
+- (changelog) Update changelog [skip ci] (e4bf0c3)
+
 
 ### Features
 
@@ -508,6 +512,8 @@ All notable changes to this project are documented in this file.
 - (gui) Canonicalize viewport seam ownership (80da0ca)
 
 - (gui) Add option-click curve node deletion (e35efbc)
+
+- (gui) Make curve offset handle-only (923afb5)
 
 
 ### Other
@@ -1443,6 +1449,10 @@ feat(gui): rebuild curve painting on release (3d20e4b)
 - Merge pull request #75 from PORTALSURFER/wsvasek/opt-1324-pump-add-option-click-as-an-alternate-curve-node-deletion
 
 Pump: add Option-click curve-node deletion (195d2fd)
+
+- Merge pull request #76 from PORTALSURFER/wsvasek/opt-1321-pump-make-the-curve-offset-control-handle-only-and-easier-to
+
+Pump: make the curve offset control handle-only (93312b0)
 
 
 ### Refactoring
