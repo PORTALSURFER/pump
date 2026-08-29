@@ -25,9 +25,9 @@ use radiant::runtime::{
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
-    ButtonMessage, ButtonWidget, FocusBehavior, IconButtonWidget, PointerButton, TextWrap, Widget,
-    WidgetCapabilities, WidgetCommon, WidgetInput, WidgetKey, WidgetOutput, WidgetSemantics,
-    WidgetSizing,
+    ButtonMessage, ButtonWidget, FocusBehavior, IconButtonWidget, PointerButton,
+    PointerPressAdmission, TextWrap, Widget, WidgetCapabilities, WidgetCommon, WidgetInput,
+    WidgetKey, WidgetOutput, WidgetSemantics, WidgetSizing,
 };
 use toybox::clack_extensions::params::HostParams;
 use toybox::clack_plugin::prelude::HostSharedHandle;
@@ -174,8 +174,8 @@ const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
 const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.divider;
 const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_OFFSET_BAR_HEIGHT: f32 = 10.2;
-const CURVE_OFFSET_BAR_INSET: f32 = 2.55;
-const CURVE_OFFSET_HANDLE_WIDTH: f32 = 5.95;
+const CURVE_OFFSET_BAR_INSET: f32 = PUMP_VISUAL_METRICS.space_8;
+const CURVE_OFFSET_HANDLE_WIDTH: f32 = PUMP_VISUAL_METRICS.space_16;
 const CURVE_FILL_TOP_ALPHA: u8 = 96;
 const CURVE_FILL_BOTTOM_ALPHA: u8 = 12;
 const CURVE_NODE_SIZE: f32 = 4.25;
@@ -589,7 +589,7 @@ impl Widget for SoundSwitchButtonWidget {
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         match input {
-            WidgetInput::PointerModifiersChanged { modifiers } => {
+            WidgetInput::PointerModifiersChanged { modifiers, .. } => {
                 self.command_held = modifiers.command;
                 None
             }
@@ -619,7 +619,10 @@ impl Widget for SoundSwitchButtonWidget {
                 self.command_held = false;
                 output
             }
-            WidgetInput::KeyPress(WidgetKey::Enter | WidgetKey::Space) => self
+            WidgetInput::KeyPress {
+                key: WidgetKey::Enter | WidgetKey::Space,
+                ..
+            } => self
                 .button
                 .handle_input(bounds, input)
                 .and_then(|output| output.typed_copied::<ButtonMessage>())
@@ -735,7 +738,7 @@ impl Widget for SoundSideButtonWidget {
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         match input {
-            WidgetInput::PointerModifiersChanged { modifiers } => {
+            WidgetInput::PointerModifiersChanged { modifiers, .. } => {
                 self.alt_held = modifiers.alt;
                 None
             }
@@ -759,16 +762,17 @@ impl Widget for SoundSideButtonWidget {
                     copy: alt_held && !self.selected,
                 }))
             }
-            WidgetInput::KeyPress(WidgetKey::Enter | WidgetKey::Space) => {
-                self.button.handle_input(bounds, input).and_then(|message| {
-                    message.is_activate().then(|| {
-                        WidgetOutput::typed(RadiantEditorMessage::SelectSound {
-                            side: self.side,
-                            copy: false,
-                        })
+            WidgetInput::KeyPress {
+                key: WidgetKey::Enter | WidgetKey::Space,
+                ..
+            } => self.button.handle_input(bounds, input).and_then(|message| {
+                message.is_activate().then(|| {
+                    WidgetOutput::typed(RadiantEditorMessage::SelectSound {
+                        side: self.side,
+                        copy: false,
                     })
                 })
-            }
+            }),
             WidgetInput::PointerDrop { .. } => {
                 let _ = self.button.handle_input(bounds, input);
                 self.alt_held = false;
@@ -1086,7 +1090,7 @@ impl Widget for ActionIconButtonWidget {
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         if self.disabled {
-            if let WidgetInput::PointerMove { position } = input {
+            if let WidgetInput::PointerMove { position, .. } = input {
                 // Disabled actions remain hoverable so their explanatory
                 // tooltip can be discovered without making them activatable.
                 self.button.common.state.hovered = bounds.contains(position);
@@ -2817,7 +2821,7 @@ fn reduce_knob_message(
                 state.active_knob_gesture = Some(target);
             }
         }
-        KnobMessage::ValueChanged { value } => {
+        KnobMessage::ValueChanged { value, .. } => {
             if state.active_knob_gesture == Some(target) {
                 let (param_id, plain_value) = knob_plain_value(target, value);
                 if !state.host_param_edit_sink.gesture_value(
@@ -2838,7 +2842,7 @@ fn reduce_knob_message(
                 state.active_knob_gesture = None;
             }
         }
-        KnobMessage::Reset { value } => {
+        KnobMessage::Reset { value, .. } => {
             if state.active_knob_gesture == Some(target) {
                 let _ = state
                     .host_param_edit_sink
@@ -4739,7 +4743,7 @@ impl Widget for NumericValueLabelWidget {
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         let message = match input {
-            WidgetInput::PointerMove { position } => {
+            WidgetInput::PointerMove { position, .. } => {
                 self.common.state.hovered = bounds.contains(position);
                 None
             }
@@ -4747,6 +4751,7 @@ impl Widget for NumericValueLabelWidget {
                 position,
                 button: PointerButton::Primary,
                 modifiers,
+                ..
             } if bounds.contains(position) => {
                 self.common.state.focused = true;
                 self.common.state.hovered = true;
@@ -4760,30 +4765,37 @@ impl Widget for NumericValueLabelWidget {
                     target: self.target,
                 })
             }
-            WidgetInput::Character('\u{1b}') if self.editing => Some(NumericEntryMessage::Cancel {
+            WidgetInput::Character {
+                character: '\u{1b}',
+                ..
+            } if self.editing => Some(NumericEntryMessage::Cancel {
                 target: self.target,
             }),
-            WidgetInput::Character('\r' | '\n') if self.editing => {
-                Some(NumericEntryMessage::Commit {
-                    target: self.target,
-                    draft: self.text.clone(),
-                })
-            }
-            WidgetInput::Character(ch) if self.editing => self
+            WidgetInput::Character {
+                character: '\r' | '\n',
+                ..
+            } if self.editing => Some(NumericEntryMessage::Commit {
+                target: self.target,
+                draft: self.text.clone(),
+            }),
+            WidgetInput::Character { character: ch, .. } if self.editing => self
                 .draft_with_character(ch)
                 .map(|draft| self.changed(draft)),
-            WidgetInput::KeyPress(WidgetKey::Enter) if self.editing => {
-                Some(NumericEntryMessage::Commit {
-                    target: self.target,
-                    draft: self.text.clone(),
-                })
-            }
-            WidgetInput::KeyPress(WidgetKey::Backspace) if self.editing => {
-                Some(self.changed(self.draft_after_backspace()))
-            }
-            WidgetInput::KeyPress(WidgetKey::Delete) if self.editing => {
-                Some(self.changed(self.draft_after_delete()))
-            }
+            WidgetInput::KeyPress {
+                key: WidgetKey::Enter,
+                ..
+            } if self.editing => Some(NumericEntryMessage::Commit {
+                target: self.target,
+                draft: self.text.clone(),
+            }),
+            WidgetInput::KeyPress {
+                key: WidgetKey::Backspace,
+                ..
+            } if self.editing => Some(self.changed(self.draft_after_backspace())),
+            WidgetInput::KeyPress {
+                key: WidgetKey::Delete,
+                ..
+            } if self.editing => Some(self.changed(self.draft_after_delete())),
             _ => None,
         }?;
         Some(WidgetOutput::typed(message))
@@ -4922,11 +4934,11 @@ impl Widget for CurveSlotWidget {
 
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
         let message = match input {
-            WidgetInput::PointerMove { position } => {
+            WidgetInput::PointerMove { position, .. } => {
                 self.common.state.hovered = bounds.contains(position);
                 None
             }
-            WidgetInput::PointerModifiersChanged { modifiers } => {
+            WidgetInput::PointerModifiersChanged { modifiers, .. } => {
                 self.command_hovered = modifiers.command;
                 None
             }
@@ -4934,6 +4946,7 @@ impl Widget for CurveSlotWidget {
                 position,
                 button: PointerButton::Primary,
                 modifiers,
+                ..
             } if bounds.contains(position) => {
                 self.common.state.focused = true;
                 self.common.state.hovered = true;
@@ -5268,6 +5281,7 @@ struct CurvePreviewWidget {
     active_curve_paint: bool,
     curve_paint_runs: Vec<PaintRun>,
     active_curve_offset_start_x: Option<f32>,
+    last_pointer_position: Option<Point>,
     selected_nodes: Vec<usize>,
     active_marquee: Option<ActiveCurveMarquee>,
     playhead_phase: Option<f32>,
@@ -5313,6 +5327,7 @@ impl CurvePreviewWidget {
             active_curve_paint: false,
             curve_paint_runs: Vec::new(),
             active_curve_offset_start_x: None,
+            last_pointer_position: None,
             selected_nodes: Vec::new(),
             active_marquee: None,
             playhead_phase: None,
@@ -5428,6 +5443,14 @@ impl CurvePreviewWidget {
             curve_bounds.width(),
             CURVE_OFFSET_BAR_HEIGHT,
         )
+    }
+
+    fn offset_handle_bounds(bounds: Rect, phase_offset: f32) -> Rect {
+        let bar = Self::offset_bar_bounds(bounds);
+        let handle_width = CURVE_OFFSET_HANDLE_WIDTH.min(bar.width());
+        let handle_x =
+            bar.min.x + phase_offset.clamp(0.0, 1.0) * (bar.width() - handle_width).max(0.0);
+        Rect::from_xy_size(handle_x, bar.min.y, handle_width, bar.height())
     }
 
     fn reference_gutter_bounds(bounds: Rect) -> Rect {
@@ -6115,18 +6138,22 @@ impl CurvePreviewWidget {
             align: PaintTextAlign::Right,
             wrap: TextWrap::None,
         }));
-        let handle_x =
-            bar.min.x + self.phase_offset * (bar.width() - CURVE_OFFSET_HANDLE_WIDTH).max(0.0);
-        let handle = Rect::from_xy_size(
-            handle_x,
-            bar.min.y,
-            CURVE_OFFSET_HANDLE_WIDTH.min(bar.width()),
-            bar.height(),
-        );
+        let handle = Self::offset_handle_bounds(bounds, self.phase_offset);
+        let handle_color = if self.active_curve_offset_start_x.is_some() {
+            CURVE_OFFSET_MOVE_COLOR
+        } else if self.common.state.hovered
+            && self
+                .last_pointer_position
+                .is_some_and(|position| handle.contains(position))
+        {
+            CURVE_OFFSET_HOVER_COLOR
+        } else {
+            theme.accent_mint
+        };
         primitives.push(PaintPrimitive::FillRect(PaintFillRect {
             widget_id: self.common.id,
             rect: handle,
-            color: theme.accent_mint,
+            color: handle_color,
         }));
     }
 
@@ -6551,7 +6578,36 @@ impl Widget for CurvePreviewWidget {
         &mut self.common
     }
 
+    fn preflight_pointer_press(&self, bounds: Rect, input: &WidgetInput) -> PointerPressAdmission {
+        let WidgetInput::PointerPress {
+            position,
+            button: PointerButton::Primary,
+            ..
+        } = input
+        else {
+            return PointerPressAdmission::Legacy;
+        };
+
+        let on_offset_track = Self::offset_bar_bounds(bounds).contains(*position)
+            && !Self::offset_handle_bounds(bounds, self.phase_offset).contains(*position);
+        if on_offset_track {
+            PointerPressAdmission::Blocked
+        } else {
+            PointerPressAdmission::Legacy
+        }
+    }
+
     fn handle_input(&mut self, bounds: Rect, input: WidgetInput) -> Option<WidgetOutput> {
+        match &input {
+            WidgetInput::PointerMove { position, .. }
+            | WidgetInput::PointerPress { position, .. }
+            | WidgetInput::PointerDoubleClick { position, .. }
+            | WidgetInput::PointerRelease { position, .. }
+            | WidgetInput::PointerDrop { position, .. } => {
+                self.last_pointer_position = Some(*position);
+            }
+            _ => {}
+        }
         if matches!(
             &input,
             WidgetInput::PointerPress { .. } | WidgetInput::PointerDoubleClick { .. }
@@ -6574,6 +6630,7 @@ impl Widget for CurvePreviewWidget {
                 position,
                 button: PointerButton::Primary,
                 modifiers,
+                ..
             } => {
                 self.common.state.hovered = bounds.contains(position);
                 if modifiers.alt
@@ -6603,7 +6660,9 @@ impl Widget for CurvePreviewWidget {
                     && modifiers.shift
                     && Self::curve_bounds(bounds).contains(position);
                 let hit_node = self.hit_node(bounds, position);
-                if Self::offset_bar_bounds(bounds).contains(position) || offset_gesture {
+                if Self::offset_handle_bounds(bounds, self.phase_offset).contains(position)
+                    || offset_gesture
+                {
                     Some(CurvePreviewMessage::PressCurveOffset {
                         pointer_x: Self::offset_pointer_x(bounds, position),
                         quantized: option_held,
@@ -6670,19 +6729,20 @@ impl Widget for CurvePreviewWidget {
                 button: PointerButton::Primary,
                 ..
             } => {
-                if Self::offset_bar_bounds(bounds).contains(position) {
+                if Self::offset_handle_bounds(bounds, self.phase_offset).contains(position) {
                     Some(CurvePreviewMessage::ResetCurveOffset)
                 } else {
                     self.deletable_node_at(bounds, position)
                         .map(|index| CurvePreviewMessage::DeleteNode { index })
                 }
             }
-            WidgetInput::KeyPress(WidgetKey::Delete | WidgetKey::Backspace)
-                if self.common.state.focused && self.has_interactive_deletable_selection() =>
-            {
+            WidgetInput::KeyPress {
+                key: WidgetKey::Delete | WidgetKey::Backspace,
+                ..
+            } if self.common.state.focused && self.has_interactive_deletable_selection() => {
                 Some(CurvePreviewMessage::DeleteSelectedNodes)
             }
-            WidgetInput::PointerMove { position } => {
+            WidgetInput::PointerMove { position, .. } => {
                 self.common.state.hovered = bounds.contains(position);
                 if let Some(pending) = self.pending_option_gesture {
                     if Self::option_gesture_drag_started(pending.origin, position) {
@@ -6752,7 +6812,7 @@ impl Widget for CurvePreviewWidget {
                     }
                 }
             }
-            WidgetInput::PointerModifiersChanged { modifiers } => (modifiers.alt
+            WidgetInput::PointerModifiersChanged { modifiers, .. } => (modifiers.alt
                 != self.option_hover_held
                 || modifiers.command != self.command_hover_held
                 || modifiers.shift != self.shift_hover_held)
@@ -6788,6 +6848,7 @@ impl Widget for CurvePreviewWidget {
                 position,
                 button: PointerButton::Primary,
                 modifiers,
+                ..
             } if self.pending_option_gesture.is_some() => {
                 let pending = self
                     .pending_option_gesture
@@ -6820,11 +6881,13 @@ impl Widget for CurvePreviewWidget {
                 position,
                 button: PointerButton::Primary,
                 modifiers,
+                ..
             }
             | WidgetInput::PointerDrop {
                 position,
                 button: PointerButton::Primary,
                 modifiers,
+                ..
             } => {
                 self.common.state.hovered = bounds.contains(position);
                 if self.active_marquee.is_some() {
@@ -6892,6 +6955,7 @@ impl Widget for CurvePreviewWidget {
         };
         self.common.state.hovered = previous.common.state.hovered;
         self.pending_option_gesture = previous.pending_option_gesture;
+        self.last_pointer_position = previous.last_pointer_position;
     }
 
     fn append_paint(
@@ -7033,7 +7097,7 @@ mod tests {
     #[cfg(feature = "vst3")]
     use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
-    use radiant::widgets::PointerModifiers;
+    use radiant::widgets::{PointerModifiers, WidgetId};
     use toybox::clack_plugin::events::event_types::{
         ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
     };
@@ -8298,16 +8362,10 @@ mod tests {
     fn ab_buttons_activate_on_release_and_preserve_modifier_intent() {
         let bounds = Rect::from_xy_size(0.0, 0.0, 40.0, BUILD_LABEL_HEIGHT);
         let point = Point::new(20.0, BUILD_LABEL_HEIGHT * 0.5);
-        let press = |modifiers| WidgetInput::PointerPress {
-            position: point,
-            button: PointerButton::Primary,
-            modifiers,
-        };
-        let release = |modifiers| WidgetInput::PointerRelease {
-            position: point,
-            button: PointerButton::Primary,
-            modifiers,
-        };
+        let press =
+            |modifiers| WidgetInput::pointer_press(point, PointerButton::Primary, modifiers);
+        let release =
+            |modifiers| WidgetInput::pointer_release(point, PointerButton::Primary, modifiers);
 
         let mut switch = SoundSwitchButtonWidget::new(SoundSide::A);
         assert!(switch
@@ -8426,19 +8484,19 @@ mod tests {
         let bounds = Rect::from_xy_size(0.0, 0.0, 40.0, BUILD_LABEL_HEIGHT);
         let point = Point::new(20.0, BUILD_LABEL_HEIGHT * 0.5);
         let mut active = SoundSideButtonWidget::new(SoundSide::A, true);
-        let press = WidgetInput::PointerPress {
-            position: point,
-            button: PointerButton::Primary,
-            modifiers: PointerModifiers {
+        let press = WidgetInput::pointer_press(
+            point,
+            PointerButton::Primary,
+            PointerModifiers {
                 alt: true,
                 ..PointerModifiers::default()
             },
-        };
-        let release = WidgetInput::PointerRelease {
-            position: point,
-            button: PointerButton::Primary,
-            modifiers: PointerModifiers::default(),
-        };
+        );
+        let release = WidgetInput::pointer_release(
+            point,
+            PointerButton::Primary,
+            PointerModifiers::default(),
+        );
 
         assert!(active.handle_input(bounds, press).is_none());
         let message = active
@@ -8502,12 +8560,7 @@ mod tests {
         );
         assert_eq!(fill(&normal_primitives), Some(theme.surface_base));
 
-        normal.handle_input(
-            bounds,
-            WidgetInput::PointerMove {
-                position: Point::new(8.0, 8.0),
-            },
-        );
+        normal.handle_input(bounds, WidgetInput::pointer_move(Point::new(8.0, 8.0)));
         let mut hovered_primitives = Vec::new();
         normal.append_paint(&mut hovered_primitives, bounds, &layout, &theme);
         assert!(normal.common().state.hovered);
@@ -8528,12 +8581,7 @@ mod tests {
         );
 
         let mut selected = SoundSideButtonWidget::new(SoundSide::B, true);
-        selected.handle_input(
-            bounds,
-            WidgetInput::PointerMove {
-                position: Point::new(8.0, 8.0),
-            },
-        );
+        selected.handle_input(bounds, WidgetInput::pointer_move(Point::new(8.0, 8.0)));
         let mut selected_primitives = Vec::new();
         selected.append_paint(&mut selected_primitives, bounds, &layout, &theme);
         assert_eq!(
@@ -8545,12 +8593,7 @@ mod tests {
         let help_bounds = Rect::from_xy_size(0.0, 0.0, 28.0, TIMING_CONTROL_HEIGHT);
         let mut help = HotkeyHelpButtonWidget::new();
         assert!(help.accepts_pointer_move());
-        help.handle_input(
-            help_bounds,
-            WidgetInput::PointerMove {
-                position: Point::new(8.0, 8.0),
-            },
-        );
+        help.handle_input(help_bounds, WidgetInput::pointer_move(Point::new(8.0, 8.0)));
         let mut help_primitives = Vec::new();
         help.append_paint(&mut help_primitives, help_bounds, &layout, &theme);
         assert!(help.common().state.hovered);
@@ -8598,15 +8641,22 @@ mod tests {
             target: NumericEntryTarget::Swing,
             message: KnobMessage::GestureStarted {
                 value: initial_swing,
+                metadata: Default::default(),
             },
         });
         editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
             target: NumericEntryTarget::Swing,
-            message: KnobMessage::ValueChanged { value: 0.25 },
+            message: KnobMessage::ValueChanged {
+                value: 0.25,
+                metadata: Default::default(),
+            },
         });
         editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
             target: NumericEntryTarget::Swing,
-            message: KnobMessage::GestureEnded { value: 0.25 },
+            message: KnobMessage::GestureEnded {
+                value: 0.25,
+                metadata: Default::default(),
+            },
         });
         assert_ne!(params.swing(), initial_swing);
         assert!(editor.dispatch_character('u'));
@@ -8637,15 +8687,22 @@ mod tests {
             target: NumericEntryTarget::Swing,
             message: KnobMessage::GestureStarted {
                 value: initial_swing,
+                metadata: Default::default(),
             },
         });
         editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
             target: NumericEntryTarget::Swing,
-            message: KnobMessage::ValueChanged { value: 0.25 },
+            message: KnobMessage::ValueChanged {
+                value: 0.25,
+                metadata: Default::default(),
+            },
         });
         editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
             target: NumericEntryTarget::Swing,
-            message: KnobMessage::GestureEnded { value: 0.25 },
+            message: KnobMessage::GestureEnded {
+                value: 0.25,
+                metadata: Default::default(),
+            },
         });
 
         assert_eq!(editor.runtime.bridge().state().undo_history.len(), 1);
@@ -8690,12 +8747,12 @@ mod tests {
         widget.handle_input(bounds, WidgetInput::FocusChanged(true));
         for key in [WidgetKey::Enter, WidgetKey::Space] {
             let output = widget
-                .handle_input(bounds, WidgetInput::KeyPress(key))
+                .handle_input(bounds, WidgetInput::key_press(key))
                 .unwrap_or_else(|| panic!("help button should activate from {key:?}"));
-            assert_eq!(
+            assert!(matches!(
                 output.typed_copied::<ButtonMessage>(),
-                Some(ButtonMessage::Activate)
-            );
+                Some(ButtonMessage::Activate { .. })
+            ));
         }
     }
 
@@ -8842,12 +8899,12 @@ mod tests {
             widget.handle_input(bounds, WidgetInput::FocusChanged(true));
             for key in [WidgetKey::Enter, WidgetKey::Space] {
                 let output = widget
-                    .handle_input(bounds, WidgetInput::KeyPress(key))
+                    .handle_input(bounds, WidgetInput::key_press(key))
                     .unwrap_or_else(|| panic!("{label} should activate from {key:?}"));
-                assert_eq!(
+                assert!(matches!(
                     output.typed_copied::<ButtonMessage>(),
-                    Some(ButtonMessage::Activate)
-                );
+                    Some(ButtonMessage::Activate { .. })
+                ));
             }
         }
     }
@@ -8870,14 +8927,9 @@ mod tests {
         assert!(!widget.common().state.disabled);
         widget.handle_input(bounds, WidgetInput::FocusChanged(true));
         assert!(widget
-            .handle_input(bounds, WidgetInput::KeyPress(WidgetKey::Enter))
+            .handle_input(bounds, WidgetInput::key_press(WidgetKey::Enter))
             .is_none());
-        widget.handle_input(
-            bounds,
-            WidgetInput::PointerMove {
-                position: Point::new(2.0, 2.0),
-            },
-        );
+        widget.handle_input(bounds, WidgetInput::pointer_move(Point::new(2.0, 2.0)));
         assert!(widget.common().state.hovered);
 
         let mut primitives = Vec::new();
@@ -8898,21 +8950,21 @@ mod tests {
         assert!(active
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: Point::new(8.0, 8.0),
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(
+                    Point::new(8.0, 8.0),
+                    PointerButton::Primary,
+                    Default::default()
+                ),
             )
             .is_none());
         assert!(active
             .handle_input(
                 bounds,
-                WidgetInput::PointerRelease {
-                    position: Point::new(8.0, 8.0),
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_release(
+                    Point::new(8.0, 8.0),
+                    PointerButton::Primary,
+                    Default::default()
+                ),
             )
             .is_some());
 
@@ -8920,7 +8972,7 @@ mod tests {
             let mut keyboard = BypassControlWidget::new(false, false);
             let _ = keyboard.handle_input(bounds, WidgetInput::FocusChanged(true));
             assert!(keyboard
-                .handle_input(bounds, WidgetInput::KeyPress(key))
+                .handle_input(bounds, WidgetInput::key_press(key))
                 .is_some());
         }
 
@@ -8987,11 +9039,11 @@ mod tests {
         let load = widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: Point::new(10.0, 10.0),
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers::default(),
-                },
+                WidgetInput::pointer_press(
+                    Point::new(10.0, 10.0),
+                    PointerButton::Primary,
+                    PointerModifiers::default(),
+                ),
             )
             .expect("normal slot click should emit load");
         assert_eq!(
@@ -9002,14 +9054,14 @@ mod tests {
         let store = widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: Point::new(10.0, 10.0),
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                WidgetInput::pointer_press(
+                    Point::new(10.0, 10.0),
+                    PointerButton::Primary,
+                    PointerModifiers {
                         command: true,
                         ..PointerModifiers::default()
                     },
-                },
+                ),
             )
             .expect("command slot click should emit store");
         assert_eq!(
@@ -9018,11 +9070,11 @@ mod tests {
         );
         widget.handle_input(
             bounds,
-            WidgetInput::PointerRelease {
-                position: Point::new(10.0, 10.0),
-                button: PointerButton::Primary,
-                modifiers: PointerModifiers::default(),
-            },
+            WidgetInput::pointer_release(
+                Point::new(10.0, 10.0),
+                PointerButton::Primary,
+                PointerModifiers::default(),
+            ),
         );
         assert!(!widget.common.state.pressed);
     }
@@ -9035,11 +9087,11 @@ mod tests {
 
         let wheel = widget.handle_input(
             bounds,
-            WidgetInput::Wheel {
-                position: Point::new(10.0, 10.0),
-                delta: Vector2::new(0.0, -1.0),
-                modifiers: PointerModifiers::default(),
-            },
+            WidgetInput::wheel(
+                Point::new(10.0, 10.0),
+                Vector2::new(0.0, -1.0),
+                PointerModifiers::default(),
+            ),
         );
         assert!(wheel.is_none());
 
@@ -9141,7 +9193,10 @@ mod tests {
                 &mut state,
                 RadiantEditorMessage::Knob {
                     target,
-                    message: KnobMessage::Reset { value },
+                    message: KnobMessage::Reset {
+                        value,
+                        metadata: Default::default(),
+                    },
                 },
             );
         }
@@ -9296,21 +9351,30 @@ mod tests {
             &mut state,
             RadiantEditorMessage::Knob {
                 target: NumericEntryTarget::Swing,
-                message: KnobMessage::GestureStarted { value: 0.0 },
+                message: KnobMessage::GestureStarted {
+                    value: 0.0,
+                    metadata: Default::default(),
+                },
             },
         );
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
                 target: NumericEntryTarget::Swing,
-                message: KnobMessage::ValueChanged { value: 0.5 },
+                message: KnobMessage::ValueChanged {
+                    value: 0.5,
+                    metadata: Default::default(),
+                },
             },
         );
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
                 target: NumericEntryTarget::Swing,
-                message: KnobMessage::GestureEnded { value: 0.5 },
+                message: KnobMessage::GestureEnded {
+                    value: 0.5,
+                    metadata: Default::default(),
+                },
             },
         );
 
@@ -9580,14 +9644,14 @@ mod tests {
         let output = widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: Point::new(8.0, 8.0),
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                WidgetInput::pointer_press(
+                    Point::new(8.0, 8.0),
+                    PointerButton::Primary,
+                    PointerModifiers {
                         command: true,
                         ..PointerModifiers::default()
                     },
-                },
+                ),
             )
             .expect("command-click should begin numeric entry");
 
@@ -9606,7 +9670,7 @@ mod tests {
             NumericValueLabelWidget::new(NumericEntryTarget::Mix, "100%".to_string(), true, false);
 
         let output = widget
-            .handle_input(bounds, WidgetInput::Character('2'))
+            .handle_input(bounds, WidgetInput::character('2'))
             .expect("first typed character should replace selected label");
         assert_eq!(
             output.typed_cloned::<NumericEntryMessage>(),
@@ -9620,7 +9684,7 @@ mod tests {
         widget.text = "2".to_string();
         widget.dirty = true;
         let output = widget
-            .handle_input(bounds, WidgetInput::Character('5'))
+            .handle_input(bounds, WidgetInput::character('5'))
             .expect("second typed character should append");
         assert_eq!(
             output.typed_cloned::<NumericEntryMessage>(),
@@ -9633,7 +9697,7 @@ mod tests {
 
         widget.text = "25".to_string();
         let output = widget
-            .handle_input(bounds, WidgetInput::KeyPress(WidgetKey::Enter))
+            .handle_input(bounds, WidgetInput::key_press(WidgetKey::Enter))
             .expect("enter should commit");
         assert_eq!(
             output.typed_cloned::<NumericEntryMessage>(),
@@ -11043,7 +11107,7 @@ mod tests {
             CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
         assert_eq!(
             hover_widget
-                .handle_input(bounds, WidgetInput::PointerMove { position })
+                .handle_input(bounds, WidgetInput::pointer_move(position))
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::HoverProximitySegment { index: 1 })
         );
@@ -11055,9 +11119,7 @@ mod tests {
         let leave = leaving_widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerMove {
-                    position: Point::new(bounds.min.x - 1.0, bounds.min.y - 1.0),
-                },
+                WidgetInput::pointer_move(Point::new(bounds.min.x - 1.0, bounds.min.y - 1.0)),
             )
             .and_then(|output| output.typed_copied());
         assert_eq!(
@@ -11416,6 +11478,182 @@ mod tests {
         Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT)
     }
 
+    fn editor_runtime(params: Arc<PumpParams>) -> EditorSurfaceRuntime {
+        EditorSurfaceRuntime::new_declarative(
+            editor_state(params),
+            Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+            project_editor_surface,
+            reduce_editor_message,
+        )
+    }
+
+    fn projected_widget<T: 'static>(runtime: &EditorSurfaceRuntime) -> (WidgetId, Rect) {
+        runtime
+            .layout()
+            .rects
+            .iter()
+            .find_map(|(widget_id, bounds)| {
+                runtime
+                    .surface()
+                    .find_widget(*widget_id)
+                    .and_then(|widget| {
+                        widget
+                            .widget()
+                            .as_any()
+                            .is::<T>()
+                            .then_some((*widget_id, *bounds))
+                    })
+            })
+            .expect("requested widget should be projected")
+    }
+
+    fn offset_handle_paint_color(runtime: &EditorSurfaceRuntime, handle: Rect) -> Rgba8 {
+        runtime
+            .frame(&pump_theme())
+            .paint_plan
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill) if fill.rect == handle => Some(fill.color),
+                _ => None,
+            })
+            .expect("offset handle should be painted")
+    }
+
+    #[test]
+    fn runtime_blocks_offset_track_press_before_focus_or_capture_mutation() {
+        let params = Arc::new(PumpParams::new());
+        params.set_phase_offset(0.37);
+        let mut runtime = editor_runtime(Arc::clone(&params));
+        let (curve_widget_id, curve_bounds) = projected_widget::<CurvePreviewWidget>(&runtime);
+        let (numeric_widget_id, numeric_bounds) =
+            projected_widget::<NumericValueLabelWidget>(&runtime);
+        let numeric_position = numeric_bounds.center();
+
+        assert_eq!(
+            runtime.dispatch_event(radiant::runtime::Event::pointer_press(
+                numeric_position,
+                PointerButton::Primary,
+                PointerModifiers {
+                    command: true,
+                    ..PointerModifiers::default()
+                },
+            )),
+            Some(numeric_widget_id)
+        );
+        assert!(runtime.bridge().state().numeric_entry.is_some());
+        assert_eq!(runtime.focused_widget(), Some(numeric_widget_id));
+        runtime.dispatch_event(radiant::runtime::Event::pointer_release(
+            numeric_position,
+            PointerButton::Primary,
+            PointerModifiers::default(),
+        ));
+        assert_eq!(runtime.pointer_capture(), None);
+
+        let bar = CurvePreviewWidget::offset_bar_bounds(curve_bounds);
+        let handle = CurvePreviewWidget::offset_handle_bounds(curve_bounds, params.phase_offset());
+        let track_position = if params.phase_offset() < 0.5 {
+            Point::new((bar.min.x + handle.min.x) * 0.5, bar.center().y)
+        } else {
+            Point::new((handle.max.x + bar.max.x) * 0.5, bar.center().y)
+        };
+        let focused_numeric_widget = runtime.focused_widget();
+        assert_eq!(
+            runtime.dispatch_event(radiant::runtime::Event::pointer_press(
+                track_position,
+                PointerButton::Primary,
+                PointerModifiers::default(),
+            )),
+            None
+        );
+        assert_eq!(runtime.focused_widget(), focused_numeric_widget);
+        assert_eq!(runtime.pointer_capture(), None);
+        assert!(runtime.bridge().state().numeric_entry.is_some());
+        assert!(runtime.surface().find_widget(curve_widget_id).is_some());
+
+        let mut handle_runtime = editor_runtime(Arc::clone(&params));
+        let (handle_curve_id, handle_curve_bounds) =
+            projected_widget::<CurvePreviewWidget>(&handle_runtime);
+        let handle_position =
+            CurvePreviewWidget::offset_handle_bounds(handle_curve_bounds, params.phase_offset())
+                .center();
+        assert_eq!(
+            handle_runtime.dispatch_event(radiant::runtime::Event::pointer_press(
+                handle_position,
+                PointerButton::Primary,
+                PointerModifiers::default(),
+            )),
+            Some(handle_curve_id)
+        );
+        assert_eq!(handle_runtime.pointer_capture(), Some(handle_curve_id));
+    }
+
+    #[test]
+    fn runtime_surface_leave_clears_offset_handle_hover_after_reprojection() {
+        let params = Arc::new(PumpParams::new());
+        params.set_phase_offset(0.37);
+        let mut runtime = editor_runtime(Arc::clone(&params));
+        let (curve_widget_id, curve_bounds) = projected_widget::<CurvePreviewWidget>(&runtime);
+        let handle = CurvePreviewWidget::offset_handle_bounds(curve_bounds, params.phase_offset());
+
+        assert_eq!(
+            runtime.dispatch_event(radiant::runtime::Event::pointer_move(handle.center())),
+            Some(curve_widget_id)
+        );
+        assert_eq!(
+            offset_handle_paint_color(&runtime, handle),
+            CURVE_OFFSET_HOVER_COLOR
+        );
+
+        let previous = runtime
+            .surface()
+            .find_widget(curve_widget_id)
+            .expect("curve widget should be projected")
+            .widget()
+            .as_any()
+            .downcast_ref::<CurvePreviewWidget>()
+            .expect("curve widget should retain its concrete type")
+            .clone();
+        let mut left_surface_previous = previous;
+        // This is the runtime-owned state change made by Radiant's native
+        // surface-leave path; it intentionally does not clear the local point.
+        left_surface_previous.common.state.hovered = false;
+        assert_eq!(
+            left_surface_previous.last_pointer_position,
+            Some(handle.center())
+        );
+
+        let mut reprojected = CurvePreviewWidget::new(
+            left_surface_previous.curve.clone(),
+            left_surface_previous.active_node,
+            left_surface_previous.active_segment,
+            left_surface_previous.hover_node,
+            left_surface_previous.preview_node,
+            left_surface_previous.hover_segment,
+            left_surface_previous.option_hover_held,
+        )
+        .with_phase_offset(left_surface_previous.phase_offset);
+        reprojected.synchronize_from_previous(&left_surface_previous);
+        assert!(!reprojected.common.state.hovered);
+        assert_eq!(reprojected.last_pointer_position, Some(handle.center()));
+
+        let mut primitives = Vec::new();
+        reprojected.append_paint(
+            &mut primitives,
+            curve_bounds,
+            &LayoutOutput::default(),
+            &pump_theme(),
+        );
+        let handle_color = primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill) if fill.rect == handle => Some(fill.color),
+                _ => None,
+            })
+            .expect("reprojected offset handle should be painted");
+        assert_eq!(handle_color, pump_theme().accent_mint);
+    }
+
     #[test]
     fn radiant_editor_command_release_clears_segment_move_without_mutation() {
         let params = Arc::new(PumpParams::new());
@@ -11460,11 +11698,7 @@ mod tests {
         let output = widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position,
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(position, PointerButton::Primary, Default::default()),
             )
             .expect("hit node should emit a press message");
 
@@ -11492,11 +11726,11 @@ mod tests {
             press_widget
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerPress {
+                    WidgetInput::pointer_press(
                         position,
-                        button: PointerButton::Secondary,
-                        modifiers: Default::default(),
-                    },
+                        PointerButton::Secondary,
+                        Default::default()
+                    ),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::PressPaint { sample })
@@ -11507,12 +11741,7 @@ mod tests {
         let drag_position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.58, y: 0.72 });
         assert!(matches!(
             drag_widget
-                .handle_input(
-                    bounds,
-                    WidgetInput::PointerMove {
-                        position: drag_position
-                    }
-                )
+                .handle_input(bounds, WidgetInput::pointer_move(drag_position))
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::DragPaint { .. })
         ));
@@ -11520,11 +11749,11 @@ mod tests {
             drag_widget
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerRelease {
-                        position: drag_position,
-                        button: PointerButton::Secondary,
-                        modifiers: Default::default(),
-                    },
+                    WidgetInput::pointer_release(
+                        drag_position,
+                        PointerButton::Secondary,
+                        Default::default()
+                    ),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::ReleasePaint { .. })
@@ -11565,7 +11794,7 @@ mod tests {
                     .with_active_curve_paint(true);
             assert_eq!(
                 active_widget
-                    .handle_input(bounds, WidgetInput::PointerMove { position })
+                    .handle_input(bounds, WidgetInput::pointer_move(position))
                     .and_then(|output| output.typed_copied()),
                 Some(CurvePreviewMessage::DragPaintOutside { sample: actual }),
                 "captured outside motion must preserve the raw observation at {position:?}"
@@ -11574,11 +11803,11 @@ mod tests {
                 active_widget
                     .handle_input(
                         bounds,
-                        WidgetInput::PointerRelease {
+                        WidgetInput::pointer_release(
                             position,
-                            button: PointerButton::Secondary,
-                            modifiers: Default::default(),
-                        },
+                            PointerButton::Secondary,
+                            Default::default()
+                        ),
                     )
                     .and_then(|output| output.typed_copied()),
                 Some(CurvePreviewMessage::ReleasePaintOutside { sample: actual })
@@ -11605,11 +11834,11 @@ mod tests {
         let start_sample = match press_widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: start_position,
-                    button: PointerButton::Secondary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(
+                    start_position,
+                    PointerButton::Secondary,
+                    Default::default(),
+                ),
             )
             .and_then(|output| output.typed_copied())
         {
@@ -11620,12 +11849,7 @@ mod tests {
         let mut drag_widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
             .with_active_curve_paint(true);
         let outside_sample = match drag_widget
-            .handle_input(
-                bounds,
-                WidgetInput::PointerMove {
-                    position: outside_position,
-                },
-            )
+            .handle_input(bounds, WidgetInput::pointer_move(outside_position))
             .and_then(|output| output.typed_copied())
         {
             Some(CurvePreviewMessage::DragPaintOutside { sample }) => sample,
@@ -12833,11 +13057,7 @@ mod tests {
             press_widget
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerPress {
-                        position: start,
-                        button: PointerButton::Primary,
-                        modifiers: shift,
-                    },
+                    WidgetInput::pointer_press(start, PointerButton::Primary, shift),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::PressMarquee {
@@ -12852,7 +13072,7 @@ mod tests {
             }));
         assert_eq!(
             drag_widget
-                .handle_input(bounds, WidgetInput::PointerMove { position: end })
+                .handle_input(bounds, WidgetInput::pointer_move(end))
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::DragMarquee {
                 current: CurvePreviewWidget::node_from_point(bounds, end),
@@ -12862,11 +13082,7 @@ mod tests {
             drag_widget
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerRelease {
-                        position: end,
-                        button: PointerButton::Primary,
-                        modifiers: shift,
-                    },
+                    WidgetInput::pointer_release(end, PointerButton::Primary, shift),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::ReleaseMarquee {
@@ -12891,11 +13107,7 @@ mod tests {
         let press = press_widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position,
-                    button: PointerButton::Primary,
-                    modifiers,
-                },
+                WidgetInput::pointer_press(position, PointerButton::Primary, modifiers),
             )
             .and_then(|output| output.typed_copied::<CurvePreviewMessage>());
         assert_eq!(
@@ -12914,11 +13126,7 @@ mod tests {
         let release = release_widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerRelease {
-                    position,
-                    button: PointerButton::Primary,
-                    modifiers,
-                },
+                WidgetInput::pointer_release(position, PointerButton::Primary, modifiers),
             )
             .and_then(|output| output.typed_copied::<CurvePreviewMessage>());
         assert_eq!(
@@ -12928,6 +13136,287 @@ mod tests {
                 option_held: true,
             })
         );
+    }
+
+    #[test]
+    fn curve_preview_widget_keeps_a_gap_and_shared_handle_geometry_at_supported_sizes() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+
+        for bounds in [
+            Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT),
+            Rect::from_xy_size(18.0, 7.0, 212.0, 118.0),
+        ] {
+            let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+            let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+            let handle = CurvePreviewWidget::offset_handle_bounds(bounds, 0.37);
+
+            assert!((bar.min.y - curve_bounds.max.y - CURVE_OFFSET_BAR_INSET).abs() < 1.0e-4);
+            assert!(bar.min.y > curve_bounds.max.y);
+            assert!((handle.width() - CURVE_OFFSET_HANDLE_WIDTH).abs() < 1.0e-4);
+            assert!((handle.height() - bar.height()).abs() < 1.0e-4);
+
+            let widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(0.37);
+            let mut primitives = Vec::new();
+            widget.append_paint(
+                &mut primitives,
+                bounds,
+                &LayoutOutput::default(),
+                &ThemeTokens::default(),
+            );
+            assert!(primitives.iter().any(|primitive| {
+                matches!(
+                    primitive,
+                    PaintPrimitive::FillRect(fill) if fill.rect == handle
+                )
+            }));
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_starts_offset_only_from_the_handle_on_both_sides() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+
+        for phase_offset in [0.25, 0.75] {
+            let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+            let handle = CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset);
+            let bar_y = (bar.min.y + bar.max.y) * 0.5;
+            let handle_position = handle.center();
+            let track_position = if phase_offset < 0.5 {
+                Point::new((bar.min.x + handle.min.x) * 0.5, bar_y)
+            } else {
+                Point::new((handle.max.x + bar.max.x) * 0.5, bar_y)
+            };
+
+            let mut track_widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(phase_offset);
+            assert!(track_widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::pointer_press(
+                        track_position,
+                        PointerButton::Primary,
+                        Default::default()
+                    ),
+                )
+                .is_none());
+
+            let mut handle_widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(phase_offset);
+            assert_eq!(
+                handle_widget
+                    .handle_input(
+                        bounds,
+                        WidgetInput::pointer_press(
+                            handle_position,
+                            PointerButton::Primary,
+                            Default::default()
+                        ),
+                    )
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::PressCurveOffset {
+                    pointer_x: CurvePreviewWidget::offset_pointer_x(bounds, handle_position),
+                    quantized: false,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_track_press_stays_inert_after_crossing_the_handle() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+
+        for phase_offset in [0.25, 0.75] {
+            let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+            let handle = CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset);
+            let track_position = if phase_offset < 0.5 {
+                Point::new(bar.min.x + 1.0, bar.center().y)
+            } else {
+                Point::new(bar.max.x - 1.0, bar.center().y)
+            };
+            let handle_position = handle.center();
+            let mut widget =
+                CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                    .with_phase_offset(phase_offset);
+
+            assert!(widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::pointer_press(
+                        track_position,
+                        PointerButton::Primary,
+                        Default::default()
+                    ),
+                )
+                .is_none());
+            assert!(!matches!(
+                widget
+                    .handle_input(bounds, WidgetInput::pointer_move(handle_position))
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::DragCurveOffset { .. })
+            ));
+            assert!(!matches!(
+                widget
+                    .handle_input(
+                        bounds,
+                        WidgetInput::pointer_release(
+                            handle_position,
+                            PointerButton::Primary,
+                            Default::default()
+                        ),
+                    )
+                    .and_then(|output| output.typed_copied()),
+                Some(CurvePreviewMessage::ReleaseCurveOffset { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn curve_preview_widget_continues_handle_drag_after_rebuild_and_outside() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+        let phase_offset = 0.37;
+        let handle_position =
+            CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset).center();
+        let start_x = CurvePreviewWidget::offset_pointer_x(bounds, handle_position);
+        let mut previous =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                .with_phase_offset(phase_offset);
+
+        assert!(previous
+            .handle_input(
+                bounds,
+                WidgetInput::pointer_press(
+                    handle_position,
+                    PointerButton::Primary,
+                    Default::default()
+                ),
+            )
+            .is_some());
+
+        let mut rebuilt = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(phase_offset)
+            .with_active_curve_offset(Some(start_x));
+        rebuilt.synchronize_from_previous(&previous);
+        assert_eq!(rebuilt.last_pointer_position, Some(handle_position));
+
+        let outside = Point::new(bounds.max.x + 24.0, bounds.max.y + 24.0);
+        let drag = rebuilt
+            .handle_input(bounds, WidgetInput::pointer_move(outside))
+            .and_then(|output| output.typed_copied());
+        assert_eq!(
+            drag,
+            Some(CurvePreviewMessage::DragCurveOffset {
+                delta: CurvePreviewWidget::offset_pointer_x(bounds, outside) - start_x,
+            })
+        );
+        assert_eq!(
+            rebuilt
+                .handle_input(
+                    bounds,
+                    WidgetInput::pointer_drop(outside, PointerButton::Primary, Default::default()),
+                )
+                .and_then(|output| output.typed_copied()),
+            Some(CurvePreviewMessage::ReleaseCurveOffset {
+                delta: CurvePreviewWidget::offset_pointer_x(bounds, outside) - start_x,
+                option_held: false,
+            })
+        );
+    }
+
+    #[test]
+    fn curve_preview_widget_paints_normal_hovered_and_pressed_handle_colors() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+        let phase_offset = 0.37;
+        let handle = CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset);
+        let theme = ThemeTokens::default();
+        let handle_color = |primitives: &[PaintPrimitive]| {
+            primitives
+                .iter()
+                .find_map(|primitive| match primitive {
+                    PaintPrimitive::FillRect(fill) if fill.rect == handle => Some(fill.color),
+                    _ => None,
+                })
+                .expect("offset handle should be painted")
+        };
+
+        let mut normal_primitives = Vec::new();
+        CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_phase_offset(phase_offset)
+            .append_paint(
+                &mut normal_primitives,
+                bounds,
+                &LayoutOutput::default(),
+                &theme,
+            );
+        assert_eq!(handle_color(&normal_primitives), theme.accent_mint);
+
+        let mut hover_widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                .with_phase_offset(phase_offset);
+        assert!(hover_widget
+            .handle_input(bounds, WidgetInput::pointer_move(handle.center()))
+            .is_none());
+        let mut hover_primitives = Vec::new();
+        hover_widget.append_paint(
+            &mut hover_primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &theme,
+        );
+        assert_eq!(handle_color(&hover_primitives), CURVE_OFFSET_HOVER_COLOR);
+
+        let mut pressed_primitives = Vec::new();
+        CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(phase_offset)
+            .with_active_curve_offset(Some(0.37))
+            .append_paint(
+                &mut pressed_primitives,
+                bounds,
+                &LayoutOutput::default(),
+                &theme,
+            );
+        assert_eq!(handle_color(&pressed_primitives), CURVE_OFFSET_MOVE_COLOR);
+    }
+
+    #[test]
+    fn curve_preview_widget_synchronizes_handle_pointer_hover_without_copying_drag_state() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+        let phase_offset = 0.37;
+        let handle = CurvePreviewWidget::offset_handle_bounds(bounds, phase_offset);
+        let mut previous =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+                .with_phase_offset(phase_offset)
+                .with_active_curve_offset(Some(0.37));
+        previous.handle_input(bounds, WidgetInput::pointer_move(handle.center()));
+
+        let mut rebuilt = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(phase_offset);
+        rebuilt.synchronize_from_previous(&previous);
+        assert_eq!(rebuilt.last_pointer_position, Some(handle.center()));
+        assert!(rebuilt.active_curve_offset_start_x.is_none());
+
+        let mut primitives = Vec::new();
+        rebuilt.append_paint(
+            &mut primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &ThemeTokens::default(),
+        );
+        assert!(primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::FillRect(fill)
+                    if fill.rect == handle && fill.color == CURVE_OFFSET_HOVER_COLOR
+            )
+        }));
     }
 
     #[test]
@@ -12946,11 +13435,11 @@ mod tests {
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: gutter_position,
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(
+                    gutter_position,
+                    PointerButton::Primary,
+                    Default::default()
+                ),
             )
             .is_none());
         assert!(
@@ -12978,7 +13467,7 @@ mod tests {
                 (CurvePreviewWidget::curve_bounds(bounds).width().max(1.0) - 1.0).max(1.0);
 
             let drag = widget
-                .handle_input(bounds, WidgetInput::PointerMove { position })
+                .handle_input(bounds, WidgetInput::pointer_move(position))
                 .expect("active node move should emit a drag message");
             let drag_threshold = match drag.typed_copied() {
                 Some(CurvePreviewMessage::DragNode {
@@ -12995,11 +13484,11 @@ mod tests {
             let release = widget
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerRelease {
+                    WidgetInput::pointer_release(
                         position,
-                        button: PointerButton::Primary,
-                        modifiers: Default::default(),
-                    },
+                        PointerButton::Primary,
+                        Default::default(),
+                    ),
                 )
                 .expect("active node release should emit a release message");
             let release_threshold = match release.typed_copied() {
@@ -13100,11 +13589,11 @@ mod tests {
             plain
                 .handle_input(
                     reference_bounds,
-                    WidgetInput::PointerPress {
-                        position: expanded_plain,
-                        button: PointerButton::Primary,
-                        modifiers: Default::default(),
-                    },
+                    WidgetInput::pointer_press(
+                        expanded_plain,
+                        PointerButton::Primary,
+                        Default::default()
+                    ),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::PressDirectProximitySegment { index: 1, .. })
@@ -13119,14 +13608,14 @@ mod tests {
             command
                 .handle_input(
                     reference_bounds,
-                    WidgetInput::PointerPress {
-                        position: expanded_plain,
-                        button: PointerButton::Primary,
-                        modifiers: PointerModifiers {
+                    WidgetInput::pointer_press(
+                        expanded_plain,
+                        PointerButton::Primary,
+                        PointerModifiers {
                             command: true,
                             ..PointerModifiers::default()
-                        },
-                    },
+                        }
+                    ),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::InsertNode {
@@ -13142,14 +13631,14 @@ mod tests {
         assert!(option
             .handle_input(
                 reference_bounds,
-                WidgetInput::PointerPress {
-                    position: expanded_plain,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                WidgetInput::pointer_press(
+                    expanded_plain,
+                    PointerButton::Primary,
+                    PointerModifiers {
                         alt: true,
                         ..PointerModifiers::default()
-                    },
-                },
+                    }
+                ),
             )
             .is_none());
     }
@@ -13172,16 +13661,12 @@ mod tests {
 
         assert!(widget.hit_curve_segment(bounds, position).is_none());
         assert!(widget
-            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .handle_input(bounds, WidgetInput::pointer_move(position))
             .is_none());
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position,
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(position, PointerButton::Primary, Default::default()),
             )
             .is_none());
         assert_eq!(widget.curve, before);
@@ -13206,7 +13691,7 @@ mod tests {
                     .with_command_hover_held(true);
             assert_eq!(
                 command_hover
-                    .handle_input(bounds, WidgetInput::PointerMove { position })
+                    .handle_input(bounds, WidgetInput::pointer_move(position))
                     .and_then(|output| output.typed_copied()),
                 Some(CurvePreviewMessage::Hover {
                     node: None,
@@ -13222,14 +13707,14 @@ mod tests {
                 command_press
                     .handle_input(
                         bounds,
-                        WidgetInput::PointerPress {
+                        WidgetInput::pointer_press(
                             position,
-                            button: PointerButton::Primary,
-                            modifiers: PointerModifiers {
+                            PointerButton::Primary,
+                            PointerModifiers {
                                 command: true,
                                 ..PointerModifiers::default()
-                            },
-                        },
+                            }
+                        ),
                     )
                     .and_then(|output| output.typed_copied()),
                 Some(CurvePreviewMessage::PressSegmentMove { index: 1, .. })
@@ -13239,7 +13724,7 @@ mod tests {
                 CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, true);
             assert_eq!(
                 option_hover
-                    .handle_input(bounds, WidgetInput::PointerMove { position })
+                    .handle_input(bounds, WidgetInput::pointer_move(position))
                     .and_then(|output| output.typed_copied()),
                 Some(CurvePreviewMessage::Hover {
                     node: None,
@@ -13254,14 +13739,14 @@ mod tests {
             assert!(option_press
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerPress {
+                    WidgetInput::pointer_press(
                         position,
-                        button: PointerButton::Primary,
-                        modifiers: PointerModifiers {
+                        PointerButton::Primary,
+                        PointerModifiers {
                             alt: true,
                             ..PointerModifiers::default()
-                        },
-                    },
+                        }
+                    ),
                 )
                 .is_none());
             assert_eq!(
@@ -13288,11 +13773,7 @@ mod tests {
             plain
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerPress {
-                        position: outer,
-                        button: PointerButton::Primary,
-                        modifiers: Default::default(),
-                    },
+                    WidgetInput::pointer_press(outer, PointerButton::Primary, Default::default()),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::PressDirectProximitySegment {
@@ -13307,14 +13788,14 @@ mod tests {
             command
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerPress {
-                        position: outer,
-                        button: PointerButton::Primary,
-                        modifiers: PointerModifiers {
+                    WidgetInput::pointer_press(
+                        outer,
+                        PointerButton::Primary,
+                        PointerModifiers {
                             command: true,
                             ..PointerModifiers::default()
-                        },
-                    },
+                        }
+                    ),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::PressSegmentMove { index: 1, .. })
@@ -13325,14 +13806,14 @@ mod tests {
         assert!(option
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: outer,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                WidgetInput::pointer_press(
+                    outer,
+                    PointerButton::Primary,
+                    PointerModifiers {
                         alt: true,
                         ..PointerModifiers::default()
-                    },
-                },
+                    }
+                ),
             )
             .is_none());
         assert_eq!(
@@ -13348,14 +13829,14 @@ mod tests {
             shift
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerPress {
-                        position: outer,
-                        button: PointerButton::Primary,
-                        modifiers: PointerModifiers {
+                    WidgetInput::pointer_press(
+                        outer,
+                        PointerButton::Primary,
+                        PointerModifiers {
                             shift: true,
                             ..PointerModifiers::default()
-                        },
-                    },
+                        }
+                    ),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::PressMarquee { .. })
@@ -13365,11 +13846,7 @@ mod tests {
         assert!(matches!(
             line.handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: on_line,
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(on_line, PointerButton::Primary, Default::default()),
             )
             .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::InsertNode { .. })
@@ -13379,11 +13856,7 @@ mod tests {
         assert!(matches!(
             node.handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: near_node,
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(near_node, PointerButton::Primary, Default::default()),
             )
             .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::PressNode { index: 2, .. })
@@ -13417,11 +13890,7 @@ mod tests {
         assert!(background
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position,
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(position, PointerButton::Primary, Default::default()),
             )
             .is_none());
     }
@@ -13439,7 +13908,7 @@ mod tests {
         let position = CurvePreviewWidget::curve_point(bounds, expected);
 
         let output = widget
-            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .handle_input(bounds, WidgetInput::pointer_move(position))
             .expect("segment hover should emit a preview message");
 
         match output.typed_copied() {
@@ -13467,7 +13936,7 @@ mod tests {
         let position = CurvePreviewWidget::curve_point(bounds, expected);
 
         let output = widget
-            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .handle_input(bounds, WidgetInput::pointer_move(position))
             .expect("option line hover should emit segment hover state");
 
         assert_eq!(
@@ -13495,11 +13964,7 @@ mod tests {
         let output = widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position,
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(position, PointerButton::Primary, Default::default()),
             )
             .expect("segment press should emit an insert message");
 
@@ -13526,25 +13991,23 @@ mod tests {
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                    PointerButton::Primary,
+                    PointerModifiers {
                         alt: true,
                         ..PointerModifiers::default()
-                    },
-                },
+                    }
+                ),
             )
             .is_none());
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerMove {
-                    position: Point::new(
-                        position.x + OPTION_GESTURE_DRAG_START_DISTANCE,
-                        position.y,
-                    ),
-                },
+                WidgetInput::pointer_move(Point::new(
+                    position.x + OPTION_GESTURE_DRAG_START_DISTANCE,
+                    position.y,
+                )),
             )
             .is_some_and(|output| {
                 output.typed_copied()
@@ -13563,14 +14026,14 @@ mod tests {
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                    PointerButton::Primary,
+                    PointerModifiers {
                         alt: true,
                         ..PointerModifiers::default()
-                    },
-                },
+                    }
+                ),
             )
             .is_none());
     }
@@ -13585,15 +14048,15 @@ mod tests {
         let output = widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                    PointerButton::Primary,
+                    PointerModifiers {
                         command: true,
                         shift: true,
                         ..PointerModifiers::default()
                     },
-                },
+                ),
             )
             .expect("Cmd+Shift empty-canvas press should start an offset");
         assert!(matches!(
@@ -13616,15 +14079,15 @@ mod tests {
         let output = widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                    PointerButton::Primary,
+                    PointerModifiers {
                         command: true,
                         shift: true,
                         alt: true,
                     },
-                },
+                ),
             )
             .expect("Cmd+Shift node press should start whole-curve offset");
         assert_eq!(
@@ -13647,14 +14110,14 @@ mod tests {
 
         let output = widget.handle_input(
             bounds,
-            WidgetInput::PointerPress {
+            WidgetInput::pointer_press(
                 position,
-                button: PointerButton::Primary,
-                modifiers: PointerModifiers {
+                PointerButton::Primary,
+                PointerModifiers {
                     command: true,
                     ..PointerModifiers::default()
                 },
-            },
+            ),
         );
         assert!(!matches!(
             output.and_then(|output| output.typed_copied()),
@@ -13672,14 +14135,14 @@ mod tests {
 
         let output = widget.handle_input(
             bounds,
-            WidgetInput::PointerPress {
+            WidgetInput::pointer_press(
                 position,
-                button: PointerButton::Primary,
-                modifiers: PointerModifiers {
+                PointerButton::Primary,
+                PointerModifiers {
                     shift: true,
                     ..PointerModifiers::default()
                 },
-            },
+            ),
         );
         assert!(!matches!(
             output.and_then(|output| output.typed_copied()),
@@ -13894,12 +14357,12 @@ mod tests {
     }
 
     #[test]
-    fn offset_bar_double_click_resets_the_automatable_phase_offset() {
+    fn offset_handle_double_click_resets_the_automatable_phase_offset() {
         let params = Arc::new(PumpParams::new());
         params.set_phase_offset(0.43);
         let mut state = editor_state(Arc::clone(&params));
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+        let handle = CurvePreviewWidget::offset_handle_bounds(bounds, 0.43);
         let mut widget = CurvePreviewWidget::new(
             params.editable_curve_snapshot(),
             None,
@@ -13908,14 +14371,15 @@ mod tests {
             None,
             None,
             false,
-        );
+        )
+        .with_phase_offset(0.43);
 
         let message = widget
             .handle_input(
                 bounds,
                 WidgetInput::primary_double_click(Point::new(
-                    (bar.min.x + bar.max.x) * 0.5,
-                    (bar.min.y + bar.max.y) * 0.5,
+                    (handle.min.x + handle.max.x) * 0.5,
+                    (handle.min.y + handle.max.y) * 0.5,
                 )),
             )
             .and_then(|output| output.typed_copied());
@@ -13928,6 +14392,22 @@ mod tests {
     }
 
     #[test]
+    fn offset_track_double_click_is_inert() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = bounds_for_curve_test();
+        let bar = CurvePreviewWidget::offset_bar_bounds(bounds);
+        let handle = CurvePreviewWidget::offset_handle_bounds(bounds, 0.43);
+        let track_position = Point::new(bar.min.x + 1.0, bar.center().y);
+        assert!(!handle.contains(track_position));
+
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_phase_offset(0.43);
+        assert!(widget
+            .handle_input(bounds, WidgetInput::primary_double_click(track_position),)
+            .is_none());
+    }
+
+    #[test]
     fn curve_preview_widget_plain_empty_canvas_press_is_no_op() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
@@ -13937,11 +14417,7 @@ mod tests {
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position,
-                    button: PointerButton::Primary,
-                    modifiers: Default::default(),
-                },
+                WidgetInput::pointer_press(position, PointerButton::Primary, Default::default()),
             )
             .is_none());
     }
@@ -13957,11 +14433,11 @@ mod tests {
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers::default(),
-                },
+                    PointerButton::Primary,
+                    PointerModifiers::default()
+                ),
             )
             .is_none());
     }
@@ -14045,14 +14521,14 @@ mod tests {
         let output = widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                    PointerButton::Primary,
+                    PointerModifiers {
                         command: true,
                         ..PointerModifiers::default()
                     },
-                },
+                ),
             )
             .expect("command empty-canvas press should insert a snapped point");
 
@@ -14127,7 +14603,7 @@ mod tests {
         .with_sync_division(6)
         .with_swing(1.0);
         let snapped_message = snapped_widget
-            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .handle_input(bounds, WidgetInput::pointer_move(position))
             .and_then(|output| output.typed_copied::<CurvePreviewMessage>())
             .expect("active command drag should emit a snapped node move");
         reduce_curve_message(&mut state, snapped_message);
@@ -14158,7 +14634,7 @@ mod tests {
         )
         .with_sync_division(6);
         let plain_message = plain_widget
-            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .handle_input(bounds, WidgetInput::pointer_move(position))
             .and_then(|output| output.typed_copied::<CurvePreviewMessage>())
             .expect("active plain drag should emit a continuous node move");
         reduce_curve_message(&mut state, plain_message);
@@ -14238,7 +14714,7 @@ mod tests {
         );
 
         let output = widget
-            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .handle_input(bounds, WidgetInput::pointer_move(position))
             .expect("line hover should emit hover state");
         assert!(matches!(
             output.typed_copied(),
@@ -14256,6 +14732,7 @@ mod tests {
                         alt: true,
                         ..PointerModifiers::default()
                     },
+                    timestamp: None,
                 },
             )
             .expect("option press should emit option-hover state");
@@ -14284,11 +14761,7 @@ mod tests {
         let point_output = point_widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: point,
-                    button: PointerButton::Primary,
-                    modifiers,
-                },
+                WidgetInput::pointer_press(point, PointerButton::Primary, modifiers),
             )
             .expect("command point press should remain a point gesture");
         assert_eq!(
@@ -14314,11 +14787,7 @@ mod tests {
         let segment_output = segment_widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: segment,
-                    button: PointerButton::Primary,
-                    modifiers,
-                },
+                WidgetInput::pointer_press(segment, PointerButton::Primary, modifiers),
             )
             .expect("command line press should start grouped movement");
         assert!(matches!(
@@ -14331,11 +14800,7 @@ mod tests {
         let empty_output = empty_widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: empty,
-                    button: PointerButton::Primary,
-                    modifiers,
-                },
+                WidgetInput::pointer_press(empty, PointerButton::Primary, modifiers),
             )
             .expect("command empty-canvas press should retain insertion behavior");
         assert!(matches!(
@@ -14354,15 +14819,15 @@ mod tests {
         let output = widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                    PointerButton::Primary,
+                    PointerModifiers {
                         command: true,
                         shift: true,
                         alt: false,
                     },
-                },
+                ),
             )
             .expect("Cmd+Shift point press should start whole-curve offset");
 
@@ -14384,7 +14849,7 @@ mod tests {
         let position = CurvePreviewWidget::curve_point(bounds, curve.nodes[1]);
 
         let output = widget
-            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .handle_input(bounds, WidgetInput::pointer_move(position))
             .expect("node hover should emit hover state");
 
         assert_eq!(
@@ -14410,7 +14875,7 @@ mod tests {
         );
 
         let output = widget
-            .handle_input(bounds, WidgetInput::PointerMove { position })
+            .handle_input(bounds, WidgetInput::pointer_move(position))
             .expect("moving off the node should clear hover state");
 
         assert!(matches!(
@@ -14437,11 +14902,7 @@ mod tests {
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: origin,
-                    button: PointerButton::Primary,
-                    modifiers: option_only_modifiers(),
-                },
+                WidgetInput::pointer_press(origin, PointerButton::Primary, option_only_modifiers()),
             )
             .is_none());
         assert_eq!(
@@ -14457,11 +14918,11 @@ mod tests {
             widget
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerRelease {
-                        position: rehit,
-                        button: PointerButton::Primary,
-                        modifiers: option_only_modifiers(),
-                    },
+                    WidgetInput::pointer_release(
+                        rehit,
+                        PointerButton::Primary,
+                        option_only_modifiers()
+                    ),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::DeleteNode { index: 2 })
@@ -14470,11 +14931,11 @@ mod tests {
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerRelease {
-                    position: rehit,
-                    button: PointerButton::Primary,
-                    modifiers: option_only_modifiers(),
-                },
+                WidgetInput::pointer_release(
+                    rehit,
+                    PointerButton::Primary,
+                    option_only_modifiers()
+                ),
             )
             .is_none());
     }
@@ -14493,31 +14954,22 @@ mod tests {
         assert!(click
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: origin,
-                    button: PointerButton::Primary,
-                    modifiers: option_only_modifiers(),
-                },
+                WidgetInput::pointer_press(origin, PointerButton::Primary, option_only_modifiers()),
             )
             .is_none());
         assert!(click
-            .handle_input(
-                bounds,
-                WidgetInput::PointerMove {
-                    position: below_threshold,
-                },
-            )
+            .handle_input(bounds, WidgetInput::pointer_move(below_threshold),)
             .is_none());
         assert!(click.pending_option_gesture.is_some());
         assert_eq!(
             click
                 .handle_input(
                     bounds,
-                    WidgetInput::PointerRelease {
-                        position: origin,
-                        button: PointerButton::Primary,
-                        modifiers: option_only_modifiers(),
-                    },
+                    WidgetInput::pointer_release(
+                        origin,
+                        PointerButton::Primary,
+                        option_only_modifiers()
+                    ),
                 )
                 .and_then(|output| output.typed_copied()),
             Some(CurvePreviewMessage::DeleteNode { index: 2 })
@@ -14527,19 +14979,16 @@ mod tests {
         assert!(drag
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
-                    position: origin,
-                    button: PointerButton::Primary,
-                    modifiers: option_only_modifiers(),
-                },
+                WidgetInput::pointer_press(origin, PointerButton::Primary, option_only_modifiers()),
             )
             .is_none());
         let output = drag
             .handle_input(
                 bounds,
-                WidgetInput::PointerMove {
-                    position: Point::new(origin.x + OPTION_GESTURE_DRAG_START_DISTANCE, origin.y),
-                },
+                WidgetInput::pointer_move(Point::new(
+                    origin.x + OPTION_GESTURE_DRAG_START_DISTANCE,
+                    origin.y,
+                )),
             )
             .expect("crossing the click threshold should hand off to node dragging");
         assert!(matches!(
@@ -14566,21 +15015,21 @@ mod tests {
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: option_only_modifiers(),
-                },
+                    PointerButton::Primary,
+                    option_only_modifiers()
+                ),
             )
             .is_none());
         assert!(widget
             .handle_input(
                 bounds,
-                WidgetInput::PointerRelease {
+                WidgetInput::pointer_release(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: option_only_modifiers(),
-                },
+                    PointerButton::Primary,
+                    option_only_modifiers()
+                ),
             )
             .is_none());
         assert!(widget.pending_option_gesture.is_none());
@@ -14597,15 +15046,15 @@ mod tests {
         let output = command
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                    PointerButton::Primary,
+                    PointerModifiers {
                         alt: true,
                         command: true,
                         ..PointerModifiers::default()
                     },
-                },
+                ),
             )
             .expect("Option+Command should preserve the existing node press");
         assert!(matches!(
@@ -14623,15 +15072,15 @@ mod tests {
         let output = shift
             .handle_input(
                 bounds,
-                WidgetInput::PointerPress {
+                WidgetInput::pointer_press(
                     position,
-                    button: PointerButton::Primary,
-                    modifiers: PointerModifiers {
+                    PointerButton::Primary,
+                    PointerModifiers {
                         alt: true,
                         shift: true,
                         ..PointerModifiers::default()
                     },
-                },
+                ),
             )
             .expect("Option+Shift should preserve the existing node press");
         assert!(matches!(
@@ -14701,7 +15150,7 @@ mod tests {
 
         for key in [WidgetKey::Delete, WidgetKey::Backspace] {
             let output = widget
-                .handle_input(bounds, WidgetInput::KeyPress(key))
+                .handle_input(bounds, WidgetInput::key_press(key))
                 .expect("focused selected curve should handle deletion");
             assert_eq!(
                 output.typed_copied(),
@@ -16414,28 +16863,40 @@ mod tests {
             &mut state,
             RadiantEditorMessage::Knob {
                 target: NumericEntryTarget::FreeRate,
-                message: KnobMessage::GestureStarted { value: 0.0 },
+                message: KnobMessage::GestureStarted {
+                    value: 0.0,
+                    metadata: Default::default(),
+                },
             },
         );
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
                 target: NumericEntryTarget::FreeRate,
-                message: KnobMessage::ValueChanged { value: 0.25 },
+                message: KnobMessage::ValueChanged {
+                    value: 0.25,
+                    metadata: Default::default(),
+                },
             },
         );
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
                 target: NumericEntryTarget::FreeRate,
-                message: KnobMessage::ValueChanged { value: 0.5 },
+                message: KnobMessage::ValueChanged {
+                    value: 0.5,
+                    metadata: Default::default(),
+                },
             },
         );
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::Knob {
                 target: NumericEntryTarget::FreeRate,
-                message: KnobMessage::GestureEnded { value: 0.5 },
+                message: KnobMessage::GestureEnded {
+                    value: 0.5,
+                    metadata: Default::default(),
+                },
             },
         );
         assert!((params.free_rate_hz() - 31.622_776).abs() < 1.0e-3);
@@ -16474,7 +16935,10 @@ mod tests {
             &mut state,
             RadiantEditorMessage::Knob {
                 target: NumericEntryTarget::FreeRate,
-                message: KnobMessage::Reset { value: 0.0 },
+                message: KnobMessage::Reset {
+                    value: 0.0,
+                    metadata: Default::default(),
+                },
             },
         );
         let mut buffer = EventBuffer::new();
