@@ -927,6 +927,28 @@ mod tests {
     }
 
     #[test]
+    fn small_backward_raw_seek_with_phase_offset_change_clears_stale_display() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.80, 0.80, 1.0, 0.0, 0.0, 0.9, 0.0);
+        writer.finish_block(&buffer);
+        assert!(
+            buffer.snapshot().is_some(),
+            "the old waveform should be visible"
+        );
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.78, 0.03, 1.0, 0.25, 0.0, 0.4, 0.0);
+        writer.finish_block(&buffer);
+
+        assert!(
+            buffer.snapshot().is_none(),
+            "a genuine small backward raw seek must clear stale display data"
+        );
+    }
+
+    #[test]
     fn swing_mapping_change_invalidates_instead_of_mixing_generations() {
         let buffer = IncomingWaveformBuffer::default();
         let mut writer = IncomingWaveformWriter::default();
