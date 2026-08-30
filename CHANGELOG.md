@@ -117,6 +117,8 @@ All notable changes to this project are documented in this file.
 
 - Make curve offset interaction handle-only (541181e)
 
+- Publish server-valid Pump nightly manifests (#78) (47ce57d)
+
 
 ### CI
 
@@ -475,6 +477,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (ad776cf)
 
 - (changelog) Update changelog [skip ci] (e4bf0c3)
+
+- (changelog) Update changelog [skip ci] (41e4354)
 
 
 ### Features
