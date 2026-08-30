@@ -26,6 +26,10 @@ TEAM_ID = re.compile(r"[A-Z0-9]{10}\Z")
 NOTARY_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\Z")
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\Z")
 CORE_SEMVER = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)\Z")
+NIGHTLY_NUMBER = re.compile(r"[1-9][0-9]*\Z")
+NIGHTLY_VERSION = re.compile(
+    r"(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)-nightly\.(?P<number>[1-9][0-9]*)\Z"
+)
 GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -99,6 +103,53 @@ def _format_core_version(version: tuple[int, int, int]) -> str:
     return ".".join(str(part) for part in version)
 
 
+def _canonical_nightly_number(value: Any) -> str:
+    if isinstance(value, bool):
+        raise ValueError("nightly suffix must be a positive canonical decimal")
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError("nightly suffix must be a positive canonical decimal")
+        return str(value)
+    if isinstance(value, str) and NIGHTLY_NUMBER.fullmatch(value):
+        return value
+    raise ValueError("nightly suffix must be a positive canonical decimal")
+
+
+def format_manifest_version(package_version: str, channel: str, nightly_number: Any = None) -> str:
+    """Format the version sent in a release manifest for ``channel``."""
+    if channel not in {"stable", "rc", "nightly"}:
+        raise ValueError(f"invalid release channel: {channel}")
+    if channel != "nightly":
+        return package_version
+    _parse_core_version(package_version, field="package version")
+    return f"{package_version}-nightly.{_canonical_nightly_number(nightly_number)}"
+
+
+def _parse_nightly_core_version(version: Any, *, field: str) -> tuple[int, int, int]:
+    if not isinstance(version, str):
+        raise ValueError(f"{field} must be X.Y.Z-nightly.N")
+    match = NIGHTLY_VERSION.fullmatch(version)
+    if match is None:
+        raise ValueError(f"{field} must be X.Y.Z-nightly.N with a positive canonical decimal suffix")
+    return tuple(int(match.group(part)) for part in ("major", "minor", "patch"))
+
+
+def validate_manifest_version(version: Any, channel: str) -> None:
+    """Validate the channel-specific version carried by a release manifest."""
+    if channel not in {"stable", "rc", "nightly"}:
+        raise ValueError(f"invalid release channel: {channel}")
+    if channel == "nightly":
+        _parse_nightly_core_version(version, field="nightly version")
+    elif not isinstance(version, str) or not SEMVER.fullmatch(version):
+        raise ValueError("version must be semver-like")
+
+
+def _parse_release_history_core_version(version: Any, *, channel: str) -> tuple[int, int, int]:
+    if channel == "nightly" and isinstance(version, str) and NIGHTLY_VERSION.fullmatch(version):
+        return _parse_nightly_core_version(version, field="release version")
+    return _parse_core_version(version, field="release version")
+
+
 def latest_release_version(document: Any) -> Optional[str]:
     """Return the highest numeric version published on any release channel."""
     if not isinstance(document, dict) or not isinstance(document.get("releases"), list):
@@ -108,9 +159,10 @@ def latest_release_version(document: Any) -> Optional[str]:
     for release in document["releases"]:
         if not isinstance(release, dict):
             raise ValueError("release history contains a non-object release")
-        if release.get("channel") not in {"stable", "rc", "nightly"}:
+        channel = release.get("channel")
+        if channel not in {"stable", "rc", "nightly"}:
             raise ValueError("release history contains an invalid channel")
-        candidate = _parse_core_version(release.get("version"), field="release version")
+        candidate = _parse_release_history_core_version(release.get("version"), channel=channel)
         if latest is None or candidate > latest:
             latest = candidate
     return _format_core_version(latest) if latest is not None else None
@@ -133,9 +185,8 @@ def next_release_version(package_version: str, document: Any) -> str:
     return _format_core_version((base[0], base[1], base[2] + 1))
 
 
-def validate_release_fields(version: str, released_at: str, names: list[str], hashes: list[str], sizes: list[int]) -> None:
-    if not SEMVER.fullmatch(version):
-        raise ValueError("version must be semver-like")
+def validate_release_fields(version: str, released_at: str, names: list[str], hashes: list[str], sizes: list[int], channel: str = "stable") -> None:
+    validate_manifest_version(version, channel)
     try:
         parsed = dt.datetime.fromisoformat(released_at.replace("Z", "+00:00"))
     except ValueError as error:
@@ -271,7 +322,7 @@ def build_manifest(
     changelog_hash, changelog_size = file_digest(changelog)
     if changelog_size == 0:
         raise ValueError("CHANGELOG.md must not be empty")
-    validate_release_fields(version, released_at, [item["name"] for item in artifacts] + [screenshot.name, changelog.name], [item["sha256"] for item in artifacts] + [screenshot_info["hash"], changelog_hash], [item["size_bytes"] for item in artifacts] + [screenshot_info["size"], changelog_size])
+    validate_release_fields(version, released_at, [item["name"] for item in artifacts] + [screenshot.name, changelog.name], [item["sha256"] for item in artifacts] + [screenshot_info["hash"], changelog_hash], [item["size_bytes"] for item in artifacts] + [screenshot_info["size"], changelog_size], channel=channel)
     return {
         "schema_version": MANIFEST_SCHEMA,
         "product": "pump",
@@ -504,7 +555,11 @@ def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path, r
 
 
 def _validate_exact_manifest_names(manifest: dict[str, Any]) -> None:
-    expected = {"clap": f"pump-v{manifest['version']}-macos.clap.zip", "vst3": f"pump-v{manifest['version']}-macos.vst3.zip"}
+    channel = manifest.get("channel")
+    version = manifest.get("version")
+    if channel == "nightly":
+        version = _format_core_version(_parse_nightly_core_version(version, field="nightly version"))
+    expected = {"clap": f"pump-v{version}-macos.clap.zip", "vst3": f"pump-v{version}-macos.vst3.zip"}
     actual = {artifact["format"]: artifact["name"] for artifact in manifest["artifacts"]}
     if actual != expected:
         raise ValueError("manifest artifact names do not match the exact Pump ZIP contract")
@@ -552,6 +607,9 @@ def validate_publish_manifest(manifest: dict[str, Any], root: Path, *, require_p
     build_id = manifest.get("build_id")
     source = manifest.get("source", {})
     signing = manifest.get("signing", {})
+    channel = manifest.get("channel")
+    if channel not in {"stable", "rc", "nightly"}:
+        raise ValueError("publish manifest has invalid channel")
     if not isinstance(signing, dict):
         raise ValueError("publish manifest has invalid signing provenance")
     if not isinstance(build_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,127}", build_id) or not isinstance(source, dict) or source != {"repository": "PORTALSURFER/pump", "git_sha": source.get("git_sha"), "dirty": False} or not isinstance(source.get("git_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", source["git_sha"]):
@@ -578,7 +636,7 @@ def validate_publish_manifest(manifest: dict[str, Any], root: Path, *, require_p
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not isinstance(entry.get("sha256"), str) or not isinstance(entry.get("size_bytes"), int):
             raise ValueError("publish manifest has invalid file metadata")
-    validate_release_fields(manifest.get("version", ""), manifest.get("released_at", ""), [entry["name"] for entry in entries], [entry["sha256"] for entry in entries], [entry["size_bytes"] for entry in entries])
+    validate_release_fields(manifest.get("version", ""), manifest.get("released_at", ""), [entry["name"] for entry in entries], [entry["sha256"] for entry in entries], [entry["size_bytes"] for entry in entries], channel=channel)
     for entry in entries:
         path = root / entry["name"]
         digest, size = file_digest(path)

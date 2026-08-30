@@ -86,6 +86,29 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertEqual(release_helper.next_release_version("0.2.0", document), "0.2.6")
         self.assertEqual(release_helper.next_release_version("0.2.6", document), "0.2.6")
 
+    def test_release_version_history_accepts_mixed_legacy_and_suffixed_nightlies(self):
+        document = {
+            "releases": [
+                {"channel": "nightly", "version": "0.2.3", "released_at": "2026-07-29T20:00:00Z"},
+                {"channel": "nightly", "version": "0.2.4-nightly.17", "released_at": "2026-07-30T20:00:00Z"},
+            ]
+        }
+        self.assertEqual(release_helper.latest_release_version(document), "0.2.4")
+        self.assertEqual(release_helper.next_release_version("0.2.4", document), "0.2.5")
+
+    def test_nightly_manifest_version_format_and_validation(self):
+        self.assertEqual(release_helper.format_manifest_version("0.2.3", "nightly", 17), "0.2.3-nightly.17")
+        self.assertEqual(release_helper.format_manifest_version("0.2.3", "stable"), "0.2.3")
+        self.assertEqual(release_helper.format_manifest_version("0.2.3", "rc"), "0.2.3")
+        for number in (0, "0", "01"):
+            with self.subTest(number=number), self.assertRaisesRegex(ValueError, "positive canonical"):
+                release_helper.format_manifest_version("0.2.3", "nightly", number)
+
+    def test_nightly_manifest_validation_rejects_bare_and_noncanonical_versions(self):
+        for version in ("0.2.3", "0.2.3-nightly.0", "0.2.3-nightly.01"):
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "nightly version"):
+                release_helper.validate_release_fields(version, "2026-07-30T20:00:00Z", ["release.zip"], ["a" * 64], [1], channel="nightly")
+
     def test_release_version_rejects_malformed_history(self):
         with self.assertRaisesRegex(ValueError, "release version"):
             release_helper.latest_release_version({"releases": [{"channel": "nightly", "version": "0.2.x"}]})
@@ -229,6 +252,40 @@ class ReleaseHelperTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "production Developer ID notarized"):
                 release_helper.validate_publish_manifest(manifest, root)
 
+    def test_nightly_manifest_uses_numeric_artifact_names_and_matching_headers(self):
+        transport = FakeTransport()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            screenshot = root / "pump-default-640x400.png"
+            screenshot.write_bytes(png())
+            clap = root / "pump-v0.2.3-macos.clap.zip"
+            vst3 = root / "pump-v0.2.3-macos.vst3.zip"
+            clap.write_bytes(b"clap")
+            vst3.write_bytes(b"vst3")
+            changelog = root / "CHANGELOG.md"
+            changelog.write_text("# Nightly\n", encoding="utf-8")
+            manifest = release_helper.build_manifest(version="0.2.3-nightly.17", build_id="pump-v0.2.3-abcdef012345", channel="nightly", released_at="2026-07-30T20:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="preflight", signing_identity_class="ad hoc", notarized=False, stapled=False)
+            release_helper.validate_preflight_manifest(manifest, root)
+            release_helper._publish_validated_manifest(endpoint=release_helper.PRODUCTION_ORIGIN, token="secret", manifest=manifest, root=root, transport=transport)
+        self.assertEqual(manifest["version"], "0.2.3-nightly.17")
+        self.assertEqual(transport.calls[-1][3]["X-PortalSurfer-Release-Version"], manifest["version"])
+        self.assertTrue(all("pump-v0.2.3-macos" in call[0] for call in transport.calls[1:3]))
+
+    def test_stable_and_rc_artifact_names_remain_numeric(self):
+        for channel in ("stable", "rc"):
+            with self.subTest(channel=channel):
+                manifest = {
+                    "channel": channel,
+                    "version": "0.2.3",
+                    "artifacts": [
+                        {"format": "clap", "name": "pump-v0.2.3-macos.clap.zip"},
+                        {"format": "vst3", "name": "pump-v0.2.3-macos.vst3.zip"},
+                    ],
+                    "screenshot": {"role": "default-ui", "name": "pump-default-640x400.png"},
+                    "changelog": {"name": "CHANGELOG.md"},
+                }
+                release_helper._validate_exact_manifest_names(manifest)
+
     def test_release_preflight_cli_contract_is_credential_free(self):
         script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
         self.assertIn("--preflight", script)
@@ -238,6 +295,17 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertNotIn("APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64", preflight)
         self.assertIn("require_production=False", script)
         self.assertLess(script.index("printf 'preflight CodeResources\\n'"), script.index('codesign --force --deep --sign - "${bundle_dir}"'))
+
+    def test_release_script_derives_nightly_manifest_version_from_complete_history(self):
+        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
+        source = script.index('git_sha="$(git rev-parse HEAD)"')
+        count = script.index('git rev-list --count "${git_sha}"')
+        self.assertLess(source, count)
+        self.assertIn('git rev-parse --is-shallow-repository', script)
+        self.assertIn('manifest_version="${package_version}-nightly.${nightly_revision_count}"', script)
+        self.assertIn('<key>CFBundleVersion</key><string>${package_version}</string>', script)
+        self.assertIn('pump-v${package_version}-macos.clap.zip', script)
+        self.assertIn('"${release_dir}" "${manifest_version}" "${package_version}"', script)
 
     def test_capability_refusal_makes_zero_puts(self):
         transport = FakeTransport(manifest_schema_versions=(1,))

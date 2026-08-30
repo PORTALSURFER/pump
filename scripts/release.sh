@@ -66,16 +66,16 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   exit 1
 fi
 
-version="$(python3 - <<'PY'
+package_version="$(python3 - <<'PY'
 import pathlib, tomllib
 print(tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"])
 PY
 )"
-if [[ -n "${requested_version}" && "${requested_version}" != "${version}" ]]; then
-  echo "requested version ${requested_version} does not match Cargo.toml ${version}" >&2
+if [[ -n "${requested_version}" && "${requested_version}" != "${package_version}" ]]; then
+  echo "requested version ${requested_version} does not match Cargo.toml ${package_version}" >&2
   exit 1
 fi
-version="${requested_version:-${version}}"
+package_version="${requested_version:-${package_version}}"
 git_sha="$(git rev-parse HEAD)"
 [[ "${git_sha}" =~ ^[0-9a-f]{40}$ ]] || { echo "could not resolve an exact source SHA" >&2; exit 1; }
 if [[ "${mode}" != preflight ]]; then
@@ -83,7 +83,21 @@ if [[ "${mode}" != preflight ]]; then
   canonical_main="$(git rev-parse refs/remotes/origin/main 2>/dev/null || true)"
   [[ -n "${canonical_main}" && "${git_sha}" == "${canonical_main}" ]] || { echo "production release source must equal origin/main (${canonical_main:-unavailable})" >&2; exit 1; }
 fi
-build_id="${build_id:-pump-v${version}-${git_sha:0:12}}"
+manifest_version="${package_version}"
+if [[ "${channel}" == nightly ]]; then
+  if ! shallow_repository="$(git rev-parse --is-shallow-repository 2>/dev/null)"; then
+    echo "nightly release requires a complete git history" >&2
+    exit 1
+  fi
+  [[ "${shallow_repository}" == false ]] || { echo "nightly release requires a complete git history" >&2; exit 1; }
+  if ! nightly_revision_count="$(git rev-list --count "${git_sha}" 2>/dev/null)"; then
+    echo "could not derive a trusted nightly revision count" >&2
+    exit 1
+  fi
+  [[ "${nightly_revision_count}" =~ ^[1-9][0-9]*$ ]] || { echo "could not derive a trusted nightly revision count" >&2; exit 1; }
+  manifest_version="${package_version}-nightly.${nightly_revision_count}"
+fi
+build_id="${build_id:-pump-v${package_version}-${git_sha:0:12}}"
 [[ "${build_id}" =~ ^[a-z0-9][a-z0-9._-]{1,127}$ ]] || { echo "invalid build id" >&2; exit 2; }
 released_at="${released_at:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 [[ -s CHANGELOG.md ]] || { echo "CHANGELOG.md must not be empty" >&2; exit 1; }
@@ -183,8 +197,8 @@ build_bundle() {
 <key>CFBundleIdentifier</key><string>com.portalsurfer.pump.${format}</string>
 <key>CFBundleName</key><string>Pump</string>
 <key>CFBundlePackageType</key><string>BNDL</string>
-<key>CFBundleShortVersionString</key><string>${version}</string>
-<key>CFBundleVersion</key><string>${version}</string>
+<key>CFBundleShortVersionString</key><string>${package_version}</string>
+<key>CFBundleVersion</key><string>${package_version}</string>
 </dict></plist>
 EOF
   printf 'BNDL????' > "${contents}/PkgInfo"
@@ -292,36 +306,36 @@ TOYBOX_ACTIVE_ARTIFACT=clap CARGO_TARGET_DIR="${clap_target}" cargo build --lock
 clap_binary="${clap_target}/release/libpump.dylib"
 [[ -f "${clap_binary}" ]] || { echo "CLAP build did not produce ${clap_binary}" >&2; exit 1; }
 clap_bundle="${tmp_root}/pump.clap"
-build_bundle clap "${release_dir}/pump-v${version}-macos.clap.zip" "${clap_bundle}" "${clap_binary}"
-audit_zip clap "${release_dir}/pump-v${version}-macos.clap.zip" "${signing_team_id}"
+build_bundle clap "${release_dir}/pump-v${package_version}-macos.clap.zip" "${clap_bundle}" "${clap_binary}"
+audit_zip clap "${release_dir}/pump-v${package_version}-macos.clap.zip" "${signing_team_id}"
 
 echo "[release] building VST3"
 TOYBOX_ACTIVE_ARTIFACT=vst3 VST3_SDK_DIR="${VST3_SDK_DIR}" CARGO_TARGET_DIR="${vst3_target}" cargo rustc --locked --release --features vst3 -- -C link-arg=-Wl,-bundle
 vst3_binary="${vst3_target}/release/libpump.dylib"
 [[ -f "${vst3_binary}" ]] || { echo "VST3 build did not produce ${vst3_binary}" >&2; exit 1; }
 vst3_bundle="${tmp_root}/pump.vst3"
-build_bundle vst3 "${release_dir}/pump-v${version}-macos.vst3.zip" "${vst3_bundle}" "${vst3_binary}"
-audit_zip vst3 "${release_dir}/pump-v${version}-macos.vst3.zip" "${signing_team_id}"
+build_bundle vst3 "${release_dir}/pump-v${package_version}-macos.vst3.zip" "${vst3_bundle}" "${vst3_binary}"
+audit_zip vst3 "${release_dir}/pump-v${package_version}-macos.vst3.zip" "${signing_team_id}"
 
 cp CHANGELOG.md "${release_dir}/CHANGELOG.md"
 if [[ "${mode}" == preflight ]]; then
-  python3 - "${release_dir}" "${version}" "${build_id}" "${channel}" "${released_at}" "${git_sha}" <<'PY'
+  python3 - "${release_dir}" "${manifest_version}" "${package_version}" "${build_id}" "${channel}" "${released_at}" "${git_sha}" <<'PY'
 import pathlib
 import sys
 sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
 from release_helper import build_manifest, canonical_json, validate_preflight_manifest
 root = pathlib.Path(sys.argv[1])
-manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys.argv[4], released_at=sys.argv[5], git_sha=sys.argv[6], clap=root / f"pump-v{sys.argv[2]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[2]}-macos.vst3.zip", screenshot=root / "pump-default-640x400.png", changelog=root / "CHANGELOG.md", distribution="preflight", signing_identity_class="ad hoc", notarized=False, stapled=False)
+manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[4], channel=sys.argv[5], released_at=sys.argv[6], git_sha=sys.argv[7], clap=root / f"pump-v{sys.argv[3]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[3]}-macos.vst3.zip", screenshot=root / "pump-default-640x400.png", changelog=root / "CHANGELOG.md", distribution="preflight", signing_identity_class="ad hoc", notarized=False, stapled=False)
 (root / "release-manifest.json").write_bytes(canonical_json(manifest))
 validate_preflight_manifest(manifest, root)
 PY
 else
-  python3 - "${release_dir}" "${version}" "${build_id}" "${channel}" "${released_at}" "${git_sha}" "${signing_team_id}" "${clap_notary_id}" "${vst3_notary_id}" <<'PY'
+  python3 - "${release_dir}" "${manifest_version}" "${package_version}" "${build_id}" "${channel}" "${released_at}" "${git_sha}" "${signing_team_id}" "${clap_notary_id}" "${vst3_notary_id}" <<'PY'
 import json, pathlib, sys
 sys.path.insert(0, str(pathlib.Path("scripts").resolve()))
 from release_helper import build_manifest, canonical_json
 root = pathlib.Path(sys.argv[1])
-manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[3], channel=sys.argv[4], released_at=sys.argv[5], git_sha=sys.argv[6], clap=root / f"pump-v{sys.argv[2]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[2]}-macos.vst3.zip", screenshot=root / "pump-default-640x400.png", changelog=root / "CHANGELOG.md", distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id=sys.argv[7], notary_submissions={"clap": sys.argv[8], "vst3": sys.argv[9]})
+manifest = build_manifest(version=sys.argv[2], build_id=sys.argv[4], channel=sys.argv[5], released_at=sys.argv[6], git_sha=sys.argv[7], clap=root / f"pump-v{sys.argv[3]}-macos.clap.zip", vst3=root / f"pump-v{sys.argv[3]}-macos.vst3.zip", screenshot=root / "pump-default-640x400.png", changelog=root / "CHANGELOG.md", distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id=sys.argv[8], notary_submissions={"clap": sys.argv[9], "vst3": sys.argv[10]})
 (root / "release-manifest.json").write_bytes(canonical_json(manifest))
 PY
 fi
