@@ -14216,6 +14216,97 @@ mod tests {
     }
 
     #[test]
+    fn radiant_editor_cmd_shift_offset_keeps_both_waveform_layers_visible_through_gesture() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+        {
+            let buffer = state.status.incoming_waveform_buffer();
+            let mut writer = crate::incoming_waveform::IncomingWaveformWriter::default();
+            writer.begin_block(buffer);
+            writer.record(buffer, 0.8, 0.9, 0.0);
+            writer.record(buffer, 0.1, 0.0, 0.0);
+            writer.finish_block(buffer);
+        }
+
+        let theme = pump_theme();
+        let assert_waveform_layers = |state: &mut RadiantEditorState| {
+            let frame = project_editor_surface(state).frame_at_size(
+                Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32),
+                &theme,
+            );
+            let processed = frame
+                .paint_plan
+                .primitives
+                .iter()
+                .filter(|primitive| {
+                    matches!(
+                        primitive,
+                        PaintPrimitive::StrokePolyline(stroke)
+                            if stroke.color == theme.accent_copper.with_alpha(96)
+                                && (stroke.width - 2.0).abs() < 1.0e-6
+                    )
+                })
+                .count();
+            let incoming = frame
+                .paint_plan
+                .primitives
+                .iter()
+                .filter(|primitive| {
+                    matches!(
+                        primitive,
+                        PaintPrimitive::StrokePolyline(stroke)
+                            if stroke.color == theme.text_muted.with_alpha(88)
+                                && (stroke.width - 1.0).abs() < 1.0e-6
+                    )
+                })
+                .count();
+            assert_eq!(processed, 2, "processed waveform must retain both branches");
+            assert_eq!(incoming, 2, "incoming waveform must retain both branches");
+        };
+
+        assert_waveform_layers(&mut state);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: 0.4,
+                quantized: false,
+            }),
+        );
+        assert_waveform_layers(&mut state);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragCurveOffset { delta: 0.25 }),
+        );
+        assert_waveform_layers(&mut state);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseCurveOffset {
+                delta: 0.25,
+                option_held: false,
+            }),
+        );
+        assert_waveform_layers(&mut state);
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressCurveOffset {
+                pointer_x: 0.4,
+                quantized: false,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragCurveOffset { delta: 0.5 }),
+        );
+        assert_waveform_layers(&mut state);
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::Cancel),
+        );
+        assert_waveform_layers(&mut state);
+    }
+
+    #[test]
     fn radiant_editor_cmd_shift_offset_snaps_immediately_when_option_is_pressed() {
         let params = Arc::new(PumpParams::new());
         let mut state = editor_state(Arc::clone(&params));
