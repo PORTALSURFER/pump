@@ -119,6 +119,12 @@ All notable changes to this project are documented in this file.
 
 - Publish server-valid Pump nightly manifests (#78) (47ce57d)
 
+- Keep waveform visible during offset sliding (fb7abcc)
+
+- Harden waveform remap publication (f4a8066)
+
+- Invalidate waveform on swing remap (e917503)
+
 
 ### CI
 
@@ -479,6 +485,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (e4bf0c3)
 
 - (changelog) Update changelog [skip ci] (41e4354)
+
+- (changelog) Update changelog [skip ci] (0cb00b4)
 
 
 ### Features
@@ -1458,6 +1466,10 @@ Pump: add Option-click curve-node deletion (195d2fd)
 
 Pump: make the curve offset control handle-only (93312b0)
 
+- Merge pull request #77 from PORTALSURFER/wsvasek/opt-1332-pump-keep-the-waveform-visible-during-command-shift-offset
+
+Pump: keep waveform visible during Command-Shift offset sliding (53550f1)
+
 
 ### Refactoring
 
@@ -1505,4 +1517,6 @@ Pump: make the curve offset control handle-only (93312b0)
 - Cover Pump header action states (2aa67d2)
 
 - (gui) Satisfy edge interaction lint (18b85be)
+
+- Cover waveform clearing on small offset seek (e4609d4)
 
