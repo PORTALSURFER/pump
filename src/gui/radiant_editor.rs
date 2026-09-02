@@ -4388,7 +4388,7 @@ fn move_curve_node_with_push_through(
     }
 
     if let Some(edge) = curve_edge_for_x(target.x) {
-        remove_interior_curve_node(curve, moved_index);
+        remove_interior_curve_node_at_edge(curve, moved_index, edge);
         set_wrapped_curve_endpoint_y(curve, y);
         return edge.index(curve.nodes.len());
     }
@@ -4406,7 +4406,32 @@ fn move_curve_node_with_push_through(
     moved_index
 }
 
+fn remove_interior_curve_node_at_edge(
+    curve: &mut EditableCurve,
+    remove_index: usize,
+    edge: CurveEdge,
+) {
+    let preserved_segment_index = match edge {
+        CurveEdge::Left => remove_index,
+        CurveEdge::Right => remove_index.saturating_sub(1),
+    };
+    let preserved_tension = curve
+        .segments
+        .get(preserved_segment_index)
+        .copied()
+        .map(|segment| segment.tension);
+    remove_interior_curve_node_with_merge_tension(curve, remove_index, preserved_tension);
+}
+
 fn remove_interior_curve_node(curve: &mut EditableCurve, remove_index: usize) {
+    remove_interior_curve_node_with_merge_tension(curve, remove_index, None);
+}
+
+fn remove_interior_curve_node_with_merge_tension(
+    curve: &mut EditableCurve,
+    remove_index: usize,
+    preserved_tension: Option<f32>,
+) {
     let last_index = curve.nodes.len().saturating_sub(1);
     if remove_index == 0 || remove_index >= last_index {
         return;
@@ -4428,8 +4453,9 @@ fn remove_interior_curve_node(curve: &mut EditableCurve, remove_index: usize) {
             tension: left_tension,
         })
         .tension;
-    let merged_tension =
-        ((left_tension + right_tension) * 0.5).clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
+    let merged_tension = preserved_tension.unwrap_or_else(|| {
+        ((left_tension + right_tension) * 0.5).clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION)
+    });
 
     curve.nodes.remove(remove_index);
     if !curve.segments.is_empty() {
@@ -4695,7 +4721,7 @@ fn update_curve_node(curve: &mut EditableCurve, index: usize, node: CurveNode) -
         return index;
     }
     if let Some(edge) = curve_edge_for_x(node.x) {
-        remove_interior_curve_node(curve, index);
+        remove_interior_curve_node_at_edge(curve, index, edge);
         set_wrapped_curve_endpoint_y(curve, node.y);
         curve.normalize_in_place();
         return edge.index(curve.nodes.len());
@@ -10531,6 +10557,110 @@ mod tests {
         let second = params.editable_curve_snapshot().nodes[1];
         assert!((second.x - 0.4).abs() < 1.0e-6);
         assert!((second.y - 0.4).abs() < 1.0e-6);
+    }
+
+    fn direct_edge_drag_curve() -> EditableCurve {
+        EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.9 },
+                CurveNode { x: 0.2, y: 0.3 },
+                CurveNode { x: 0.5, y: 0.6 },
+                CurveNode { x: 0.8, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.9 },
+            ],
+            segments: vec![
+                CurveSegment { tension: 0.13 },
+                CurveSegment { tension: 0.62 },
+                CurveSegment { tension: -0.74 },
+                CurveSegment { tension: 0.31 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized()
+    }
+
+    fn assert_direct_edge_drag_preserves_incident_tension(edge: CurveEdge) {
+        let origin = direct_edge_drag_curve();
+        let (index, target_x, target_y, expected_active, expected_segment, expected_tension) =
+            match edge {
+                CurveEdge::Left => (1, 0.0, 0.35, 0, 0, 0.62),
+                CurveEdge::Right => (3, 1.0, 0.65, 3, 2, -0.74),
+            };
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&origin);
+        // Keep this as a raw edge collapse rather than the viewport seam
+        // takeover path, whose endpoint tension policy is intentionally
+        // covered by the seam tests below.
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index,
+                pointer: origin.nodes[index],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index,
+                node: CurveNode {
+                    x: target_x,
+                    y: target_y,
+                },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let dragged = params.editable_curve_snapshot();
+        let last_index = dragged.nodes.len() - 1;
+        assert_eq!(dragged.nodes.len(), origin.nodes.len() - 1);
+        assert_eq!(dragged.segments.len(), dragged.nodes.len() - 1);
+        assert_eq!(state.active_curve_node, Some(expected_active));
+        assert_eq!(dragged.nodes[0].y, target_y);
+        assert_eq!(dragged.nodes[last_index].y, target_y);
+        assert_eq!(dragged.segments[expected_segment].tension, expected_tension);
+    }
+
+    #[test]
+    fn radiant_editor_direct_left_edge_drag_preserves_outgoing_tension() {
+        assert_direct_edge_drag_preserves_incident_tension(CurveEdge::Left);
+    }
+
+    #[test]
+    fn radiant_editor_direct_right_edge_drag_preserves_incoming_tension() {
+        assert_direct_edge_drag_preserves_incident_tension(CurveEdge::Right);
+    }
+
+    #[test]
+    fn radiant_editor_update_curve_node_preserves_edge_incident_tension() {
+        for (index, target_x, target_y, expected_active, expected_segment, expected_tension) in
+            [(1, 0.0, 0.35, 0, 0, 0.62), (3, 1.0, 0.65, 3, 2, -0.74)]
+        {
+            let origin = direct_edge_drag_curve();
+            let mut updated = origin.clone();
+
+            let moved_index = update_curve_node(
+                &mut updated,
+                index,
+                CurveNode {
+                    x: target_x,
+                    y: target_y,
+                },
+            );
+
+            assert_eq!(moved_index, expected_active);
+            assert_eq!(updated.nodes.len(), origin.nodes.len() - 1);
+            assert_eq!(updated.segments.len(), updated.nodes.len() - 1);
+            let last_index = updated.nodes.len() - 1;
+            assert_eq!(updated.nodes[0].y, target_y);
+            assert_eq!(updated.nodes[last_index].y, target_y);
+            assert_eq!(updated.segments[expected_segment].tension, expected_tension);
+        }
     }
 
     #[test]
