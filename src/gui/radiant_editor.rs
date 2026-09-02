@@ -2811,14 +2811,16 @@ impl CurvePreviewWidget {
     }
 
     fn insert_node_at(&self, bounds: Rect, position: Point) -> Option<CurveNode> {
-        if !Self::curve_bounds(bounds).contains(position)
-            || self.curve.nodes.len() < 2
-            || self.curve.nodes.len() >= MAX_EDITABLE_NODES
-        {
+        if !Self::curve_bounds(bounds).contains(position) || self.curve.nodes.len() < 2 {
             return None;
         }
 
-        Some(Self::node_from_point(bounds, position))
+        let candidate = Self::node_from_point(bounds, position);
+        if self.curve.nodes.len() >= MAX_EDITABLE_NODES && curve_edge_for_x(candidate.x).is_none() {
+            return None;
+        }
+
+        Some(candidate)
     }
 
     fn hover_at(&self, bounds: Rect, position: Point) -> CurveHoverState {
@@ -3577,6 +3579,20 @@ mod tests {
 
     fn test_curve_push_through_threshold_x() -> f32 {
         curve_node_push_through_threshold_x(300.0)
+    }
+
+    fn max_capacity_curve() -> EditableCurve {
+        EditableCurve {
+            nodes: (0..MAX_EDITABLE_NODES)
+                .map(|index| CurveNode {
+                    x: index as f32 / (MAX_EDITABLE_NODES - 1) as f32,
+                    y: 0.5,
+                })
+                .collect(),
+            segments: vec![CurveSegment { tension: 0.0 }; MAX_EDITABLE_NODES - 1],
+            ..EditableCurve::default()
+        }
+        .normalized()
     }
 
     fn unconstrained_press(index: usize) -> CurvePreviewMessage {
@@ -4942,6 +4958,84 @@ mod tests {
             .iter()
             .any(|inserted| (inserted.x - node.x).abs() < 1.0e-6
                 && (inserted.y - node.y).abs() < 1.0e-6));
+    }
+
+    #[test]
+    fn curve_preview_widget_inserts_left_edge_at_capacity() {
+        let params = Arc::new(PumpParams::new());
+        let curve = max_capacity_curve();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.0005, y: 0.1 });
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+
+        let output = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers::default(),
+                },
+            )
+            .expect("left edge candidate should remain insertable at capacity");
+        let node = match output.typed_copied() {
+            Some(CurvePreviewMessage::InsertNode { node, .. }) => node,
+            other => panic!("unexpected output: {other:?}"),
+        };
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::InsertNode {
+                node,
+                command_held: false,
+            }),
+        );
+
+        let after = params.editable_curve_snapshot();
+        assert_eq!(after.nodes.len(), MAX_EDITABLE_NODES);
+        assert_eq!(state.active_curve_node, Some(0));
+        assert!((after.nodes[0].y - 0.1).abs() < 1.0e-6);
+        assert_eq!(after.nodes[0].y, after.nodes[MAX_EDITABLE_NODES - 1].y);
+    }
+
+    #[test]
+    fn curve_preview_widget_inserts_right_edge_at_capacity() {
+        let params = Arc::new(PumpParams::new());
+        let curve = max_capacity_curve();
+        params.set_editable_curve(&curve);
+        let mut state = editor_state(Arc::clone(&params));
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.9995, y: 0.9 });
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+
+        let output = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers::default(),
+                },
+            )
+            .expect("right edge candidate should remain insertable at capacity");
+        let node = match output.typed_copied() {
+            Some(CurvePreviewMessage::InsertNode { node, .. }) => node,
+            other => panic!("unexpected output: {other:?}"),
+        };
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::InsertNode {
+                node,
+                command_held: false,
+            }),
+        );
+
+        let after = params.editable_curve_snapshot();
+        assert_eq!(after.nodes.len(), MAX_EDITABLE_NODES);
+        assert_eq!(state.active_curve_node, Some(MAX_EDITABLE_NODES - 1));
+        assert!((after.nodes[0].y - 0.9).abs() < 1.0e-6);
+        assert_eq!(after.nodes[0].y, after.nodes[MAX_EDITABLE_NODES - 1].y);
     }
 
     fn assert_edge_insert_is_single_visible_node(node: CurveNode, edge: CurveEdge) {
