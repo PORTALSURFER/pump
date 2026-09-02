@@ -229,6 +229,8 @@ All notable changes to this project are documented in this file.
 
 - (release) Bump Pump to v0.2.3 [skip ci] (27827ba)
 
+- (release) Bump Pump to v0.2.4 [skip ci] (6330cd4)
+
 
 ### Documentation
 
@@ -487,6 +489,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (41e4354)
 
 - (changelog) Update changelog [skip ci] (0cb00b4)
+
+- (changelog) Update changelog [skip ci] (bd2af9e)
 
 
 ### Features
@@ -1324,6 +1328,10 @@ OPT-1291: Keep the input waveform always on (ffa3201)
 
 OPT-1122 Rebuild responsive Radiant editor layout shell (0985c1c)
 
+- Fix Pump curve edge node merging (3fdcd30)
+
+- Fix Pump curve edge normalization and insertion (39d2273)
+
 - Define Pump dark coral visual system (cba5f5a)
 
 - Use retained icons for Pump actions (17fecc4)
@@ -1469,6 +1477,14 @@ Pump: make the curve offset control handle-only (93312b0)
 - Merge pull request #77 from PORTALSURFER/wsvasek/opt-1332-pump-keep-the-waveform-visible-during-command-shift-offset
 
 Pump: keep waveform visible during Command-Shift offset sliding (53550f1)
+
+- Merge origin/main into edge-node fix (a3823af)
+
+- Fix direct edge drag tension preservation (d597fbb)
+
+- Merge pull request #79 from PORTALSURFER/codex/pump-edge-single-node
+
+Fix Pump curve edge-node merging (16411e8)
 
 
 ### Refactoring
