@@ -11,6 +11,7 @@ pub const MIN_SEGMENT_TENSION: f32 = -1.0;
 pub const MAX_SEGMENT_TENSION: f32 = 1.0;
 
 const NODE_X_EPSILON: f32 = 1.0e-4;
+const NODE_EDGE_EPSILON: f32 = 1.0e-3;
 const LEGACY_RESTORE_NODE_COUNT: usize = 9;
 #[allow(dead_code)]
 const OFFSET_SAMPLE_EPSILON: f32 = 1.0e-5;
@@ -72,8 +73,13 @@ impl EditableCurve {
 
     /// Clamp and repair this curve in-place so it is valid for sampling.
     pub fn normalize_in_place(&mut self) {
-        self.nodes = normalize_nodes(&self.nodes);
-        self.segments = normalize_segments(&self.segments, self.nodes.len().saturating_sub(1));
+        let (nodes, segment_sources) = normalize_nodes(&self.nodes);
+        self.nodes = nodes;
+        self.segments = normalize_segments(
+            &self.segments,
+            self.nodes.len().saturating_sub(1),
+            &segment_sources,
+        );
         if let Some(source) = self.phase_source.as_mut() {
             source.normalize_in_place();
         }
@@ -380,73 +386,96 @@ fn shape_with_tension(value: f32, tension: f32) -> f32 {
     }
 }
 
-fn normalize_nodes(nodes: &[CurveNode]) -> Vec<CurveNode> {
-    let mut normalized: Vec<CurveNode> = nodes
+fn normalize_nodes(nodes: &[CurveNode]) -> (Vec<CurveNode>, Vec<usize>) {
+    let mut normalized: Vec<(CurveNode, usize)> = nodes
         .iter()
         .copied()
-        .filter(|node| node.x.is_finite() && node.y.is_finite())
-        .map(|node| CurveNode {
-            x: node.x.clamp(0.0, 1.0),
-            y: node.y.clamp(0.0, 1.0),
+        .enumerate()
+        .filter_map(|(source_index, node)| {
+            (node.x.is_finite() && node.y.is_finite()).then_some((
+                CurveNode {
+                    x: match node.x.clamp(0.0, 1.0) {
+                        x if x <= NODE_EDGE_EPSILON => 0.0,
+                        x if x >= 1.0 - NODE_EDGE_EPSILON => 1.0,
+                        x => x,
+                    },
+                    y: node.y.clamp(0.0, 1.0),
+                },
+                source_index,
+            ))
         })
         .collect();
 
     if normalized.is_empty() {
-        return vec![CurveNode { x: 0.0, y: 1.0 }, CurveNode { x: 1.0, y: 1.0 }];
+        return (
+            vec![CurveNode { x: 0.0, y: 1.0 }, CurveNode { x: 1.0, y: 1.0 }],
+            vec![0],
+        );
     }
 
-    normalized.sort_by(|a, b| a.x.total_cmp(&b.x));
+    normalized.sort_by(|(a, _), (b, _)| a.x.total_cmp(&b.x));
 
-    let mut deduped: Vec<CurveNode> = Vec::with_capacity(normalized.len());
-    for node in normalized {
+    let mut deduped: Vec<(CurveNode, usize)> = Vec::with_capacity(normalized.len());
+    for (node, source_index) in normalized {
         if let Some(last) = deduped.last_mut() {
-            if (node.x - last.x).abs() < NODE_X_EPSILON {
-                last.y = node.y;
+            if (node.x - last.0.x).abs() < NODE_X_EPSILON {
+                last.0 = node;
+                last.1 = source_index;
                 continue;
             }
         }
-        deduped.push(node);
+        deduped.push((node, source_index));
     }
 
     if deduped.len() == 1 {
-        let only = deduped[0];
-        deduped.push(CurveNode {
-            x: if only.x < 0.5 { 1.0 } else { 0.0 },
-            y: only.y,
-        });
-        deduped.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let only = deduped[0].0;
+        let source_index = deduped[0].1;
+        deduped.push((
+            CurveNode {
+                x: if only.x < 0.5 { 1.0 } else { 0.0 },
+                y: only.y,
+            },
+            source_index,
+        ));
+        deduped.sort_by(|(a, _), (b, _)| a.x.total_cmp(&b.x));
     }
 
     if deduped.len() > MAX_EDITABLE_NODES {
         deduped = limit_nodes(&deduped, MAX_EDITABLE_NODES);
     }
 
-    deduped[0].x = 0.0;
+    deduped[0].0.x = 0.0;
     let last = deduped.len() - 1;
-    deduped[last].x = 1.0;
+    deduped[last].0.x = 1.0;
 
     for index in 1..=last {
-        let min_x = deduped[index - 1].x + NODE_X_EPSILON;
-        if deduped[index].x < min_x {
-            deduped[index].x = min_x;
+        let min_x = deduped[index - 1].0.x + NODE_X_EPSILON;
+        if deduped[index].0.x < min_x {
+            deduped[index].0.x = min_x;
         }
     }
-    deduped[last].x = 1.0;
+    deduped[last].0.x = 1.0;
     for index in (0..last).rev() {
-        let max_x = deduped[index + 1].x - NODE_X_EPSILON;
-        if deduped[index].x > max_x {
-            deduped[index].x = max_x;
+        let max_x = deduped[index + 1].0.x - NODE_X_EPSILON;
+        if deduped[index].0.x > max_x {
+            deduped[index].0.x = max_x;
         }
     }
-    deduped[0].x = 0.0;
+    deduped[0].0.x = 0.0;
 
     // Looping continuity: start and end nodes represent the same wrapped point.
-    deduped[last].y = deduped[0].y;
+    deduped[last].0.y = deduped[0].0.y;
 
-    deduped
+    let segment_sources = deduped
+        .iter()
+        .take(last)
+        .map(|(_, source_index)| *source_index)
+        .collect();
+    let nodes = deduped.into_iter().map(|(node, _)| node).collect();
+    (nodes, segment_sources)
 }
 
-fn limit_nodes(nodes: &[CurveNode], max_nodes: usize) -> Vec<CurveNode> {
+fn limit_nodes(nodes: &[(CurveNode, usize)], max_nodes: usize) -> Vec<(CurveNode, usize)> {
     if nodes.len() <= max_nodes || max_nodes < 2 {
         return nodes.to_vec();
     }
@@ -462,11 +491,16 @@ fn limit_nodes(nodes: &[CurveNode], max_nodes: usize) -> Vec<CurveNode> {
     limited
 }
 
-fn normalize_segments(segments: &[CurveSegment], target_len: usize) -> Vec<CurveSegment> {
+fn normalize_segments(
+    segments: &[CurveSegment],
+    target_len: usize,
+    source_indices: &[usize],
+) -> Vec<CurveSegment> {
     let mut normalized = Vec::with_capacity(target_len);
     for index in 0..target_len {
+        let source_index = source_indices.get(index).copied().unwrap_or(index);
         let tension = segments
-            .get(index)
+            .get(source_index)
             .copied()
             .unwrap_or(CurveSegment { tension: 0.0 })
             .tension
@@ -666,6 +700,37 @@ mod tests {
     }
 
     #[test]
+    fn editable_curve_normalization_merges_nodes_at_both_boundaries() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.0005, y: 0.2 },
+                CurveNode { x: 0.5, y: 0.6 },
+                CurveNode { x: 0.9995, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.4 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.2 },
+                CurveSegment { tension: 0.4 },
+            ],
+
+            ..EditableCurve::default()
+        }
+        .normalized();
+
+        assert_eq!(curve.nodes.len(), 3);
+        assert_eq!(curve.nodes[0].x, 0.0);
+        assert_eq!(curve.nodes[1].x, 0.5);
+        assert_eq!(curve.nodes[2].x, 1.0);
+        assert_eq!(curve.segments.len(), curve.nodes.len() - 1);
+        assert_eq!(curve.nodes.iter().filter(|node| node.x == 0.0).count(), 1);
+        assert_eq!(curve.nodes.iter().filter(|node| node.x == 1.0).count(), 1);
+        assert_eq!(curve.nodes[0].y, curve.nodes[2].y);
+    }
+
+    #[test]
     fn editable_curve_to_table_stays_finite() {
         let curve = default_editable_curve();
         let table = editable_curve_to_table(&curve);
@@ -733,5 +798,85 @@ mod tests {
 
         let last_index = curve.nodes.len() - 1;
         assert!((curve.nodes[last_index].y - curve.nodes[0].y).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn normalized_curve_preserves_left_merged_boundary_segment_tension() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.0005, y: 0.7 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.8 },
+                CurveSegment { tension: 0.4 },
+                CurveSegment { tension: 0.6 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized();
+
+        assert_eq!(
+            curve.segments,
+            vec![CurveSegment { tension: 0.4 }, CurveSegment { tension: 0.6 },]
+        );
+        assert_eq!(curve.nodes[0].y, curve.nodes[2].y);
+    }
+
+    #[test]
+    fn normalized_curve_preserves_right_merged_boundary_segment_tension() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 0.9995, y: 0.7 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.8 },
+                CurveSegment { tension: 0.4 },
+                CurveSegment { tension: 0.6 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized();
+
+        assert_eq!(
+            curve.segments,
+            vec![
+                CurveSegment { tension: -0.8 },
+                CurveSegment { tension: 0.4 },
+            ]
+        );
+        assert_eq!(curve.nodes[0].y, curve.nodes[2].y);
+    }
+
+    #[test]
+    fn normalized_curve_preserves_both_merged_boundary_segment_tensions() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.0005, y: 0.7 },
+                CurveNode { x: 0.5, y: 0.3 },
+                CurveNode { x: 0.9995, y: 0.7 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.8 },
+                CurveSegment { tension: 0.4 },
+                CurveSegment { tension: 0.6 },
+                CurveSegment { tension: 0.9 },
+            ],
+            ..EditableCurve::default()
+        }
+        .normalized();
+
+        assert_eq!(
+            curve.segments,
+            vec![CurveSegment { tension: 0.4 }, CurveSegment { tension: 0.6 },]
+        );
+        assert_eq!(curve.nodes[0].y, curve.nodes[2].y);
     }
 }
