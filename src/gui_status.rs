@@ -48,7 +48,6 @@ pub struct GuiStatus {
     beat_phase: AtomicF32,
     tempo_bpm: AtomicF32,
     cycle_hz: AtomicF32,
-    sidechain_available: AtomicBool,
     last_update_micros: AtomicU64,
     incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer,
 }
@@ -74,7 +73,6 @@ impl Default for GuiStatus {
             beat_phase: AtomicF32::new(0.0),
             tempo_bpm: AtomicF32::new(120.0),
             cycle_hz: AtomicF32::new(0.0),
-            sidechain_available: AtomicBool::new(false),
             last_update_micros: AtomicU64::new(0),
             incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer::default(),
         }
@@ -89,16 +87,6 @@ impl GuiStatus {
         self.publish_gain_reduction(reduction_gain, true);
     }
 
-    /// Publish whether the host supplied the optional sidechain bus recently.
-    pub(crate) fn set_sidechain_available(&self, available: bool) {
-        self.sidechain_available.store(available, Ordering::Relaxed);
-    }
-
-    /// Return whether sidechain-trigger mode currently has an input bus.
-    pub(crate) fn sidechain_available(&self) -> bool {
-        self.sidechain_available.load(Ordering::Relaxed)
-    }
-
     pub(crate) fn incoming_waveform_buffer(
         &self,
     ) -> &crate::incoming_waveform::IncomingWaveformBuffer {
@@ -109,6 +97,14 @@ impl GuiStatus {
         &self,
     ) -> Option<crate::incoming_waveform::IncomingWaveformSnapshot> {
         self.incoming_waveform.snapshot()
+    }
+
+    pub(crate) fn waveform_live_mode(&self) -> bool {
+        self.incoming_waveform.live_mode()
+    }
+
+    pub(crate) fn set_waveform_live_mode(&self, enabled: bool) {
+        self.incoming_waveform.set_live_mode(enabled);
     }
     /// Update telemetry from the latest processed frame.
     pub fn update_transport(&self, phase: f32, transport: GuiTransportTelemetry) {

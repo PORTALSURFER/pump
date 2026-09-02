@@ -1,6 +1,6 @@
 [package]
 name = "pump"
-version = "0.2.0"
+version = "0.2.4"
 edition = "2021"
 publish = false
 resolver = "2"
@@ -10,8 +10,8 @@ build = "build.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "b21a4caa094294b3eb2b2b87f6c6bc08ced8b137", default-features = false }
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "1c40aeee6062b3bcebc2799fa2ab65cf36d160a2", features = ["radiant-gui"] }
+radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "0e6dd4c1d290fc34e094dc5838725d89c13d8bfe", default-features = false }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "3e48018c41415729b66d54b85309c14ad8419597", features = ["radiant-gui"] }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 [lints.rust]

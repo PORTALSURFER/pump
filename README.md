@@ -1,6 +1,6 @@
 # pump
 
-`pump` is a node-based beat-synced gain-shaper plugin for sidechain-style ducking.
+`pump` is a node-based beat-synced gain-shaper plugin.
 
 ## Build
 
@@ -21,6 +21,59 @@ VST3_SDK_DIR=/mnt/e/lib/vst3sdk cargo build --features vst3
 VST3_SDK_DIR=/mnt/e/lib/vst3sdk cargo test --features vst3
 ```
 
+## Local VST3 testing
+
+Build the host-installable bundle for local testing with the audiodev producer
+(this is separate from the signed/notarized production release workflow below):
+
+```bash
+bash /Users/portalsurfer/dev/audiodev/scripts/build-vst3-release.sh pump
+```
+
+When run from `/Users/portalsurfer/dev/audiodev`, the equivalent command is
+`bash scripts/build-vst3-release.sh pump`. The resulting bundle is
+`/Users/portalsurfer/dev/audiodev/dist/pump-v<version>-macos.vst3`. Do not copy
+`pump/target/release/*.vst3`: Cargo refreshes the binary but not that bundle.
+Restart the DAW or fully unload the previous plugin before testing a replacement.
+
+## Production releases
+
+The same producer is used locally and by the manual `Pump release` Actions
+workflow. On a clean macOS arm64 checkout, with `VST3_SDK_DIR` set to the pinned
+Steinberg SDK and the Apple Developer ID/notarization credentials configured,
+run:
+
+```bash
+bash scripts/release.sh --package-only --channel stable
+```
+
+Every production Actions release selects the next unused global patch version
+across stable, RC, and nightly releases, commits that version to `main`, and
+builds from the resulting exact commit. Nightlies use the same serialized
+release path, so a published nightly also advances the patch version.
+
+This creates `dist/releases/pump-v<version>-<12-char HEAD>/` containing only the
+two host-installable ZIP bundles, `pump-default-640x400.png`, `CHANGELOG.md`, and
+`release-manifest.json` schema 2. Add `--publish` and set
+`PORTALSURFER_RELEASE_TOKEN` in the environment to capability-check and publish
+the immutable bundle. The token is never accepted as a command-line argument.
+
+`--package-only` is still a production release: it signs, notarizes, staples, and
+verifies notarization on both bundles. The Actions workflow cannot run until the production
+environment has all Apple certificate/notary secrets, `RADIANT_REPO_TOKEN`, and
+the PortalSurfer release token for publish runs.
+
+Publishing is fail-closed to the exact `https://portalsurfer.org` origin. Immediately
+before a publish, the producer re-audits the final ZIP bytes, bundle signatures and
+team, stapling, notarization, arm64 architecture, exports, and manifest hashes; the
+publish transport is injectable only in zero-network tests.
+
+Production artifacts are macOS arm64, hardened-runtime Developer ID signed,
+notarized, stapled, and checked with `codesign -vvvv -R=notarized --check-notarization`.
+Universal2 and ad-hoc production
+artifacts are intentionally unsupported until a separate host-compatibility
+decision; the manifest records this production provenance explicitly.
+
 ## Core idea
 
 Edit a node-based spline curve that defines gain over one sync cycle.
@@ -29,11 +82,10 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 ## Main controls
 
 - `Mix`: dry/wet blend of ducking intensity.
-- `Phase Offset`: shifts where the curve starts in the sync cycle.
+- `Phase Offset`: shifts where the curve starts in the sync cycle. In Sync,
+  raw Offset 0 is the host-cycle/transport origin.
 - `Output Gain`: level trim after ducking.
-- `Trigger`: `Host` follows the host beat/transport timeline; `Sidechain` restarts
-  the curve from phase zero on detected transients from the optional stereo
-  sidechain input.
+- The curve always follows the host beat/transport timeline.
 
 Depth and Floor control the curve's wet gain mapping. Depth ranges from `0` to
 `120 dB` and defaults to `120 dB`; `0 dB` is no effect. Floor supports `−∞`
@@ -58,37 +110,22 @@ mapping and compatibility behavior.
   curve, and returns to normal when the curve matches again or a matching slot
   is loaded/stored.
 
-## Trigger and sidechain behavior
+## Timing behavior
 
-CLAP and VST3 expose a stereo, optional `Sidechain` input bus alongside the main
-stereo input. The `Sidechain` trigger detector uses the larger absolute sample
-level of the left and right channels. A trigger is accepted when that level
-rises to `0.25` or above, after the signal has fallen to `0.125` or below. A
-10 ms refractory period suppresses chatter; a sustained high signal cannot
-retrigger until it crosses the release threshold. Non-finite samples are
-treated as silence.
+Pump has two timing sources:
 
-In `Sidechain` mode the trigger sample is processed at phase `0`, and the curve
-advances one sample at a time using the current host tempo and Division. Tempo
-and Division changes take effect on the next sample; the most recent accepted
-sidechain trigger takes precedence over the host song position. The event-driven
-curve continues while the host is stopped, because the sidechain source—not
-transport playback—is authoritative in this mode. Silence produces no trigger.
-If the optional bus is omitted or unavailable, Pump falls back to host
-beat/transport timing and waits for a fresh trigger after the bus returns, so a
-sidechain-enabled preset remains audible in hosts that cannot route a
-sidechain. Switching between Host and Sidechain also discards the previous
-sidechain phase and detector arm state. In `Host` mode sidechain audio is ignored
-and the host timeline is authoritative.
-
-The incoming waveform display records the same per-sample phase used by the
-gain curve, including sidechain restarts. Sidechain detection and processing
-use preallocated audio-thread state and do not block, log, or allocate.
+- **Sync** follows the host beat timeline and the selected Sync division (for
+  example, 1/4 or 1/8). Host tempo and song position therefore determine the
+  modulation phase when that timeline is available.
+- **Free** runs continuously at the selected Free Rate in hertz. It is
+  independent of host tempo and song position, so it remains continuous even
+  when the host transport is stopped or does not provide beat-position data.
 
 ## Notes
 
-- The modulation phase follows host beat position when the host exposes a beat timeline.
-- When beat timeline data is unavailable, phase falls back to transport-driven free running so curve modulation remains audible.
+- Sync modulation uses host beat position when the host exposes a beat timeline.
+- Free modulation always uses its continuous rate; it does not fall back to or
+  depend on host tempo or song position.
 - Curve state is persisted in plugin state payloads.
 
 ## Transport Indicator
@@ -105,3 +142,6 @@ use preallocated audio-thread state and do not block, log, or allocate.
 - If the transport indicator never lights:
   - Start host playback.
   - Confirm the plugin build includes transport telemetry propagation from the processor to GUI status.
+
+Timing controls are documented in [docs/swing.md](docs/swing.md), including the
+host-automatable Swing mapping.

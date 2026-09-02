@@ -20,6 +20,7 @@ pub(super) struct PendingRuntimeChanges {
 /// audio thread or waiting for another thread to release a lock.
 pub(super) struct RuntimeHandoff {
     sample_rate_bits: AtomicU32,
+    input_presentation_latency_samples: AtomicU32,
     pending: AtomicU8,
 }
 
@@ -27,6 +28,7 @@ impl RuntimeHandoff {
     pub(super) fn new() -> Self {
         Self {
             sample_rate_bits: AtomicU32::new(48_000.0_f32.to_bits()),
+            input_presentation_latency_samples: AtomicU32::new(0),
             pending: AtomicU8::new(0),
         }
     }
@@ -53,6 +55,21 @@ impl RuntimeHandoff {
             .fetch_or(PENDING_PROCESSING_RESET, Ordering::Release);
     }
 
+    pub(super) fn publish_input_presentation_latency(&self, latency_samples: u32) {
+        self.input_presentation_latency_samples
+            .store(latency_samples, Ordering::Release);
+    }
+
+    pub(super) fn reset_input_presentation_latency(&self) {
+        self.input_presentation_latency_samples
+            .store(0, Ordering::Release);
+    }
+
+    pub(super) fn input_presentation_latency_samples(&self) -> u32 {
+        self.input_presentation_latency_samples
+            .load(Ordering::Acquire)
+    }
+
     pub(super) fn take_pending(&self) -> PendingRuntimeChanges {
         let pending = self.pending.swap(0, Ordering::AcqRel);
         PendingRuntimeChanges {
@@ -68,7 +85,7 @@ impl RuntimeHandoff {
 pub(super) struct PumpVst3Shared {
     pub(super) params: Arc<PumpParams>,
     pub(super) status: Arc<GuiStatus>,
-    pub(super) automation_queue: Arc<AutomationQueue>,
+    pub(super) component_handler: Mutex<Option<ComPtr<IComponentHandler>>>,
 }
 
 impl PumpVst3Shared {
@@ -76,7 +93,7 @@ impl PumpVst3Shared {
         Self {
             params: Arc::new(PumpParams::new()),
             status: Arc::new(GuiStatus::default()),
-            automation_queue: Arc::new(AutomationQueue::default()),
+            component_handler: Mutex::new(None),
         }
     }
 }
@@ -165,7 +182,7 @@ impl PumpVst3Runtime {
     pub(super) fn new(params: &PumpParams) -> Self {
         let curve = params.curve_snapshot();
         Self {
-            engine: PumpEngine::new(48_000.0, curve),
+            engine: PumpEngine::new_with_bypass(48_000.0, curve, params.bypassed()),
             param_schedule: ParamEventSchedule::with_capacity(16_384),
             last_curve_revision: params.curve_revision(),
             sample_rate: 48_000.0,
@@ -180,7 +197,11 @@ impl PumpVst3Runtime {
         }
 
         self.sample_rate = clamped;
-        self.engine = PumpEngine::new(self.sample_rate, params.curve_snapshot());
+        self.engine = PumpEngine::new_with_bypass(
+            self.sample_rate,
+            params.curve_snapshot(),
+            params.bypassed(),
+        );
         self.last_curve_revision = params.curve_revision();
     }
 }

@@ -142,9 +142,11 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         phase_offset: params.phase_offset(),
         output_gain_db: params.output_gain_db(),
         beats_per_cycle: params.sync_beats_per_cycle(),
-        trigger_mode: params.trigger_mode(),
         smooth: params.smooth(),
-        mode: params.mode(),
+        swing: params.swing(),
+        timing_mode: params.timing_mode(),
+        free_rate_hz: params.free_rate_hz(),
+        bypassed: params.bypassed(),
     }
 }
 
@@ -154,12 +156,6 @@ pub(crate) struct StereoBlockSlices<'a> {
     pub(crate) right: &'a mut [f32],
 }
 
-/// Read-only sidechain stereo input aligned to the processed main block.
-pub(crate) struct SidechainBlockSlices<'a> {
-    pub(crate) left: &'a [f32],
-    pub(crate) right: &'a [f32],
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process_stereo_block(
     engine: &mut PumpEngine,
@@ -167,8 +163,8 @@ pub(crate) fn process_stereo_block(
     params: &PumpParams,
     schedule: &mut ParamEventSchedule,
     settings: &mut DspSettings,
+    last_curve_revision: &mut u32,
     transport: TransportState,
-    sidechain: Option<SidechainBlockSlices<'_>>,
     mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
     let StereoBlockSlices { left, right } = block;
@@ -180,30 +176,30 @@ pub(crate) fn process_stereo_block(
 
     for sample_offset in 0..frame_count {
         schedule.apply_through(sample_offset, params, settings);
+        let revision = params.curve_revision();
+        if revision != *last_curve_revision {
+            engine.set_target_curve(params.curve_snapshot());
+            *last_curve_revision = revision;
+        }
         let input_left = left[sample_offset];
         let input_right = right[sample_offset];
-        let telemetry = engine.process_sample(
+        let (telemetry, raw_cycle_phase) = engine.process_sample_with_raw_cycle_phase(
             &mut left[sample_offset],
             &mut right[sample_offset],
             *settings,
             transport_for_sample,
-            sidechain.as_ref().and_then(|sidechain| {
-                sidechain
-                    .left
-                    .get(sample_offset)
-                    .zip(sidechain.right.get(sample_offset))
-                    .map(|(&left, &right)| (left, right))
-            }),
         );
-        if input_left.abs().max(input_right.abs()) > 1.0e-5 {
+        if !telemetry.bypassed && input_left.abs().max(input_right.abs()) > 1.0e-5 {
             input_active = true;
             minimum_reduction_gain = minimum_reduction_gain.min(telemetry.reduction_gain);
         }
         if let Some(capture) = waveform.as_mut() {
             capture.record(
+                raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
                 settings.phase_offset,
+                settings.swing,
                 input_left,
                 input_right,
             );
@@ -219,8 +215,13 @@ pub(crate) fn process_stereo_block(
         }
     }
     last_telemetry.map(|mut telemetry| {
-        telemetry.reduction_gain = minimum_reduction_gain;
-        telemetry.input_active = input_active;
+        if telemetry.bypassed {
+            telemetry.reduction_gain = 1.0;
+            telemetry.input_active = false;
+        } else {
+            telemetry.reduction_gain = minimum_reduction_gain;
+            telemetry.input_active = input_active;
+        }
         telemetry
     })
 }
@@ -239,14 +240,6 @@ pub(crate) struct RawStereoBlock {
     pub(crate) input_right: *const f32,
     pub(crate) output_left: *mut f32,
     pub(crate) output_right: *mut f32,
-}
-
-/// Raw optional VST3 sidechain input pointers owned by the current process call.
-#[cfg(feature = "vst3")]
-#[derive(Clone, Copy)]
-pub(crate) struct RawSidechainBlock {
-    pub(crate) input_left: *const f32,
-    pub(crate) input_right: *const f32,
 }
 
 #[cfg(feature = "vst3")]
@@ -270,8 +263,8 @@ pub(crate) unsafe fn process_stereo_block_raw(
     params: &PumpParams,
     schedule: &mut ParamEventSchedule,
     settings: &mut DspSettings,
+    last_curve_revision: &mut u32,
     transport: TransportState,
-    sidechain: Option<RawSidechainBlock>,
     mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
     let mut transport_for_sample = transport;
@@ -281,33 +274,34 @@ pub(crate) unsafe fn process_stereo_block_raw(
 
     for sample_offset in 0..block.num_samples {
         schedule.apply_through(sample_offset, params, settings);
+        let revision = params.curve_revision();
+        if revision != *last_curve_revision {
+            engine.set_target_curve(params.curve_snapshot());
+            *last_curve_revision = revision;
+        }
         // Read both inputs before either output is written so exact in-place
         // buffers preserve the original stereo sample pair.
         let mut left = unsafe { block.input_left.add(sample_offset).read() };
         let mut right = unsafe { block.input_right.add(sample_offset).read() };
         let input_left = left;
         let input_right = right;
-        let telemetry = engine.process_sample(
+        let (telemetry, raw_cycle_phase) = engine.process_sample_with_raw_cycle_phase(
             &mut left,
             &mut right,
             *settings,
             transport_for_sample,
-            sidechain.map(|sidechain| unsafe {
-                (
-                    sidechain.input_left.add(sample_offset).read(),
-                    sidechain.input_right.add(sample_offset).read(),
-                )
-            }),
         );
-        if input_left.abs().max(input_right.abs()) > 1.0e-5 {
+        if !telemetry.bypassed && input_left.abs().max(input_right.abs()) > 1.0e-5 {
             input_active = true;
             minimum_reduction_gain = minimum_reduction_gain.min(telemetry.reduction_gain);
         }
         if let Some(capture) = waveform.as_mut() {
             capture.record(
+                raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
                 settings.phase_offset,
+                settings.swing,
                 input_left,
                 input_right,
             );
@@ -327,8 +321,13 @@ pub(crate) unsafe fn process_stereo_block_raw(
         }
     }
     last_telemetry.map(|mut telemetry| {
-        telemetry.reduction_gain = minimum_reduction_gain;
-        telemetry.input_active = input_active;
+        if telemetry.bypassed {
+            telemetry.reduction_gain = 1.0;
+            telemetry.input_active = false;
+        } else {
+            telemetry.reduction_gain = minimum_reduction_gain;
+            telemetry.input_active = input_active;
+        }
         telemetry
     })
 }
@@ -337,10 +336,11 @@ pub(crate) unsafe fn process_stereo_block_raw(
 mod tests {
     use super::*;
     use crate::curve::CURVE_TABLE_LEN;
+    use crate::incoming_waveform::IncomingWaveformWriter;
     use crate::params::{
-        PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID,
-        PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SYNC_DIVISION_ID, PARAM_TRIGGER_MODE_ID,
-        PROCESSING_MODE_PUNCH, TRIGGER_MODE_SIDECHAIN,
+        PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
+        PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID,
+        PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID,
     };
 
     fn constant_curve(value: f32) -> [f32; CURVE_TABLE_LEN] {
@@ -359,6 +359,72 @@ mod tests {
         }
     }
 
+    fn params_with_distinct_sound_curves() -> PumpParams {
+        let params = PumpParams::new();
+        params.set_curve(&constant_curve(0.0));
+        params.copy_active_to_inactive();
+        params.set_active_sound(crate::params::SoundSide::B);
+        params.set_curve(&constant_curve(1.0));
+        params.set_active_sound(crate::params::SoundSide::A);
+        params
+    }
+
+    #[test]
+    fn sound_automation_retargets_at_zero_and_keeps_revision_owned_by_processor() {
+        let params = params_with_distinct_sound_curves();
+        let mut engine = PumpEngine::new(1_000.0, constant_curve(0.0));
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(4);
+        schedule.push(0, PARAM_SOUND_ID, 1.0);
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+        let mut last_curve_revision = params.curve_revision();
+        let mut left = [1.0; 4];
+        let mut right = [1.0; 4];
+
+        process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            &mut last_curve_revision,
+            playing_transport(0.0),
+            None,
+        );
+
+        assert!(
+            left[1] > left[0],
+            "offset-zero sound target must affect the block: left={left:?}"
+        );
+        assert_eq!(last_curve_revision, params.curve_revision());
+
+        schedule.begin_block(4);
+        schedule.push(2, PARAM_SOUND_ID, 0.0);
+        schedule.prepare();
+        process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            &mut last_curve_revision,
+            playing_transport(0.0),
+            None,
+        );
+        assert!(
+            left[1] > left[2],
+            "interior sound target must retarget at its offset: left={left:?}"
+        );
+        assert_eq!(last_curve_revision, params.curve_revision());
+    }
+
     #[test]
     fn continuous_points_start_smoothing_at_their_exact_samples() {
         let params = PumpParams::new();
@@ -370,6 +436,7 @@ mod tests {
         schedule.push(2, PARAM_MIX_ID, 0.0);
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
+        let mut last_curve_revision = params.curve_revision();
         let mut left = [1.0; 8];
         let mut right = [1.0; 8];
 
@@ -382,8 +449,8 @@ mod tests {
             &params,
             &mut schedule,
             &mut settings,
+            &mut last_curve_revision,
             playing_transport(0.0),
-            None,
             None,
         );
 
@@ -400,19 +467,24 @@ mod tests {
     }
 
     #[test]
-    fn sidechain_block_trigger_timing_is_shared_by_sample_processing() {
+    fn free_timing_automation_takes_effect_at_its_sample_offset() {
         let params = PumpParams::new();
-        params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
-        let mut engine = PumpEngine::new(100.0, constant_curve(1.0));
+        let mut engine = PumpEngine::new(1_000.0, ramp_curve());
         let mut schedule = ParamEventSchedule::default();
-        schedule.begin_block(4);
+        schedule.begin_block(6);
+        schedule.push(
+            2,
+            PARAM_TIMING_MODE_ID,
+            crate::params::TIMING_MODE_FREE as f32,
+        );
+        schedule.push(2, PARAM_FREE_RATE_ID, 10.0);
+        schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
-        let mut left = [1.0; 4];
-        let mut right = [1.0; 4];
-        let sidechain_left = [0.0; 4];
-        let sidechain_right = [0.0, 0.0, 0.5, 0.5];
+        let mut last_curve_revision = params.curve_revision();
+        let mut left = [1.0; 6];
+        let mut right = [1.0; 6];
 
-        let telemetry = process_stereo_block(
+        process_stereo_block(
             &mut engine,
             StereoBlockSlices {
                 left: &mut left,
@@ -421,16 +493,14 @@ mod tests {
             &params,
             &mut schedule,
             &mut settings,
-            playing_transport(0.0),
-            Some(SidechainBlockSlices {
-                left: &sidechain_left,
-                right: &sidechain_right,
-            }),
+            &mut last_curve_revision,
+            playing_transport(3.0),
             None,
-        )
-        .expect("non-empty block should return telemetry");
+        );
 
-        assert!((telemetry.phase - 0.01).abs() < 1.0e-6);
+        assert_eq!(params.timing_mode(), crate::params::TIMING_MODE_FREE);
+        assert!((params.free_rate_hz() - 10.0).abs() < f32::EPSILON);
+        assert!((left[2] - left[3]).abs() > 1.0e-5);
         assert_eq!(left, right);
     }
 
@@ -442,6 +512,7 @@ mod tests {
         let mut schedule = ParamEventSchedule::default();
         schedule.begin_block(4);
         let mut settings = dsp_settings_from_params(&params);
+        let mut last_curve_revision = params.curve_revision();
         let mut left = [0.0, 1.0, 0.5, 0.0];
         let mut right = [0.0, 0.5, 1.0, 0.0];
         let telemetry = process_stereo_block(
@@ -453,8 +524,8 @@ mod tests {
             &params,
             &mut schedule,
             &mut settings,
+            &mut last_curve_revision,
             playing_transport(0.0),
-            None,
             None,
         )
         .expect("non-empty block should return telemetry");
@@ -473,8 +544,8 @@ mod tests {
             &params,
             &mut schedule,
             &mut settings,
+            &mut last_curve_revision,
             playing_transport(0.0),
-            None,
             None,
         )
         .expect("silent non-empty block should return telemetry");
@@ -493,6 +564,7 @@ mod tests {
         schedule.push(3, PARAM_SYNC_DIVISION_ID, 5.0); // 2 beats
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
+        let mut last_curve_revision = params.curve_revision();
         let mut left = [1.0; 6];
         let mut right = [1.0; 6];
 
@@ -505,8 +577,8 @@ mod tests {
             &params,
             &mut schedule,
             &mut settings,
+            &mut last_curve_revision,
             playing_transport(0.4),
-            None,
             None,
         );
 
@@ -528,7 +600,6 @@ mod tests {
         schedule.push(2, PARAM_MIX_ID, 0.75);
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
-
         schedule.apply_through(0, &params, &mut settings);
         assert!((params.mix() - 0.25).abs() < f32::EPSILON);
         schedule.apply_through(1, &params, &mut settings);
@@ -551,9 +622,9 @@ mod tests {
         schedule.push(4, PARAM_PHASE_OFFSET_ID, 0.5);
         schedule.push(5, PARAM_OUTPUT_GAIN_ID, 6.0);
         schedule.push(6, PARAM_SYNC_DIVISION_ID, 6.0);
-        schedule.push(7, PARAM_TRIGGER_MODE_ID, TRIGGER_MODE_SIDECHAIN as f32);
         schedule.push(7, PARAM_SMOOTH_ID, 0.75);
-        schedule.push(7, PARAM_MODE_ID, PROCESSING_MODE_PUNCH as f32);
+        schedule.push(7, PARAM_SWING_ID, 0.8);
+        schedule.push(7, PARAM_BYPASS_ID, 1.0);
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
 
@@ -576,8 +647,109 @@ mod tests {
         schedule.apply_through(6, &params, &mut settings);
         assert!((settings.beats_per_cycle - 4.0).abs() < f32::EPSILON);
         schedule.apply_through(7, &params, &mut settings);
-        assert_eq!(settings.trigger_mode, TRIGGER_MODE_SIDECHAIN);
         assert!((settings.smooth - 0.75).abs() < f32::EPSILON);
-        assert_eq!(settings.mode, PROCESSING_MODE_PUNCH);
+        assert!((settings.swing - 0.8).abs() < f32::EPSILON);
+        assert!(settings.bypassed);
+    }
+
+    #[test]
+    fn bypass_points_retarget_at_exact_offsets_and_block_end_starts_next_sample() {
+        let params = PumpParams::new();
+        let mut engine = PumpEngine::new(1_000.0, constant_curve(0.0));
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(4);
+        schedule.push(0, PARAM_BYPASS_ID, 1.0);
+        schedule.push(2, PARAM_BYPASS_ID, 0.0);
+        schedule.push(2, PARAM_BYPASS_ID, 1.0);
+        schedule.push(4, PARAM_BYPASS_ID, 0.0);
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+        let mut last_curve_revision = params.curve_revision();
+        let mut left = [1.0; 4];
+        let mut right = [1.0; 4];
+
+        process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            &mut last_curve_revision,
+            playing_transport(0.0),
+            None,
+        );
+
+        assert_eq!(left, [0.2, 0.4, 0.6, 0.8]);
+        assert!(!settings.bypassed);
+        assert!(!params.bypassed());
+
+        schedule.begin_block(1);
+        schedule.prepare();
+        let mut next_left = [1.0];
+        let mut next_right = [1.0];
+        process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut next_left,
+                right: &mut next_right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            &mut last_curve_revision,
+            playing_transport(0.04),
+            None,
+        );
+        assert!(
+            (next_left[0] - 0.64).abs() < 1.0e-6,
+            "block-end event must first affect the next processed sample"
+        );
+    }
+
+    #[test]
+    fn full_bypass_idles_meter_but_keeps_waveform_capture_running() {
+        let params = PumpParams::new();
+        params.set_bypass(1.0);
+        let mut engine = PumpEngine::new_with_bypass(1_000.0, constant_curve(0.0), true);
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(4);
+        let mut settings = dsp_settings_from_params(&params);
+        let mut last_curve_revision = params.curve_revision();
+        let mut left = [0.5, 0.25, 0.75, 0.125];
+        let original = left;
+        let mut right = left;
+        let status = crate::GuiStatus::default();
+        let mut writer = IncomingWaveformWriter::default();
+
+        let telemetry = process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            &mut last_curve_revision,
+            playing_transport(0.0),
+            Some(IncomingWaveformCapture::new(
+                status.incoming_waveform_buffer(),
+                &mut writer,
+            )),
+        )
+        .expect("non-empty block should return telemetry");
+
+        assert_eq!(left, original);
+        assert_eq!(right, original);
+        assert!(telemetry.bypassed);
+        assert_eq!(telemetry.reduction_gain, 1.0);
+        assert!(!telemetry.input_active);
+        assert!(
+            status.incoming_waveform_snapshot().is_some(),
+            "full bypass must continue waveform capture"
+        );
     }
 }

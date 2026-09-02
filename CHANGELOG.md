@@ -77,6 +77,54 @@ All notable changes to this project are documented in this file.
 
 - Fix preserve Option empty canvas no-op (1ab9c98)
 
+- Align swing editor phase and legacy migration (2392027)
+
+- Align command snap with swing grid (302295a)
+
+- Fit swing controls at minimum editor size (b291c87)
+
+- (release) Create temporary build parent (#42) (2ba8990)
+
+- (release) Verify notarized plugin bundles (#44) (9aa7f3a)
+
+- (release) Label artifact with checkout source (#45) (75ab159)
+
+- Keep release builds lockfile-stable (#49) (9af7160)
+
+- Report release source drift (#50) (6200fdb)
+
+- Prevent release bytecode drift (#51) (1dbeada)
+
+- Accept signed clap resource metadata (#52) (ac41d32)
+
+- Audit signed vst3 resource metadata (#54) (de0c518)
+
+- Switch after copying A/B sound (7460bee)
+
+- Compensate reported input presentation latency (2062c6a)
+
+- (gui) Bound curve paint fitting progress (05d337a)
+
+- (gui) Stabilize curve edge interactions (dead5d9)
+
+- (gui) Fit painted edge crossings before release (173d974)
+
+- (gui) Make side snapping reversible (#71) (0eba774)
+
+- (gui) Widen direct segment proximity band (#73) (8e50bbd)
+
+- (gui) Distinguish fixed curve offset edge (#74) (d5aff93)
+
+- Make curve offset interaction handle-only (541181e)
+
+- Publish server-valid Pump nightly manifests (#78) (47ce57d)
+
+- Keep waveform visible during offset sliding (fb7abcc)
+
+- Harden waveform remap publication (f4a8066)
+
+- Invalidate waveform on swing remap (e917503)
+
 
 ### CI
 
@@ -85,6 +133,14 @@ All notable changes to this project are documented in this file.
 - Align screenshot manifest and windows compatibility lane (39fb40a)
 
 - Run Pump checks on macOS only (dc184f8)
+
+- Add release preflight (#53) (fee51ea)
+
+- (release) Bump patch version on every release (5b3fca7)
+
+- (release) Handle concurrent main updates (a4b46e1)
+
+- (release) Prevent bytecode drift (58a2c22)
 
 
 ### Chores
@@ -162,6 +218,16 @@ All notable changes to this project are documented in this file.
 - Remove local agent state files (9a5e07a)
 
 - Repin canonical Radiant and Toybox merges (1fb2078)
+
+- Repin corrected knob wheel dependencies (0750e93)
+
+- (release) Bump Pump to v0.2.1 [skip ci] (aa7e48e)
+
+- (release) Bump Pump to v0.2.2 [skip ci] (d277bc7)
+
+- (deps) Repin Toybox to merged main (2b73014)
+
+- (release) Bump Pump to v0.2.3 [skip ci] (27827ba)
 
 
 ### Documentation
@@ -334,6 +400,94 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (362c980)
 
+- (changelog) Update changelog [skip ci] (d5076b5)
+
+- (changelog) Update changelog [skip ci] (a2993c8)
+
+- (changelog) Update changelog [skip ci] (788182e)
+
+- (changelog) Update changelog [skip ci] (d348da9)
+
+- (changelog) Update changelog [skip ci] (53c9ac0)
+
+- (changelog) Update changelog [skip ci] (8a1bdbc)
+
+- (changelog) Update changelog [skip ci] (aab0c73)
+
+- (changelog) Update changelog [skip ci] (742121f)
+
+- (changelog) Update changelog [skip ci] (af186a3)
+
+- (changelog) Update changelog [skip ci] (ce49662)
+
+- (changelog) Update changelog [skip ci] (42ddcb4)
+
+- (changelog) Update changelog [skip ci] (76c2243)
+
+- (changelog) Update changelog [skip ci] (2e7a9d0)
+
+- (changelog) Update changelog [skip ci] (704373e)
+
+- (changelog) Update changelog [skip ci] (ba4b607)
+
+- (changelog) Update changelog [skip ci] (17089b6)
+
+- (changelog) Update changelog [skip ci] (655be22)
+
+- (changelog) Update changelog [skip ci] (fc63a2d)
+
+- (changelog) Update changelog [skip ci] (f152c6a)
+
+- (changelog) Update changelog [skip ci] (a7f1ec7)
+
+- (changelog) Update changelog [skip ci] (2fa9b9b)
+
+- (changelog) Update changelog [skip ci] (44bb4a3)
+
+- (changelog) Update changelog [skip ci] (e589762)
+
+- (changelog) Update changelog [skip ci] (36442ac)
+
+- (changelog) Update changelog [skip ci] (15eb1cf)
+
+- (changelog) Update changelog [skip ci] (f70252a)
+
+- (changelog) Update changelog [skip ci] (5a8e8c9)
+
+- (changelog) Update changelog [skip ci] (82680d7)
+
+- (changelog) Update changelog [skip ci] (d2c3ba7)
+
+- (changelog) Update changelog [skip ci] (cc89cd8)
+
+- (changelog) Update changelog [skip ci] (d5d7e9a)
+
+- (changelog) Update changelog [skip ci] (352689d)
+
+- (changelog) Update changelog [skip ci] (a2d84d4)
+
+- (changelog) Update changelog [skip ci] (9e697d3)
+
+- (changelog) Update changelog [skip ci] (de0d9b2)
+
+- (changelog) Update changelog [skip ci] (26bb549)
+
+- (changelog) Update changelog [skip ci] (8e5c1fb)
+
+- (changelog) Update changelog [skip ci] (a9e50f2)
+
+- (changelog) Update changelog [skip ci] (1719120)
+
+- (changelog) Update changelog [skip ci] (2c81774)
+
+- (changelog) Update changelog [skip ci] (ad776cf)
+
+- (changelog) Update changelog [skip ci] (e4bf0c3)
+
+- (changelog) Update changelog [skip ci] (41e4354)
+
+- (changelog) Update changelog [skip ci] (0cb00b4)
+
 
 ### Features
 
@@ -352,6 +506,26 @@ All notable changes to this project are documented in this file.
 - Define Pump processing modes and add Mode selector (#35) (d3fc439)
 
 - (pump) Rebuild responsive Radiant editor shell (f279636)
+
+- Add host-automatable swing control (2282e19)
+
+- Redesign Pump header action bar (454defe)
+
+- Add Pump command history shortcuts (1d262bb)
+
+- Simplify Pump to clock-synced curve shaping (10a033c)
+
+- Add free timing editor workflow (#48) (3958f4a)
+
+- (gui) Adopt hover wheel knob automation (0adad6e)
+
+- (gui) Rebuild curve painting on release (ae89355)
+
+- (gui) Canonicalize viewport seam ownership (80da0ca)
+
+- (gui) Add option-click curve node deletion (e35efbc)
+
+- (gui) Make curve offset handle-only (923afb5)
 
 
 ### Other
@@ -1150,6 +1324,152 @@ OPT-1291: Keep the input waveform always on (ffa3201)
 
 OPT-1122 Rebuild responsive Radiant editor layout shell (0985c1c)
 
+- Define Pump dark coral visual system (cba5f5a)
+
+- Use retained icons for Pump actions (17fecc4)
+
+- Merge pull request #37 from PORTALSURFER/wsvasek/opt-1121-pump-redesign-define-the-dark-coral-visual-system-and-shared
+
+OPT-1121 Define the Pump dark coral visual system (d667b42)
+
+- Add click-safe host bypass control (28f477f)
+
+- Make bypass host edits transactional (02954be)
+
+- Merge pull request #38 from PORTALSURFER/wsvasek/opt-1135-pump-redesign-add-a-click-safe-host-bypass-control
+
+OPT-1135 Add click-safe host bypass control (2bbf7ae)
+
+- Merge pull request #39 from PORTALSURFER/wsvasek/opt-1129-pump-redesign-add-a-host-automatable-swing-control
+
+feat: add host-automatable swing control (ab07edf)
+
+- Add production Pump release producer (5d2788f)
+
+- Harden Pump release publication (2b43f88)
+
+- Enforce audited Pump publication boundary (f6a177c)
+
+- Merge pull request #40 from PORTALSURFER/codex/plugin-release-producer
+
+Add production Pump release producer (411d96c)
+
+- Add Pump A/B sound states (87ad5a1)
+
+- Retarget A/B curves at automation boundaries (336444a)
+
+- Cover interior A/B automation retargeting (7cebf1b)
+
+- Merge pull request #41 from PORTALSURFER/wsvasek/opt-1123-pump-redesign-add-ab-state-comparison-and-copy
+
+Add Pump A/B sound states (e1fc475)
+
+- Register temporary signing keychain for releases (#43)
+
+* fix(release): register temporary signing keychain
+
+* test(release): assert keychain restore ordering (e5e67a9)
+
+- Build target knob deck and gain reduction section (e16cd60)
+
+- Merge pull request #46 from PORTALSURFER/wsvasek/opt-1134-pump-redesign-build-the-target-knob-deck-and-gain-reduction
+
+Build target knob deck and gain reduction section (ff44770)
+
+- Merge pull request #47 from PORTALSURFER/wsvasek/opt-1124-pump-redesign-build-the-branded-header-and-global-action-bar
+
+Pump redesign: build branded header and global action bar (cbdcf43)
+
+- Add Pump hotkey help button (#55) (39a7cf0)
+
+- Remap Pump undo and redo hotkeys (#56) (937cf05)
+
+- Schedule guarded Pump nightly releases (#57)
+
+* Schedule guarded Pump nightly releases
+
+* Keep release preflight checkout clean (b8c4c59)
+
+- Make curve slides audible while dragging (4226d99)
+
+- Merge pull request #58 from PORTALSURFER/codex/live-curve-slide-audition
+
+Make curve slides audible while dragging (6170215)
+
+- Refine compact Pump editor workflow (8265ad6)
+
+- Fix compact gutter CI assertion (8a42b53)
+
+- Merge pull request #59 from PORTALSURFER/codex/eight-curve-slots
+
+Refine compact Pump editor workflow (e31f4fd)
+
+- Add curve multi-node editing (9f0217e)
+
+- Fix curve editor clippy lint (c54eb11)
+
+- Refine header button labels and hover (d157650)
+
+- Fix header button hover and label alignment (34b884d)
+
+- Clarify header hover regression name (e29269f)
+
+- Document local VST3 test builds (5016f9b)
+
+- Simplify A/B copy interactions (d7746bc)
+
+- Improve curve rendering fidelity (0a13518)
+
+- Merge pull request #60 from PORTALSURFER/codex/curve-multi-select-edit
+
+Improve Pump curve and A/B interactions (80fec81)
+
+- Extend high-end smoothing (b5f5d08)
+
+- Merge pull request #62 from PORTALSURFER/codex/smoother-high-end-impl
+
+Extend high-end smoothing (f3b3309)
+
+- Merge pull request #63 from PORTALSURFER/codex/pump-ab-command-switch
+
+Fix A/B command-copy switching (863d5d0)
+
+- Merge pull request #61 from PORTALSURFER/codex/pump-knob-wheel
+
+Adopt Radiant hover-wheel knob automation (85d4209)
+
+- Fix screenshots and adopt shared Radiant font policy
+
+Merged after exact-head Terra review APPROVE, passing Pump CI, and successful release preflight with CLAP/VST3 bundle audit. (81a8ccf)
+
+- Fix Sync Offset transport origin (#65)
+
+Remove the hidden half-cycle Sync phase bias so raw Offset 0 follows the DAW transport origin 1:1. Preserve nonzero cyclic offsets, Swing ordering, Free timing, and add focused DSP/transport regressions. (7c94d07)
+
+- Add curve-mapped waveform preview (#67)
+
+Add a GUI-only processed waveform preview using the existing input envelope and authoritative Depth/Floor curve mapping. Preserve phase alignment and enforce the production screenshot fixture. (b2af460)
+
+- Make global curve slots empty by default (#68) (74453ad)
+
+- Merge pull request #70 from PORTALSURFER/codex/curve-paint-reconstruction
+
+feat(gui): rebuild curve painting on release (3d20e4b)
+
+- Directly manipulate curve segments by proximity (#72) (af2a06c)
+
+- Merge pull request #75 from PORTALSURFER/wsvasek/opt-1324-pump-add-option-click-as-an-alternate-curve-node-deletion
+
+Pump: add Option-click curve-node deletion (195d2fd)
+
+- Merge pull request #76 from PORTALSURFER/wsvasek/opt-1321-pump-make-the-curve-offset-control-handle-only-and-easier-to
+
+Pump: make the curve offset control handle-only (93312b0)
+
+- Merge pull request #77 from PORTALSURFER/wsvasek/opt-1332-pump-keep-the-waveform-visible-during-command-shift-offset
+
+Pump: keep waveform visible during Command-Shift offset sliding (53550f1)
+
 
 ### Refactoring
 
@@ -1193,4 +1513,10 @@ OPT-1122 Rebuild responsive Radiant editor layout shell (0985c1c)
 - (state) Add malformed payload decode coverage (ebed91c)
 
 - (gui) Add non-windows dropdown-over-curve coverage (dd87705)
+
+- Cover Pump header action states (2aa67d2)
+
+- (gui) Satisfy edge interaction lint (18b85be)
+
+- Cover waveform clearing on small offset seek (e4609d4)
 

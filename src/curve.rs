@@ -110,7 +110,7 @@ pub fn cyclically_offset_editable_curve(curve: &EditableCurve, delta: f32) -> Ed
 
     let last_index = origin.nodes.len() - 1;
     let mut boundaries = vec![0.0_f32];
-    for node in origin.nodes[..last_index].iter().copied() {
+    for node in origin.nodes[1..last_index].iter().copied() {
         let shifted = (node.x + delta).rem_euclid(1.0);
         if shifted > OFFSET_SAMPLE_EPSILON && shifted < 1.0 - OFFSET_SAMPLE_EPSILON {
             boundaries.push(shifted);
@@ -120,29 +120,13 @@ pub fn cyclically_offset_editable_curve(curve: &EditableCurve, delta: f32) -> Ed
     boundaries.dedup_by(|left, right| (*left - *right).abs() <= OFFSET_SAMPLE_EPSILON);
     boundaries.push(1.0);
 
-    let split_count = boundaries
-        .windows(2)
-        .filter(|window| {
-            !offset_interval_matches_origin_segment(&origin, delta, window[0], window[1])
-        })
-        .count();
-    let split_subdivision_count =
-        (MAX_EDITABLE_NODES.saturating_sub(boundaries.len()) / split_count.max(1) + 1).max(1);
-    let mut positions = Vec::with_capacity(
-        boundaries.len() + split_count * split_subdivision_count.saturating_sub(1),
-    );
-    for window in boundaries.windows(2) {
-        let left = window[0];
-        let right = window[1];
-        positions.push(left);
-        if !offset_interval_matches_origin_segment(&origin, delta, left, right) {
-            let span = right - left;
-            for subdivision in 1..split_subdivision_count {
-                positions.push(left + span * subdivision as f32 / split_subdivision_count as f32);
-            }
-        }
-    }
-    positions.push(1.0);
+    // Keep the control-point topology stable.  The old implementation filled
+    // every segment that crossed the cyclic seam with uniformly sampled nodes
+    // to approximate the wrapped shape.  That made a simple whole-curve drag
+    // unexpectedly turn a handful of authored nodes into dozens of generated
+    // ones.  The exact phase source below still provides the wrapped sample;
+    // these positions are only the corresponding authored control points.
+    let positions = boundaries;
 
     let nodes = positions
         .iter()
@@ -371,19 +355,24 @@ pub fn curve_table_to_editable(curve: &[f32; CURVE_TABLE_LEN]) -> EditableCurve 
 fn sample_segment(curve: &EditableCurve, segment_index: usize, x: f32) -> f32 {
     let left = curve.nodes[segment_index];
     let right = curve.nodes[(segment_index + 1).min(curve.nodes.len() - 1)];
-    let span = (right.x - left.x).max(1.0e-6);
-    let local = ((x - left.x) / span).clamp(0.0, 1.0);
-
-    let shaped_local = shape_with_tension(
-        local,
+    sample_curve_segment(
+        left,
+        right,
         curve
             .segments
             .get(segment_index)
             .copied()
             .unwrap_or(CurveSegment { tension: 0.0 })
             .tension,
-    );
+        x,
+    )
+}
 
+/// Sample one editable curve edge using its node endpoints and tension.
+pub(crate) fn sample_curve_segment(left: CurveNode, right: CurveNode, tension: f32, x: f32) -> f32 {
+    let span = (right.x - left.x).max(1.0e-6);
+    let local = ((x - left.x) / span).clamp(0.0, 1.0);
+    let shaped_local = shape_with_tension(local, tension);
     lerp(left.y, right.y, shaped_local).clamp(0.0, 1.0)
 }
 
@@ -570,6 +559,40 @@ mod tests {
         assert_eq!(cyclically_offset_editable_curve(&origin, 1.0), origin);
         assert_eq!(cyclically_offset_editable_curve(&origin, 2.0), origin);
         assert_eq!(cyclically_offset_editable_curve(&origin, -1.0), origin);
+    }
+
+    #[test]
+    fn cyclic_offset_preserves_authored_node_and_segment_topology() {
+        let mut origin = default_editable_curve();
+        origin.segments = vec![
+            CurveSegment { tension: 0.85 },
+            CurveSegment { tension: -0.55 },
+            CurveSegment { tension: 0.25 },
+        ];
+        let origin = origin.normalized();
+        let offset = cyclically_offset_editable_curve(&origin, 0.23);
+
+        assert_eq!(offset.nodes.len(), origin.nodes.len());
+        assert_eq!(offset.segments.len(), origin.segments.len());
+        assert!(offset.phase_source.is_some());
+        assert!(offset
+            .nodes
+            .windows(2)
+            .all(|window| window[1].x - window[0].x >= 1.0e-4));
+        let mut expected_x = std::iter::once(0.0)
+            .chain(
+                origin.nodes[1..origin.nodes.len() - 1]
+                    .iter()
+                    .map(|node| (node.x + 0.23).rem_euclid(1.0)),
+            )
+            .chain(std::iter::once(1.0))
+            .collect::<Vec<_>>();
+        expected_x.sort_by(f32::total_cmp);
+        assert!(offset
+            .nodes
+            .iter()
+            .zip(expected_x)
+            .all(|(actual, expected)| (actual.x - expected).abs() < 1.0e-6));
     }
 
     #[test]

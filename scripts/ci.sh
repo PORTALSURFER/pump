@@ -12,8 +12,8 @@ Usage:
 Runs the same checks locally that CI enforces:
   - scripts/policy-check.sh (if present)
   - cargo fmt --check
-  - cargo clippy -D warnings
-  - cargo test
+  - cargo clippy --locked -D warnings
+  - cargo test --locked
   - optional UI screenshot test (when supported)
 
 Options:
@@ -57,11 +57,11 @@ fi
 
 cargo fmt --all -- --check
 if [[ ${#features[@]} -gt 0 ]]; then
-  cargo clippy --all-targets "${features[@]}" -- -D warnings
-  cargo test --all "${features[@]}"
+  cargo clippy --locked --all-targets "${features[@]}" -- -D warnings
+  cargo test --locked --all "${features[@]}"
 else
-  cargo clippy --all-targets -- -D warnings
-  cargo test --all
+  cargo clippy --locked --all-targets -- -D warnings
+  cargo test --locked --all
 fi
 
 if [[ "${want_screenshots}" == "1" ]]; then
@@ -73,12 +73,32 @@ if [[ "${want_screenshots}" == "1" ]]; then
   rm -rf target/ui-screenshots
   mkdir -p target/ui-screenshots
 
-  cargo test -r --features screenshot-test \
-    gui::screenshot_tests::pump_editor_screenshots_cover_supported_sizes_and_fractional_scale \
-    -- --nocapture
+  cargo test --locked -r --features screenshot-test gui::screenshot_tests -- --nocapture
 
-  if ! compgen -G "target/ui-screenshots/pump/pump-*.png" >/dev/null; then
-    echo "[ci] screenshot-test feature is enabled but no Pump Radiant screenshots were produced under target/ui-screenshots/pump" >&2
-    exit 1
-  fi
+  required_captures=(
+    target/ui-screenshots/pump/pump-min-640x400.png
+    target/ui-screenshots/pump/pump-default-640x400.png
+    target/ui-screenshots/pump/pump-max-1280x800.png
+    target/ui-screenshots/pump/pump-default-640x400-dpi-1_25.png
+    target/ui-screenshots/pump/pump-components-states-720x360-1x.png
+    target/ui-screenshots/pump/pump-components-states-720x360-2x.png
+    target/ui-screenshots/pump/pump-bypass-active-640x400.png
+    target/ui-screenshots/pump/pump-bypass-bypassed-640x400.png
+    target/ui-screenshots/pump/pump-header-normal-640x400.png
+    target/ui-screenshots/pump/pump-header-hovered-640x400.png
+    target/ui-screenshots/pump/pump-header-copy-hovered-640x400.png
+    target/ui-screenshots/pump/pump-header-a-hovered-640x400.png
+    target/ui-screenshots/pump/pump-header-b-hovered-640x400.png
+    target/ui-screenshots/pump/pump-header-pressed-640x400.png
+    target/ui-screenshots/pump/pump-header-disabled-640x400.png
+    target/ui-screenshots/pump/pump-header-a-active-640x400.png
+    target/ui-screenshots/pump/pump-header-b-active-640x400.png
+    target/ui-screenshots/pump/pump-waveform-layers-640x400.png
+  )
+  for capture in "${required_captures[@]}"; do
+    if [[ ! -f "${capture}" ]]; then
+      echo "[ci] required Pump screenshot was not produced: ${capture}" >&2
+      exit 1
+    fi
+  done
 fi

@@ -9,12 +9,8 @@ use super::*;
 impl<'a> PluginMainThread<'a, PumpShared> for PumpMainThread<'a> {}
 
 impl PluginAudioPortsImpl for PumpMainThread<'_> {
-    fn count(&mut self, is_input: bool) -> u32 {
-        if is_input {
-            2
-        } else {
-            1
-        }
+    fn count(&mut self, _is_input: bool) -> u32 {
+        1
     }
 
     fn get(&mut self, index: u32, is_input: bool, writer: &mut AudioPortInfoWriter) {
@@ -24,14 +20,6 @@ impl PluginAudioPortsImpl for PumpMainThread<'_> {
                 name: b"main",
                 channel_count: 2,
                 flags: AudioPortFlags::IS_MAIN,
-                port_type: Some(AudioPortType::STEREO),
-                in_place_pair: None,
-            }),
-            (true, 1) => writer.set(&AudioPortInfo {
-                id: ClapId::new(1),
-                name: b"sidechain",
-                channel_count: 2,
-                flags: AudioPortFlags::empty(),
                 port_type: Some(AudioPortType::STEREO),
                 in_place_pair: None,
             }),
@@ -59,6 +47,7 @@ impl PluginMainThreadParams for PumpMainThread<'_> {
 
     fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
         get_param_value(self.shared.params.as_ref(), param_id)
+            .map(|value| clap_value_from_plain_value(param_id, value))
     }
 
     fn value_to_text(
@@ -67,11 +56,16 @@ impl PluginMainThreadParams for PumpMainThread<'_> {
         value: f64,
         writer: &mut ParamDisplayWriter,
     ) -> std::fmt::Result {
-        value_to_text(self.shared.params.as_ref(), param_id, value, writer)
+        value_to_text(
+            self.shared.params.as_ref(),
+            param_id,
+            plain_value_from_clap_value(param_id, value),
+            writer,
+        )
     }
 
     fn text_to_value(&mut self, param_id: ClapId, text: &std::ffi::CStr) -> Option<f64> {
-        text_to_value(param_id, text)
+        text_to_value(param_id, text).map(|value| clap_value_from_plain_value(param_id, value))
     }
 
     fn flush(
@@ -80,7 +74,7 @@ impl PluginMainThreadParams for PumpMainThread<'_> {
         output_parameter_changes: &mut OutputEvents,
     ) {
         apply_param_events(input_parameter_changes, |param_id, value| {
-            apply_param_event(self.shared.params.as_ref(), param_id, value as f32)
+            apply_clap_param_event(self.shared.params.as_ref(), param_id, value as f32)
         });
 
         let _stats = self

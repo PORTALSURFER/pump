@@ -1,8 +1,47 @@
 //! Shared transport-phase helpers used by both CLAP and VST3 paths.
 
-use crate::dsp::DspSettings;
+use crate::dsp::{swing_warp_phase, DspSettings};
 use crate::GuiTransportTelemetry;
 use toybox::dsp::{phase_from_beats, TransportState};
+
+/// Compensate a host beat timeline for input presentation latency.
+///
+/// The host timeline is expressed at the block's presentation point, while
+/// audio entering the plugin may represent an earlier point by the input
+/// latency. Keep invalid or unavailable timing inputs unchanged so callers
+/// retain the existing fallback behavior.
+pub(crate) fn compensate_input_presentation_latency(
+    transport: TransportState,
+    latency_samples: Option<u32>,
+    sample_rate: f64,
+) -> TransportState {
+    let Some(latency_samples) = latency_samples.filter(|&samples| samples != 0) else {
+        return transport;
+    };
+    let Some(song_pos_beats) = transport.song_pos_beats else {
+        return transport;
+    };
+    let tempo_bpm = f64::from(transport.tempo_bpm);
+    if !song_pos_beats.is_finite()
+        || !tempo_bpm.is_finite()
+        || tempo_bpm <= 0.0
+        || !sample_rate.is_finite()
+        || sample_rate <= 0.0
+    {
+        return transport;
+    }
+
+    let latency_beats = f64::from(latency_samples) * tempo_bpm / (60.0 * sample_rate);
+    let compensated_song_pos_beats = song_pos_beats - latency_beats;
+    if !latency_beats.is_finite() || !compensated_song_pos_beats.is_finite() {
+        return transport;
+    }
+
+    TransportState {
+        song_pos_beats: Some(compensated_song_pos_beats),
+        ..transport
+    }
+}
 
 /// Resolve GUI phase from the latest host transport snapshot.
 ///
@@ -15,7 +54,16 @@ pub(crate) fn gui_phase_from_transport(
 ) -> f32 {
     transport
         .song_pos_beats
-        .map(|beats| phase_from_beats(beats, settings.beats_per_cycle, settings.phase_offset))
+        .map(|beats| {
+            if settings.swing <= 0.0 {
+                // Preserve the legacy host-timeline phase calculation exactly.
+                phase_from_beats(beats, settings.beats_per_cycle, settings.phase_offset)
+            } else {
+                let raw_phase = phase_from_beats(beats, settings.beats_per_cycle, 0.0);
+                (swing_warp_phase(raw_phase, settings.swing) + settings.phase_offset)
+                    .rem_euclid(1.0)
+            }
+        })
         .unwrap_or_else(|| fallback_phase.rem_euclid(1.0))
 }
 
@@ -52,13 +100,90 @@ pub(crate) fn gui_transport_telemetry(
 
 #[cfg(test)]
 mod tests {
-    use crate::dsp::DspSettings;
+    use crate::dsp::{swing_warp_phase, DspSettings};
     use toybox::dsp::{phase_from_beats, TransportState};
 
     use super::{
-        gui_phase_from_transport, gui_transport_telemetry, host_beat_phase,
-        phase_running_from_transport,
+        compensate_input_presentation_latency, gui_phase_from_transport, gui_transport_telemetry,
+        host_beat_phase, phase_running_from_transport,
     };
+
+    #[test]
+    fn input_presentation_latency_compensation_uses_samples_and_tempo_units() {
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            song_pos_beats: Some(4.0),
+            ..TransportState::default()
+        };
+
+        let compensated = compensate_input_presentation_latency(transport, Some(24_000), 48_000.0);
+
+        assert!((compensated.song_pos_beats.unwrap_or_default() - 3.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn input_presentation_latency_compensation_preserves_zero_missing_and_invalid_inputs() {
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            song_pos_beats: Some(4.0),
+            ..TransportState::default()
+        };
+
+        for (latency_samples, sample_rate) in [
+            (None, 48_000.0),
+            (Some(0), 48_000.0),
+            (Some(24), 0.0),
+            (Some(24), f64::NAN),
+        ] {
+            assert_eq!(
+                compensate_input_presentation_latency(transport, latency_samples, sample_rate),
+                transport
+            );
+        }
+
+        assert_eq!(
+            compensate_input_presentation_latency(
+                TransportState {
+                    tempo_bpm: 0.0,
+                    ..transport
+                },
+                Some(24),
+                48_000.0,
+            ),
+            TransportState {
+                tempo_bpm: 0.0,
+                ..transport
+            }
+        );
+
+        assert_eq!(
+            compensate_input_presentation_latency(
+                TransportState {
+                    song_pos_beats: None,
+                    ..transport
+                },
+                Some(24),
+                48_000.0,
+            ),
+            TransportState {
+                song_pos_beats: None,
+                ..transport
+            }
+        );
+    }
+
+    #[test]
+    fn input_presentation_latency_compensation_allows_negative_beats() {
+        let transport = TransportState {
+            tempo_bpm: 60.0,
+            song_pos_beats: Some(-0.25),
+            ..TransportState::default()
+        };
+
+        let compensated = compensate_input_presentation_latency(transport, Some(24_000), 48_000.0);
+
+        assert!((compensated.song_pos_beats.unwrap_or_default() + 0.75).abs() < 1.0e-6);
+    }
 
     #[test]
     fn gui_phase_from_transport_prefers_host_song_position() {
@@ -69,9 +194,11 @@ mod tests {
             phase_offset: 0.2,
             output_gain_db: 0.0,
             beats_per_cycle: 4.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
         };
         let transport = TransportState {
             tempo_bpm: 128.0,
@@ -84,6 +211,101 @@ mod tests {
     }
 
     #[test]
+    fn gui_phase_from_transport_warps_raw_host_phase_before_offset() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.2,
+            output_gain_db: 0.0,
+            beats_per_cycle: 4.0,
+            smooth: 0.0,
+            swing: 1.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        let transport = TransportState {
+            tempo_bpm: 128.0,
+            is_playing: true,
+            song_pos_beats: Some(2.0),
+        };
+        let raw_phase = phase_from_beats(2.0, settings.beats_per_cycle, 0.0);
+        let expected =
+            (swing_warp_phase(raw_phase, settings.swing) + settings.phase_offset).rem_euclid(1.0);
+        let resolved = gui_phase_from_transport(transport, settings, 0.75);
+        assert!((resolved - expected).abs() < 1.0e-6);
+        assert!((resolved - 0.575).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gui_sync_phase_matches_raw_transport_boundaries_and_offset_wrap() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: crate::params::TIMING_MODE_SYNC,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        for (host_beats, expected) in [(0.0, 0.0), (0.25, 0.25), (0.5, 0.5), (0.75, 0.75)] {
+            let phase = gui_phase_from_transport(
+                TransportState {
+                    song_pos_beats: Some(host_beats),
+                    ..TransportState::default()
+                },
+                settings,
+                0.0,
+            );
+            assert!((phase - expected).abs() < 1.0e-6);
+        }
+
+        let wrapped = gui_phase_from_transport(
+            TransportState {
+                song_pos_beats: Some(0.875),
+                ..TransportState::default()
+            },
+            DspSettings {
+                phase_offset: 0.2,
+                ..settings
+            },
+            0.0,
+        );
+        assert!((wrapped - 0.075).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gui_free_phase_keeps_raw_offset_origin() {
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.2,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: crate::params::TIMING_MODE_FREE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        let resolved = gui_phase_from_transport(
+            TransportState {
+                song_pos_beats: Some(0.0),
+                ..TransportState::default()
+            },
+            settings,
+            0.0,
+        );
+        assert!((resolved - settings.phase_offset).abs() < 1.0e-6);
+    }
+
+    #[test]
     fn gui_phase_from_transport_uses_fallback_without_song_position() {
         let settings = DspSettings {
             mix: 1.0,
@@ -92,9 +314,11 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
-            trigger_mode: crate::params::TRIGGER_MODE_HOST,
             smooth: 0.0,
-            mode: crate::params::PROCESSING_MODE_CLASSIC,
+            swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,

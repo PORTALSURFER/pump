@@ -1,5 +1,33 @@
 use super::*;
+
+fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
+    float_near_eq(left.mix, right.mix)
+        && float_near_eq(left.depth_db, right.depth_db)
+        && float_near_eq(left.floor_db, right.floor_db)
+        && float_near_eq(left.phase_offset, right.phase_offset)
+        && float_near_eq(left.output_gain_db, right.output_gain_db)
+        && left.sync_division == right.sync_division
+        && left.trigger_mode == right.trigger_mode
+        && float_near_eq(left.smooth, right.smooth)
+        && left.mode == right.mode
+        && float_near_eq(left.swing, right.swing)
+        && left.timing_mode == right.timing_mode
+        && float_near_eq(left.free_rate_hz, right.free_rate_hz)
+        && curve_near_eq(&left.editable_curve, &right.editable_curve)
+        && left.quick_slots.len() == right.quick_slots.len()
+        && left
+            .quick_slots
+            .iter()
+            .zip(right.quick_slots.iter())
+            .all(|(lhs, rhs)| curve_near_eq(&lhs.curve, &rhs.curve))
+}
+
 impl PumpParams {
+    #[inline]
+    fn realtime_index(&self) -> usize {
+        (self.active_sound.load(Ordering::Acquire) as usize).min(1)
+    }
+
     /// Create params with production defaults and default curve.
     pub fn new() -> Self {
         let editable_curve = default_editable_curve();
@@ -14,11 +42,52 @@ impl PumpParams {
             trigger_mode: AtomicU32::new(DEFAULT_TRIGGER_MODE as u32),
             smooth: AtomicF32::new(DEFAULT_SMOOTH),
             mode: AtomicU32::new(PROCESSING_MODE_CLASSIC as u32),
+            swing: AtomicF32::new(DEFAULT_SWING),
+            timing_mode: AtomicU32::new(DEFAULT_TIMING_MODE as u32),
+            free_rate_hz: AtomicF32::new(DEFAULT_FREE_RATE_HZ),
+            bypass: AtomicBool::new(false),
+            bypass_revision: AtomicU32::new(1),
+            bypass_last_automation_micros: AtomicU64::new(0),
             editable_curve: RwLock::new(editable_curve),
             curve: std::array::from_fn(|index| AtomicF32::new(default_curve[index])),
             curve_revision: AtomicU32::new(1),
             preset_bank: RwLock::new(PumpPresetBank::default_init()),
             preset_persistence_warning: RwLock::new(None),
+            active_sound: AtomicU32::new(SoundSide::A.index() as u32),
+            pending_active_sound: AtomicU32::new(u32::MAX),
+            active_sound_dirty: AtomicBool::new(false),
+            realtime_mix: std::array::from_fn(|_| AtomicF32::new(DEFAULT_MIX)),
+            realtime_depth_db: std::array::from_fn(|_| AtomicF32::new(DEFAULT_DEPTH_DB)),
+            realtime_floor_db: std::array::from_fn(|_| AtomicF32::new(DEFAULT_FLOOR_DB)),
+            realtime_phase_offset: std::array::from_fn(|_| AtomicF32::new(DEFAULT_PHASE_OFFSET)),
+            realtime_output_gain_db: std::array::from_fn(|_| {
+                AtomicF32::new(DEFAULT_OUTPUT_GAIN_DB)
+            }),
+            realtime_sync_division: std::array::from_fn(|_| {
+                AtomicU32::new(DEFAULT_SYNC_DIVISION_INDEX as u32)
+            }),
+            realtime_trigger_mode: std::array::from_fn(|_| {
+                AtomicU32::new(DEFAULT_TRIGGER_MODE as u32)
+            }),
+            realtime_smooth: std::array::from_fn(|_| AtomicF32::new(DEFAULT_SMOOTH)),
+            realtime_mode: std::array::from_fn(|_| AtomicU32::new(PROCESSING_MODE_CLASSIC as u32)),
+            realtime_swing: std::array::from_fn(|_| AtomicF32::new(DEFAULT_SWING)),
+            realtime_timing_mode: std::array::from_fn(|_| {
+                AtomicU32::new(DEFAULT_TIMING_MODE as u32)
+            }),
+            realtime_free_rate_hz: std::array::from_fn(|_| AtomicF32::new(DEFAULT_FREE_RATE_HZ)),
+            realtime_curve: std::array::from_fn(|_| {
+                std::array::from_fn(|index| AtomicF32::new(default_curve[index]))
+            }),
+            sound_states: RwLock::new([
+                PumpSoundState::default_init(),
+                PumpSoundState::default_init(),
+            ]),
+            stored_sound_states: RwLock::new([
+                PumpSoundState::default_init(),
+                PumpSoundState::default_init(),
+            ]),
+            sound_state_dirty: std::array::from_fn(|_| AtomicBool::new(false)),
         };
         match super::preset_store::load_persisted_preset_bank() {
             Ok(Some(bank)) => params.set_preset_bank_without_persistence(bank),
@@ -32,17 +101,17 @@ impl PumpParams {
 
     /// Get dry/wet mix amount.
     pub fn mix(&self) -> f32 {
-        self.mix.load(Ordering::Relaxed)
+        self.realtime_mix[self.realtime_index()].load(Ordering::Relaxed)
     }
 
     /// Get curve attenuation depth in decibels.
     pub fn depth_db(&self) -> f32 {
-        self.depth_db.load(Ordering::Relaxed)
+        self.realtime_depth_db[self.realtime_index()].load(Ordering::Relaxed)
     }
 
     /// Get the minimum wet gain floor in decibels.
     pub fn floor_db(&self) -> f32 {
-        self.floor_db.load(Ordering::Relaxed)
+        self.realtime_floor_db[self.realtime_index()].load(Ordering::Relaxed)
     }
 
     /// Get legacy normalized depth amount for old payloads and presets.
@@ -52,17 +121,19 @@ impl PumpParams {
 
     /// Get cycle phase offset.
     pub fn phase_offset(&self) -> f32 {
-        self.phase_offset.load(Ordering::Relaxed)
+        self.realtime_phase_offset[self.realtime_index()].load(Ordering::Relaxed)
     }
 
     /// Get output gain in decibels.
     pub fn output_gain_db(&self) -> f32 {
-        self.output_gain_db.load(Ordering::Relaxed)
+        self.realtime_output_gain_db[self.realtime_index()].load(Ordering::Relaxed)
     }
 
     /// Get sync division index.
     pub fn sync_division(&self) -> usize {
-        clamp_sync_division(self.sync_division.load(Ordering::Relaxed) as f32)
+        clamp_sync_division(
+            self.realtime_sync_division[self.realtime_index()].load(Ordering::Relaxed) as f32,
+        )
     }
 
     /// Get sync division in beats per cycle.
@@ -72,23 +143,77 @@ impl PumpParams {
 
     /// Get the selected curve trigger source.
     pub fn trigger_mode(&self) -> usize {
-        (self.trigger_mode.load(Ordering::Relaxed) as usize).min(TRIGGER_MODE_SIDECHAIN)
+        clamp_trigger_mode(
+            self.realtime_trigger_mode[self.realtime_index()].load(Ordering::Relaxed) as f32,
+        )
     }
 
     /// Get evaluated wet-gain smoothing amount.
     pub fn smooth(&self) -> f32 {
-        self.smooth.load(Ordering::Relaxed)
+        self.realtime_smooth[self.realtime_index()].load(Ordering::Relaxed)
     }
 
-    /// Get the selected processing mode, falling back to Classic for unknown values.
+    /// Get the sole supported processing mode, mapping historical values to Classic.
     pub fn mode(&self) -> usize {
-        clamp_processing_mode(self.mode.load(Ordering::Relaxed) as f32)
+        clamp_processing_mode(
+            self.realtime_mode[self.realtime_index()].load(Ordering::Relaxed) as f32,
+        )
+    }
+
+    /// Get alternating-subdivision swing amount.
+    pub fn swing(&self) -> f32 {
+        self.realtime_swing[self.realtime_index()]
+            .load(Ordering::Relaxed)
+            .clamp(MIN_SWING, MAX_SWING)
+    }
+
+    /// Get the timing source.
+    pub fn timing_mode(&self) -> usize {
+        clamp_timing_mode(
+            self.realtime_timing_mode[self.realtime_index()].load(Ordering::Relaxed) as f32,
+        )
+    }
+
+    /// Get the canonical free-running timing rate in hertz.
+    pub fn free_rate_hz(&self) -> f32 {
+        clamp_free_rate_hz(
+            self.realtime_free_rate_hz[self.realtime_index()].load(Ordering::Relaxed),
+        )
+    }
+
+    /// Return whether complete Pump output is currently bypassed.
+    pub fn bypassed(&self) -> bool {
+        self.bypass.load(Ordering::Relaxed)
+    }
+
+    /// Return the bypass value in its plain host representation.
+    pub fn bypass_value(&self) -> f32 {
+        if self.bypassed() {
+            BYPASS_BYPASSED_VALUE
+        } else {
+            BYPASS_ACTIVE_VALUE
+        }
+    }
+
+    /// Read the bypass projection revision used by hosted editors.
+    pub fn bypass_revision(&self) -> u32 {
+        self.bypass_revision.load(Ordering::Acquire)
+    }
+
+    /// Return whether host bypass automation was observed in the last 250 ms.
+    pub fn bypass_automation_recent(&self) -> bool {
+        let last = self.bypass_last_automation_micros.load(Ordering::Acquire);
+        last != 0
+            && crate::time_utils::monotonic_micros().saturating_sub(last)
+                < BYPASS_AUTOMATION_CUE_MICROS
     }
 
     /// Set dry/wet mix amount.
     pub fn set_mix(&self, value: f32) {
-        self.mix
-            .store(value.clamp(MIN_MIX, MAX_MIX), Ordering::Relaxed);
+        let value = value.clamp(MIN_MIX, MAX_MIX);
+        self.mix.store(value, Ordering::Relaxed);
+        self.realtime_mix[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
     }
 
     /// Set curve attenuation depth in decibels.
@@ -98,8 +223,10 @@ impl PumpParams {
         } else {
             DEFAULT_DEPTH_DB
         };
-        self.depth_db
-            .store(value.clamp(MIN_DEPTH_DB, MAX_DEPTH_DB), Ordering::Relaxed);
+        let value = value.clamp(MIN_DEPTH_DB, MAX_DEPTH_DB);
+        self.depth_db.store(value, Ordering::Relaxed);
+        self.realtime_depth_db[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
     }
 
     /// Set legacy normalized depth, migrating it to the documented dB range.
@@ -114,40 +241,42 @@ impl PumpParams {
         } else {
             DEFAULT_FLOOR_DB
         };
-        self.floor_db
-            .store(value.clamp(MIN_FLOOR_DB, MAX_FLOOR_DB), Ordering::Relaxed);
+        let value = value.clamp(MIN_FLOOR_DB, MAX_FLOOR_DB);
+        self.floor_db.store(value, Ordering::Relaxed);
+        self.realtime_floor_db[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
     }
 
     /// Set cycle phase offset.
     pub fn set_phase_offset(&self, value: f32) {
-        self.phase_offset.store(
-            value.clamp(MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
-            Ordering::Relaxed,
-        );
+        let value = value.clamp(MIN_PHASE_OFFSET, MAX_PHASE_OFFSET);
+        self.phase_offset.store(value, Ordering::Relaxed);
+        self.realtime_phase_offset[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
     }
 
     /// Set output gain in decibels.
     pub fn set_output_gain_db(&self, value: f32) {
-        self.output_gain_db.store(
-            value.clamp(MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
-            Ordering::Relaxed,
-        );
+        let value = value.clamp(MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB);
+        self.output_gain_db.store(value, Ordering::Relaxed);
+        self.realtime_output_gain_db[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
     }
 
     /// Set sync division index from scalar host value.
     pub fn set_sync_division(&self, value: f32) {
         let index = clamp_sync_division(value);
         self.sync_division.store(index as u32, Ordering::Relaxed);
+        self.realtime_sync_division[self.realtime_index()].store(index as u32, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
     }
 
     /// Set the curve trigger source from a scalar host value.
     pub fn set_trigger_mode(&self, value: f32) {
-        self.trigger_mode.store(
-            value
-                .round()
-                .clamp(TRIGGER_MODE_HOST as f32, TRIGGER_MODE_SIDECHAIN as f32) as u32,
-            Ordering::Relaxed,
-        );
+        let value = clamp_trigger_mode(value) as u32;
+        self.trigger_mode.store(value, Ordering::Relaxed);
+        self.realtime_trigger_mode[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
     }
 
     /// Set evaluated wet-gain smoothing amount.
@@ -157,14 +286,64 @@ impl PumpParams {
         } else {
             DEFAULT_SMOOTH
         };
-        self.smooth
-            .store(value.clamp(MIN_SMOOTH, MAX_SMOOTH), Ordering::Relaxed);
+        let value = value.clamp(MIN_SMOOTH, MAX_SMOOTH);
+        self.smooth.store(value, Ordering::Relaxed);
+        self.realtime_smooth[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
     }
 
-    /// Set the processing mode, falling back to Classic for unknown values.
+    /// Set the processing mode, mapping historical values to Classic.
     pub fn set_mode(&self, value: f32) {
-        self.mode
-            .store(clamp_processing_mode(value) as u32, Ordering::Relaxed);
+        let value = clamp_processing_mode(value) as u32;
+        self.mode.store(value, Ordering::Relaxed);
+        self.realtime_mode[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set alternating-subdivision swing amount.
+    pub fn set_swing(&self, value: f32) {
+        let value = if value.is_finite() {
+            value
+        } else {
+            DEFAULT_SWING
+        };
+        let value = value.clamp(MIN_SWING, MAX_SWING);
+        self.swing.store(value, Ordering::Relaxed);
+        self.realtime_swing[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the timing source.
+    pub fn set_timing_mode(&self, value: f32) {
+        let value = clamp_timing_mode(value) as u32;
+        self.timing_mode.store(value, Ordering::Relaxed);
+        self.realtime_timing_mode[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the canonical free-running timing rate in hertz.
+    pub fn set_free_rate_hz(&self, value: f32) {
+        let value = clamp_free_rate_hz(value);
+        self.free_rate_hz.store(value, Ordering::Relaxed);
+        self.realtime_free_rate_hz[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set bypass from its stepped plain host value.
+    pub fn set_bypass(&self, value: f32) {
+        let bypassed = value.is_finite() && value.round() >= BYPASS_BYPASSED_VALUE;
+        if self.bypass.swap(bypassed, Ordering::AcqRel) != bypassed {
+            self.bypass_revision.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// Set bypass from host automation and publish the GUI automation cue.
+    pub(crate) fn set_bypass_from_host(&self, value: f32) {
+        self.set_bypass(value);
+        self.bypass_last_automation_micros.store(
+            crate::time_utils::monotonic_micros().max(1),
+            Ordering::Release,
+        );
     }
 
     /// Read the current curve revision counter.
@@ -174,7 +353,7 @@ impl PumpParams {
 
     /// Read one point from the curve table.
     pub fn curve_value(&self, index: usize) -> f32 {
-        self.curve
+        self.realtime_curve[self.realtime_index()]
             .get(index)
             .map(|sample: &AtomicF32| sample.load(Ordering::Acquire).clamp(0.0, 1.0))
             .unwrap_or(1.0)
@@ -183,8 +362,9 @@ impl PumpParams {
     /// Snapshot the whole curve table in one array.
     pub fn curve_snapshot(&self) -> [f32; CURVE_TABLE_LEN] {
         let mut values = [1.0_f32; CURVE_TABLE_LEN];
+        let active_curve = &self.realtime_curve[self.realtime_index()];
         for (index, value) in values.iter_mut().enumerate() {
-            *value = self.curve[index].load(Ordering::Acquire).clamp(0.0, 1.0);
+            *value = active_curve[index].load(Ordering::Acquire).clamp(0.0, 1.0);
         }
         values
     }
@@ -203,11 +383,13 @@ impl PumpParams {
         plain_curve.phase_source = None;
         plain_curve.phase_offset = 0.0;
         self.set_editable_curve_internal(&plain_curve);
+        self.capture_active_working_state();
     }
 
     /// Replace the editable curve while retaining an exact cyclic phase source.
     pub fn set_editable_curve_preserving_phase(&self, editable_curve: &EditableCurve) {
         self.set_editable_curve_internal(editable_curve);
+        self.capture_active_working_state();
     }
 
     fn set_editable_curve_internal(&self, editable_curve: &EditableCurve) {
@@ -218,6 +400,7 @@ impl PumpParams {
         }
         self.store_curve_table(&curve_table);
         self.curve_revision.fetch_add(1, Ordering::AcqRel);
+        self.mark_active_sound_dirty();
     }
 
     /// Replace the whole curve table and advance revision.
@@ -227,11 +410,445 @@ impl PumpParams {
         }
         self.store_curve_table(values);
         self.curve_revision.fetch_add(1, Ordering::AcqRel);
+        self.capture_active_working_state();
     }
 
     /// Restore default curve shape and advance revision.
     pub fn reset_curve_to_default(&self) {
         self.set_editable_curve(&default_editable_curve());
+    }
+
+    /// Return the currently active A/B side.
+    pub fn active_sound(&self) -> SoundSide {
+        if self.active_sound.load(Ordering::Acquire) == SoundSide::B.index() as u32 {
+            SoundSide::B
+        } else {
+            SoundSide::A
+        }
+    }
+
+    /// Return a UI-safe snapshot of one complete A/B side.
+    pub fn sound_state_snapshot(&self, side: SoundSide) -> PumpSoundState {
+        if side == self.active_sound() && self.active_sound_dirty.load(Ordering::Acquire) {
+            return self.current_audio_state();
+        }
+        self.sound_states
+            .read()
+            .ok()
+            .and_then(|states| states.get(side.index()).cloned())
+            .unwrap_or_else(PumpSoundState::default_init)
+    }
+
+    /// Return the durable reference state for one A/B side.
+    pub fn stored_sound_state_snapshot(&self, side: SoundSide) -> PumpSoundState {
+        self.stored_sound_states
+            .read()
+            .ok()
+            .and_then(|states| states.get(side.index()).cloned())
+            .unwrap_or_else(PumpSoundState::default_init)
+    }
+
+    /// Return whether a side's complete working state differs from its stored reference.
+    pub fn sound_state_is_dirty(&self, side: SoundSide) -> bool {
+        if side == self.active_sound() && self.active_sound_dirty.load(Ordering::Acquire) {
+            let current = self.current_audio_state();
+            let stored = self.stored_sound_state_snapshot(side);
+            return !sound_state_near_eq(&current, &stored);
+        }
+        self.sound_state_dirty[side.index()].load(Ordering::Acquire)
+    }
+
+    /// Store the active complete working state as its durable reference.
+    pub fn store_active_sound_state(&self) -> bool {
+        let side = self.active_sound();
+        self.capture_active_working_state();
+        let working = self.sound_state_snapshot(side);
+        if let Ok(mut states) = self.stored_sound_states.write() {
+            states[side.index()] = working;
+            self.sound_state_dirty[side.index()].store(false, Ordering::Release);
+            self.active_sound_dirty.store(false, Ordering::Release);
+            return true;
+        }
+        false
+    }
+
+    /// Return whether the two complete sound sides differ.
+    pub fn sound_sides_differ(&self) -> bool {
+        self.capture_active_working_state();
+        self.sound_states
+            .read()
+            .map(|states| states[0] != states[1])
+            .unwrap_or(false)
+    }
+
+    /// Select one side and publish its complete state to the audio-facing atomics.
+    ///
+    /// The audio processor only reads atomics and never takes this lock. The
+    /// returned value indicates whether a side transition occurred.
+    pub fn set_active_sound(&self, side: SoundSide) -> bool {
+        let current = self.active_sound();
+        if current == side {
+            return false;
+        }
+        self.capture_active_working_state();
+        let target = self
+            .sound_states
+            .read()
+            .ok()
+            .and_then(|states| states.get(side.index()).cloned())
+            .unwrap_or_else(PumpSoundState::default_init);
+        self.publish_sound_state_at(side.index(), &target);
+        self.active_sound
+            .store(side.index() as u32, Ordering::Release);
+        self.curve_revision.fetch_add(1, Ordering::AcqRel);
+        self.reconcile_active_sound_projection();
+        true
+    }
+
+    /// Queue a host-driven side change without taking a lock on the audio thread.
+    pub(crate) fn request_active_sound_from_host(&self, side: SoundSide) {
+        // Every per-side audio field is pre-published in lock-free atomics;
+        // changing this selector is therefore the complete realtime-safe
+        // transition and requires no UI snapshot access.
+        if self
+            .active_sound
+            .swap(side.index() as u32, Ordering::AcqRel)
+            != side.index() as u32
+        {
+            self.curve_revision.fetch_add(1, Ordering::AcqRel);
+        }
+        self.pending_active_sound
+            .store(side.index() as u32, Ordering::Release);
+    }
+
+    /// Apply a queued host side change from the UI/host projection thread.
+    pub(crate) fn consume_pending_active_sound(&self) -> Option<SoundSide> {
+        let value = self.pending_active_sound.swap(u32::MAX, Ordering::AcqRel);
+        let side = if value == SoundSide::B.index() as u32 {
+            SoundSide::B
+        } else if value == SoundSide::A.index() as u32 {
+            SoundSide::A
+        } else {
+            return None;
+        };
+        if self.active_sound_dirty.load(Ordering::Acquire) {
+            self.sync_sound_state_from_realtime(SoundSide::A);
+            self.sync_sound_state_from_realtime(SoundSide::B);
+        }
+        self.reconcile_active_sound_projection();
+        Some(side)
+    }
+
+    pub(crate) fn has_pending_active_sound(&self) -> bool {
+        self.pending_active_sound.load(Ordering::Acquire) != u32::MAX
+    }
+
+    /// Copy the active complete sound state into the inactive side.
+    ///
+    /// Copying intentionally does not republish the active atomics, so the
+    /// currently audible state remains unchanged.
+    pub fn copy_active_to_inactive(&self) -> bool {
+        let active = self.active_sound();
+        self.capture_active_working_state();
+        let snapshot = self.current_audio_state();
+        let Ok(mut states) = self.sound_states.write() else {
+            return false;
+        };
+        let inactive = active.other();
+        if states[inactive.index()] == snapshot {
+            return false;
+        }
+        self.publish_sound_state_at(inactive.index(), &snapshot);
+        states[inactive.index()] = snapshot;
+        self.sound_state_dirty[inactive.index()].store(true, Ordering::Release);
+        true
+    }
+
+    /// Set one active side's quick slots without changing its audio state.
+    pub fn set_active_sound_quick_slots(
+        &self,
+        quick_slots: Vec<QuickShapeSlot>,
+    ) -> Result<(), PresetMutationError> {
+        let mut quick_slots = quick_slots;
+        quick_slots.truncate(QUICK_SLOT_COUNT);
+        if quick_slots.len() != QUICK_SLOT_COUNT {
+            return Err(PresetMutationError::InvalidIndex);
+        }
+        let Ok(mut states) = self.sound_states.write() else {
+            return Err(PresetMutationError::StateUnavailable);
+        };
+        let side = self.active_sound();
+        let index = side.index();
+        states[index].quick_slots = quick_slots;
+        let dirty = self
+            .stored_sound_states
+            .read()
+            .ok()
+            .and_then(|stored| stored.get(index).cloned())
+            .map(|stored| !sound_state_near_eq(&states[index], &stored))
+            .unwrap_or(true);
+        self.sound_state_dirty[index].store(dirty, Ordering::Release);
+        self.active_sound_dirty.store(dirty, Ordering::Release);
+        Ok(())
+    }
+
+    fn current_audio_state(&self) -> PumpSoundState {
+        // The editable curve projection is UI-owned and may still represent
+        // the previously selected side when host automation switches sides
+        // with the editor closed. Keep the stored side curve as the source of
+        // truth for scalar-only dirty snapshots; UI curve edits synchronize
+        // this stored value immediately through `sync_active_sound_state`.
+        let editable_curve = if self.has_pending_active_sound() {
+            self.sound_states
+                .read()
+                .ok()
+                .and_then(|states| {
+                    states
+                        .get(self.active_sound().index())
+                        .map(|state| state.editable_curve.clone())
+                })
+                .unwrap_or_else(default_editable_curve)
+        } else {
+            self.editable_curve_snapshot()
+        };
+        let quick_slots = self
+            .sound_states
+            .read()
+            .ok()
+            .and_then(|states| {
+                states
+                    .get(self.active_sound().index())
+                    .map(|state| state.quick_slots.clone())
+            })
+            .unwrap_or_else(seeded_quick_shape_slots);
+        PumpSoundState {
+            mix: self.mix(),
+            depth_db: self.depth_db(),
+            floor_db: self.floor_db(),
+            phase_offset: self.phase_offset(),
+            output_gain_db: self.output_gain_db(),
+            sync_division: self.sync_division(),
+            trigger_mode: self.trigger_mode(),
+            smooth: self.smooth(),
+            mode: self.mode(),
+            swing: self.swing(),
+            timing_mode: self.timing_mode(),
+            free_rate_hz: self.free_rate_hz(),
+            editable_curve,
+            quick_slots,
+        }
+    }
+
+    fn capture_active_working_state(&self) {
+        let snapshot = self.current_audio_state();
+        // Public curve mutators update the UI projection before reaching this
+        // helper, so capture that exact editable representation rather than
+        // reducing it back through the stored snapshot curve.
+        let snapshot = PumpSoundState {
+            editable_curve: self.editable_curve_snapshot(),
+            ..snapshot
+        };
+        if let Ok(mut states) = self.sound_states.write() {
+            states[self.active_sound().index()] = snapshot;
+            let index = self.active_sound().index();
+            let dirty = self
+                .stored_sound_states
+                .read()
+                .ok()
+                .and_then(|stored| stored.get(index).cloned())
+                .map(|stored| !sound_state_near_eq(&states[index], &stored))
+                .unwrap_or(true);
+            self.sound_state_dirty[index].store(dirty, Ordering::Release);
+            self.active_sound_dirty.store(dirty, Ordering::Release);
+        }
+    }
+
+    fn sync_sound_state_from_realtime(&self, side: SoundSide) {
+        let index = side.index();
+        let quick_slots = self
+            .sound_states
+            .read()
+            .ok()
+            .and_then(|states| states.get(index).map(|state| state.quick_slots.clone()))
+            .unwrap_or_else(seeded_quick_shape_slots);
+        let editable_curve = self
+            .sound_states
+            .read()
+            .ok()
+            .and_then(|states| states.get(index).map(|state| state.editable_curve.clone()))
+            .unwrap_or_else(default_editable_curve);
+        if let Ok(mut states) = self.sound_states.write() {
+            states[index] = PumpSoundState {
+                mix: self.realtime_mix[index].load(Ordering::Acquire),
+                depth_db: self.realtime_depth_db[index].load(Ordering::Acquire),
+                floor_db: self.realtime_floor_db[index].load(Ordering::Acquire),
+                phase_offset: self.realtime_phase_offset[index].load(Ordering::Acquire),
+                output_gain_db: self.realtime_output_gain_db[index].load(Ordering::Acquire),
+                sync_division: self.realtime_sync_division[index].load(Ordering::Acquire) as usize,
+                trigger_mode: self.realtime_trigger_mode[index].load(Ordering::Acquire) as usize,
+                smooth: self.realtime_smooth[index].load(Ordering::Acquire),
+                mode: self.realtime_mode[index].load(Ordering::Acquire) as usize,
+                swing: self.realtime_swing[index].load(Ordering::Acquire),
+                timing_mode: self.realtime_timing_mode[index].load(Ordering::Acquire) as usize,
+                free_rate_hz: self.realtime_free_rate_hz[index].load(Ordering::Acquire),
+                editable_curve,
+                quick_slots,
+            };
+            self.sound_state_dirty[index].store(true, Ordering::Release);
+        }
+    }
+
+    fn mark_active_sound_dirty(&self) {
+        self.active_sound_dirty.store(true, Ordering::Release);
+        self.sound_state_dirty[self.active_sound().index()].store(true, Ordering::Release);
+    }
+
+    fn publish_sound_state_at(&self, index: usize, state: &PumpSoundState) {
+        let active_index = self.realtime_index();
+        if index == active_index {
+            self.mix
+                .store(state.mix.clamp(MIN_MIX, MAX_MIX), Ordering::Relaxed);
+        }
+        self.realtime_mix[index].store(state.mix.clamp(MIN_MIX, MAX_MIX), Ordering::Relaxed);
+        if index == active_index {
+            self.depth_db.store(
+                state.depth_db.clamp(MIN_DEPTH_DB, MAX_DEPTH_DB),
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_depth_db[index].store(
+            state.depth_db.clamp(MIN_DEPTH_DB, MAX_DEPTH_DB),
+            Ordering::Relaxed,
+        );
+        if index == active_index {
+            self.floor_db.store(
+                state.floor_db.clamp(MIN_FLOOR_DB, MAX_FLOOR_DB),
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_floor_db[index].store(
+            state.floor_db.clamp(MIN_FLOOR_DB, MAX_FLOOR_DB),
+            Ordering::Relaxed,
+        );
+        if index == active_index {
+            self.phase_offset.store(
+                state.phase_offset.clamp(MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_phase_offset[index].store(
+            state.phase_offset.clamp(MIN_PHASE_OFFSET, MAX_PHASE_OFFSET),
+            Ordering::Relaxed,
+        );
+        if index == active_index {
+            self.output_gain_db.store(
+                state
+                    .output_gain_db
+                    .clamp(MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_output_gain_db[index].store(
+            state
+                .output_gain_db
+                .clamp(MIN_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB),
+            Ordering::Relaxed,
+        );
+        if index == active_index {
+            self.sync_division.store(
+                clamp_sync_division(state.sync_division as f32) as u32,
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_sync_division[index].store(
+            clamp_sync_division(state.sync_division as f32) as u32,
+            Ordering::Relaxed,
+        );
+        if index == active_index {
+            self.trigger_mode.store(
+                clamp_trigger_mode(state.trigger_mode as f32) as u32,
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_trigger_mode[index].store(
+            clamp_trigger_mode(state.trigger_mode as f32) as u32,
+            Ordering::Relaxed,
+        );
+        if index == active_index {
+            self.smooth.store(
+                state.smooth.clamp(MIN_SMOOTH, MAX_SMOOTH),
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_smooth[index].store(
+            state.smooth.clamp(MIN_SMOOTH, MAX_SMOOTH),
+            Ordering::Relaxed,
+        );
+        if index == active_index {
+            self.mode.store(
+                clamp_processing_mode(state.mode as f32) as u32,
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_mode[index].store(
+            clamp_processing_mode(state.mode as f32) as u32,
+            Ordering::Relaxed,
+        );
+        if index == active_index {
+            self.swing
+                .store(state.swing.clamp(MIN_SWING, MAX_SWING), Ordering::Relaxed);
+        }
+        self.realtime_swing[index]
+            .store(state.swing.clamp(MIN_SWING, MAX_SWING), Ordering::Relaxed);
+        if index == active_index {
+            self.timing_mode.store(
+                clamp_timing_mode(state.timing_mode as f32) as u32,
+                Ordering::Relaxed,
+            );
+            self.free_rate_hz
+                .store(clamp_free_rate_hz(state.free_rate_hz), Ordering::Relaxed);
+        }
+        self.realtime_timing_mode[index].store(
+            clamp_timing_mode(state.timing_mode as f32) as u32,
+            Ordering::Relaxed,
+        );
+        self.realtime_free_rate_hz[index]
+            .store(clamp_free_rate_hz(state.free_rate_hz), Ordering::Relaxed);
+        let normalized = state.editable_curve.clone().normalized();
+        let curve_table = editable_curve_to_table(&normalized);
+        for (curve, value) in self.realtime_curve[index]
+            .iter()
+            .zip(curve_table.iter().copied())
+        {
+            curve.store(value.clamp(0.0, 1.0), Ordering::Release);
+        }
+        if index == active_index {
+            if let Ok(mut guard) = self.editable_curve.write() {
+                *guard = normalized;
+            }
+            self.store_curve_table(&curve_table);
+            self.curve_revision.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    fn reconcile_active_sound_projection(&self) {
+        let side = self.active_sound();
+        let Some(state) = self
+            .sound_states
+            .read()
+            .ok()
+            .and_then(|states| states.get(side.index()).cloned())
+        else {
+            return;
+        };
+        let curve_table = editable_curve_to_table(&state.editable_curve);
+        if let Ok(mut guard) = self.editable_curve.write() {
+            *guard = state.editable_curve;
+        }
+        for (index, sample) in curve_table.iter().copied().enumerate() {
+            self.curve[index].store(sample.clamp(0.0, 1.0), Ordering::Release);
+        }
+        self.active_sound_dirty.store(false, Ordering::Release);
     }
 
     fn current_preset_snapshot_with_name(&self, name: String) -> PumpPreset {
@@ -249,8 +866,11 @@ impl PumpParams {
             trigger_mode: self.trigger_mode(),
             smooth: self.smooth(),
             mode: self.mode(),
+            swing: self.swing(),
+            timing_mode: self.timing_mode(),
+            free_rate_hz: self.free_rate_hz(),
             editable_curve: self.editable_curve_snapshot(),
-            quick_slots: self.selected_quick_slots_snapshot(),
+            quick_slots: self.sound_state_snapshot(self.active_sound()).quick_slots,
         }
     }
 
@@ -309,8 +929,15 @@ impl PumpParams {
                 DEFAULT_FLOOR_DB
             };
             preset.sync_division = preset.sync_division.min(MAX_SYNC_DIVISION as usize);
-            preset.trigger_mode = preset.trigger_mode.min(TRIGGER_MODE_SIDECHAIN);
+            preset.trigger_mode = clamp_trigger_mode(preset.trigger_mode as f32);
             preset.mode = clamp_processing_mode(preset.mode as f32);
+            preset.swing = if preset.swing.is_finite() {
+                preset.swing.clamp(MIN_SWING, MAX_SWING)
+            } else {
+                DEFAULT_SWING
+            };
+            preset.timing_mode = clamp_timing_mode(preset.timing_mode as f32);
+            preset.free_rate_hz = clamp_free_rate_hz(preset.free_rate_hz);
             preset.smooth = if preset.smooth.is_finite() {
                 preset.smooth.clamp(MIN_SMOOTH, MAX_SMOOTH)
             } else {
@@ -346,7 +973,11 @@ impl PumpParams {
         self.set_trigger_mode(preset.trigger_mode as f32);
         self.set_smooth(preset.smooth);
         self.set_mode(preset.mode as f32);
+        self.set_swing(preset.swing);
+        self.set_timing_mode(preset.timing_mode as f32);
+        self.set_free_rate_hz(preset.free_rate_hz);
         self.set_editable_curve_preserving_phase(&preset.editable_curve);
+        let _ = self.set_active_sound_quick_slots(preset.quick_slots.clone());
     }
 
     /// Snapshot the stored preset bank.
@@ -359,19 +990,13 @@ impl PumpParams {
 
     /// Snapshot the selected preset's quick slots.
     pub fn selected_quick_slots_snapshot(&self) -> Vec<QuickShapeSlot> {
-        let bank = self.preset_bank_snapshot();
-        bank.presets
-            .get(bank.selected)
-            .map(|preset| preset.quick_slots.clone())
-            .unwrap_or_else(seeded_quick_shape_slots)
+        self.sound_state_snapshot(self.active_sound()).quick_slots
     }
 
     /// Snapshot one quick-slot curve from the selected preset.
     pub fn selected_quick_slot_curve(&self, index: usize) -> Option<EditableCurve> {
-        let bank = self.preset_bank_snapshot();
-        bank.presets
-            .get(bank.selected)
-            .and_then(|preset| preset.quick_slots.get(index))
+        self.selected_quick_slots_snapshot()
+            .get(index)
             .map(|slot| slot.curve.clone())
     }
 
@@ -394,9 +1019,16 @@ impl PumpParams {
         let Some(slot) = preset.quick_slots.get_mut(index) else {
             return Err(PresetMutationError::InvalidIndex);
         };
-        slot.curve = curve.clone().normalized();
+        let normalized_curve = curve.clone().normalized();
+        slot.curve = normalized_curve.clone();
         self.persist_preset_bank_snapshot(&candidate)?;
         *guard = candidate;
+        drop(guard);
+        let mut active_slots = self.selected_quick_slots_snapshot();
+        if let Some(active_slot) = active_slots.get_mut(index) {
+            active_slot.curve = normalized_curve;
+        }
+        let _ = self.set_active_sound_quick_slots(active_slots);
         Ok(())
     }
 
@@ -454,6 +1086,64 @@ impl PumpParams {
         if let Ok(mut guard) = self.preset_bank.write() {
             *guard = normalized;
         }
+    }
+
+    /// Restore the complete A/B bank after a state payload has been validated.
+    pub(crate) fn set_sound_states_without_persistence(
+        &self,
+        active: SoundSide,
+        states: [PumpSoundState; 2],
+    ) {
+        self.set_sound_states_with_references_without_persistence(active, states.clone(), states);
+    }
+
+    /// Restore working and durable A/B states after state decoding.
+    pub(crate) fn set_sound_states_with_references_without_persistence(
+        &self,
+        active: SoundSide,
+        states: [PumpSoundState; 2],
+        stored_states: [PumpSoundState; 2],
+    ) {
+        self.pending_active_sound.store(u32::MAX, Ordering::Release);
+        self.active_sound_dirty.store(false, Ordering::Release);
+        if let Ok(mut guard) = self.sound_states.write() {
+            *guard = states;
+        }
+        if let Ok(mut guard) = self.stored_sound_states.write() {
+            *guard = stored_states;
+        }
+        let dirty = [SoundSide::A, SoundSide::B].map(|side| {
+            let working = self
+                .sound_states
+                .read()
+                .ok()
+                .and_then(|states| states.get(side.index()).cloned())
+                .unwrap_or_else(PumpSoundState::default_init);
+            let stored = self
+                .stored_sound_states
+                .read()
+                .ok()
+                .and_then(|states| states.get(side.index()).cloned())
+                .unwrap_or_else(PumpSoundState::default_init);
+            let dirty = !sound_state_near_eq(&working, &stored);
+            self.sound_state_dirty[side.index()].store(dirty, Ordering::Release);
+            dirty
+        });
+        for side in [SoundSide::A, SoundSide::B] {
+            let snapshot = self
+                .sound_states
+                .read()
+                .ok()
+                .and_then(|states| states.get(side.index()).cloned())
+                .unwrap_or_else(PumpSoundState::default_init);
+            self.publish_sound_state_at(side.index(), &snapshot);
+        }
+        self.active_sound
+            .store(active.index() as u32, Ordering::Release);
+        self.curve_revision.fetch_add(1, Ordering::AcqRel);
+        self.reconcile_active_sound_projection();
+        self.active_sound_dirty
+            .store(dirty[active.index()], Ordering::Release);
     }
 
     /// Load one preset by index into the active parameter state.
@@ -595,6 +1285,7 @@ impl PumpParams {
                 existing.trigger_mode = snapshot.trigger_mode;
                 existing.smooth = snapshot.smooth;
                 existing.mode = snapshot.mode;
+                existing.swing = snapshot.swing;
                 existing.editable_curve = snapshot.editable_curve;
                 existing.quick_slots = snapshot.quick_slots;
             }
@@ -641,12 +1332,16 @@ impl PumpParams {
             || current.trigger_mode != selected.trigger_mode
             || !float_near_eq(current.smooth, selected.smooth)
             || current.mode != selected.mode
+            || !float_near_eq(current.swing, selected.swing)
             || !curve_near_eq(&current.editable_curve, &selected.editable_curve)
     }
 
     fn store_curve_table(&self, values: &[f32; CURVE_TABLE_LEN]) {
+        let active_curve = &self.realtime_curve[self.realtime_index()];
         for (index, sample) in values.iter().copied().enumerate() {
-            self.curve[index].store(sample.clamp(0.0, 1.0), Ordering::Release);
+            let sample = sample.clamp(0.0, 1.0);
+            self.curve[index].store(sample, Ordering::Release);
+            active_curve[index].store(sample, Ordering::Release);
         }
     }
 }

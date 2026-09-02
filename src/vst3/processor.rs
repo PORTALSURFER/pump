@@ -6,7 +6,6 @@
 
 use super::*;
 use crate::incoming_waveform::IncomingWaveformCapture;
-use crate::sample_automation::RawSidechainBlock;
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,7 +67,6 @@ pub(super) struct PumpVst3Processor {
     shared: Arc<PumpVst3Shared>,
     pub(super) runtime: RealtimeRuntime,
     pub(super) runtime_handoff: RuntimeHandoff,
-    sidechain_bus_active: AtomicBool,
 }
 
 impl PumpVst3Processor {
@@ -76,7 +74,6 @@ impl PumpVst3Processor {
         Self {
             runtime: RealtimeRuntime::new(PumpVst3Runtime::new(shared.params.as_ref())),
             runtime_handoff: RuntimeHandoff::new(),
-            sidechain_bus_active: AtomicBool::new(false),
             shared,
         }
     }
@@ -89,7 +86,12 @@ impl Drop for PumpVst3Processor {
 }
 
 impl Class for PumpVst3Processor {
-    type Interfaces = (IComponent, IAudioProcessor, IProcessContextRequirements);
+    type Interfaces = (
+        IComponent,
+        IAudioProcessor,
+        IAudioPresentationLatency,
+        IProcessContextRequirements,
+    );
 }
 
 impl IPluginBaseTrait for PumpVst3Processor {
@@ -118,7 +120,7 @@ impl IComponentTrait for PumpVst3Processor {
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
         match media_type as MediaTypes {
             MediaTypes_::kAudio => match dir as BusDirections {
-                BusDirections_::kInput => 2,
+                BusDirections_::kInput => 1,
                 BusDirections_::kOutput => 1,
                 _ => 0,
             },
@@ -147,7 +149,6 @@ impl IComponentTrait for PumpVst3Processor {
                 BusTypes_::kMain as BusType,
                 BusInfo_::BusFlags_::kDefaultActive as u32,
             ),
-            BusDirections_::kInput if index == 1 => ("Sidechain", BusTypes_::kAux as BusType, 0),
             BusDirections_::kOutput if index == 0 => (
                 "Output",
                 BusTypes_::kMain as BusType,
@@ -180,31 +181,30 @@ impl IComponentTrait for PumpVst3Processor {
         media_type: MediaType,
         dir: BusDirection,
         index: i32,
-        state: TBool,
+        _state: TBool,
     ) -> tresult {
         if media_type as MediaTypes != MediaTypes_::kAudio {
             return kInvalidArgument;
         }
         match dir as BusDirections {
-            BusDirections_::kInput if (0..2).contains(&index) => {
-                if index == 1 {
-                    self.sidechain_bus_active
-                        .store(state != 0, Ordering::Release);
-                }
-            }
+            BusDirections_::kInput if index == 0 => {}
             BusDirections_::kOutput if index == 0 => {}
             _ => return kInvalidArgument,
         }
         kResultOk
     }
 
-    unsafe fn setActive(&self, _state: TBool) -> tresult {
+    unsafe fn setActive(&self, state: TBool) -> tresult {
+        if state == 0 {
+            self.runtime_handoff.reset_input_presentation_latency();
+        }
         self.runtime_handoff.publish_processing_reset();
         kResultOk
     }
 
     unsafe fn setState(&self, state: *mut IBStream) -> tresult {
-        let payload = unsafe { read_versioned_payload(state, STATE_MAGIC, &[STATE_VERSION]) };
+        let payload =
+            unsafe { read_versioned_payload(state, STATE_MAGIC, ACCEPTED_STATE_VERSIONS) };
         let Ok(payload) = payload else {
             return kInvalidArgument;
         };
@@ -305,16 +305,13 @@ impl IAudioProcessorTrait for PumpVst3Processor {
 
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
         if data.is_null() {
-            self.shared.status.set_sidechain_available(false);
             return kInvalidArgument;
         }
 
         let process_data = unsafe { &*data };
-        let sidechain_bus_active = self.sidechain_bus_active.load(Ordering::Acquire);
         let frame_count = process_data.numSamples.max(0) as usize;
         let Some(mut runtime) = self.runtime.try_acquire() else {
             self.shared.status.mark_gain_reduction_inactive();
-            self.shared.status.set_sidechain_available(false);
             apply_vst3_param_points_immediately(process_data, self.shared.params.as_ref());
             self.shared
                 .status
@@ -328,9 +325,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             {
                 return kInvalidArgument;
             }
-            let Some((buffers, _sidechain)) =
-                (unsafe { raw_stereo_f32_buffers(process_data, sidechain_bus_active) })
-            else {
+            let Some(buffers) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
                 return unsafe { silence_valid_stereo_output(process_data) };
             };
             unsafe { buffers.silence() };
@@ -346,7 +341,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         // range or sample format to validate after consuming parameter changes.
         if process_data.numOutputs == 0 {
             self.shared.status.mark_gain_reduction_inactive();
-            self.shared.status.set_sidechain_available(false);
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -363,7 +357,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
         {
             self.shared.status.mark_gain_reduction_inactive();
-            self.shared.status.set_sidechain_available(false);
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -376,11 +369,8 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             return kInvalidArgument;
         }
 
-        let Some((buffers, sidechain)) =
-            (unsafe { raw_stereo_f32_buffers(process_data, sidechain_bus_active) })
-        else {
+        let Some(buffers) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
             self.shared.status.mark_gain_reduction_inactive();
-            self.shared.status.set_sidechain_available(false);
             self.shared
                 .status
                 .incoming_waveform_buffer()
@@ -392,16 +382,15 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             );
             return unsafe { silence_valid_stereo_output(process_data) };
         };
-        self.shared
-            .status
-            .set_sidechain_available(sidechain.is_some());
 
         let pending = self.runtime_handoff.take_pending();
         if let Some(sample_rate) = pending.sample_rate {
             runtime.set_sample_rate(sample_rate.into(), self.shared.params.as_ref());
         }
         if pending.processing_reset {
-            runtime.engine.reset();
+            runtime
+                .engine
+                .reset_with_bypass(self.shared.params.bypassed());
         }
         if pending.state_restored {
             runtime
@@ -409,6 +398,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 .set_target_curve(self.shared.params.curve_snapshot());
             runtime.last_curve_revision = self.shared.params.curve_revision();
         }
+
+        // Presentation latency is a host-side input property. Load it once
+        // for the block so GUI, DSP, and waveform publication share one
+        // compensated transport snapshot.
+        let input_latency_samples = self.runtime_handoff.input_presentation_latency_samples();
 
         let revision = self.shared.params.curve_revision();
         if revision != runtime.last_curve_revision {
@@ -422,7 +416,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         runtime
             .param_schedule
             .apply_through(0, self.shared.params.as_ref(), &mut settings);
-        let transport = transport_state_from_vst3_process_context(process_data.processContext);
+        let transport = crate::transport::compensate_input_presentation_latency(
+            transport_state_from_vst3_process_context(process_data.processContext),
+            Some(input_latency_samples),
+            runtime.sample_rate.into(),
+        );
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
         self.shared.status.update_transport(
             gui_phase,
@@ -441,8 +439,8 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 self.shared.params.as_ref(),
                 &mut runtime.param_schedule,
                 &mut settings,
+                &mut runtime.last_curve_revision,
                 transport,
-                sidechain,
                 Some(IncomingWaveformCapture::new(
                     self.shared.status.incoming_waveform_buffer(),
                     &mut runtime.waveform_writer,
@@ -477,13 +475,31 @@ impl IAudioProcessorTrait for PumpVst3Processor {
     }
 }
 
+impl IAudioPresentationLatencyTrait for PumpVst3Processor {
+    unsafe fn setAudioPresentationLatencySamples(
+        &self,
+        dir: BusDirection,
+        bus_index: int32,
+        latency_in_samples: uint32,
+    ) -> tresult {
+        match dir as BusDirections {
+            BusDirections_::kInput if bus_index == 0 => {
+                self.runtime_handoff
+                    .publish_input_presentation_latency(latency_in_samples);
+                kResultOk
+            }
+            // Pump does not report or use output presentation latency, but a
+            // valid main output bus is still accepted per the VST3 contract.
+            BusDirections_::kOutput if bus_index == 0 => kResultOk,
+            _ => kInvalidArgument,
+        }
+    }
+}
+
 /// Validate a VST3 stereo f32 block while retaining raw pointers so exact
 /// in-place input/output channel aliases never become overlapping Rust slices.
-unsafe fn raw_stereo_f32_buffers(
-    data: &ProcessData,
-    sidechain_bus_active: bool,
-) -> Option<(RawStereoBlock, Option<RawSidechainBlock>)> {
-    if !(data.numInputs == 1 || data.numInputs == 2)
+unsafe fn raw_stereo_f32_buffers(data: &ProcessData) -> Option<RawStereoBlock> {
+    if data.numInputs != 1
         || data.numOutputs != 1
         || data.inputs.is_null()
         || data.outputs.is_null()
@@ -517,27 +533,7 @@ unsafe fn raw_stereo_f32_buffers(
         output_left: output_channels[0],
         output_right: output_channels[1],
     };
-    let sidechain = if sidechain_bus_active && data.numInputs == 2 {
-        let sidechain_bus = unsafe { &*data.inputs.add(1) };
-        if sidechain_bus.numChannels == 2 && !sidechain_bus.__field0.channelBuffers32.is_null() {
-            let sidechain_channels =
-                unsafe { slice::from_raw_parts(sidechain_bus.__field0.channelBuffers32, 2) };
-            if sidechain_channels.iter().all(|channel| !channel.is_null()) {
-                Some(RawSidechainBlock {
-                    input_left: sidechain_channels[0],
-                    input_right: sidechain_channels[1],
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    Some((main, sidechain))
+    Some(main)
 }
 
 fn prepare_vst3_param_schedule(
@@ -633,7 +629,7 @@ impl IProcessContextRequirementsTrait for PumpVst3Processor {
 #[cfg(test)]
 mod parameter_automation_tests {
     use super::*;
-    use crate::params::PARAM_SYNC_DIVISION_NUM;
+    use crate::params::{PARAM_BYPASS_NUM, PARAM_SYNC_DIVISION_NUM};
 
     #[test]
     fn vst3_points_share_offset_clamping_ordering_and_step_conversion() {
@@ -658,6 +654,12 @@ mod parameter_automation_tests {
             99,
             to_normalized(PARAM_MIX_NUM, 0.8),
         );
+        schedule_vst3_param_point(
+            &mut schedule,
+            PARAM_BYPASS_NUM,
+            3,
+            to_normalized(PARAM_BYPASS_NUM, 1.0),
+        );
         schedule.prepare();
         let mut settings = dsp_settings_from_params(&params);
 
@@ -666,6 +668,8 @@ mod parameter_automation_tests {
         assert!((params.mix() - 1.0).abs() < f32::EPSILON);
         schedule.apply_through(4, &params, &mut settings);
         assert!((params.mix() - 0.4).abs() < 1.0e-6);
+        assert!(params.bypassed());
+        assert!(settings.bypassed);
         schedule.apply_remaining(&params, &mut settings);
         assert!((params.mix() - 0.8).abs() < 1.0e-6);
     }

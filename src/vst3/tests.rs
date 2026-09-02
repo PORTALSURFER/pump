@@ -1,6 +1,179 @@
 use super::*;
+use crate::gui::HostParamEditSink;
+use crate::params::{PumpParams, DEFAULT_FREE_RATE_HZ, TIMING_MODE_FREE, TIMING_MODE_SYNC};
+use std::ffi::c_void;
 use std::mem;
 use std::ptr;
+use std::sync::Mutex as StdMutex;
+
+#[repr(C)]
+struct TestVst3Stream {
+    base: IBStream,
+    data: Vec<u8>,
+    cursor: usize,
+}
+
+impl TestVst3Stream {
+    fn v14(payload: Vec<u8>) -> Self {
+        let mut data = Vec::with_capacity(12 + payload.len());
+        data.extend_from_slice(&STATE_MAGIC.to_le_bytes());
+        data.extend_from_slice(&14u32.to_le_bytes());
+        data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        data.extend_from_slice(&payload);
+        Self {
+            base: IBStream {
+                vtbl: &TEST_STREAM_VTABLE,
+            },
+            data,
+            cursor: 0,
+        }
+    }
+
+    fn as_ptr(&mut self) -> *mut IBStream {
+        &mut self.base
+    }
+}
+
+static TEST_STREAM_VTABLE: IBStreamVtbl = IBStreamVtbl {
+    base: FUnknownVtbl {
+        queryInterface: test_stream_query_interface,
+        addRef: test_stream_add_ref,
+        release: test_stream_release,
+    },
+    read: test_stream_read,
+    write: test_stream_write,
+    seek: test_stream_seek,
+    tell: test_stream_tell,
+};
+
+unsafe extern "system" fn test_stream_query_interface(
+    _this: *mut FUnknown,
+    _iid: *const TUID,
+    obj: *mut *mut c_void,
+) -> tresult {
+    if !obj.is_null() {
+        unsafe { *obj = ptr::null_mut() };
+    }
+    kNoInterface
+}
+
+unsafe extern "system" fn test_stream_add_ref(_this: *mut FUnknown) -> u32 {
+    1
+}
+
+unsafe extern "system" fn test_stream_release(_this: *mut FUnknown) -> u32 {
+    1
+}
+
+unsafe extern "system" fn test_stream_read(
+    this: *mut IBStream,
+    buffer: *mut c_void,
+    num_bytes: int32,
+    num_bytes_read: *mut int32,
+) -> tresult {
+    let stream = unsafe { &mut *(this as *mut TestVst3Stream) };
+    let available = stream.data.len().saturating_sub(stream.cursor);
+    let count = (num_bytes.max(0) as usize).min(available);
+    if count > 0 {
+        unsafe {
+            ptr::copy_nonoverlapping(
+                stream.data.as_ptr().add(stream.cursor),
+                buffer.cast::<u8>(),
+                count,
+            );
+        }
+        stream.cursor += count;
+    }
+    if !num_bytes_read.is_null() {
+        unsafe { *num_bytes_read = count as int32 };
+    }
+    kResultOk
+}
+
+unsafe extern "system" fn test_stream_write(
+    _this: *mut IBStream,
+    _buffer: *mut c_void,
+    _num_bytes: int32,
+    num_bytes_written: *mut int32,
+) -> tresult {
+    if !num_bytes_written.is_null() {
+        unsafe { *num_bytes_written = 0 };
+    }
+    kResultFalse
+}
+
+unsafe extern "system" fn test_stream_seek(
+    this: *mut IBStream,
+    pos: int64,
+    _mode: int32,
+    result: *mut int64,
+) -> tresult {
+    if pos < 0 {
+        return kInvalidArgument;
+    }
+    let stream = unsafe { &mut *(this as *mut TestVst3Stream) };
+    stream.cursor = pos as usize;
+    if !result.is_null() {
+        unsafe { *result = stream.cursor as int64 };
+    }
+    kResultOk
+}
+
+unsafe extern "system" fn test_stream_tell(this: *mut IBStream, result: *mut int64) -> tresult {
+    let stream = unsafe { &mut *(this as *mut TestVst3Stream) };
+    if !result.is_null() {
+        unsafe { *result = stream.cursor as int64 };
+    }
+    kResultOk
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum RecordedEditCall {
+    Begin(ParamID),
+    Perform(ParamID, ParamValue),
+    End(ParamID),
+}
+
+struct RecordingComponentHandler {
+    calls: Arc<StdMutex<Vec<RecordedEditCall>>>,
+    begin_result: tresult,
+    perform_result: tresult,
+    end_result: tresult,
+}
+
+impl Class for RecordingComponentHandler {
+    type Interfaces = (IComponentHandler,);
+}
+
+impl IComponentHandlerTrait for RecordingComponentHandler {
+    unsafe fn beginEdit(&self, id: ParamID) -> tresult {
+        self.calls
+            .lock()
+            .expect("recording handler lock")
+            .push(RecordedEditCall::Begin(id));
+        self.begin_result
+    }
+
+    unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
+        self.calls
+            .lock()
+            .expect("recording handler lock")
+            .push(RecordedEditCall::Perform(id, value));
+        self.perform_result
+    }
+
+    unsafe fn endEdit(&self, id: ParamID) -> tresult {
+        self.calls
+            .lock()
+            .expect("recording handler lock")
+            .push(RecordedEditCall::End(id));
+        self.end_result
+    }
+
+    unsafe fn restartComponent(&self, _flags: i32) -> tresult {
+        kResultOk
+    }
+}
 
 struct StereoProcessFixture {
     process_data: ProcessData,
@@ -63,11 +236,241 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 9);
+    assert_eq!(count, 12);
 }
 
 #[test]
-fn processor_declares_optional_stereo_sidechain_bus() {
+fn controller_marks_only_appended_bypass_as_stepped_host_bypass() {
+    let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
+    let mut info: ParameterInfo = unsafe { mem::zeroed() };
+    assert_eq!(
+        unsafe { controller.getParameterInfo(7, &mut info) },
+        kResultOk
+    );
+    assert_eq!(info.id, crate::params::PARAM_BYPASS_NUM);
+    assert_eq!(info.stepCount, 1);
+    assert_eq!(info.defaultNormalizedValue, 0.0);
+    assert_ne!(
+        info.flags & ParameterInfo_::ParameterFlags_::kCanAutomate,
+        0
+    );
+    assert_ne!(info.flags & ParameterInfo_::ParameterFlags_::kIsBypass, 0);
+
+    let mut preceding: ParameterInfo = unsafe { mem::zeroed() };
+    assert_eq!(
+        unsafe { controller.getParameterInfo(6, &mut preceding) },
+        kResultOk
+    );
+    assert_eq!(preceding.id, crate::params::PARAM_SMOOTH_NUM);
+    assert_eq!(
+        preceding.flags & ParameterInfo_::ParameterFlags_::kIsBypass,
+        0
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_delivers_begin_value_end_on_component_handler() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+    assert!(crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM),
+            RecordedEditCall::Perform(crate::params::PARAM_BYPASS_NUM, 1.0),
+            RecordedEditCall::End(crate::params::PARAM_BYPASS_NUM),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_delivers_continuous_begin_value_end_on_component_handler() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+    let config = toybox::clap::automation::AutomationConfig::default();
+    let param_id = crate::params::PARAM_MIX_ID;
+    assert!(sink.gesture_started(&config, param_id));
+    assert!(sink.gesture_value(&config, param_id, 0.375));
+    assert!(sink.gesture_ended(&config, param_id));
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(crate::params::PARAM_MIX_NUM),
+            RecordedEditCall::Perform(crate::params::PARAM_MIX_NUM, 0.375),
+            RecordedEditCall::End(crate::params::PARAM_MIX_NUM),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_keeps_bypass_state_when_component_handler_is_missing() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(!crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(!shared.params.bypassed());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_keeps_bypass_state_when_component_handler_rejects_edit() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultFalse,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(!crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(!shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM),
+            RecordedEditCall::Perform(crate::params::PARAM_BYPASS_NUM, 1.0),
+            RecordedEditCall::End(crate::params::PARAM_BYPASS_NUM),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_short_circuits_when_component_handler_rejects_begin() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultFalse,
+        perform_result: kResultOk,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(!crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(!shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM)]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_commits_accepted_value_when_component_handler_rejects_end() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultFalse,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+
+    assert!(crate::gui::try_toggle_bypass(
+        shared.params.as_ref(),
+        &sink,
+        &toybox::clap::automation::AutomationConfig::default(),
+    ));
+    assert!(shared.params.bypassed());
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(crate::params::PARAM_BYPASS_NUM),
+            RecordedEditCall::Perform(crate::params::PARAM_BYPASS_NUM, 1.0),
+            RecordedEditCall::End(crate::params::PARAM_BYPASS_NUM),
+        ]
+    );
+}
+
+#[test]
+fn processor_declares_single_stereo_main_bus() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
 
     assert_eq!(
@@ -77,7 +480,7 @@ fn processor_declares_optional_stereo_sidechain_bus() {
                 BusDirections_::kInput as BusDirection,
             )
         },
-        2
+        1
     );
     assert_eq!(
         unsafe {
@@ -89,26 +492,10 @@ fn processor_declares_optional_stereo_sidechain_bus() {
         1
     );
 
-    let mut sidechain_info: BusInfo = unsafe { mem::zeroed() };
-    assert_eq!(
-        unsafe {
-            processor.getBusInfo(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-                1,
-                &mut sidechain_info,
-            )
-        },
-        kResultOk
-    );
-    assert_eq!(sidechain_info.channelCount, 2);
-    assert_eq!(sidechain_info.busType, BusTypes_::kAux as BusType);
-    assert_eq!(sidechain_info.flags, 0);
-
     let mut arrangement = SpeakerArrangement::default();
     assert_eq!(
         unsafe {
-            processor.getBusArrangement(BusDirections_::kInput as BusDirection, 1, &mut arrangement)
+            processor.getBusArrangement(BusDirections_::kInput as BusDirection, 0, &mut arrangement)
         },
         kResultOk
     );
@@ -116,107 +503,90 @@ fn processor_declares_optional_stereo_sidechain_bus() {
 }
 
 #[test]
-fn processor_keeps_main_audio_when_optional_sidechain_bus_is_inactive() {
+fn processor_accepts_input_presentation_latency_and_ignores_output_latency() {
     let shared = Arc::new(PumpVst3Shared::new());
     let processor = PumpVst3Processor::new(Arc::clone(&shared));
-    let mut fixture = stereo_process_fixture(32, 9.0);
-    fixture
-        ._input_buses
-        .push(unsafe { mem::zeroed::<AudioBusBuffers>() });
-    fixture.process_data.numInputs = 2;
-    fixture.process_data.inputs = fixture._input_buses.as_mut_ptr();
+
+    assert_eq!(unsafe { processor.getLatencySamples() }, 0);
+    assert_eq!(
+        unsafe {
+            processor.setAudioPresentationLatencySamples(
+                BusDirections_::kInput as BusDirection,
+                0,
+                512,
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(
+        processor
+            .runtime_handoff
+            .input_presentation_latency_samples(),
+        512
+    );
 
     assert_eq!(
-        unsafe { processor.process(&mut fixture.process_data) },
-        process_ok()
+        unsafe {
+            processor.setAudioPresentationLatencySamples(
+                BusDirections_::kOutput as BusDirection,
+                0,
+                1024,
+            )
+        },
+        kResultOk
     );
-    assert!(!shared.status.sidechain_available());
-    assert!(fixture.output_left.iter().any(|sample| *sample != 9.0));
-    assert!(fixture.output_right.iter().any(|sample| *sample != 9.0));
+    assert_eq!(
+        processor
+            .runtime_handoff
+            .input_presentation_latency_samples(),
+        512
+    );
 }
 
 #[test]
-fn processor_honors_optional_sidechain_bus_activation_state() {
-    let shared = Arc::new(PumpVst3Shared::new());
-    shared
-        .params
-        .set_trigger_mode(crate::params::TRIGGER_MODE_SIDECHAIN as f32);
-    let processor = PumpVst3Processor::new(Arc::clone(&shared));
-    let mut fixture = stereo_process_fixture(32, 9.0);
-    let mut sidechain_left = vec![0.0; 32];
-    let mut sidechain_right = vec![0.0; 32];
-    sidechain_right[0] = 0.5;
-    let mut sidechain_channel_buffers =
-        vec![sidechain_left.as_mut_ptr(), sidechain_right.as_mut_ptr()];
-    fixture._input_buses.push(AudioBusBuffers {
-        numChannels: 2,
-        silenceFlags: 0,
-        __field0: AudioBusBuffers__type0 {
-            channelBuffers32: sidechain_channel_buffers.as_mut_ptr(),
-        },
-    });
-    fixture.process_data.numInputs = 2;
-    fixture.process_data.inputs = fixture._input_buses.as_mut_ptr();
+fn processor_rejects_invalid_presentation_latency_buses_without_mutation() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+    processor
+        .runtime_handoff
+        .publish_input_presentation_latency(512);
 
-    assert_eq!(
-        unsafe {
-            processor.activateBus(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-                0,
-                1,
-            )
-        },
-        kResultOk
-    );
-    assert_eq!(
-        unsafe {
-            processor.activateBus(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kOutput as BusDirection,
-                0,
-                1,
-            )
-        },
-        kResultOk
-    );
-    assert_eq!(
-        unsafe {
-            processor.activateBus(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-                1,
-                1,
-            )
-        },
-        kResultOk
-    );
-    assert_eq!(
-        unsafe { processor.process(&mut fixture.process_data) },
-        process_ok()
-    );
-    assert!(shared.status.sidechain_available());
+    for (direction, bus_index) in [
+        (BusDirections_::kInput as BusDirection, 1),
+        (BusDirections_::kOutput as BusDirection, 1),
+        (999, 0),
+    ] {
+        assert_eq!(
+            unsafe { processor.setAudioPresentationLatencySamples(direction, bus_index, 1024) },
+            kInvalidArgument
+        );
+        assert_eq!(
+            processor
+                .runtime_handoff
+                .input_presentation_latency_samples(),
+            512
+        );
+    }
+}
 
+#[test]
+fn processor_resets_input_presentation_latency_when_deactivated() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+    processor
+        .runtime_handoff
+        .publish_input_presentation_latency(512);
+
+    assert_eq!(unsafe { processor.setActive(0) }, kResultOk);
     assert_eq!(
-        unsafe {
-            processor.activateBus(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-                1,
-                0,
-            )
-        },
-        kResultOk
+        processor
+            .runtime_handoff
+            .input_presentation_latency_samples(),
+        0
     );
-    assert_eq!(
-        unsafe { processor.process(&mut fixture.process_data) },
-        process_ok()
-    );
-    assert!(!shared.status.sidechain_available());
 }
 
 #[test]
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn controller_creates_editor_view_for_host_editor_request() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let view = unsafe { controller.createView(ViewType::kEditor) };
@@ -309,7 +679,7 @@ fn view_normalizes_off_aspect_host_resize_and_preserves_origin() {
     assert_eq!(unsafe { view.checkSizeConstraint(&mut rect) }, kResultOk);
     assert_eq!((rect.left, rect.top), (12, 18));
     assert_eq!(rect.right - rect.left, 1_200);
-    assert_eq!(rect.bottom - rect.top, 900);
+    assert_eq!(rect.bottom - rect.top, 750);
 }
 
 #[test]
@@ -335,6 +705,45 @@ fn controller_and_processor_share_param_state() {
 }
 
 #[test]
+fn component_and_controller_restore_v14_state_with_sync_timing_defaults() {
+    let source = PumpParams::new();
+    source.set_timing_mode(TIMING_MODE_FREE as f32);
+    source.set_free_rate_hz(17.0);
+    let payload = crate::params::payload_for_state_version(&source, 14);
+
+    let processor_shared = Arc::new(PumpVst3Shared::new());
+    processor_shared
+        .params
+        .set_timing_mode(TIMING_MODE_FREE as f32);
+    processor_shared.params.set_free_rate_hz(17.0);
+    let processor = PumpVst3Processor::new(Arc::clone(&processor_shared));
+    let mut processor_stream = TestVst3Stream::v14(payload.clone());
+    assert_eq!(
+        unsafe { processor.setState(processor_stream.as_ptr()) },
+        kResultOk
+    );
+    assert_eq!(processor_shared.params.timing_mode(), TIMING_MODE_SYNC);
+    assert_eq!(processor_shared.params.free_rate_hz(), DEFAULT_FREE_RATE_HZ);
+
+    let controller_shared = Arc::new(PumpVst3Shared::new());
+    controller_shared
+        .params
+        .set_timing_mode(TIMING_MODE_FREE as f32);
+    controller_shared.params.set_free_rate_hz(17.0);
+    let controller = PumpVst3Controller::new(Arc::clone(&controller_shared));
+    let mut controller_stream = TestVst3Stream::v14(payload);
+    assert_eq!(
+        unsafe { controller.setComponentState(controller_stream.as_ptr()) },
+        kResultOk
+    );
+    assert_eq!(controller_shared.params.timing_mode(), TIMING_MODE_SYNC);
+    assert_eq!(
+        controller_shared.params.free_rate_hz(),
+        DEFAULT_FREE_RATE_HZ
+    );
+}
+
+#[test]
 fn processor_writes_the_full_normal_output_range() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let mut fixture = stereo_process_fixture(64, 9.0);
@@ -349,7 +758,7 @@ fn processor_writes_the_full_normal_output_range() {
 }
 
 #[test]
-fn processor_publishes_input_waveform_by_default_and_clears_it_when_input_disappears() {
+fn processor_shows_the_initial_input_waveform_and_clears_it_when_input_disappears() {
     let shared = Arc::new(PumpVst3Shared::new());
     let processor = PumpVst3Processor::new(Arc::clone(&shared));
     let mut fixture = stereo_process_fixture(64, 9.0);
@@ -361,7 +770,7 @@ fn processor_publishes_input_waveform_by_default_and_clears_it_when_input_disapp
     let snapshot = shared
         .status
         .incoming_waveform_snapshot()
-        .expect("VST3 input should publish a waveform snapshot");
+        .expect("the first cycle should be visible while it is captured");
     assert!(snapshot.iter().copied().fold(0.0_f32, f32::max) >= 1.0);
 
     fixture.process_data.inputs = ptr::null_mut();

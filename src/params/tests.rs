@@ -1,23 +1,26 @@
+#[cfg(feature = "vst3")]
+use super::{
+    apply_normalized_param_value, clap_id_from_vst3_param_id, format_plain_value_text,
+    parse_plain_value_text, vst3_param_info_for_index, PARAM_FREE_RATE_NUM, PARAM_MIX_NUM,
+    PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM,
+    PARAM_SOUND_ID, PARAM_SOUND_NUM, PARAM_SWING_NUM, PARAM_SYNC_DIVISION_ID,
+    PARAM_SYNC_DIVISION_NUM, PARAM_TIMING_MODE_ID, PARAM_TIMING_MODE_NUM,
+};
 use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
     sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
     SavePresetOutcome, DEFAULT_FLOOR_DB, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DEPTH_ID,
-    PARAM_FLOOR_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID,
-    PROCESSING_MODE_PUNCH, TRIGGER_MODE_SIDECHAIN,
-};
-#[cfg(feature = "vst3")]
-use super::{
-    clap_id_from_vst3_param_id, format_plain_value_text, parse_plain_value_text,
-    vst3_param_info_for_index, PARAM_MIX_NUM, PARAM_MODE_NUM, PARAM_OUTPUT_GAIN_NUM,
-    PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM, PARAM_SYNC_DIVISION_ID,
-    PARAM_SYNC_DIVISION_NUM,
+    PARAM_FLOOR_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID,
+    PARAM_SMOOTH_ID, PARAM_SWING_ID, PROCESSING_MODE_CLASSIC, PROCESSING_MODE_PUNCH,
+    TRIGGER_MODE_HOST, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::curve::{
-    cyclically_offset_editable_curve, sample_editable_curve, CurveNode, CurveSegment,
-    EditableCurve, CURVE_TABLE_LEN,
+    cyclically_offset_editable_curve, editable_curve_to_table, sample_editable_curve, CurveNode,
+    CurveSegment, EditableCurve, CURVE_TABLE_LEN,
 };
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use toybox::clack_extensions::params::ParamInfoFlags;
 fn temp_preset_store_path(label: &str) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -69,7 +72,7 @@ fn sync_division_clamping_is_bounded() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 9);
+    assert_eq!(super::param_count(), 12);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -103,7 +106,11 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     );
     assert_eq!(super::get_param_value(&params, PARAM_MIX_ID), Some(1.0));
     assert_eq!(super::get_param_value(&params, PARAM_SMOOTH_ID), Some(0.0));
-    assert_eq!(super::get_param_value(&params, PARAM_MODE_ID), Some(0.0));
+    assert_eq!(super::get_param_value(&params, PARAM_MODE_ID), None);
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_BYPASS_ID),
+        Some(0.0)
+    );
     super::apply_param_event(&params, PARAM_SMOOTH_ID, 0.67);
     assert!((params.smooth() - 0.67).abs() < f32::EPSILON);
     assert_eq!(
@@ -115,17 +122,314 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
         Some(0.67)
     );
     super::apply_param_event(&params, PARAM_MODE_ID, PROCESSING_MODE_PUNCH as f32);
-    assert_eq!(params.mode(), PROCESSING_MODE_PUNCH);
+    assert_eq!(params.mode(), PROCESSING_MODE_CLASSIC);
     assert_eq!(
-        super::format_plain_value_text(PARAM_MODE_ID, PROCESSING_MODE_PUNCH as f64),
-        Some("Punch".into())
+        super::format_plain_value_text(PARAM_MODE_ID, PROCESSING_MODE_CLASSIC as f64),
+        None
     );
     assert_eq!(
         super::parse_plain_value_text(PARAM_MODE_ID, "classic"),
-        Some(0.0)
+        None
     );
     assert_eq!(
         super::get_param_value(&params, PARAM_OUTPUT_GAIN_ID),
+        Some(0.0)
+    );
+    assert_eq!(
+        super::format_plain_value_text(super::PARAM_BYPASS_ID, 0.0),
+        Some("ACTIVE".into())
+    );
+    assert_eq!(
+        super::format_plain_value_text(super::PARAM_BYPASS_ID, 1.0),
+        Some("BYPASSED".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_BYPASS_ID, "bypassed"),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn free_rate_clap_and_vst3_normalized_mapping_agree() {
+    for normalized in [0.0, 0.1, 0.5, 0.9, 1.0] {
+        let plain = super::host_api::plain_from_normalized_value(PARAM_FREE_RATE_ID, normalized)
+            .expect("free rate normalized value should decode");
+        let clap_value = super::clap_value_from_plain_value(PARAM_FREE_RATE_ID, plain);
+        let vst3_value = super::host_api::normalized_from_plain_value(PARAM_FREE_RATE_ID, plain)
+            .expect("free rate plain value should normalize");
+        assert!((clap_value - normalized).abs() < 1.0e-12);
+        assert!((vst3_value - normalized).abs() < 1.0e-12);
+    }
+
+    assert_eq!(
+        super::format_plain_value_text(PARAM_FREE_RATE_ID, 2.0),
+        Some("2 Hz".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_FREE_RATE_ID, "2 Hz"),
+        Some(2.0)
+    );
+
+    let params = PumpParams::new();
+    super::apply_clap_param_event(&params, PARAM_FREE_RATE_ID, 2.0);
+    assert!((params.free_rate_hz() - 2.0).abs() < 1.0e-6);
+    let normalized = super::clap_value_from_plain_value(PARAM_FREE_RATE_ID, 2.0);
+    let normalized_params = PumpParams::new();
+    super::apply_clap_param_event(&normalized_params, PARAM_FREE_RATE_ID, normalized as f32);
+    assert!((normalized_params.free_rate_hz() - 2.0).abs() < 1.0e-6);
+}
+
+#[test]
+fn free_timing_parameters_use_stable_ids_and_lossless_units() {
+    let params = PumpParams::new();
+    assert_eq!(super::param_count(), 12);
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_TIMING_MODE_ID),
+        Some(0.0)
+    );
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_FREE_RATE_ID),
+        Some(super::DEFAULT_FREE_RATE_HZ as f64)
+    );
+
+    super::apply_param_event(&params, super::PARAM_TIMING_MODE_ID, 1.0);
+    super::apply_param_event(&params, super::PARAM_FREE_RATE_ID, 1234.5);
+    assert_eq!(params.timing_mode(), super::TIMING_MODE_FREE);
+    assert!((params.free_rate_hz() - 1234.5).abs() < 1.0e-4);
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_FREE_RATE_ID, "500 ms"),
+        Some(2.0)
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_FREE_RATE_ID, "2 s"),
+        Some(0.5)
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_FREE_RATE_ID, "2 Hz"),
+        Some(2.0)
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_FREE_RATE_ID, "2 kHz"),
+        Some(2000.0)
+    );
+    assert_eq!(
+        super::format_plain_value_text(super::PARAM_FREE_RATE_ID, 2.0),
+        Some("2 Hz".into())
+    );
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("free timing state should decode");
+    assert_eq!(restored.timing_mode(), super::TIMING_MODE_FREE);
+    assert!((restored.free_rate_hz() - 1234.5).abs() < 1.0e-4);
+}
+
+#[test]
+fn swing_is_a_stable_percent_parameter_with_straight_default() {
+    let params = PumpParams::new();
+    assert_eq!(super::get_param_value(&params, PARAM_SWING_ID), Some(0.0));
+    super::apply_param_event(&params, PARAM_SWING_ID, 0.75);
+    assert!((params.swing() - 0.75).abs() < f32::EPSILON);
+    assert_eq!(
+        super::format_plain_value_text(PARAM_SWING_ID, 0.75),
+        Some("75%".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_SWING_ID, "75%"),
+        Some(0.75)
+    );
+}
+
+#[test]
+fn sound_sides_switch_copy_and_roundtrip_as_complete_states() {
+    let params = PumpParams::new();
+    params.set_mix(0.31);
+    params.set_depth_db(48.0);
+    let curve = params.editable_curve_snapshot();
+    assert_eq!(params.active_sound(), super::SoundSide::A);
+    assert!(params.sound_sides_differ());
+
+    assert!(params.copy_active_to_inactive());
+    assert!(!params.sound_sides_differ());
+    assert_eq!(params.active_sound(), super::SoundSide::A);
+
+    assert!(params.set_active_sound(super::SoundSide::B));
+    assert!((params.mix() - 0.31).abs() < 1.0e-6);
+    assert!((params.depth_db() - 48.0).abs() < 1.0e-6);
+    assert_eq!(params.editable_curve_snapshot(), curve);
+    params.set_mix(0.82);
+    assert!(params.set_active_sound(super::SoundSide::A));
+    assert!((params.mix() - 0.31).abs() < 1.0e-6);
+    assert!(params.copy_active_to_inactive());
+    assert!(params.set_active_sound(super::SoundSide::B));
+    params.set_mix(0.17);
+    assert!(params.copy_active_to_inactive());
+    assert!(params.set_active_sound(super::SoundSide::A));
+    assert!((params.mix() - 0.17).abs() < 1.0e-6);
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("A/B state should decode");
+    assert_eq!(restored.active_sound(), super::SoundSide::A);
+    assert!((restored.sound_state_snapshot(super::SoundSide::B).mix - 0.17).abs() < 1.0e-6);
+}
+
+#[test]
+fn stored_sound_references_track_complete_working_state_and_copy_dirtyness() {
+    let params = PumpParams::new();
+    params.set_mix(0.23);
+    assert!(params.sound_state_is_dirty(super::SoundSide::A));
+    assert!(params.store_active_sound_state());
+    assert!(!params.sound_state_is_dirty(super::SoundSide::A));
+
+    assert!(params.copy_active_to_inactive());
+    assert!(params.sound_state_is_dirty(super::SoundSide::B));
+    assert!(params.set_active_sound(super::SoundSide::B));
+    assert!(params.sound_state_is_dirty(super::SoundSide::B));
+    assert!(params.store_active_sound_state());
+    assert!(!params.sound_state_is_dirty(super::SoundSide::B));
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("stored references should round-trip");
+    assert!(!restored.sound_state_is_dirty(super::SoundSide::A));
+    assert!(!restored.sound_state_is_dirty(super::SoundSide::B));
+    assert_eq!(
+        restored.sound_state_snapshot(super::SoundSide::B),
+        restored.stored_sound_state_snapshot(super::SoundSide::B)
+    );
+}
+
+#[test]
+fn active_quick_slot_replacement_marks_dirty_until_store() {
+    let params = PumpParams::new();
+    let mut slots = seeded_quick_shape_slots();
+    slots[0].curve = test_quick_slot_curve(0.08);
+    assert!(params.set_active_sound_quick_slots(slots).is_ok());
+    assert!(params.sound_state_is_dirty(super::SoundSide::A));
+    assert!(params.store_active_sound_state());
+    assert!(!params.sound_state_is_dirty(super::SoundSide::A));
+}
+
+#[test]
+fn v16_roundtrip_restores_working_reference_dirtyness() {
+    let params = PumpParams::new();
+    params.set_mix(0.37);
+    assert!(params.sound_state_is_dirty(super::SoundSide::A));
+    assert!(!params.sound_state_is_dirty(super::SoundSide::B));
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("v16 state should decode");
+    assert!(restored.sound_state_is_dirty(super::SoundSide::A));
+    assert!(!restored.sound_state_is_dirty(super::SoundSide::B));
+}
+
+#[test]
+fn host_sound_automation_is_queued_without_audio_thread_snapshot_access() {
+    let params = PumpParams::new();
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    assert_eq!(params.active_sound(), super::SoundSide::B);
+    assert_eq!(
+        params.consume_pending_active_sound(),
+        Some(super::SoundSide::B)
+    );
+    assert_eq!(params.active_sound(), super::SoundSide::B);
+}
+
+#[test]
+fn copy_and_host_switch_publish_distinct_curves_before_selection() {
+    let params = PumpParams::new();
+    let mut curve_a = params.editable_curve_snapshot();
+    curve_a.nodes[1].y = 0.21;
+    params.set_editable_curve(&curve_a);
+    assert!(params.copy_active_to_inactive());
+    let expected = editable_curve_to_table(&curve_a);
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    assert_eq!(params.curve_snapshot(), expected);
+    assert_eq!(
+        params.consume_pending_active_sound(),
+        Some(super::SoundSide::B)
+    );
+    assert_eq!(params.editable_curve_snapshot(), curve_a);
+
+    let mut curve_b = curve_a.clone();
+    curve_b.nodes[1].y = 0.79;
+    params.set_editable_curve(&curve_b);
+    let expected_b = editable_curve_to_table(&curve_b);
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 0.0);
+    assert_eq!(params.curve_snapshot(), expected);
+    params.consume_pending_active_sound();
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    assert_eq!(params.curve_snapshot(), expected_b);
+    params.consume_pending_active_sound();
+    assert_eq!(params.editable_curve_snapshot(), curve_b);
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("distinct A/B curves should round-trip");
+    super::apply_param_event(&restored, super::PARAM_SOUND_ID, 1.0);
+    assert_eq!(restored.curve_snapshot(), expected_b);
+    restored.consume_pending_active_sound();
+    assert_eq!(restored.editable_curve_snapshot(), curve_b);
+
+    let editor_closed = PumpParams::new();
+    editor_closed.set_editable_curve(&curve_a);
+    editor_closed.copy_active_to_inactive();
+    super::apply_param_event(&editor_closed, super::PARAM_SOUND_ID, 1.0);
+    let closed_payload = encode_state_payload(&editor_closed);
+    let reopened = PumpParams::new();
+    decode_state_payload(&reopened, &closed_payload).expect("editor-closed B state should decode");
+    assert_eq!(reopened.active_sound(), super::SoundSide::B);
+    assert_eq!(reopened.editable_curve_snapshot(), curve_a);
+}
+
+#[test]
+fn editor_closed_host_switch_preserves_active_side_curve_during_scalar_save() {
+    let params = PumpParams::new();
+    let mut curve_a = params.editable_curve_snapshot();
+    curve_a.nodes[1].y = 0.18;
+    params.set_editable_curve(&curve_a);
+    params.copy_active_to_inactive();
+
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    params.consume_pending_active_sound();
+    let mut curve_b = curve_a.clone();
+    curve_b.nodes[1].y = 0.82;
+    params.set_editable_curve(&curve_b);
+    params.consume_pending_active_sound();
+
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 0.0);
+    params.consume_pending_active_sound();
+    super::apply_param_event(&params, super::PARAM_SOUND_ID, 1.0);
+    // Simulate a host save while the editor has not consumed the pending
+    // selector projection. A scalar automation event makes the active side
+    // dirty without changing its stored editable curve.
+    params.set_mix(0.63);
+    let payload = encode_state_payload(&params);
+
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("editor-closed state should decode");
+    assert_eq!(restored.active_sound(), super::SoundSide::B);
+    assert_eq!(
+        restored
+            .sound_state_snapshot(super::SoundSide::B)
+            .editable_curve,
+        curve_b
+    );
+}
+
+#[test]
+fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
+    assert_eq!(super::param_count(), 12);
+    let flags = super::param_flags_for_index(7).expect("bypass metadata should exist");
+    assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
+    assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
+    assert!(flags.contains(ParamInfoFlags::IS_BYPASS));
+    assert!(!flags.contains(ParamInfoFlags::IS_ENUM));
+    let params = PumpParams::new();
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_BYPASS_ID),
         Some(0.0)
     );
 }
@@ -139,9 +443,13 @@ fn state_roundtrip_preserves_values() {
     params.set_phase_offset(0.42);
     params.set_output_gain_db(-3.0);
     params.set_smooth(0.67);
+    params.set_swing(0.42);
+    params.set_timing_mode(super::TIMING_MODE_FREE as f32);
+    params.set_free_rate_hz(37.5);
     params.set_sync_division(6.0);
     params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
     params.set_mode(PROCESSING_MODE_PUNCH as f32);
+    params.set_bypass(1.0);
     params
         .save_current_state_by_name("Init")
         .expect("preset snapshot should save");
@@ -171,13 +479,18 @@ fn state_roundtrip_preserves_values() {
     assert!((restored.phase_offset() - 0.42).abs() < 1.0e-6);
     assert!((restored.output_gain_db() + 3.0).abs() < 1.0e-6);
     assert!((restored.smooth() - 0.67).abs() < 1.0e-6);
+    assert!((restored.swing() - 0.42).abs() < 1.0e-6);
+    assert_eq!(restored.timing_mode(), super::TIMING_MODE_FREE);
+    assert!((restored.free_rate_hz() - 37.5).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 6);
-    assert_eq!(restored.trigger_mode(), TRIGGER_MODE_SIDECHAIN);
-    assert_eq!(restored.mode(), PROCESSING_MODE_PUNCH);
+    assert_eq!(restored.trigger_mode(), TRIGGER_MODE_HOST);
+    assert_eq!(restored.mode(), PROCESSING_MODE_CLASSIC);
+    assert!(restored.bypassed());
     assert!((restored.preset_bank_snapshot().presets[0].smooth - 0.67).abs() < 1.0e-6);
+    assert!((restored.preset_bank_snapshot().presets[0].swing - 0.42).abs() < 1.0e-6);
     assert_eq!(
         restored.preset_bank_snapshot().presets[0].mode,
-        PROCESSING_MODE_PUNCH
+        PROCESSING_MODE_CLASSIC
     );
     let editable = restored.editable_curve_snapshot();
     assert_eq!(editable.nodes.len(), 3);
@@ -185,13 +498,44 @@ fn state_roundtrip_preserves_values() {
 }
 
 #[test]
-fn unsupported_processing_mode_falls_back_to_classic() {
+fn bypass_is_top_level_state_but_never_part_of_preset_load_or_save() {
+    let params = PumpParams::new();
+    params.set_bypass(1.0);
+    params
+        .add_preset_from_current_state()
+        .expect("preset insertion should succeed");
+    params.set_bypass(0.0);
+    params.load_preset(1).expect("preset should load");
+    assert!(!params.bypassed(), "preset load must not restore bypass");
+
+    params.set_bypass(1.0);
+    params
+        .save_current_state_by_name("Init")
+        .expect("preset save should succeed");
+    params.set_bypass(0.0);
+    params.load_preset(0).expect("saved preset should load");
+    assert!(!params.bypassed(), "preset save must not capture bypass");
+
+    params.set_bypass(1.0);
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("project state should decode");
+    assert!(restored.bypassed(), "project state must restore bypass");
+}
+
+#[test]
+fn legacy_processing_mode_maps_to_classic() {
     for unsupported in [99.0_f32, 0.6_f32] {
         let params = PumpParams::new();
         params.set_mode(PROCESSING_MODE_PUNCH as f32);
-        let mut payload = encode_state_payload(&params);
-        let mode_offset = payload.len() - 4;
-        payload[mode_offset..].copy_from_slice(&unsupported.to_le_bytes());
+        let mut states = [
+            params.sound_state_snapshot(super::SoundSide::A),
+            params.sound_state_snapshot(super::SoundSide::B),
+        ];
+        states[0].mode = unsupported as usize;
+        states[1].mode = unsupported as usize;
+        params.set_sound_states_without_persistence(super::SoundSide::A, states);
+        let payload = encode_state_payload(&params);
 
         let restored = PumpParams::new();
         decode_state_payload(&restored, &payload).expect("unknown mode should be recoverable");
@@ -695,9 +1039,12 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     phase_offset: 0.33,
                     output_gain_db: -1.0,
                     sync_division: 2,
-                    trigger_mode: 0,
+                    trigger_mode: super::TRIGGER_MODE_HOST,
                     smooth: 0.0,
                     mode: super::PROCESSING_MODE_CLASSIC,
+                    swing: super::DEFAULT_SWING,
+                    timing_mode: super::DEFAULT_TIMING_MODE,
+                    free_rate_hz: super::DEFAULT_FREE_RATE_HZ,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -712,9 +1059,12 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     phase_offset: 0.55,
                     output_gain_db: -2.0,
                     sync_division: 4,
-                    trigger_mode: 0,
+                    trigger_mode: super::TRIGGER_MODE_HOST,
                     smooth: 0.0,
                     mode: super::PROCESSING_MODE_CLASSIC,
+                    swing: super::DEFAULT_SWING,
+                    timing_mode: super::DEFAULT_TIMING_MODE,
+                    free_rate_hz: super::DEFAULT_FREE_RATE_HZ,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -844,6 +1194,22 @@ fn vst3_mapping_resolves_to_shared_clap_ids() {
         clap_id_from_vst3_param_id(PARAM_SMOOTH_NUM),
         Some(PARAM_SMOOTH_ID)
     );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_SWING_NUM),
+        Some(PARAM_SWING_ID)
+    );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_SOUND_NUM),
+        Some(PARAM_SOUND_ID)
+    );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_TIMING_MODE_NUM),
+        Some(PARAM_TIMING_MODE_ID)
+    );
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_FREE_RATE_NUM),
+        Some(PARAM_FREE_RATE_ID)
+    );
     assert_eq!(clap_id_from_vst3_param_id(999), None);
 }
 
@@ -858,12 +1224,39 @@ fn vst3_info_and_text_conversions_share_param_rules() {
     let division_info = vst3_param_info_for_index(3).expect("division info should exist");
     assert_eq!(division_info.id, PARAM_SYNC_DIVISION_NUM);
     assert_eq!(division_info.step_count, MAX_SYNC_DIVISION as i32);
-    let smooth_info = vst3_param_info_for_index(7).expect("smooth info should exist");
+    let smooth_info = vst3_param_info_for_index(6).expect("smooth info should exist");
     assert_eq!(smooth_info.id, PARAM_SMOOTH_NUM);
-    let mode_info = vst3_param_info_for_index(8).expect("mode info should exist");
-    assert_eq!(mode_info.id, PARAM_MODE_NUM);
+    let bypass_info = vst3_param_info_for_index(7).expect("bypass info should exist");
+    assert_eq!(bypass_info.id, super::PARAM_BYPASS_NUM);
+    assert_eq!(bypass_info.step_count, 1);
+    assert_eq!(bypass_info.default_normalized, 0.0);
+    assert!(bypass_info.is_bypass);
+    let swing_info = vst3_param_info_for_index(8).expect("swing info should exist");
+    assert_eq!(swing_info.id, PARAM_SWING_NUM);
+    assert_eq!(swing_info.units, "%");
     assert_eq!(smooth_info.title, "Smooth");
     assert_eq!(smooth_info.units, "%");
+    let sound_info = vst3_param_info_for_index(9).expect("sound info should exist");
+    assert_eq!(sound_info.id, PARAM_SOUND_NUM);
+    assert_eq!(sound_info.step_count, 1);
+    assert_eq!(sound_info.default_normalized, 0.0);
+    assert_eq!(
+        format_plain_value_text(PARAM_SOUND_ID, 1.0),
+        Some("B".into())
+    );
+    assert_eq!(parse_plain_value_text(PARAM_SOUND_ID, "B"), Some(1.0));
+    let timing_info = vst3_param_info_for_index(10).expect("timing mode info");
+    assert_eq!(timing_info.id, PARAM_TIMING_MODE_NUM);
+    assert_eq!(timing_info.step_count, 1);
+    let rate_info = vst3_param_info_for_index(11).expect("free rate info");
+    assert_eq!(rate_info.id, PARAM_FREE_RATE_NUM);
+    assert_eq!(rate_info.units, "Hz");
+    let normalized = super::normalized_from_plain_value(PARAM_FREE_RATE_ID, 2.0)
+        .expect("free rate should normalize");
+    assert!(
+        (super::plain_from_normalized_value(PARAM_FREE_RATE_ID, normalized).unwrap() - 2.0).abs()
+            < 1.0e-6
+    );
 
     let mix_text = format_plain_value_text(PARAM_MIX_ID, 0.5).expect("mix text");
     assert_eq!(mix_text, "50%");
@@ -883,6 +1276,15 @@ fn vst3_info_and_text_conversions_share_param_rules() {
         parse_plain_value_text(PARAM_SYNC_DIVISION_ID, "2 Bars"),
         Some(7.0)
     );
+}
+
+#[cfg(feature = "vst3")]
+#[test]
+fn vst3_sound_automation_switches_without_editor_state() {
+    let params = PumpParams::new();
+    assert!(apply_normalized_param_value(&params, PARAM_SOUND_ID, 1.0));
+    assert_eq!(params.active_sound(), super::SoundSide::B);
+    assert_eq!(params.mix(), 1.0);
 }
 
 #[test]

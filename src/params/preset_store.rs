@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 8;
+const PRESET_STORE_VERSION: u32 = 10;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
@@ -276,6 +276,9 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.smooth.to_le_bytes());
     payload.extend_from_slice(&(clamp_processing_mode(preset.mode as f32) as u32).to_le_bytes());
     payload.push(u8::from(preset.is_favorite));
+    payload.extend_from_slice(&preset.swing.to_le_bytes());
+    payload.extend_from_slice(&(preset.timing_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&preset.free_rate_hz.to_le_bytes());
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -403,6 +406,26 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         } else {
             false
         };
+        let swing = if version >= 9 {
+            read_f32(&mut cursor).ok_or_else(|| "invalid preset swing".to_string())?
+        } else {
+            DEFAULT_SWING
+        };
+        let (timing_mode, free_rate_hz) = if version >= 10 {
+            let timing_mode =
+                read_u32(&mut cursor).ok_or_else(|| "invalid preset timing mode".to_string())?;
+            let free_rate_hz =
+                read_f32(&mut cursor).ok_or_else(|| "invalid preset free rate".to_string())?;
+            if !free_rate_hz.is_finite() {
+                return Err("invalid preset free rate".to_string());
+            }
+            (
+                clamp_timing_mode(timing_mode as f32),
+                clamp_free_rate_hz(free_rate_hz),
+            )
+        } else {
+            (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -414,9 +437,12 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             phase_offset,
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
-            trigger_mode: trigger_mode.min(TRIGGER_MODE_SIDECHAIN),
+            trigger_mode: clamp_trigger_mode(trigger_mode as f32),
             smooth,
             mode,
+            swing,
+            timing_mode,
+            free_rate_hz,
             editable_curve,
             quick_slots,
         });
@@ -549,6 +575,17 @@ mod tests {
         node_count_offset + 4 + curve_bytes
     }
 
+    fn trigger_and_mode_offsets(payload: &[u8]) -> (usize, usize) {
+        let mut offset = quick_slot_count_offset(payload);
+        let quick_slot_count = payload_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_slot_count {
+            let node_count = payload_u32(payload, offset) as usize;
+            offset += 4 + node_count * 8 + node_count.saturating_sub(1) * 4;
+        }
+        (offset, offset + 8)
+    }
+
     fn encoded_single_preset_bank() -> Vec<u8> {
         encode_preset_bank_payload(&PumpPresetBank {
             selected: 0,
@@ -566,6 +603,9 @@ mod tests {
                 trigger_mode: DEFAULT_TRIGGER_MODE,
                 smooth: DEFAULT_SMOOTH,
                 mode: PROCESSING_MODE_CLASSIC,
+                swing: DEFAULT_SWING,
+                timing_mode: DEFAULT_TIMING_MODE,
+                free_rate_hz: DEFAULT_FREE_RATE_HZ,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -574,6 +614,9 @@ mod tests {
 
     fn encoded_v3_preset_bank() -> Vec<u8> {
         let mut payload = encoded_single_preset_bank();
+        // Timing metadata was added in v10 and swing in v9; both are absent
+        // from a v3 store.
+        payload.truncate(payload.len().saturating_sub(12));
         // Favorite metadata was added in v6, Smooth in v7, and trigger mode
         // in v5; processing mode was added in v8. Remove all four before
         // emulating v3.
@@ -619,6 +662,9 @@ mod tests {
                     trigger_mode: DEFAULT_TRIGGER_MODE,
                     smooth: DEFAULT_SMOOTH,
                     mode: PROCESSING_MODE_CLASSIC,
+                    swing: DEFAULT_SWING,
+                    timing_mode: DEFAULT_TIMING_MODE,
+                    free_rate_hz: DEFAULT_FREE_RATE_HZ,
                     editable_curve: default_editable_curve(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -633,9 +679,12 @@ mod tests {
                     phase_offset: 0.13,
                     output_gain_db: -1.5,
                     sync_division: 3,
-                    trigger_mode: TRIGGER_MODE_SIDECHAIN,
+                    trigger_mode: TRIGGER_MODE_HOST,
                     smooth: 0.58,
-                    mode: PROCESSING_MODE_PUNCH,
+                    mode: PROCESSING_MODE_CLASSIC,
+                    swing: DEFAULT_SWING,
+                    timing_mode: DEFAULT_TIMING_MODE,
+                    free_rate_hz: DEFAULT_FREE_RATE_HZ,
                     editable_curve: EditableCurve {
                         nodes: vec![
                             CurveNode { x: 0.0, y: 1.0 },
@@ -660,6 +709,22 @@ mod tests {
         let loaded = decode_preset_bank_payload(&payload).expect("preset store decode should pass");
         assert_eq!(loaded, bank);
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn persisted_preset_store_maps_legacy_sidechain_and_punch_to_supported_values() {
+        let path = temp_path("legacy-modes");
+        let mut payload = encoded_single_preset_bank();
+        let (trigger_offset, mode_offset) = trigger_and_mode_offsets(&payload);
+        write_payload_u32(&mut payload, trigger_offset, TRIGGER_MODE_SIDECHAIN as u32);
+        write_payload_u32(&mut payload, mode_offset, PROCESSING_MODE_PUNCH as u32);
+        fs::write(&path, payload).expect("legacy preset fixture should be writable");
+
+        let payload = fs::read(&path).expect("legacy preset fixture should be readable");
+        let bank = decode_preset_bank_payload(&payload).expect("legacy preset should decode");
+        assert_eq!(bank.presets[0].trigger_mode, TRIGGER_MODE_HOST);
+        assert_eq!(bank.presets[0].mode, PROCESSING_MODE_CLASSIC);
         let _ = fs::remove_file(path);
     }
 

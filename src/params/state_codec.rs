@@ -5,7 +5,9 @@ const MIN_ENCODED_CURVE_BYTES: usize = 4 + MIN_CURVE_BYTES;
 const PHASE_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"PHAS");
 /// Encode all parameter state including curve table into bytes.
 pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
-    let editable = params.editable_curve_snapshot();
+    let editable = params
+        .sound_state_snapshot(params.active_sound())
+        .editable_curve;
     let node_count = editable.nodes.len().min(MAX_EDITABLE_NODES);
     let segment_count = node_count.saturating_sub(1);
     let bank = params.preset_bank_snapshot();
@@ -37,6 +39,18 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     payload.extend_from_slice(&(params.trigger_mode() as f32).to_le_bytes());
     payload.extend_from_slice(&params.smooth().to_le_bytes());
     payload.extend_from_slice(&(params.mode() as f32).to_le_bytes());
+    payload.extend_from_slice(&params.bypass_value().to_le_bytes());
+    payload.extend_from_slice(&params.swing().to_le_bytes());
+
+    payload.extend_from_slice(&(params.active_sound().index() as u32).to_le_bytes());
+    for side in [SoundSide::A, SoundSide::B] {
+        encode_sound_state(&mut payload, &params.sound_state_snapshot(side));
+    }
+    for side in [SoundSide::A, SoundSide::B] {
+        encode_sound_state(&mut payload, &params.stored_sound_state_snapshot(side));
+    }
+    payload.extend_from_slice(&(params.timing_mode() as u32).to_le_bytes());
+    payload.extend_from_slice(&params.free_rate_hz().to_le_bytes());
 
     payload
 }
@@ -113,6 +127,9 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 trigger_mode: DEFAULT_TRIGGER_MODE,
                 smooth: DEFAULT_SMOOTH,
                 mode: PROCESSING_MODE_CLASSIC,
+                swing: DEFAULT_SWING,
+                timing_mode: DEFAULT_TIMING_MODE,
+                free_rate_hz: DEFAULT_FREE_RATE_HZ,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -143,6 +160,109 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     } else {
         PROCESSING_MODE_CLASSIC
     };
+    let bypass = if version >= 12 {
+        let Some(bypass) = read_f32(&mut cursor) else {
+            return Err("invalid bypass field");
+        };
+        if !bypass.is_finite() {
+            return Err("invalid bypass field");
+        }
+        bypass
+    } else {
+        BYPASS_ACTIVE_VALUE
+    };
+    let swing = if version >= 13 {
+        let Some(swing) = read_f32(&mut cursor) else {
+            return Err("invalid swing field");
+        };
+        swing
+    } else {
+        DEFAULT_SWING
+    };
+    if version >= 14
+        && ![
+            mix,
+            depth_field,
+            floor_db,
+            phase_offset,
+            output_gain_db,
+            sync_division,
+            trigger_mode,
+            smooth,
+            bypass,
+            swing,
+        ]
+        .into_iter()
+        .all(f32::is_finite)
+    {
+        return Err("invalid A/B scalar field");
+    }
+    let (active_sound, sound_states, stored_sound_states) = if version >= 14 {
+        let Some(active_sound) = read_u32(&mut cursor).map(|value| {
+            if value == SoundSide::B.index() as u32 {
+                SoundSide::B
+            } else {
+                SoundSide::A
+            }
+        }) else {
+            return Err("invalid active sound field");
+        };
+        let a = decode_sound_state(&mut cursor, version)?;
+        let b = decode_sound_state(&mut cursor, version)?;
+        let working = [a, b];
+        let stored = if version >= 16 {
+            [
+                decode_sound_state(&mut cursor, version)?,
+                decode_sound_state(&mut cursor, version)?,
+            ]
+        } else {
+            working.clone()
+        };
+        (active_sound, working, stored)
+    } else {
+        let legacy = PumpSoundState {
+            mix,
+            depth_db,
+            floor_db,
+            phase_offset,
+            output_gain_db,
+            sync_division: clamp_sync_division(sync_division),
+            trigger_mode: clamp_trigger_mode(trigger_mode),
+            smooth,
+            mode,
+            swing,
+            timing_mode: DEFAULT_TIMING_MODE,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            editable_curve: editable_curve.clone(),
+            quick_slots: preset_bank
+                .presets
+                .get(preset_bank.selected)
+                .map(|preset| preset.quick_slots.clone())
+                .unwrap_or_else(seeded_quick_shape_slots),
+        };
+        (
+            SoundSide::A,
+            [legacy.clone(), legacy.clone()],
+            [legacy.clone(), legacy],
+        )
+    };
+    let (timing_mode, free_rate_hz) = if version >= 15 {
+        let Some(timing_mode) = read_u32(&mut cursor) else {
+            return Err("invalid timing mode field");
+        };
+        let Some(free_rate_hz) = read_f32(&mut cursor) else {
+            return Err("invalid free rate field");
+        };
+        if !free_rate_hz.is_finite() {
+            return Err("invalid free rate field");
+        }
+        (
+            clamp_timing_mode(timing_mode as f32),
+            clamp_free_rate_hz(free_rate_hz),
+        )
+    } else {
+        (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
+    };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -156,10 +276,141 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_trigger_mode(trigger_mode);
     params.set_smooth(smooth);
     params.set_mode(mode as f32);
+    params.set_bypass(bypass);
+    params.set_swing(swing);
+    params.set_timing_mode(timing_mode as f32);
+    params.set_free_rate_hz(free_rate_hz);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
+    params.set_sound_states_with_references_without_persistence(
+        active_sound,
+        sound_states,
+        stored_sound_states,
+    );
 
     Ok(())
+}
+
+fn encode_sound_state(payload: &mut Vec<u8>, state: &PumpSoundState) {
+    payload.extend_from_slice(&state.mix.to_le_bytes());
+    payload.extend_from_slice(&state.depth_db.to_le_bytes());
+    payload.extend_from_slice(&state.floor_db.to_le_bytes());
+    payload.extend_from_slice(&state.phase_offset.to_le_bytes());
+    payload.extend_from_slice(&state.output_gain_db.to_le_bytes());
+    payload.extend_from_slice(&(state.sync_division as u32).to_le_bytes());
+    payload.extend_from_slice(&(state.trigger_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&state.smooth.to_le_bytes());
+    payload.extend_from_slice(&(state.mode as u32).to_le_bytes());
+    payload.extend_from_slice(&state.swing.to_le_bytes());
+    encode_curve(payload, &state.editable_curve);
+    payload.extend_from_slice(&(state.quick_slots.len() as u32).to_le_bytes());
+    for slot in &state.quick_slots {
+        encode_curve(payload, &slot.curve);
+    }
+    payload.extend_from_slice(&(state.timing_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&state.free_rate_hz.to_le_bytes());
+}
+
+fn decode_sound_state(
+    cursor: &mut Cursor<&[u8]>,
+    version: u32,
+) -> Result<PumpSoundState, &'static str> {
+    let Some(mix) = read_f32(cursor) else {
+        return Err("invalid A/B mix field");
+    };
+    let Some(depth_db) = read_f32(cursor) else {
+        return Err("invalid A/B depth field");
+    };
+    let Some(floor_db) = read_f32(cursor) else {
+        return Err("invalid A/B floor field");
+    };
+    let Some(phase_offset) = read_f32(cursor) else {
+        return Err("invalid A/B phase field");
+    };
+    let Some(output_gain_db) = read_f32(cursor) else {
+        return Err("invalid A/B output field");
+    };
+    let Some(sync_division) = read_u32(cursor) else {
+        return Err("invalid A/B sync field");
+    };
+    let Some(trigger_mode) = read_u32(cursor) else {
+        return Err("invalid A/B trigger field");
+    };
+    let Some(smooth) = read_f32(cursor) else {
+        return Err("invalid A/B smooth field");
+    };
+    let Some(mode) = read_u32(cursor) else {
+        return Err("invalid A/B mode field");
+    };
+    let Some(swing) = read_f32(cursor) else {
+        return Err("invalid A/B swing field");
+    };
+    let Some(node_count) = read_u32(cursor).map(|count| count as usize) else {
+        return Err("invalid A/B node count");
+    };
+    let editable_curve = decode_curve(cursor, node_count, true)?;
+    let Some(quick_count) = read_u32(cursor).map(|count| count as usize) else {
+        return Err("invalid A/B quick slot count");
+    };
+    if quick_count != QUICK_SLOT_COUNT {
+        return Err("invalid A/B quick slot count bounds");
+    }
+    let mut quick_slots = Vec::with_capacity(quick_count);
+    for _ in 0..quick_count {
+        let Some(node_count) = read_u32(cursor).map(|count| count as usize) else {
+            return Err("invalid A/B quick slot node count");
+        };
+        quick_slots.push(QuickShapeSlot {
+            curve: decode_curve(cursor, node_count, true)?,
+        });
+    }
+    let (timing_mode, free_rate_hz) = if version >= 15 {
+        let Some(timing_mode) = read_u32(cursor) else {
+            return Err("invalid A/B timing mode field");
+        };
+        let Some(free_rate_hz) = read_f32(cursor) else {
+            return Err("invalid A/B free rate field");
+        };
+        if !free_rate_hz.is_finite() {
+            return Err("invalid A/B free rate field");
+        }
+        (
+            clamp_timing_mode(timing_mode as f32),
+            clamp_free_rate_hz(free_rate_hz),
+        )
+    } else {
+        (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
+    };
+    if ![
+        mix,
+        depth_db,
+        floor_db,
+        phase_offset,
+        output_gain_db,
+        smooth,
+        swing,
+    ]
+    .into_iter()
+    .all(f32::is_finite)
+    {
+        return Err("invalid A/B scalar field");
+    }
+    Ok(PumpSoundState {
+        mix,
+        depth_db,
+        floor_db,
+        phase_offset,
+        output_gain_db,
+        sync_division: (sync_division as usize).min(MAX_SYNC_DIVISION as usize),
+        trigger_mode: clamp_trigger_mode(trigger_mode as f32),
+        smooth,
+        mode: clamp_processing_mode(mode as f32),
+        swing,
+        timing_mode,
+        free_rate_hz,
+        editable_curve: editable_curve.normalized(),
+        quick_slots,
+    })
 }
 
 fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
@@ -182,6 +433,9 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.smooth.to_le_bytes());
     payload.extend_from_slice(&(clamp_processing_mode(preset.mode as f32) as u32).to_le_bytes());
     payload.push(u8::from(preset.is_favorite));
+    payload.extend_from_slice(&preset.swing.to_le_bytes());
+    payload.extend_from_slice(&(preset.timing_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&preset.free_rate_hz.to_le_bytes());
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -368,6 +622,24 @@ fn decode_preset_bank(
         } else {
             false
         };
+        let swing = if version >= 13 {
+            read_f32(cursor).ok_or("invalid preset swing")?
+        } else {
+            DEFAULT_SWING
+        };
+        let (timing_mode, free_rate_hz) = if version >= 15 {
+            let timing_mode = read_u32(cursor).ok_or("invalid preset timing mode")?;
+            let free_rate_hz = read_f32(cursor).ok_or("invalid preset free rate")?;
+            if !free_rate_hz.is_finite() {
+                return Err("invalid preset free rate");
+            }
+            (
+                clamp_timing_mode(timing_mode as f32),
+                clamp_free_rate_hz(free_rate_hz),
+            )
+        } else {
+            (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -379,9 +651,12 @@ fn decode_preset_bank(
             phase_offset,
             output_gain_db,
             sync_division: sync_division.min(MAX_SYNC_DIVISION as usize),
-            trigger_mode: trigger_mode.min(TRIGGER_MODE_SIDECHAIN),
+            trigger_mode: clamp_trigger_mode(trigger_mode as f32),
             smooth,
             mode,
+            swing,
+            timing_mode,
+            free_rate_hz,
             editable_curve: editable_curve.normalized(),
             quick_slots,
         });
@@ -459,7 +734,24 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
     params.set_trigger_mode(DEFAULT_TRIGGER_MODE as f32);
     params.set_smooth(DEFAULT_SMOOTH);
     params.set_mode(PROCESSING_MODE_CLASSIC as f32);
+    params.set_swing(DEFAULT_SWING);
     params.set_curve(&curve);
+    let legacy_state = PumpSoundState {
+        mix: params.mix(),
+        depth_db: params.depth_db(),
+        floor_db: params.floor_db(),
+        phase_offset: params.phase_offset(),
+        output_gain_db: params.output_gain_db(),
+        sync_division: params.sync_division(),
+        trigger_mode: DEFAULT_TRIGGER_MODE,
+        smooth: DEFAULT_SMOOTH,
+        mode: PROCESSING_MODE_CLASSIC,
+        swing: DEFAULT_SWING,
+        timing_mode: DEFAULT_TIMING_MODE,
+        free_rate_hz: DEFAULT_FREE_RATE_HZ,
+        editable_curve: params.editable_curve_snapshot(),
+        quick_slots: seeded_quick_shape_slots(),
+    };
     params.set_preset_bank_without_persistence(PumpPresetBank {
         selected: 0,
         presets: vec![PumpPreset {
@@ -476,10 +768,14 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             trigger_mode: DEFAULT_TRIGGER_MODE,
             smooth: DEFAULT_SMOOTH,
             mode: PROCESSING_MODE_CLASSIC,
+            swing: DEFAULT_SWING,
+            timing_mode: DEFAULT_TIMING_MODE,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],
     });
+    params.set_sound_states_without_persistence(SoundSide::A, [legacy_state.clone(), legacy_state]);
 
     Ok(())
 }

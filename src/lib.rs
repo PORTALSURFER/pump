@@ -1,4 +1,4 @@
-//! Pump: node-based beat-synced gain shaping for sidechain-style ducking.
+//! Pump: node-based beat-synced gain shaping.
 
 #![warn(missing_docs)]
 
@@ -14,13 +14,14 @@ use toybox::clack_plugin;
 use toybox::clack_plugin::events::spaces::CoreEventSpace;
 use toybox::clack_plugin::prelude::*;
 use toybox::clack_plugin::stream::{InputStream, OutputStream};
-use toybox::clap::automation::{AutomationEvent, AutomationQueue};
+use toybox::clap::automation::AutomationEvent;
 use toybox::clap::prelude::apply_param_events;
 use toybox::clap::process::{min_len, split_channel};
 use toybox::clap::state::{read_versioned_payload, write_versioned_payload};
 use toybox::clap::transport::transport_state_from_transport;
 use toybox::dsp::{AtomicF32, TransportState};
 
+use crate::automation_queue::PumpAutomationQueue;
 use crate::dsp::{DspSettings, PumpEngine};
 #[cfg(all(target_os = "macos", feature = "radiant-gui"))]
 use crate::gui::HostParamFlushRequester;
@@ -31,8 +32,9 @@ use crate::gui::{
     WINDOW_WIDTH,
 };
 use crate::params::{
-    apply_param_event, decode_state_payload, encode_state_payload, get_param_value, param_count,
-    text_to_value, value_to_text, write_param_info, PumpParams,
+    apply_clap_param_event, clap_value_from_plain_value, decode_state_payload,
+    encode_state_payload, get_param_value, param_count, plain_value_from_clap_value, text_to_value,
+    value_to_text, write_param_info, PumpParams,
 };
 use crate::plugin_metadata::{PLUGIN_ID, PLUGIN_NAME, VENDOR_NAME};
 use crate::sample_automation::{
@@ -40,6 +42,7 @@ use crate::sample_automation::{
 };
 use crate::time_utils::monotonic_micros;
 
+mod automation_queue;
 #[cfg(test)]
 mod build_support;
 mod curve;
@@ -162,7 +165,7 @@ impl DefaultPluginFactory for PumpPlugin {
         Ok(PumpShared {
             params: Arc::new(PumpParams::new()),
             status: Arc::new(GuiStatus::default()),
-            automation_queue: Arc::new(AutomationQueue::default()),
+            automation_queue: Arc::new(PumpAutomationQueue::default()),
         })
     }
 
@@ -204,7 +207,7 @@ pub struct PumpShared {
     /// Real-time telemetry exposed to GUI.
     pub status: Arc<GuiStatus>,
     /// Pending GUI automation events destined for the host.
-    pub automation_queue: Arc<AutomationQueue>,
+    pub automation_queue: Arc<PumpAutomationQueue>,
 }
 
 impl PluginShared<'_> for PumpShared {}

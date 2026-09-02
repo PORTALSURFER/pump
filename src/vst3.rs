@@ -8,7 +8,6 @@ use std::ptr;
 use std::slice;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use toybox::clap::automation::AutomationQueue;
 use toybox::vst3::prelude::Steinberg::*;
 use toybox::vst3::prelude::*;
 
@@ -37,6 +36,10 @@ const CONTROLLER_CID: TUID = uid(0xB2EE267A, 0xE4314D5D, 0x96085F7A, 0x51681074)
 
 const STATE_MAGIC: u32 = u32::from_le_bytes(*b"PUMP");
 const STATE_VERSION: u32 = 1;
+// The envelope version historically tracked the serialized payload version in
+// some VST3 hosts. Keep accepting that full migration range while retaining
+// the current envelope version for newly written state.
+const ACCEPTED_STATE_VERSIONS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 mod param_bridge;
 mod processor;
