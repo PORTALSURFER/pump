@@ -11,6 +11,7 @@ pub const MIN_SEGMENT_TENSION: f32 = -1.0;
 pub const MAX_SEGMENT_TENSION: f32 = 1.0;
 
 const NODE_X_EPSILON: f32 = 1.0e-4;
+const NODE_EDGE_EPSILON: f32 = 1.0e-3;
 const LEGACY_RESTORE_NODE_COUNT: usize = 9;
 #[allow(dead_code)]
 const OFFSET_SAMPLE_EPSILON: f32 = 1.0e-5;
@@ -397,7 +398,11 @@ fn normalize_nodes(nodes: &[CurveNode]) -> Vec<CurveNode> {
         .copied()
         .filter(|node| node.x.is_finite() && node.y.is_finite())
         .map(|node| CurveNode {
-            x: node.x.clamp(0.0, 1.0),
+            x: match node.x.clamp(0.0, 1.0) {
+                x if x <= NODE_EDGE_EPSILON => 0.0,
+                x if x >= 1.0 - NODE_EDGE_EPSILON => 1.0,
+                x => x,
+            },
             y: node.y.clamp(0.0, 1.0),
         })
         .collect();
@@ -640,6 +645,37 @@ mod tests {
             .nodes
             .iter()
             .all(|node| (0.0..=1.0).contains(&node.y) && node.x.is_finite()));
+    }
+
+    #[test]
+    fn editable_curve_normalization_merges_nodes_at_both_boundaries() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.8 },
+                CurveNode { x: 0.0005, y: 0.2 },
+                CurveNode { x: 0.5, y: 0.6 },
+                CurveNode { x: 0.9995, y: 0.4 },
+                CurveNode { x: 1.0, y: 0.8 },
+            ],
+            segments: vec![
+                CurveSegment { tension: -0.4 },
+                CurveSegment { tension: 0.0 },
+                CurveSegment { tension: 0.2 },
+                CurveSegment { tension: 0.4 },
+            ],
+
+            ..EditableCurve::default()
+        }
+        .normalized();
+
+        assert_eq!(curve.nodes.len(), 3);
+        assert_eq!(curve.nodes[0].x, 0.0);
+        assert_eq!(curve.nodes[1].x, 0.5);
+        assert_eq!(curve.nodes[2].x, 1.0);
+        assert_eq!(curve.segments.len(), curve.nodes.len() - 1);
+        assert_eq!(curve.nodes.iter().filter(|node| node.x == 0.0).count(), 1);
+        assert_eq!(curve.nodes.iter().filter(|node| node.x == 1.0).count(), 1);
+        assert_eq!(curve.nodes[0].y, curve.nodes[2].y);
     }
 
     #[test]

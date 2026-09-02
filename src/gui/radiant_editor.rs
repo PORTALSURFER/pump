@@ -1431,8 +1431,8 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                         target.x,
                     );
                 }
-                update_curve_node(&mut curve, index, target);
-                (curve, index)
+                let moved_index = update_curve_node(&mut curve, index, target);
+                (curve, moved_index)
             };
             state.params.set_editable_curve(&curve);
             state.active_curve_node = Some(moved_index);
@@ -1504,8 +1504,8 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                         target.x,
                     );
                 }
-                update_curve_node(&mut curve, index, target);
-                (curve, index)
+                let moved_index = update_curve_node(&mut curve, index, target);
+                (curve, moved_index)
             };
             state.params.set_editable_curve(&curve);
             state.option_hover_held = option_held;
@@ -1668,6 +1668,12 @@ fn move_curve_node_with_push_through(
         moved_index = moved_index.saturating_sub(1);
     }
 
+    if let Some(edge) = curve_edge_for_x(target.x) {
+        remove_interior_curve_node(curve, moved_index);
+        set_wrapped_curve_endpoint_y(curve, y);
+        return edge.index(curve.nodes.len());
+    }
+
     let min_x = curve.nodes[moved_index - 1].x + CURVE_NODE_MIN_SPACING_X;
     let max_x = curve.nodes[moved_index + 1].x - CURVE_NODE_MIN_SPACING_X;
     curve.nodes[moved_index] = CurveNode {
@@ -1731,6 +1737,34 @@ fn enforce_wrapped_curve_endpoints(curve: &mut EditableCurve) {
         return;
     }
     set_wrapped_curve_endpoint_y(curve, curve.nodes[0].y);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CurveEdge {
+    Left,
+    Right,
+}
+
+impl CurveEdge {
+    fn index(self, node_count: usize) -> usize {
+        match self {
+            Self::Left => 0,
+            Self::Right => node_count.saturating_sub(1),
+        }
+    }
+}
+
+fn curve_edge_for_x(x: f32) -> Option<CurveEdge> {
+    if !x.is_finite() {
+        return None;
+    }
+    if x <= CURVE_NODE_MIN_SPACING_X {
+        Some(CurveEdge::Left)
+    } else if x >= 1.0 - CURVE_NODE_MIN_SPACING_X {
+        Some(CurveEdge::Right)
+    } else {
+        None
+    }
 }
 
 fn start_curve_segment_tension_drag(
@@ -1824,7 +1858,15 @@ fn segment_upward_tension_sign(curve: &EditableCurve, segment_index: usize) -> f
 
 fn insert_curve_node(curve: &mut EditableCurve, node: CurveNode) -> Option<usize> {
     curve.normalize_in_place();
-    if curve.nodes.len() < 2 || curve.nodes.len() >= MAX_EDITABLE_NODES {
+    if curve.nodes.len() < 2 {
+        return None;
+    }
+    if let Some(edge) = curve_edge_for_x(node.x) {
+        set_wrapped_curve_endpoint_y(curve, node.y);
+        curve.normalize_in_place();
+        return Some(edge.index(curve.nodes.len()));
+    }
+    if curve.nodes.len() >= MAX_EDITABLE_NODES {
         return None;
     }
 
@@ -1873,9 +1915,9 @@ fn delete_curve_node(curve: &mut EditableCurve, index: usize) -> bool {
     true
 }
 
-fn update_curve_node(curve: &mut EditableCurve, index: usize, node: CurveNode) {
+fn update_curve_node(curve: &mut EditableCurve, index: usize, node: CurveNode) -> usize {
     if curve.nodes.is_empty() || index >= curve.nodes.len() {
-        return;
+        return index;
     }
     if index == 0 || index + 1 == curve.nodes.len() {
         let y = node.y.clamp(0.0, 1.0);
@@ -1888,19 +1930,26 @@ fn update_curve_node(curve: &mut EditableCurve, index: usize, node: CurveNode) {
             last.y = y;
         }
         curve.normalize_in_place();
-        return;
+        return index;
+    }
+    if let Some(edge) = curve_edge_for_x(node.x) {
+        remove_interior_curve_node(curve, index);
+        set_wrapped_curve_endpoint_y(curve, node.y);
+        curve.normalize_in_place();
+        return edge.index(curve.nodes.len());
     }
 
     let previous_x = curve.nodes[index - 1].x + CURVE_NODE_MIN_SPACING_X;
     let next_x = curve.nodes[index + 1].x - CURVE_NODE_MIN_SPACING_X;
     if previous_x >= next_x {
-        return;
+        return index;
     }
     curve.nodes[index] = CurveNode {
         x: node.x.clamp(previous_x, next_x),
         y: node.y.clamp(0.0, 1.0),
     };
     curve.normalize_in_place();
+    index
 }
 
 fn normalize_output_gain(value: f32) -> f32 {
@@ -4893,6 +4942,88 @@ mod tests {
             .iter()
             .any(|inserted| (inserted.x - node.x).abs() < 1.0e-6
                 && (inserted.y - node.y).abs() < 1.0e-6));
+    }
+
+    fn assert_edge_insert_is_single_visible_node(node: CurveNode, edge: CurveEdge) {
+        let params = Arc::new(PumpParams::new());
+        let before = params.editable_curve_snapshot();
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::InsertNode {
+                node,
+                command_held: false,
+            }),
+        );
+
+        let curve = params.editable_curve_snapshot();
+        let index = edge.index(curve.nodes.len());
+        let last_index = curve.nodes.len() - 1;
+        assert_eq!(curve.nodes.len(), before.nodes.len());
+        assert_eq!(curve.segments.len(), curve.nodes.len() - 1);
+        assert_eq!(state.active_curve_node, Some(index));
+        assert!((curve.nodes[0].y - node.y).abs() < 1.0e-6);
+        assert_eq!(curve.nodes[0].y, curve.nodes[last_index].y);
+        assert_eq!(curve.nodes.iter().filter(|node| node.x == 0.0).count(), 1);
+        assert_eq!(curve.nodes.iter().filter(|node| node.x == 1.0).count(), 1);
+        assert!(curve.nodes[1..last_index].iter().all(|node| {
+            node.x > CURVE_NODE_MIN_SPACING_X && node.x < 1.0 - CURVE_NODE_MIN_SPACING_X
+        }));
+
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let expected_center = CurvePreviewWidget::curve_point(bounds, curve.nodes[index]);
+        let mut widget =
+            CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let press = widget
+            .handle_input(
+                bounds,
+                WidgetInput::PointerPress {
+                    position: expected_center,
+                    button: PointerButton::Primary,
+                    modifiers: PointerModifiers::default(),
+                },
+            )
+            .expect("boundary node should remain interactive");
+        assert!(matches!(
+            press.typed_copied(),
+            Some(CurvePreviewMessage::PressNode { index: actual, .. }) if actual == index
+        ));
+
+        let theme = ThemeTokens::default();
+        let mut primitives = Vec::new();
+        widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+        let painted_nodes: Vec<_> = primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill)
+                    if fill.color == theme.surface_raised
+                        && (fill.rect.width() - CURVE_NODE_SIZE).abs() < 1.0e-6
+                        && (fill.rect.height() - CURVE_NODE_SIZE).abs() < 1.0e-6 =>
+                {
+                    Some(fill)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(painted_nodes.len(), curve.nodes.len());
+        assert_eq!(
+            painted_nodes
+                .iter()
+                .filter(|fill| {
+                    (fill.rect.min.x + fill.rect.width() * 0.5 - expected_center.x).abs() < 1.0e-6
+                        && (fill.rect.min.y + fill.rect.height() * 0.5 - expected_center.y).abs()
+                            < 1.0e-6
+                })
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn radiant_editor_edge_insertions_merge_to_visible_interactive_boundaries() {
+        assert_edge_insert_is_single_visible_node(CurveNode { x: 0.0, y: 0.23 }, CurveEdge::Left);
+        assert_edge_insert_is_single_visible_node(CurveNode { x: 1.0, y: 0.37 }, CurveEdge::Right);
     }
 
     #[test]
