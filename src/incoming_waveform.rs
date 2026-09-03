@@ -232,12 +232,30 @@ impl IncomingWaveformBuffer {
     pub(crate) fn set_last_update_micros_for_test(&self, value: u64) {
         self.last_update_micros.store(value, Ordering::Release);
     }
+
+    #[cfg(all(test, feature = "vst3"))]
+    pub(crate) fn generation_for_test(&self) -> u32 {
+        self.generation()
+    }
+
+    #[cfg(all(test, feature = "vst3"))]
+    pub(crate) fn last_update_micros_for_test(&self) -> u64 {
+        self.last_update_micros.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum RemapCaptureState {
     #[default]
     Normal,
+}
+
+fn cycle_mapping(beats_per_cycle: f32, swing: f32, timing_mode: usize) -> [u32; 3] {
+    [
+        beats_per_cycle.to_bits(),
+        swing.to_bits(),
+        timing_mode as u32,
+    ]
 }
 
 /// Audio-owned peak aggregator that holds the last completed cycle for the GUI.
@@ -413,11 +431,7 @@ impl IncomingWaveformWriter {
     ) {
         let raw_cycle_phase = raw_cycle_phase.rem_euclid(1.0);
         let phase = phase.rem_euclid(1.0);
-        let cycle_mapping = [
-            beats_per_cycle.to_bits(),
-            swing.to_bits(),
-            timing_mode as u32,
-        ];
+        let cycle_mapping = cycle_mapping(beats_per_cycle, swing, timing_mode);
         let cycle_mapping_changed = self
             .last_cycle_mapping
             .is_some_and(|previous| previous != cycle_mapping);
@@ -461,6 +475,25 @@ impl IncomingWaveformWriter {
             self.cycle_has_signal |= peak > SILENCE_FLOOR;
             self.current_peak = self.current_peak.max(peak);
         }
+    }
+
+    /// Reconcile a zero-sample block's final cycle mapping without recording a
+    /// sample or opening a new capture for an unchanged mapping.
+    pub(crate) fn reconcile_cycle_mapping(
+        &mut self,
+        buffer: &IncomingWaveformBuffer,
+        beats_per_cycle: f32,
+        swing: f32,
+        timing_mode: usize,
+    ) {
+        let cycle_mapping = cycle_mapping(beats_per_cycle, swing, timing_mode);
+        if self
+            .last_cycle_mapping
+            .is_some_and(|previous| previous != cycle_mapping)
+        {
+            self.invalidate_capture(buffer);
+        }
+        self.last_cycle_mapping = Some(cycle_mapping);
     }
 
     pub(crate) fn finish_block(&mut self, buffer: &IncomingWaveformBuffer) {
@@ -525,6 +558,15 @@ impl<'a> IncomingWaveformCapture<'a> {
         Self { buffer, writer }
     }
 
+    /// Create a capture target for a zero-sample block without rotating the
+    /// writer. The final mapping is reconciled after parameter application.
+    pub(crate) fn new_for_zero_frame(
+        buffer: &'a IncomingWaveformBuffer,
+        writer: &'a mut IncomingWaveformWriter,
+    ) -> Self {
+        Self { buffer, writer }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record(
         &mut self,
@@ -546,6 +588,16 @@ impl<'a> IncomingWaveformCapture<'a> {
             left,
             right,
         );
+    }
+
+    pub(crate) fn reconcile_cycle_mapping(
+        &mut self,
+        beats_per_cycle: f32,
+        swing: f32,
+        timing_mode: usize,
+    ) {
+        self.writer
+            .reconcile_cycle_mapping(self.buffer, beats_per_cycle, swing, timing_mode);
     }
 
     pub(crate) fn finish(self) {
@@ -880,6 +932,97 @@ mod tests {
         writer.finish_block(&buffer);
 
         assert!(buffer.snapshot().is_none());
+    }
+
+    #[test]
+    fn zero_frame_sync_to_free_invalidates_once_and_next_block_starts_fresh() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        buffer.set_live_mode(true);
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.25,
+            0.25,
+            1.0,
+            0.0,
+            crate::params::TIMING_MODE_SYNC,
+            0.8,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+        assert!(buffer.snapshot().is_some());
+
+        let generation_before = buffer.generation_for_test();
+        buffer.set_last_update_micros_for_test(1234);
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_FREE);
+        assert_eq!(
+            buffer.generation_for_test(),
+            generation_before.wrapping_add(1)
+        );
+        assert_eq!(buffer.last_update_micros_for_test(), 0);
+        assert!(buffer.snapshot().is_none());
+
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_FREE);
+        assert_eq!(
+            buffer.generation_for_test(),
+            generation_before.wrapping_add(1)
+        );
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.30,
+            0.30,
+            1.0,
+            0.0,
+            crate::params::TIMING_MODE_FREE,
+            0.6,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+        assert!(
+            buffer.snapshot().is_none(),
+            "the first nonzero block after a mapping change must remain a fresh capture"
+        );
+    }
+
+    #[test]
+    fn zero_frame_free_to_sync_invalidates_once_and_retains_offset_rate_generation() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.25,
+            0.25,
+            1.0,
+            0.0,
+            crate::params::TIMING_MODE_FREE,
+            0.8,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+
+        let generation_before = buffer.generation_for_test();
+        buffer.set_last_update_micros_for_test(1234);
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_FREE);
+        assert_eq!(buffer.generation_for_test(), generation_before);
+        assert_eq!(buffer.last_update_micros_for_test(), 1234);
+
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_SYNC);
+        let generation_after_mapping_change = buffer.generation_for_test();
+        assert_eq!(
+            generation_after_mapping_change,
+            generation_before.wrapping_add(1)
+        );
+        assert_eq!(buffer.last_update_micros_for_test(), 0);
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_SYNC);
+        assert_eq!(
+            buffer.generation_for_test(),
+            generation_after_mapping_change
+        );
     }
 
     #[test]

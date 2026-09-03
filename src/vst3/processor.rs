@@ -441,6 +441,17 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         );
 
         let runtime = &mut *runtime;
+        let waveform_capture = if frame_count == 0 {
+            IncomingWaveformCapture::new_for_zero_frame(
+                self.shared.status.incoming_waveform_buffer(),
+                &mut runtime.waveform_writer,
+            )
+        } else {
+            IncomingWaveformCapture::new(
+                self.shared.status.incoming_waveform_buffer(),
+                &mut runtime.waveform_writer,
+            )
+        };
         let telemetry = unsafe {
             process_stereo_block_raw(
                 &mut runtime.engine,
@@ -450,10 +461,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 &mut settings,
                 &mut runtime.last_curve_revision,
                 transport,
-                Some(IncomingWaveformCapture::new(
-                    self.shared.status.incoming_waveform_buffer(),
-                    &mut runtime.waveform_writer,
-                )),
+                Some(waveform_capture),
             )
         };
         // SAFETY: successful stereo buffer extraction validated one writable
