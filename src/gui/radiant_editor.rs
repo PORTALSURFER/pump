@@ -1668,7 +1668,14 @@ impl ActiveCurvePaint {
     }
 
     fn finished_curve(&self) -> PaintCommitOutcome {
-        reconstruct_paint(&self.origin_curve, self.phase_offset, self.recorder.runs())
+        // curve_paint reconstructs authored coordinates from its legacy
+        // display-minus-offset convention. Convert the positive audio
+        // offset to that mapper's equivalent display coordinate here.
+        reconstruct_paint(
+            &self.origin_curve,
+            (-self.phase_offset).rem_euclid(1.0),
+            self.recorder.runs(),
+        )
     }
 
     #[cfg(test)]
@@ -5595,15 +5602,16 @@ impl CurvePreviewWidget {
         {
             raw_x = seam_raw(self.phase_offset);
         }
+        let offset_seam = (1.0 - self.phase_offset).rem_euclid(1.0);
         let at_offset_seam = self.phase_offset > CURVE_DISPLAY_SEAM_EPSILON
-            && (display_node.x - self.phase_offset).abs() <= CURVE_DISPLAY_SEAM_EPSILON;
+            && (display_node.x - offset_seam).abs() <= CURVE_DISPLAY_SEAM_EPSILON;
         if at_offset_seam && self.active_node.is_some() {
             let current_display_x = self
                 .active_node
                 .and_then(|index| self.curve.nodes.get(index).copied())
                 .map(|node| Self::display_phase(node.x, self.phase_offset))
-                .unwrap_or(self.phase_offset);
-            raw_x = if current_display_x > self.phase_offset {
+                .unwrap_or(offset_seam);
+            raw_x = if current_display_x > offset_seam {
                 1.0 - CURVE_DISPLAY_SEAM_EPSILON
             } else {
                 CURVE_DISPLAY_SEAM_EPSILON
@@ -5669,9 +5677,9 @@ impl CurvePreviewWidget {
     }
 
     fn display_phase(raw_x: f32, phase_offset: f32) -> f32 {
-        // Positive offsets move authored curve features to the right. The
-        // inverse mapping for display/effective samples is shared with DSP.
-        let shifted = raw_x + phase_offset;
+        // Positive offsets are added to effective phase when sampling the
+        // authored curve, so authored curve features move left in the view.
+        let shifted = raw_x - phase_offset;
         let wrapped = shifted.rem_euclid(1.0);
         if shifted > CURVE_DISPLAY_SEAM_EPSILON && wrapped <= CURVE_DISPLAY_SEAM_EPSILON {
             1.0
@@ -6018,7 +6026,7 @@ impl CurvePreviewWidget {
             width: 1.0,
         }));
         let offset_x = curve_bounds.min.x
-            + self.phase_offset.clamp(0.0, 1.0) * (curve_bounds.width().max(1.0) - 1.0);
+            + Self::display_phase(0.0, self.phase_offset) * (curve_bounds.width().max(1.0) - 1.0);
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
             points: Arc::from([
@@ -7365,7 +7373,10 @@ mod tests {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.8 },
                 CurveNode { x: 0.2, y: 0.2 },
-                CurveNode { x: 0.75, y: 0.4 },
+                CurveNode {
+                    x: seam_raw(0.25),
+                    y: 0.4,
+                },
                 CurveNode { x: 0.9, y: 0.6 },
                 CurveNode { x: 1.0, y: 0.8 },
             ],
@@ -7391,7 +7402,10 @@ mod tests {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.8 },
                 CurveNode { x: 0.2, y: 0.2 },
-                CurveNode { x: 0.75, y: 0.4 },
+                CurveNode {
+                    x: seam_raw(0.25),
+                    y: 0.4,
+                },
                 CurveNode {
                     x: edge_competitor_raw_x,
                     y: 0.3,
@@ -7414,7 +7428,7 @@ mod tests {
     fn assert_marquee_selected_single_source_takes_over_occupied_edge(edge_x: f32) {
         let phase_offset = 0.25;
         let threshold = test_curve_push_through_threshold_x();
-        let edge_competitor_raw_x = if edge_x <= 0.0 { 0.77 } else { 0.73 };
+        let edge_competitor_raw_x = if edge_x <= 0.0 { 0.27 } else { 0.23 };
         let curve = occupied_interior_seam_curve(edge_competitor_raw_x);
         assert!(matches!(
             canonical_seam_owner(&curve, phase_offset),
@@ -7557,7 +7571,7 @@ mod tests {
 
     #[test]
     fn near_interior_seam_nodes_are_ordinary_and_horizontally_movable() {
-        for raw_x in [0.7495, 0.7505] {
+        for raw_x in [0.2495, 0.2505] {
             let curve = interior_seam_curve_with_raw_x(raw_x);
             assert_eq!(canonical_seam_owner(&curve, 0.25), None);
 
@@ -7658,7 +7672,7 @@ mod tests {
             );
 
             let dragged = params.editable_curve_snapshot();
-            assert_eq!(dragged.nodes[2].x, 0.75);
+            assert_eq!(dragged.nodes[2].x, seam_raw(0.25));
             assert!((dragged.nodes[2].y - 0.65).abs() < 1.0e-6);
         }
     }
@@ -7697,7 +7711,7 @@ mod tests {
 
         let dragged = params.editable_curve_snapshot();
         assert_eq!(dragged.nodes.len(), curve.nodes.len());
-        assert!((dragged.nodes[2].x - 0.75).abs() < 1.0e-6);
+        assert!((dragged.nodes[2].x - seam_raw(0.25)).abs() < 1.0e-6);
         assert!((dragged.nodes[2].y - 0.65).abs() < 1.0e-6);
         assert_eq!(dragged.nodes[0], curve.nodes[0]);
         assert_eq!(dragged.nodes[1], curve.nodes[1]);
@@ -7718,7 +7732,7 @@ mod tests {
     #[test]
     fn marquee_selected_single_source_clears_selection_on_direct_edge_release() {
         let phase_offset = 0.25;
-        let curve = occupied_interior_seam_curve(0.77);
+        let curve = occupied_interior_seam_curve(0.27);
         let params = Arc::new(PumpParams::new());
         params.set_editable_curve(&curve);
         params.set_phase_offset(phase_offset);
@@ -7819,7 +7833,7 @@ mod tests {
     #[test]
     fn edge_takeover_unsnaps_inside_edge_zone_restores_origin_and_resnaps_at_boundary() {
         let threshold = 1.0e-4;
-        let curve = interior_seam_curve_with_raw_x(0.7495);
+        let curve = interior_seam_curve_with_raw_x(0.2495);
         let phase_offset = 0.25;
         assert_eq!(canonical_seam_owner(&curve, phase_offset), None);
 
@@ -7850,7 +7864,7 @@ mod tests {
         );
 
         let taken_over = params.editable_curve_snapshot();
-        assert_eq!(taken_over.nodes[2].x, 0.75);
+        assert_eq!(taken_over.nodes[2].x, 0.25);
         assert_eq!(taken_over.nodes[2].x, seam_raw(phase_offset));
         assert_eq!(
             canonical_seam_owner(&taken_over, phase_offset),
@@ -7937,9 +7951,9 @@ mod tests {
         let curve = EditableCurve {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.8 },
-                CurveNode { x: 0.4, y: 0.2 },
-                CurveNode { x: 0.74, y: 0.3 },
-                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 0.1, y: 0.2 },
+                CurveNode { x: 0.24, y: 0.3 },
+                CurveNode { x: 0.25, y: 0.5 },
                 CurveNode { x: 0.9, y: 0.6 },
                 CurveNode { x: 1.0, y: 0.8 },
             ],
@@ -7971,7 +7985,7 @@ mod tests {
             &mut state,
             CurvePreviewMessage::DragNode {
                 index: 1,
-                node: CurveNode { x: 0.75, y: 0.55 },
+                node: CurveNode { x: 0.25, y: 0.55 },
                 push_through_threshold_x: test_curve_push_through_threshold_x(),
             },
         );
@@ -7979,16 +7993,16 @@ mod tests {
         let taken_over = params.editable_curve_snapshot();
         assert_eq!(taken_over.nodes.len(), 4);
         assert_eq!(taken_over.nodes[0].x, 0.0);
-        assert!((taken_over.nodes[1].x - 0.75).abs() < 1.0e-6);
+        assert!((taken_over.nodes[1].x - 0.25).abs() < 1.0e-6);
         assert_eq!(taken_over.nodes[3].x, 1.0);
         assert!(!taken_over
             .nodes
             .iter()
-            .any(|node| (node.x - 0.4).abs() < 1.0e-6));
+            .any(|node| (node.x - 0.1).abs() < 1.0e-6));
         assert!(!taken_over
             .nodes
             .iter()
-            .any(|node| (node.x - 0.74).abs() < 1.0e-6));
+            .any(|node| (node.x - 0.24).abs() < 1.0e-6));
         assert_eq!(state.active_curve_node, Some(1));
         assert!((taken_over.segments[0].tension - 0.11).abs() < 1.0e-6);
         assert!((taken_over.segments[1].tension - 0.22).abs() < 1.0e-6);
@@ -8052,7 +8066,7 @@ mod tests {
             &mut state,
             CurvePreviewMessage::DragNode {
                 index: 1,
-                node: CurveNode { x: 0.75, y: 0.7 },
+                node: CurveNode { x: 0.25, y: 0.7 },
                 push_through_threshold_x: test_curve_push_through_threshold_x(),
             },
         );
@@ -8254,7 +8268,7 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let curve = legacy_edge_curve();
         params.set_editable_curve(&curve);
-        params.set_phase_offset(0.0001);
+        params.set_phase_offset(0.0);
         let origin = curve.nodes[2];
         let mut state = editor_state(Arc::clone(&params));
 
@@ -8294,7 +8308,7 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let curve = legacy_edge_curve();
         params.set_editable_curve(&curve);
-        params.set_phase_offset(0.0001);
+        params.set_phase_offset(0.0);
         let origin = curve.nodes[2];
         let mut state = editor_state(Arc::clone(&params));
         state.selected_curve_nodes = vec![0, 2];
@@ -12393,7 +12407,7 @@ mod tests {
                     .nodes
                     .iter()
                     .enumerate()
-                    .filter(|(_, node)| (node.x - 0.75).abs() <= CURVE_PAINT_ASSERT_EPSILON)
+                    .filter(|(_, node)| (node.x - 0.25).abs() <= CURVE_PAINT_ASSERT_EPSILON)
                     .collect::<Vec<_>>();
                 assert_eq!(seam_nodes.len(), 1);
                 let (seam_index, seam) = seam_nodes[0];
@@ -12531,13 +12545,7 @@ mod tests {
                         start_x * (1.0 - fraction)
                     };
                     let expected_y = start_y + (first_y - start_y) * fraction;
-                    let raw_x = if phase_offset <= CURVE_DISPLAY_SEAM_EPSILON {
-                        display_x
-                    } else if display_x < phase_offset {
-                        1.0 - phase_offset + display_x
-                    } else {
-                        display_x - phase_offset
-                    };
+                    let raw_x = (display_x + phase_offset).rem_euclid(1.0);
                     let actual_y = sample_editable_curve(&candidate, raw_x);
                     assert!(
                         (actual_y - expected_y).abs() <= 0.018 + CURVE_PAINT_ASSERT_EPSILON,
@@ -15965,7 +15973,7 @@ mod tests {
             bounds,
             CurveNode {
                 x: 0.5,
-                y: sample_editable_curve(&curve, 0.5 - phase_offset),
+                y: sample_editable_curve(&curve, 0.5 + phase_offset),
             },
         );
         let midpoint = points
@@ -16059,11 +16067,11 @@ mod tests {
     #[test]
     fn curve_preview_widget_crosses_the_active_offset_seam_without_locking() {
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let phase_offset = 0.25;
+        let phase_offset = 0.25_f32;
         let seam_position = CurvePreviewWidget::curve_point(
             bounds,
             CurveNode {
-                x: phase_offset,
+                x: (1.0 - phase_offset).rem_euclid(1.0),
                 y: 0.0,
             },
         );
@@ -16122,7 +16130,7 @@ mod tests {
             bounds,
             CurveNode {
                 x: 0.5,
-                y: widget.sample_smoothed_curve(0.5 - phase_offset),
+                y: widget.sample_smoothed_curve(0.5 + phase_offset),
             },
         );
         assert!((midpoint.x - expected.x).abs() < 1.0e-6);
@@ -16326,7 +16334,7 @@ mod tests {
             .processed_waveform()
             .expect("incoming waveform should produce a wet preview");
         assert!(
-            (processed[0] - waveform[0] * sample_editable_curve(&curve, -phase_offset)).abs()
+            (processed[0] - waveform[0] * sample_editable_curve(&curve, phase_offset)).abs()
                 < 1.0e-6
         );
         assert!(
@@ -16334,7 +16342,7 @@ mod tests {
                 - waveform[48]
                     * sample_editable_curve(
                         &curve,
-                        48.0 / (waveform.len() - 1) as f32 - phase_offset,
+                        48.0 / (waveform.len() - 1) as f32 + phase_offset,
                     ))
             .abs()
                 < 1.0e-6
@@ -16774,7 +16782,8 @@ mod tests {
             widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
             let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
             let expected_x = curve_bounds.min.x
-                + phase_offset.clamp(0.0, 1.0) * (curve_bounds.width().max(1.0) - 1.0);
+                + CurvePreviewWidget::display_phase(0.0, phase_offset)
+                    * (curve_bounds.width().max(1.0) - 1.0);
             let guide_index = primitives
                 .iter()
                 .position(|primitive| {

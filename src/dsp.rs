@@ -78,9 +78,9 @@ pub struct DspTelemetry {
     pub bypassed: bool,
 }
 
-/// Map an effective/display phase back to the authored curve phase.
+/// Map an effective/display phase to the authored curve phase.
 pub(crate) fn authored_curve_phase(effective_phase: f32, phase_offset: f32) -> f32 {
-    (effective_phase - phase_offset).rem_euclid(1.0)
+    (effective_phase + phase_offset).rem_euclid(1.0)
 }
 
 #[derive(Debug, Clone)]
@@ -1200,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_offset_moves_authored_audio_features_right() {
+    fn phase_offset_moves_authored_audio_features_left() {
         let mut curve = [0.0; crate::curve::CURVE_TABLE_LEN];
         let curve_len = curve.len();
         for (index, value) in curve.iter_mut().enumerate() {
@@ -1225,7 +1225,7 @@ mod tests {
                 .process_sample(&mut 1.0, &mut 1.0, offset_settings, transport)
                 .gain;
         }
-        assert!(offset_gain < base_gain);
+        assert!(offset_gain > base_gain);
     }
 
     #[test]
