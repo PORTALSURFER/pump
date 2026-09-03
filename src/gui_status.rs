@@ -200,10 +200,10 @@ impl GuiStatus {
         }
     }
 
-    /// Read latest phase value.
-    pub fn phase(&self) -> f32 {
-        let phase = self
-            .dsp_snapshot()
+    /// Project phase from a caller-captured DSP snapshot, preserving fallback
+    /// and extrapolation when no DSP block has completed yet.
+    pub(crate) fn phase_from_dsp_snapshot(&self, snapshot: Option<GuiDspSnapshot>) -> f32 {
+        let phase = snapshot
             .map(|snapshot| snapshot.effective_phase)
             .unwrap_or_else(|| self.phase.load(Ordering::Relaxed));
         extrapolate_phase(
@@ -213,6 +213,11 @@ impl GuiStatus {
             self.last_update_micros.load(Ordering::Relaxed),
             monotonic_micros(),
         )
+    }
+
+    /// Read latest phase value.
+    pub fn phase(&self) -> f32 {
+        self.phase_from_dsp_snapshot(self.dsp_snapshot())
     }
 
     /// Read the smoothed live gain reduction in positive decibels.
@@ -355,8 +360,8 @@ mod tests {
 
     use super::{
         extrapolate_phase, gain_reduction_db_from_linear, gain_reduction_meter_fraction,
-        monotonic_micros, smooth_gain_reduction_db, GuiStatus, GuiTransportTelemetry,
-        GAIN_REDUCTION_METER_MAX_DB, GAIN_REDUCTION_STALE_MICROS,
+        monotonic_micros, smooth_gain_reduction_db, GuiDspSnapshot, GuiStatus,
+        GuiTransportTelemetry, GAIN_REDUCTION_METER_MAX_DB, GAIN_REDUCTION_STALE_MICROS,
     };
 
     #[test]
@@ -568,6 +573,52 @@ mod tests {
     fn extrapolate_phase_holds_when_not_playing() {
         let phase = extrapolate_phase(0.25, 2.0, false, 1_000_000, 2_000_000);
         assert!((phase - 0.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn captured_dsp_snapshot_remains_authoritative_after_replacement() {
+        let status = GuiStatus::default();
+        let captured_snapshot = GuiDspSnapshot {
+            effective_phase: 0.2,
+            applied_phase_offset: 0.3,
+        };
+        let replacement_snapshot = GuiDspSnapshot {
+            effective_phase: 0.8,
+            applied_phase_offset: 0.9,
+        };
+
+        status.publish_dsp_telemetry(crate::dsp::DspTelemetry {
+            phase: captured_snapshot.effective_phase,
+            applied_phase_offset: captured_snapshot.applied_phase_offset,
+            gain: 1.0,
+            reduction_gain: 1.0,
+            input_active: false,
+            bypassed: false,
+        });
+        let captured = status
+            .dsp_snapshot()
+            .expect("the first DSP block should be available");
+
+        status.publish_dsp_telemetry(crate::dsp::DspTelemetry {
+            phase: replacement_snapshot.effective_phase,
+            applied_phase_offset: replacement_snapshot.applied_phase_offset,
+            gain: 1.0,
+            reduction_gain: 1.0,
+            input_active: false,
+            bypassed: false,
+        });
+
+        // Model a publication between projection reads without depending on
+        // thread scheduling: the surface owns this Copy snapshot after capture.
+        let projected_applied_phase_offset = captured.applied_phase_offset;
+        let projected_effective_phase = status.phase_from_dsp_snapshot(Some(captured));
+
+        assert_eq!(
+            projected_applied_phase_offset,
+            captured_snapshot.applied_phase_offset
+        );
+        assert_eq!(projected_effective_phase, captured_snapshot.effective_phase);
+        assert_eq!(status.dsp_snapshot(), Some(replacement_snapshot));
     }
 
     #[test]

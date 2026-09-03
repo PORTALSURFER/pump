@@ -2390,13 +2390,13 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let free_timing = params.timing_mode() == TIMING_MODE_FREE;
     let free_rate = params.free_rate_hz();
     let waveform_live_mode = state.status.waveform_live_mode();
-    let applied_phase_offset = state
-        .status
-        .dsp_snapshot()
+    let dsp_snapshot = state.status.dsp_snapshot();
+    let applied_phase_offset = dsp_snapshot
         .map(|snapshot| snapshot.applied_phase_offset)
         .unwrap_or_else(|| params.phase_offset());
+    let effective_phase = state.status.phase_from_dsp_snapshot(dsp_snapshot);
     let playhead_phase = (state.status.has_host_beats_timeline() || state.status.is_playing())
-        .then_some(state.status.phase());
+        .then_some(effective_phase);
     let active_sound = params.active_sound();
     let timing_options: Vec<_> = if free_timing {
         FreeRateUnit::ALL
@@ -2620,7 +2620,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             spacer().fill_width(),
             custom_widget_mapped(
                 BypassControlWidget::new(params.bypassed(), params.bypass_automation_recent())
-                    .with_pulse_phase(state.status.is_playing().then_some(state.status.phase())),
+                    .with_pulse_phase(state.status.is_playing().then_some(effective_phase)),
                 move |_: ButtonMessage| RadiantEditorMessage::ToggleBypass,
             )
             .width(BYPASS_CONTROL_WIDTH)
