@@ -228,17 +228,17 @@ impl IncomingWaveformBuffer {
         None
     }
 
-    #[cfg(all(test, feature = "vst3"))]
+    #[cfg(test)]
     pub(crate) fn set_last_update_micros_for_test(&self, value: u64) {
         self.last_update_micros.store(value, Ordering::Release);
     }
 
-    #[cfg(all(test, feature = "vst3"))]
+    #[cfg(test)]
     pub(crate) fn generation_for_test(&self) -> u32 {
         self.generation()
     }
 
-    #[cfg(all(test, feature = "vst3"))]
+    #[cfg(test)]
     pub(crate) fn last_update_micros_for_test(&self) -> u64 {
         self.last_update_micros.load(Ordering::Acquire)
     }
@@ -560,6 +560,7 @@ impl<'a> IncomingWaveformCapture<'a> {
 
     /// Create a capture target for a zero-sample block without rotating the
     /// writer. The final mapping is reconciled after parameter application.
+    #[cfg(feature = "vst3")]
     pub(crate) fn new_for_zero_frame(
         buffer: &'a IncomingWaveformBuffer,
         writer: &'a mut IncomingWaveformWriter,

@@ -348,7 +348,9 @@ pub(crate) unsafe fn process_stereo_block_raw(
 mod tests {
     use super::*;
     use crate::curve::CURVE_TABLE_LEN;
-    use crate::incoming_waveform::{IncomingWaveformBuffer, IncomingWaveformWriter};
+    #[cfg(feature = "vst3")]
+    use crate::incoming_waveform::IncomingWaveformBuffer;
+    use crate::incoming_waveform::IncomingWaveformWriter;
     use crate::params::{
         PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
         PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID,
