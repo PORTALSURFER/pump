@@ -85,6 +85,9 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 - `Phase Offset`: shifts where the curve starts in the sync cycle. In Sync,
   raw Offset 0 is the host-cycle/transport origin.
 - `Output Gain`: level trim after ducking.
+- `Delay`: in Sync mode, holds the cycle-start phase for an integer number of
+  quarter-note beats (`0` to `32`) before the selected division runs. The
+  control is hidden in Free mode, where the same slot shows `Rate`.
 - The curve always follows the host beat/transport timeline.
 
 Depth and Floor control the curve's wet gain mapping. Depth ranges from `0` to
@@ -115,8 +118,10 @@ mapping and compatibility behavior.
 Pump has two timing sources:
 
 - **Sync** follows the host beat timeline and the selected Sync division (for
-  example, 1/4 or 1/8). Host tempo and song position therefore determine the
-  modulation phase when that timeline is available.
+  example, 1/4 or 1/8). A nonzero Delay extends each period by holding phase
+  zero for the requested number of quarter-note beats before the division
+  cycle runs. Host tempo and song position therefore determine the modulation
+  phase when that timeline is available.
 - **Free** runs continuously at the selected Free Rate in hertz. It is
   independent of host tempo and song position, so it remains continuous even
   when the host transport is stopped or does not provide beat-position data.

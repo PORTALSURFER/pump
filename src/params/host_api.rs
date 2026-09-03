@@ -4,6 +4,7 @@ pub const MAX_SYNC_DIVISION: f32 = (SYNC_DIVISIONS.len() - 1) as f32;
 
 const AUTO: u32 = ParamInfoFlags::IS_AUTOMATABLE.bits();
 const AUTO_ENUM: u32 = AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags::IS_ENUM.bits();
+const AUTO_STEPPED: u32 = AUTO | ParamInfoFlags::IS_STEPPED.bits();
 const AUTO_BYPASS: u32 =
     AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags::IS_BYPASS.bits();
 
@@ -77,7 +78,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 12] = [
+const PARAM_DEFS: [ParamDef; 13] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -258,6 +259,21 @@ const PARAM_DEFS: [ParamDef; 12] = [
         default_value: DEFAULT_FREE_RATE_HZ as f64,
         flags: AUTO,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 16,
+        id: PARAM_DELAY_ID,
+        name: "Delay",
+        #[cfg(feature = "vst3")]
+        short_name: "Delay",
+        #[cfg(feature = "vst3")]
+        units: "beats",
+        module: "Pump",
+        min_value: MIN_DELAY_BEATS as f64,
+        max_value: MAX_DELAY_BEATS as f64,
+        default_value: DEFAULT_DELAY_BEATS as f64,
+        flags: AUTO_STEPPED,
+    },
 ];
 
 fn param_def_for_id(param_id: ClapId) -> Option<ParamDef> {
@@ -329,7 +345,11 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
     };
     if matches!(
         param_id,
-        PARAM_SYNC_DIVISION_ID | PARAM_BYPASS_ID | PARAM_SOUND_ID | PARAM_TIMING_MODE_ID
+        PARAM_SYNC_DIVISION_ID
+            | PARAM_BYPASS_ID
+            | PARAM_SOUND_ID
+            | PARAM_TIMING_MODE_ID
+            | PARAM_DELAY_ID
     ) {
         return Some(plain.round());
     }
@@ -394,6 +414,7 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_SOUND_ID => Some(params.active_sound().index() as f64),
         PARAM_TIMING_MODE_ID => Some(params.timing_mode() as f64),
         PARAM_FREE_RATE_ID => Some(params.free_rate_hz() as f64),
+        PARAM_DELAY_ID => Some(params.delay_beats() as f64),
         _ => None,
     }
 }
@@ -425,6 +446,7 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         }
         PARAM_TIMING_MODE_ID => params.set_timing_mode(value as f32),
         PARAM_FREE_RATE_ID => params.set_free_rate_hz(value as f32),
+        PARAM_DELAY_ID => params.set_delay_beats(value as f32),
         _ => return false,
     }
     true
@@ -543,6 +565,7 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
             .get(clamp_timing_mode(value as f32))
             .map(|label| (*label).to_string()),
         PARAM_FREE_RATE_ID => Some(format_free_rate(value as f32)),
+        PARAM_DELAY_ID => Some(format_delay_beats(value)),
         _ => None,
     }
 }
@@ -622,6 +645,7 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
                     .map(|value| clamp_timing_mode(value as f32) as f64)
             }),
         PARAM_FREE_RATE_ID => parse_free_rate(raw).map(|value| value as f64),
+        PARAM_DELAY_ID => parse_delay_beats(raw),
         _ => None,
     }
 }
@@ -665,6 +689,34 @@ fn parse_free_rate(raw: &str) -> Option<f32> {
         number * multiplier
     };
     Some(clamp_free_rate_hz(value))
+}
+
+fn format_delay_beats(value: f64) -> String {
+    let beats = if value.is_finite() {
+        value
+            .round()
+            .clamp(MIN_DELAY_BEATS as f64, MAX_DELAY_BEATS as f64) as usize
+    } else {
+        DEFAULT_DELAY_BEATS
+    };
+    match beats {
+        1 => "1 beat".to_string(),
+        beats => format!("{beats} beats"),
+    }
+}
+
+fn parse_delay_beats(raw: &str) -> Option<f64> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    let number = normalized
+        .strip_suffix("beats")
+        .or_else(|| normalized.strip_suffix("beat"))
+        .unwrap_or(normalized.as_str())
+        .trim();
+    let value = number.parse::<f64>().ok()?;
+    if !value.is_finite() || value.fract() != 0.0 {
+        return None;
+    }
+    Some(value.clamp(MIN_DELAY_BEATS as f64, MAX_DELAY_BEATS as f64))
 }
 
 /// Apply one host automation event value into shared parameter state.

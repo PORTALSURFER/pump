@@ -149,6 +149,7 @@ impl PumpVst3Processor {
         );
         waveform_capture.reconcile_cycle_mapping(
             settings.beats_per_cycle,
+            settings.delay_beats,
             settings.swing,
             settings.timing_mode,
         );

@@ -51,6 +51,7 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     }
     payload.extend_from_slice(&(params.timing_mode() as u32).to_le_bytes());
     payload.extend_from_slice(&params.free_rate_hz().to_le_bytes());
+    payload.extend_from_slice(&(params.delay_beats() as u32).to_le_bytes());
 
     payload
 }
@@ -130,6 +131,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 swing: DEFAULT_SWING,
                 timing_mode: DEFAULT_TIMING_MODE,
                 free_rate_hz: DEFAULT_FREE_RATE_HZ,
+                delay_beats: DEFAULT_DELAY_BEATS,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -233,6 +235,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
             swing,
             timing_mode: DEFAULT_TIMING_MODE,
             free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            delay_beats: DEFAULT_DELAY_BEATS,
             editable_curve: editable_curve.clone(),
             quick_slots: preset_bank
                 .presets
@@ -263,6 +266,14 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     } else {
         (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
     };
+    let delay_beats = if version >= 17 {
+        let Some(delay_beats) = read_u32(&mut cursor) else {
+            return Err("invalid delay field");
+        };
+        clamp_delay_beats(delay_beats as f32)
+    } else {
+        DEFAULT_DELAY_BEATS
+    };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -280,6 +291,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_swing(swing);
     params.set_timing_mode(timing_mode as f32);
     params.set_free_rate_hz(free_rate_hz);
+    params.set_delay_beats(delay_beats as f32);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
     params.set_sound_states_with_references_without_persistence(
@@ -309,6 +321,7 @@ fn encode_sound_state(payload: &mut Vec<u8>, state: &PumpSoundState) {
     }
     payload.extend_from_slice(&(state.timing_mode as u32).to_le_bytes());
     payload.extend_from_slice(&state.free_rate_hz.to_le_bytes());
+    payload.extend_from_slice(&(state.delay_beats as u32).to_le_bytes());
 }
 
 fn decode_sound_state(
@@ -381,6 +394,14 @@ fn decode_sound_state(
     } else {
         (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
     };
+    let delay_beats = if version >= 17 {
+        let Some(delay_beats) = read_u32(cursor) else {
+            return Err("invalid A/B delay field");
+        };
+        clamp_delay_beats(delay_beats as f32)
+    } else {
+        DEFAULT_DELAY_BEATS
+    };
     if ![
         mix,
         depth_db,
@@ -408,6 +429,7 @@ fn decode_sound_state(
         swing,
         timing_mode,
         free_rate_hz,
+        delay_beats,
         editable_curve: editable_curve.normalized(),
         quick_slots,
     })
@@ -436,6 +458,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.swing.to_le_bytes());
     payload.extend_from_slice(&(preset.timing_mode as u32).to_le_bytes());
     payload.extend_from_slice(&preset.free_rate_hz.to_le_bytes());
+    payload.extend_from_slice(&(clamp_delay_beats(preset.delay_beats as f32) as u32).to_le_bytes());
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -640,6 +663,12 @@ fn decode_preset_bank(
         } else {
             (DEFAULT_TIMING_MODE, DEFAULT_FREE_RATE_HZ)
         };
+        let delay_beats = if version >= 17 {
+            let delay_beats = read_u32(cursor).ok_or("invalid preset delay")?;
+            clamp_delay_beats(delay_beats as f32)
+        } else {
+            DEFAULT_DELAY_BEATS
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -657,6 +686,7 @@ fn decode_preset_bank(
             swing,
             timing_mode,
             free_rate_hz,
+            delay_beats,
             editable_curve: editable_curve.normalized(),
             quick_slots,
         });
@@ -749,6 +779,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
         swing: DEFAULT_SWING,
         timing_mode: DEFAULT_TIMING_MODE,
         free_rate_hz: DEFAULT_FREE_RATE_HZ,
+        delay_beats: DEFAULT_DELAY_BEATS,
         editable_curve: params.editable_curve_snapshot(),
         quick_slots: seeded_quick_shape_slots(),
     };
@@ -771,6 +802,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             swing: DEFAULT_SWING,
             timing_mode: DEFAULT_TIMING_MODE,
             free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            delay_beats: DEFAULT_DELAY_BEATS,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],

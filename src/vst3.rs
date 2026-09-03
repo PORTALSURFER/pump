@@ -39,7 +39,8 @@ const STATE_VERSION: u32 = 1;
 // The envelope version historically tracked the serialized payload version in
 // some VST3 hosts. Keep accepting that full migration range while retaining
 // the current envelope version for newly written state.
-const ACCEPTED_STATE_VERSIONS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const ACCEPTED_STATE_VERSIONS: &[u32] =
+    &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 
 mod param_bridge;
 mod processor;

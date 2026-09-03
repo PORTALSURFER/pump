@@ -9,10 +9,10 @@ use super::{
 use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
     sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
-    SavePresetOutcome, DEFAULT_FLOOR_DB, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DEPTH_ID,
-    PARAM_FLOOR_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID,
-    PARAM_SMOOTH_ID, PARAM_SWING_ID, PROCESSING_MODE_CLASSIC, PROCESSING_MODE_PUNCH,
-    TRIGGER_MODE_HOST, TRIGGER_MODE_SIDECHAIN,
+    SavePresetOutcome, DEFAULT_FLOOR_DB, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DELAY_ID,
+    PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_MODE_ID,
+    PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID, PARAM_SWING_ID, PROCESSING_MODE_CLASSIC,
+    PROCESSING_MODE_PUNCH, TRIGGER_MODE_HOST, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::curve::{
     cyclically_offset_editable_curve, editable_curve_to_table, sample_editable_curve, CurveNode,
@@ -72,7 +72,7 @@ fn sync_division_clamping_is_bounded() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 12);
+    assert_eq!(super::param_count(), 13);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -182,7 +182,7 @@ fn free_rate_clap_and_vst3_normalized_mapping_agree() {
 #[test]
 fn free_timing_parameters_use_stable_ids_and_lossless_units() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 12);
+    assert_eq!(super::param_count(), 13);
     assert_eq!(
         super::get_param_value(&params, super::PARAM_TIMING_MODE_ID),
         Some(0.0)
@@ -222,6 +222,48 @@ fn free_timing_parameters_use_stable_ids_and_lossless_units() {
     decode_state_payload(&restored, &payload).expect("free timing state should decode");
     assert_eq!(restored.timing_mode(), super::TIMING_MODE_FREE);
     assert!((restored.free_rate_hz() - 1234.5).abs() < 1.0e-4);
+}
+
+#[test]
+fn delay_parameter_has_integer_beats_text_default_and_automation_contract() {
+    let params = PumpParams::new();
+    assert_eq!(
+        super::get_param_value(&params, PARAM_DELAY_ID),
+        Some(super::DEFAULT_DELAY_BEATS as f64)
+    );
+    let flags = super::param_flags_for_index((super::param_count() - 1) as usize)
+        .expect("delay metadata should exist");
+    assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
+    assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
+    assert!(!flags.contains(ParamInfoFlags::IS_ENUM));
+
+    for (value, text) in [
+        (0.0, "0 beats"),
+        (1.0, "1 beat"),
+        (2.0, "2 beats"),
+        (super::MAX_DELAY_BEATS as f64, "32 beats"),
+    ] {
+        assert_eq!(
+            super::format_plain_value_text(PARAM_DELAY_ID, value),
+            Some(text.into())
+        );
+        assert_eq!(
+            super::parse_plain_value_text(PARAM_DELAY_ID, text),
+            Some(value)
+        );
+    }
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_DELAY_ID, "1.5 beats"),
+        None
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_DELAY_ID, "33 beats"),
+        Some(super::MAX_DELAY_BEATS as f64)
+    );
+
+    super::apply_param_event(&params, PARAM_DELAY_ID, 12.0);
+    assert_eq!(params.delay_beats(), 12);
+    assert_eq!(super::get_param_value(&params, PARAM_DELAY_ID), Some(12.0));
 }
 
 #[test]
@@ -421,7 +463,7 @@ fn editor_closed_host_switch_preserves_active_side_curve_during_scalar_save() {
 
 #[test]
 fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
-    assert_eq!(super::param_count(), 12);
+    assert_eq!(super::param_count(), 13);
     let flags = super::param_flags_for_index(7).expect("bypass metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -447,6 +489,7 @@ fn state_roundtrip_preserves_values() {
     params.set_timing_mode(super::TIMING_MODE_FREE as f32);
     params.set_free_rate_hz(37.5);
     params.set_sync_division(6.0);
+    params.set_delay_beats(7.0);
     params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
     params.set_mode(PROCESSING_MODE_PUNCH as f32);
     params.set_bypass(1.0);
@@ -483,11 +526,13 @@ fn state_roundtrip_preserves_values() {
     assert_eq!(restored.timing_mode(), super::TIMING_MODE_FREE);
     assert!((restored.free_rate_hz() - 37.5).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 6);
+    assert_eq!(restored.delay_beats(), 7);
     assert_eq!(restored.trigger_mode(), TRIGGER_MODE_HOST);
     assert_eq!(restored.mode(), PROCESSING_MODE_CLASSIC);
     assert!(restored.bypassed());
     assert!((restored.preset_bank_snapshot().presets[0].smooth - 0.67).abs() < 1.0e-6);
     assert!((restored.preset_bank_snapshot().presets[0].swing - 0.42).abs() < 1.0e-6);
+    assert_eq!(restored.preset_bank_snapshot().presets[0].delay_beats, 7);
     assert_eq!(
         restored.preset_bank_snapshot().presets[0].mode,
         PROCESSING_MODE_CLASSIC
@@ -1045,6 +1090,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     swing: super::DEFAULT_SWING,
                     timing_mode: super::DEFAULT_TIMING_MODE,
                     free_rate_hz: super::DEFAULT_FREE_RATE_HZ,
+                    delay_beats: super::DEFAULT_DELAY_BEATS,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1065,6 +1111,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     swing: super::DEFAULT_SWING,
                     timing_mode: super::DEFAULT_TIMING_MODE,
                     free_rate_hz: super::DEFAULT_FREE_RATE_HZ,
+                    delay_beats: super::DEFAULT_DELAY_BEATS,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1210,6 +1257,7 @@ fn vst3_mapping_resolves_to_shared_clap_ids() {
         clap_id_from_vst3_param_id(PARAM_FREE_RATE_NUM),
         Some(PARAM_FREE_RATE_ID)
     );
+    assert_eq!(clap_id_from_vst3_param_id(16), Some(PARAM_DELAY_ID));
     assert_eq!(clap_id_from_vst3_param_id(999), None);
 }
 
@@ -1257,6 +1305,18 @@ fn vst3_info_and_text_conversions_share_param_rules() {
         (super::plain_from_normalized_value(PARAM_FREE_RATE_ID, normalized).unwrap() - 2.0).abs()
             < 1.0e-6
     );
+
+    let delay_info = vst3_param_info_for_index(12).expect("delay info should exist");
+    assert_eq!(delay_info.id, 16);
+    assert_eq!(delay_info.title, "Delay");
+    assert_eq!(delay_info.units, "beats");
+    assert_eq!(delay_info.step_count, super::MAX_DELAY_BEATS as i32);
+    assert_eq!(delay_info.default_normalized, 0.0);
+    assert_eq!(
+        format_plain_value_text(PARAM_DELAY_ID, 1.0),
+        Some("1 beat".into())
+    );
+    assert_eq!(parse_plain_value_text(PARAM_DELAY_ID, "2 beats"), Some(2.0));
 
     let mix_text = format_plain_value_text(PARAM_MIX_ID, 0.5).expect("mix text");
     assert_eq!(mix_text, "50%");

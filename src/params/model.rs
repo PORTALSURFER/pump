@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 16;
+pub(crate) const STATE_VERSION: u32 = 17;
 
 /// The two independently editable Pump sound sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +65,8 @@ pub struct PumpSoundState {
     pub timing_mode: usize,
     /// Canonical free-running timing rate in hertz.
     pub free_rate_hz: f32,
+    /// Number of quarter-note beats to hold at the cycle start in Sync mode.
+    pub delay_beats: usize,
     pub editable_curve: EditableCurve,
     pub quick_slots: Vec<QuickShapeSlot>,
 }
@@ -84,6 +86,7 @@ impl PumpSoundState {
             swing: DEFAULT_SWING,
             timing_mode: DEFAULT_TIMING_MODE,
             free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            delay_beats: DEFAULT_DELAY_BEATS,
             editable_curve: default_editable_curve(),
             quick_slots: seeded_quick_shape_slots(),
         }
@@ -120,6 +123,8 @@ pub const PARAM_SOUND_NUM: u32 = 12;
 pub const PARAM_TIMING_MODE_NUM: u32 = 13;
 /// Host-visible numeric parameter id for the canonical free timing rate.
 pub const PARAM_FREE_RATE_NUM: u32 = 14;
+/// Host-visible numeric parameter id for the synchronized cycle-start delay.
+pub const PARAM_DELAY_NUM: u32 = 15;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
@@ -151,6 +156,8 @@ pub const PARAM_SOUND_ID: ClapId = ClapId::new(PARAM_SOUND_NUM);
 pub const PARAM_TIMING_MODE_ID: ClapId = ClapId::new(PARAM_TIMING_MODE_NUM);
 /// Parameter id for the canonical free timing rate in hertz.
 pub const PARAM_FREE_RATE_ID: ClapId = ClapId::new(PARAM_FREE_RATE_NUM);
+/// Parameter id for the synchronized cycle-start delay.
+pub const PARAM_DELAY_ID: ClapId = ClapId::new(PARAM_DELAY_NUM);
 
 /// Plain host value for active processing.
 pub const BYPASS_ACTIVE_VALUE: f32 = 0.0;
@@ -222,6 +229,12 @@ pub const MIN_FREE_RATE_HZ: f32 = 0.05;
 pub const MAX_FREE_RATE_HZ: f32 = 20_000.0;
 /// Default free-running rate in hertz.
 pub const DEFAULT_FREE_RATE_HZ: f32 = 2.0;
+/// Minimum synchronized cycle-start delay in quarter-note beats.
+pub const MIN_DELAY_BEATS: usize = 0;
+/// Maximum synchronized cycle-start delay in quarter-note beats.
+pub const MAX_DELAY_BEATS: usize = 32;
+/// Default synchronized cycle-start delay in quarter-note beats.
+pub const DEFAULT_DELAY_BEATS: usize = 0;
 /// Default sync division index (`1/4`).
 pub const DEFAULT_SYNC_DIVISION_INDEX: usize = 4;
 /// Maximum number of stored user presets.
@@ -277,6 +290,17 @@ pub fn clamp_free_rate_hz(value: f32) -> f32 {
         value.clamp(MIN_FREE_RATE_HZ, MAX_FREE_RATE_HZ)
     } else {
         DEFAULT_FREE_RATE_HZ
+    }
+}
+
+/// Clamp a synchronized cycle-start delay to its supported integer range.
+pub fn clamp_delay_beats(value: f32) -> usize {
+    if value.is_finite() {
+        value
+            .round()
+            .clamp(MIN_DELAY_BEATS as f32, MAX_DELAY_BEATS as f32) as usize
+    } else {
+        DEFAULT_DELAY_BEATS
     }
 }
 
@@ -414,6 +438,8 @@ pub struct PumpPreset {
     pub timing_mode: usize,
     /// Canonical free-running timing rate in hertz.
     pub free_rate_hz: f32,
+    /// Number of quarter-note beats to hold at the cycle start in Sync mode.
+    pub delay_beats: usize,
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
     /// Overwriteable quick-slot curves shown below the editor for this preset.
@@ -484,6 +510,7 @@ impl PumpPresetBank {
                 swing: DEFAULT_SWING,
                 timing_mode: DEFAULT_TIMING_MODE,
                 free_rate_hz: DEFAULT_FREE_RATE_HZ,
+                delay_beats: DEFAULT_DELAY_BEATS,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -553,6 +580,7 @@ pub struct PumpParams {
     pub(super) swing: AtomicF32,
     pub(super) timing_mode: AtomicU32,
     pub(super) free_rate_hz: AtomicF32,
+    pub(super) delay_beats: AtomicU32,
     pub(super) bypass: AtomicBool,
     pub(super) bypass_revision: AtomicU32,
     pub(super) bypass_last_automation_micros: AtomicU64,
@@ -576,6 +604,7 @@ pub struct PumpParams {
     pub(super) realtime_swing: [AtomicF32; 2],
     pub(super) realtime_timing_mode: [AtomicU32; 2],
     pub(super) realtime_free_rate_hz: [AtomicF32; 2],
+    pub(super) realtime_delay_beats: [AtomicU32; 2],
     pub(super) realtime_curve: [[AtomicF32; CURVE_TABLE_LEN]; 2],
     pub(super) sound_states: RwLock<[PumpSoundState; 2]>,
     /// Durable per-side reference states used for A/B dirty indicators.
