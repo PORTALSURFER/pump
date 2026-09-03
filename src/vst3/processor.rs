@@ -198,6 +198,9 @@ impl IComponentTrait for PumpVst3Processor {
         if state == 0 {
             self.runtime_handoff.reset_input_presentation_latency();
         }
+        // Supported VST3 hosts serialize process with this lifecycle callback, so the
+        // immediate mark is safe; the audio-owned reset remains deferred via RuntimeHandoff.
+        // No extra RT lock or epoch machinery is intended here.
         self.shared
             .status
             .incoming_waveform_buffer()
@@ -303,6 +306,9 @@ impl IAudioProcessorTrait for PumpVst3Processor {
     }
 
     unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+        // Supported VST3 hosts serialize process with this lifecycle callback, so the
+        // immediate mark is safe; the audio-owned reset remains deferred via RuntimeHandoff.
+        // No extra RT lock or epoch machinery is intended here.
         self.shared
             .status
             .incoming_waveform_buffer()
