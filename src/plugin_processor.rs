@@ -85,11 +85,7 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
         self.shared.status.update_transport(
             gui_phase,
-            gui_transport_telemetry(
-                transport,
-                settings.beats_per_cycle,
-                self.shared.status.beat_phase(),
-            ),
+            gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
         );
 
         let (source_present, source_processed) = audio
@@ -316,17 +312,12 @@ impl PumpAudioProcessor<'_> {
                 &mut self.waveform_writer,
             )),
         );
-        let last_phase = telemetry.map(|telemetry| telemetry.phase).unwrap_or(0.0);
-
-        self.shared.status.update_transport(
-            last_phase,
-            gui_transport_telemetry(
-                transport,
-                settings.beats_per_cycle,
-                self.shared.status.beat_phase(),
-            ),
-        );
         if let Some(telemetry) = telemetry {
+            self.shared.status.update_transport(
+                telemetry.phase,
+                gui_transport_telemetry(transport, *settings, self.shared.status.beat_phase()),
+            );
+            self.shared.status.publish_dsp_telemetry(telemetry);
             self.shared
                 .status
                 .publish_gain_reduction(telemetry.reduction_gain, telemetry.input_active);

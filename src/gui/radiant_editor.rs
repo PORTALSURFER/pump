@@ -1288,7 +1288,7 @@ struct CanonicalSeamDrag {
 
 fn seam_raw(phase_offset: f32) -> f32 {
     if phase_offset.is_finite() {
-        (-phase_offset).rem_euclid(1.0)
+        crate::dsp::authored_curve_phase(0.0, phase_offset)
     } else {
         0.0
     }
@@ -1668,7 +1668,14 @@ impl ActiveCurvePaint {
     }
 
     fn finished_curve(&self) -> PaintCommitOutcome {
-        reconstruct_paint(&self.origin_curve, self.phase_offset, self.recorder.runs())
+        // curve_paint reconstructs authored coordinates from its legacy
+        // display-minus-offset convention. Convert the positive audio
+        // offset to that mapper's equivalent display coordinate here.
+        reconstruct_paint(
+            &self.origin_curve,
+            (-self.phase_offset).rem_euclid(1.0),
+            self.recorder.runs(),
+        )
     }
 
     #[cfg(test)]
@@ -2390,8 +2397,13 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let free_timing = params.timing_mode() == TIMING_MODE_FREE;
     let free_rate = params.free_rate_hz();
     let waveform_live_mode = state.status.waveform_live_mode();
+    let dsp_snapshot = state.status.dsp_snapshot();
+    let applied_phase_offset = dsp_snapshot
+        .map(|snapshot| snapshot.applied_phase_offset)
+        .unwrap_or_else(|| params.phase_offset());
+    let effective_phase = state.status.phase_from_dsp_snapshot(dsp_snapshot);
     let playhead_phase = (state.status.has_host_beats_timeline() || state.status.is_playing())
-        .then_some(state.status.phase());
+        .then_some(effective_phase);
     let active_sound = params.active_sound();
     let timing_options: Vec<_> = if free_timing {
         FreeRateUnit::ALL
@@ -2577,6 +2589,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 .with_swing(swing)
                 .with_smooth(smooth)
                 .with_phase_offset(state.params.phase_offset())
+                .with_applied_phase_offset(applied_phase_offset)
                 .with_gain_mapping(depth, floor)
                 .with_playhead_phase(playhead_phase),
                 RadiantEditorMessage::Curve,
@@ -2614,7 +2627,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             spacer().fill_width(),
             custom_widget_mapped(
                 BypassControlWidget::new(params.bypassed(), params.bypass_automation_recent())
-                    .with_pulse_phase(state.status.is_playing().then_some(state.status.phase())),
+                    .with_pulse_phase(state.status.is_playing().then_some(effective_phase)),
                 move |_: ButtonMessage| RadiantEditorMessage::ToggleBypass,
             )
             .width(BYPASS_CONTROL_WIDTH)
@@ -5374,6 +5387,7 @@ struct CurvePreviewWidget {
     swing: f32,
     smooth: f32,
     phase_offset: f32,
+    applied_phase_offset: f32,
     depth_db: f32,
     floor_db: f32,
 }
@@ -5420,6 +5434,7 @@ impl CurvePreviewWidget {
             swing: crate::params::DEFAULT_SWING,
             smooth: crate::params::DEFAULT_SMOOTH,
             phase_offset: crate::params::DEFAULT_PHASE_OFFSET,
+            applied_phase_offset: crate::params::DEFAULT_PHASE_OFFSET,
             depth_db: crate::params::DEFAULT_DEPTH_DB,
             floor_db: crate::params::DEFAULT_FLOOR_DB,
         }
@@ -5499,7 +5514,14 @@ impl CurvePreviewWidget {
     }
 
     fn with_phase_offset(mut self, phase_offset: f32) -> Self {
-        self.phase_offset = phase_offset.rem_euclid(1.0);
+        let phase_offset = phase_offset.rem_euclid(1.0);
+        self.phase_offset = phase_offset;
+        self.applied_phase_offset = phase_offset;
+        self
+    }
+
+    fn with_applied_phase_offset(mut self, phase_offset: f32) -> Self {
+        self.applied_phase_offset = phase_offset.rem_euclid(1.0);
         self
     }
 
@@ -5569,7 +5591,7 @@ impl CurvePreviewWidget {
 
     fn raw_node_from_display_point(&self, bounds: Rect, position: Point) -> CurveNode {
         let display_node = Self::node_from_point(bounds, position);
-        let mut raw_x = (display_node.x - self.phase_offset).rem_euclid(1.0);
+        let mut raw_x = crate::dsp::authored_curve_phase(display_node.x, self.phase_offset);
         let at_viewport_seam = display_node.x <= CURVE_DISPLAY_SEAM_EPSILON
             || display_node.x >= 1.0 - CURVE_DISPLAY_SEAM_EPSILON;
         if at_viewport_seam
@@ -5580,15 +5602,16 @@ impl CurvePreviewWidget {
         {
             raw_x = seam_raw(self.phase_offset);
         }
+        let offset_seam = (1.0 - self.phase_offset).rem_euclid(1.0);
         let at_offset_seam = self.phase_offset > CURVE_DISPLAY_SEAM_EPSILON
-            && (display_node.x - self.phase_offset).abs() <= CURVE_DISPLAY_SEAM_EPSILON;
+            && (display_node.x - offset_seam).abs() <= CURVE_DISPLAY_SEAM_EPSILON;
         if at_offset_seam && self.active_node.is_some() {
             let current_display_x = self
                 .active_node
                 .and_then(|index| self.curve.nodes.get(index).copied())
                 .map(|node| Self::display_phase(node.x, self.phase_offset))
-                .unwrap_or(self.phase_offset);
-            raw_x = if current_display_x > self.phase_offset {
+                .unwrap_or(offset_seam);
+            raw_x = if current_display_x > offset_seam {
                 1.0 - CURVE_DISPLAY_SEAM_EPSILON
             } else {
                 CURVE_DISPLAY_SEAM_EPSILON
@@ -5654,7 +5677,9 @@ impl CurvePreviewWidget {
     }
 
     fn display_phase(raw_x: f32, phase_offset: f32) -> f32 {
-        let shifted = raw_x + phase_offset;
+        // Positive offsets are added to effective phase when sampling the
+        // authored curve, so authored curve features move left in the view.
+        let shifted = raw_x - phase_offset;
         let wrapped = shifted.rem_euclid(1.0);
         if shifted > CURVE_DISPLAY_SEAM_EPSILON && wrapped <= CURVE_DISPLAY_SEAM_EPSILON {
             1.0
@@ -5713,8 +5738,13 @@ impl CurvePreviewWidget {
         Self::curve_point(bounds, self.display_node(node))
     }
 
-    fn sample_display_curve(&self, phase: f32) -> f32 {
-        sample_editable_curve(&self.curve, phase - self.phase_offset)
+    fn sample_display_curve(&self, effective_phase: f32) -> f32 {
+        self.sample_curve_with_phase_offset(effective_phase, self.phase_offset)
+    }
+
+    fn sample_curve_with_phase_offset(&self, effective_phase: f32, phase_offset: f32) -> f32 {
+        let authored_phase = crate::dsp::authored_curve_phase(effective_phase, phase_offset);
+        sample_editable_curve(&self.curve, authored_phase)
     }
 
     fn offset_pointer_x(bounds: Rect, position: Point) -> f32 {
@@ -5996,7 +6026,7 @@ impl CurvePreviewWidget {
             width: 1.0,
         }));
         let offset_x = curve_bounds.min.x
-            + self.phase_offset.clamp(0.0, 1.0) * (curve_bounds.width().max(1.0) - 1.0);
+            + Self::display_phase(0.0, self.phase_offset) * (curve_bounds.width().max(1.0) - 1.0);
         primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
             widget_id: self.common.id,
             points: Arc::from([
@@ -6266,7 +6296,7 @@ impl CurvePreviewWidget {
             std::array::from_fn(|index| {
                 let viewport_phase = index as f32 / (waveform.len() - 1) as f32;
                 let gain = crate::dsp::curve_value_to_gain(
-                    self.sample_display_curve(viewport_phase),
+                    self.sample_curve_with_phase_offset(viewport_phase, self.applied_phase_offset),
                     self.depth_db,
                     self.floor_db,
                 );
@@ -6435,12 +6465,15 @@ impl CurvePreviewWidget {
     fn sample_smoothed_curve_points(&self, bounds: Rect) -> Vec<Point> {
         (0..=CURVE_SAMPLE_COUNT)
             .map(|step| {
-                let phase = step as f32 / CURVE_SAMPLE_COUNT as f32;
+                let effective_phase = step as f32 / CURVE_SAMPLE_COUNT as f32;
                 Self::curve_point(
                     bounds,
                     CurveNode {
-                        x: phase,
-                        y: self.sample_smoothed_curve(phase - self.phase_offset),
+                        x: effective_phase,
+                        y: self.sample_smoothed_curve(crate::dsp::authored_curve_phase(
+                            effective_phase,
+                            self.phase_offset,
+                        )),
                     },
                 )
             })
@@ -7179,7 +7212,8 @@ struct CurveHoverState {
 mod tests {
     use super::super::curve_paint::{BoundaryContact, BoundaryEdge, EdgeParameter};
     use super::*;
-    use crate::curve::sample_curve_segment;
+    use crate::curve::{editable_curve_to_table, sample_curve_segment};
+    use crate::dsp::{DspSettings, PumpEngine};
     #[cfg(feature = "vst3")]
     use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
@@ -7191,6 +7225,7 @@ mod tests {
     use toybox::clack_plugin::events::spaces::CoreEventSpace;
     use toybox::clack_plugin::events::Event;
     use toybox::clap::automation::{AutomationDropPolicy, AutomationQueueConfig};
+    use toybox::dsp::TransportState;
 
     const CURVE_PAINT_ASSERT_EPSILON: f32 = 1.0e-4;
 
@@ -7338,7 +7373,10 @@ mod tests {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.8 },
                 CurveNode { x: 0.2, y: 0.2 },
-                CurveNode { x: 0.75, y: 0.4 },
+                CurveNode {
+                    x: seam_raw(0.25),
+                    y: 0.4,
+                },
                 CurveNode { x: 0.9, y: 0.6 },
                 CurveNode { x: 1.0, y: 0.8 },
             ],
@@ -7364,7 +7402,10 @@ mod tests {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.8 },
                 CurveNode { x: 0.2, y: 0.2 },
-                CurveNode { x: 0.75, y: 0.4 },
+                CurveNode {
+                    x: seam_raw(0.25),
+                    y: 0.4,
+                },
                 CurveNode {
                     x: edge_competitor_raw_x,
                     y: 0.3,
@@ -7387,7 +7428,7 @@ mod tests {
     fn assert_marquee_selected_single_source_takes_over_occupied_edge(edge_x: f32) {
         let phase_offset = 0.25;
         let threshold = test_curve_push_through_threshold_x();
-        let edge_competitor_raw_x = if edge_x <= 0.0 { 0.77 } else { 0.73 };
+        let edge_competitor_raw_x = if edge_x <= 0.0 { 0.27 } else { 0.23 };
         let curve = occupied_interior_seam_curve(edge_competitor_raw_x);
         assert!(matches!(
             canonical_seam_owner(&curve, phase_offset),
@@ -7530,7 +7571,7 @@ mod tests {
 
     #[test]
     fn near_interior_seam_nodes_are_ordinary_and_horizontally_movable() {
-        for raw_x in [0.7495, 0.7505] {
+        for raw_x in [0.2495, 0.2505] {
             let curve = interior_seam_curve_with_raw_x(raw_x);
             assert_eq!(canonical_seam_owner(&curve, 0.25), None);
 
@@ -7631,7 +7672,7 @@ mod tests {
             );
 
             let dragged = params.editable_curve_snapshot();
-            assert_eq!(dragged.nodes[2].x, 0.75);
+            assert_eq!(dragged.nodes[2].x, seam_raw(0.25));
             assert!((dragged.nodes[2].y - 0.65).abs() < 1.0e-6);
         }
     }
@@ -7670,7 +7711,7 @@ mod tests {
 
         let dragged = params.editable_curve_snapshot();
         assert_eq!(dragged.nodes.len(), curve.nodes.len());
-        assert!((dragged.nodes[2].x - 0.75).abs() < 1.0e-6);
+        assert!((dragged.nodes[2].x - seam_raw(0.25)).abs() < 1.0e-6);
         assert!((dragged.nodes[2].y - 0.65).abs() < 1.0e-6);
         assert_eq!(dragged.nodes[0], curve.nodes[0]);
         assert_eq!(dragged.nodes[1], curve.nodes[1]);
@@ -7691,7 +7732,7 @@ mod tests {
     #[test]
     fn marquee_selected_single_source_clears_selection_on_direct_edge_release() {
         let phase_offset = 0.25;
-        let curve = occupied_interior_seam_curve(0.77);
+        let curve = occupied_interior_seam_curve(0.27);
         let params = Arc::new(PumpParams::new());
         params.set_editable_curve(&curve);
         params.set_phase_offset(phase_offset);
@@ -7792,7 +7833,7 @@ mod tests {
     #[test]
     fn edge_takeover_unsnaps_inside_edge_zone_restores_origin_and_resnaps_at_boundary() {
         let threshold = 1.0e-4;
-        let curve = interior_seam_curve_with_raw_x(0.7495);
+        let curve = interior_seam_curve_with_raw_x(0.2495);
         let phase_offset = 0.25;
         assert_eq!(canonical_seam_owner(&curve, phase_offset), None);
 
@@ -7823,7 +7864,7 @@ mod tests {
         );
 
         let taken_over = params.editable_curve_snapshot();
-        assert_eq!(taken_over.nodes[2].x, 0.75);
+        assert_eq!(taken_over.nodes[2].x, 0.25);
         assert_eq!(taken_over.nodes[2].x, seam_raw(phase_offset));
         assert_eq!(
             canonical_seam_owner(&taken_over, phase_offset),
@@ -7910,9 +7951,9 @@ mod tests {
         let curve = EditableCurve {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.8 },
-                CurveNode { x: 0.4, y: 0.2 },
-                CurveNode { x: 0.74, y: 0.3 },
-                CurveNode { x: 0.75, y: 0.5 },
+                CurveNode { x: 0.1, y: 0.2 },
+                CurveNode { x: 0.24, y: 0.3 },
+                CurveNode { x: 0.25, y: 0.5 },
                 CurveNode { x: 0.9, y: 0.6 },
                 CurveNode { x: 1.0, y: 0.8 },
             ],
@@ -7944,7 +7985,7 @@ mod tests {
             &mut state,
             CurvePreviewMessage::DragNode {
                 index: 1,
-                node: CurveNode { x: 0.75, y: 0.55 },
+                node: CurveNode { x: 0.25, y: 0.55 },
                 push_through_threshold_x: test_curve_push_through_threshold_x(),
             },
         );
@@ -7952,16 +7993,16 @@ mod tests {
         let taken_over = params.editable_curve_snapshot();
         assert_eq!(taken_over.nodes.len(), 4);
         assert_eq!(taken_over.nodes[0].x, 0.0);
-        assert!((taken_over.nodes[1].x - 0.75).abs() < 1.0e-6);
+        assert!((taken_over.nodes[1].x - 0.25).abs() < 1.0e-6);
         assert_eq!(taken_over.nodes[3].x, 1.0);
         assert!(!taken_over
             .nodes
             .iter()
-            .any(|node| (node.x - 0.4).abs() < 1.0e-6));
+            .any(|node| (node.x - 0.1).abs() < 1.0e-6));
         assert!(!taken_over
             .nodes
             .iter()
-            .any(|node| (node.x - 0.74).abs() < 1.0e-6));
+            .any(|node| (node.x - 0.24).abs() < 1.0e-6));
         assert_eq!(state.active_curve_node, Some(1));
         assert!((taken_over.segments[0].tension - 0.11).abs() < 1.0e-6);
         assert!((taken_over.segments[1].tension - 0.22).abs() < 1.0e-6);
@@ -8025,7 +8066,7 @@ mod tests {
             &mut state,
             CurvePreviewMessage::DragNode {
                 index: 1,
-                node: CurveNode { x: 0.75, y: 0.7 },
+                node: CurveNode { x: 0.25, y: 0.7 },
                 push_through_threshold_x: test_curve_push_through_threshold_x(),
             },
         );
@@ -8227,7 +8268,7 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let curve = legacy_edge_curve();
         params.set_editable_curve(&curve);
-        params.set_phase_offset(0.0001);
+        params.set_phase_offset(0.0);
         let origin = curve.nodes[2];
         let mut state = editor_state(Arc::clone(&params));
 
@@ -8267,7 +8308,7 @@ mod tests {
         let params = Arc::new(PumpParams::new());
         let curve = legacy_edge_curve();
         params.set_editable_curve(&curve);
-        params.set_phase_offset(0.0001);
+        params.set_phase_offset(0.0);
         let origin = curve.nodes[2];
         let mut state = editor_state(Arc::clone(&params));
         state.selected_curve_nodes = vec![0, 2];
@@ -12366,7 +12407,7 @@ mod tests {
                     .nodes
                     .iter()
                     .enumerate()
-                    .filter(|(_, node)| (node.x - 0.75).abs() <= CURVE_PAINT_ASSERT_EPSILON)
+                    .filter(|(_, node)| (node.x - 0.25).abs() <= CURVE_PAINT_ASSERT_EPSILON)
                     .collect::<Vec<_>>();
                 assert_eq!(seam_nodes.len(), 1);
                 let (seam_index, seam) = seam_nodes[0];
@@ -12504,13 +12545,7 @@ mod tests {
                         start_x * (1.0 - fraction)
                     };
                     let expected_y = start_y + (first_y - start_y) * fraction;
-                    let raw_x = if phase_offset <= CURVE_DISPLAY_SEAM_EPSILON {
-                        display_x
-                    } else if display_x < phase_offset {
-                        1.0 - phase_offset + display_x
-                    } else {
-                        display_x - phase_offset
-                    };
+                    let raw_x = (display_x + phase_offset).rem_euclid(1.0);
                     let actual_y = sample_editable_curve(&candidate, raw_x);
                     assert!(
                         (actual_y - expected_y).abs() <= 0.018 + CURVE_PAINT_ASSERT_EPSILON,
@@ -15938,7 +15973,7 @@ mod tests {
             bounds,
             CurveNode {
                 x: 0.5,
-                y: sample_editable_curve(&curve, 0.5 - phase_offset),
+                y: sample_editable_curve(&curve, 0.5 + phase_offset),
             },
         );
         let midpoint = points
@@ -16032,11 +16067,11 @@ mod tests {
     #[test]
     fn curve_preview_widget_crosses_the_active_offset_seam_without_locking() {
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let phase_offset = 0.25;
+        let phase_offset = 0.25_f32;
         let seam_position = CurvePreviewWidget::curve_point(
             bounds,
             CurveNode {
-                x: phase_offset,
+                x: (1.0 - phase_offset).rem_euclid(1.0),
                 y: 0.0,
             },
         );
@@ -16095,7 +16130,7 @@ mod tests {
             bounds,
             CurveNode {
                 x: 0.5,
-                y: widget.sample_smoothed_curve(0.5 - phase_offset),
+                y: widget.sample_smoothed_curve(0.5 + phase_offset),
             },
         );
         assert!((midpoint.x - expected.x).abs() < 1.0e-6);
@@ -16299,7 +16334,7 @@ mod tests {
             .processed_waveform()
             .expect("incoming waveform should produce a wet preview");
         assert!(
-            (processed[0] - waveform[0] * sample_editable_curve(&curve, -phase_offset)).abs()
+            (processed[0] - waveform[0] * sample_editable_curve(&curve, phase_offset)).abs()
                 < 1.0e-6
         );
         assert!(
@@ -16307,10 +16342,161 @@ mod tests {
                 - waveform[48]
                     * sample_editable_curve(
                         &curve,
-                        48.0 / (waveform.len() - 1) as f32 - phase_offset,
+                        48.0 / (waveform.len() - 1) as f32 + phase_offset,
                     ))
             .abs()
                 < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn runtime_gain_matches_processed_waveform_at_the_effective_phase_bin() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.1 },
+                CurveNode { x: 0.2, y: 0.9 },
+                CurveNode { x: 0.63, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.7 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let phase_offset = 0.25;
+        let bin = 48;
+        let displayed_phase =
+            bin as f32 / (crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT - 1) as f32;
+        let mut waveform = [0.0; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
+        waveform[bin] = 1.0;
+
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_phase_offset(phase_offset)
+            .with_gain_mapping(120.0, -60.0);
+        let processed = widget
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: TIMING_MODE_SYNC,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(displayed_phase as f64),
+        };
+        let mut engine = PumpEngine::new(1_000.0, editable_curve_to_table(&curve));
+        let mut left = 1.0;
+        let mut right = 1.0;
+        let mut telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+        for _ in 0..512 {
+            left = 1.0;
+            right = 1.0;
+            telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+        }
+
+        assert!(
+            (telemetry.phase - displayed_phase).abs() < 1.0e-5,
+            "runtime effective phase must name the captured display bin: runtime={}, display={displayed_phase}",
+            telemetry.phase
+        );
+        assert!(
+            (telemetry.gain - processed[bin]).abs() < 1.0e-3,
+            "runtime gain and processed waveform must sample the same authored phase: runtime={}, processed={}",
+            telemetry.gain,
+            processed[bin]
+        );
+    }
+
+    #[test]
+    fn processed_waveform_tracks_unsettled_applied_offset_from_dsp_snapshot() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.05 },
+                CurveNode { x: 0.23, y: 0.95 },
+                CurveNode { x: 0.61, y: 0.12 },
+                CurveNode { x: 1.0, y: 0.82 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let target_phase_offset = 0.7;
+        let bin = 24;
+        let effective_phase =
+            bin as f32 / (crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT - 1) as f32;
+        let mut waveform = [0.0; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
+        waveform[bin] = 1.0;
+
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: TIMING_MODE_SYNC,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        let transition_settings = DspSettings {
+            phase_offset: target_phase_offset,
+            ..settings
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(effective_phase as f64),
+        };
+        let mut engine = PumpEngine::new(1_000.0, editable_curve_to_table(&curve));
+        engine.process_sample(&mut 1.0, &mut 1.0, settings, transport);
+        let telemetry = engine.process_sample(&mut 1.0, &mut 1.0, transition_settings, transport);
+        assert!(telemetry.applied_phase_offset > 0.0);
+        assert!(telemetry.applied_phase_offset < target_phase_offset);
+
+        let status = GuiStatus::default();
+        status.publish_dsp_telemetry(telemetry);
+        let applied_phase_offset = status
+            .dsp_snapshot()
+            .expect("DSP telemetry should publish a phase pair")
+            .applied_phase_offset;
+        assert_eq!(applied_phase_offset, telemetry.applied_phase_offset);
+
+        let processed = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_phase_offset(target_phase_offset)
+            .with_applied_phase_offset(applied_phase_offset)
+            .with_gain_mapping(120.0, -60.0)
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+        let target_processed = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_phase_offset(target_phase_offset)
+            .with_gain_mapping(120.0, -60.0)
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+
+        assert!(
+            (telemetry.gain - processed[bin]).abs() < 1.0e-3,
+            "processed waveform must use the smoothed applied offset: runtime={}, processed={}",
+            telemetry.gain,
+            processed[bin]
+        );
+        assert!(
+            (processed[bin] - target_processed[bin]).abs() > 0.05,
+            "unsettled smoothing must not be rendered as the authored target offset"
         );
     }
 
@@ -16596,7 +16782,8 @@ mod tests {
             widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
             let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
             let expected_x = curve_bounds.min.x
-                + phase_offset.clamp(0.0, 1.0) * (curve_bounds.width().max(1.0) - 1.0);
+                + CurvePreviewWidget::display_phase(0.0, phase_offset)
+                    * (curve_bounds.width().max(1.0) - 1.0);
             let guide_index = primitives
                 .iter()
                 .position(|primitive| {
@@ -16885,6 +17072,8 @@ mod tests {
                 beat_phase: 0.0,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(status.gain_reduction_db() > 0.0);
@@ -16897,6 +17086,8 @@ mod tests {
                 beat_phase: 0.0,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         status.mark_gain_reduction_inactive();
@@ -16924,6 +17115,8 @@ mod tests {
                 beat_phase: 0.1,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         let mut editor = RadiantPumpEditor::new(
@@ -16947,6 +17140,8 @@ mod tests {
                 beat_phase: 0.6,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         let second_center = playhead_marker_center(editor.paint_plan())

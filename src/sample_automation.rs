@@ -198,8 +198,8 @@ pub(crate) fn process_stereo_block(
                 raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
-                settings.phase_offset,
                 settings.swing,
+                settings.timing_mode,
                 input_left,
                 input_right,
             );
@@ -209,10 +209,16 @@ pub(crate) fn process_stereo_block(
     }
 
     schedule.apply_remaining(params, settings);
-    if frame_count > 0 {
-        if let Some(capture) = waveform {
-            capture.finish();
+    if frame_count == 0 {
+        if let Some(capture) = waveform.as_mut() {
+            capture.reconcile_cycle_mapping(
+                settings.beats_per_cycle,
+                settings.swing,
+                settings.timing_mode,
+            );
         }
+    } else if let Some(capture) = waveform {
+        capture.finish();
     }
     last_telemetry.map(|mut telemetry| {
         if telemetry.bypassed {
@@ -300,8 +306,8 @@ pub(crate) unsafe fn process_stereo_block_raw(
                 raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
-                settings.phase_offset,
                 settings.swing,
+                settings.timing_mode,
                 input_left,
                 input_right,
             );
@@ -315,10 +321,16 @@ pub(crate) unsafe fn process_stereo_block_raw(
     }
 
     schedule.apply_remaining(params, settings);
-    if block.num_samples > 0 {
-        if let Some(capture) = waveform {
-            capture.finish();
+    if block.num_samples == 0 {
+        if let Some(capture) = waveform.as_mut() {
+            capture.reconcile_cycle_mapping(
+                settings.beats_per_cycle,
+                settings.swing,
+                settings.timing_mode,
+            );
         }
+    } else if let Some(capture) = waveform {
+        capture.finish();
     }
     last_telemetry.map(|mut telemetry| {
         if telemetry.bypassed {
@@ -336,6 +348,8 @@ pub(crate) unsafe fn process_stereo_block_raw(
 mod tests {
     use super::*;
     use crate::curve::CURVE_TABLE_LEN;
+    #[cfg(feature = "vst3")]
+    use crate::incoming_waveform::IncomingWaveformBuffer;
     use crate::incoming_waveform::IncomingWaveformWriter;
     use crate::params::{
         PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
@@ -502,6 +516,60 @@ mod tests {
         assert!((params.free_rate_hz() - 10.0).abs() < f32::EPSILON);
         assert!((left[2] - left[3]).abs() > 1.0e-5);
         assert_eq!(left, right);
+    }
+
+    #[cfg(feature = "vst3")]
+    #[test]
+    fn zero_frame_offset_and_free_rate_automation_retain_waveform_generation() {
+        let params = PumpParams::new();
+        params.set_timing_mode(crate::params::TIMING_MODE_FREE as f32);
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.25,
+            0.25,
+            1.0,
+            0.0,
+            crate::params::TIMING_MODE_FREE,
+            0.8,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+
+        let generation_before = buffer.generation_for_test();
+        buffer.set_last_update_micros_for_test(1234);
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(0);
+        schedule.push(0, PARAM_PHASE_OFFSET_ID, 0.25);
+        schedule.push(0, PARAM_FREE_RATE_ID, 17.0);
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+        let mut engine = PumpEngine::new(1_000.0, constant_curve(0.0));
+        let mut last_curve_revision = params.curve_revision();
+
+        process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut [],
+                right: &mut [],
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            &mut last_curve_revision,
+            playing_transport(0.0),
+            Some(IncomingWaveformCapture::new_for_zero_frame(
+                &buffer,
+                &mut writer,
+            )),
+        );
+
+        assert!((params.phase_offset() - 0.25).abs() < f32::EPSILON);
+        assert!((params.free_rate_hz() - 17.0).abs() < f32::EPSILON);
+        assert_eq!(buffer.generation_for_test(), generation_before);
+        assert_eq!(buffer.last_update_micros_for_test(), 1234);
     }
 
     #[test]

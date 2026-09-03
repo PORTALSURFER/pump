@@ -31,11 +31,24 @@ pub struct GuiTransportTelemetry {
     pub tempo_bpm: f32,
     /// Pump cycle length in quarter-note beats.
     pub beats_per_cycle: f32,
+    /// Active timing source used by Pump's phase generator.
+    pub timing_mode: usize,
+    /// Effective cycle frequency in hertz for GUI phase extrapolation.
+    pub effective_cycle_rate_hz: f32,
+}
+
+/// The last DSP-owned phase pair published to the GUI.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(crate) struct GuiDspSnapshot {
+    pub(crate) effective_phase: f32,
+    pub(crate) applied_phase_offset: f32,
 }
 
 /// Shared GUI telemetry values updated by the audio thread.
 pub struct GuiStatus {
     phase: AtomicF32,
+    dsp_snapshot: AtomicU64,
+    dsp_snapshot_valid: AtomicBool,
     gain_reduction_linear: AtomicF32,
     gain_reduction_active: AtomicBool,
     gain_reduction_last_update_micros: AtomicU64,
@@ -61,6 +74,8 @@ impl Default for GuiStatus {
     fn default() -> Self {
         Self {
             phase: AtomicF32::new(0.0),
+            dsp_snapshot: AtomicU64::new(0),
+            dsp_snapshot_valid: AtomicBool::new(false),
             gain_reduction_linear: AtomicF32::new(1.0),
             gain_reduction_active: AtomicBool::new(false),
             gain_reduction_last_update_micros: AtomicU64::new(0),
@@ -121,11 +136,37 @@ impl GuiStatus {
             .store(transport.beat_phase.rem_euclid(1.0), Ordering::Relaxed);
         self.tempo_bpm.store(safe_tempo, Ordering::Relaxed);
         self.cycle_hz.store(
-            (safe_tempo / 60.0) / safe_beats_per_cycle,
+            if transport.timing_mode == crate::params::TIMING_MODE_FREE {
+                transport.effective_cycle_rate_hz.max(0.0)
+            } else {
+                (safe_tempo / 60.0) / safe_beats_per_cycle
+            },
             Ordering::Relaxed,
         );
         self.last_update_micros
             .store(monotonic_micros(), Ordering::Relaxed);
+    }
+
+    /// Publish the effective phase and applied phase offset from one DSP block.
+    pub(crate) fn publish_dsp_telemetry(&self, telemetry: crate::dsp::DspTelemetry) {
+        self.dsp_snapshot.store(
+            pack_dsp_snapshot(GuiDspSnapshot {
+                effective_phase: telemetry.phase,
+                applied_phase_offset: telemetry.applied_phase_offset,
+            }),
+            Ordering::Release,
+        );
+        self.dsp_snapshot_valid.store(true, Ordering::Release);
+    }
+
+    /// Read the latest coherent DSP phase pair, if a block has completed.
+    pub(crate) fn dsp_snapshot(&self) -> Option<GuiDspSnapshot> {
+        if !self.dsp_snapshot_valid.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(unpack_dsp_snapshot(
+            self.dsp_snapshot.load(Ordering::Acquire),
+        ))
     }
 
     /// Publish one block's strongest Pump attenuation without touching the audio path.
@@ -159,15 +200,24 @@ impl GuiStatus {
         }
     }
 
-    /// Read latest phase value.
-    pub fn phase(&self) -> f32 {
+    /// Project phase from a caller-captured DSP snapshot, preserving fallback
+    /// and extrapolation when no DSP block has completed yet.
+    pub(crate) fn phase_from_dsp_snapshot(&self, snapshot: Option<GuiDspSnapshot>) -> f32 {
+        let phase = snapshot
+            .map(|snapshot| snapshot.effective_phase)
+            .unwrap_or_else(|| self.phase.load(Ordering::Relaxed));
         extrapolate_phase(
-            self.phase.load(Ordering::Relaxed),
+            phase,
             self.cycle_hz.load(Ordering::Relaxed),
             self.is_playing(),
             self.last_update_micros.load(Ordering::Relaxed),
             monotonic_micros(),
         )
+    }
+
+    /// Read latest phase value.
+    pub fn phase(&self) -> f32 {
+        self.phase_from_dsp_snapshot(self.dsp_snapshot())
     }
 
     /// Read the smoothed live gain reduction in positive decibels.
@@ -256,6 +306,18 @@ impl GuiStatus {
     }
 }
 
+fn pack_dsp_snapshot(snapshot: GuiDspSnapshot) -> u64 {
+    (u64::from(snapshot.effective_phase.to_bits()) << 32)
+        | u64::from(snapshot.applied_phase_offset.to_bits())
+}
+
+fn unpack_dsp_snapshot(value: u64) -> GuiDspSnapshot {
+    GuiDspSnapshot {
+        effective_phase: f32::from_bits((value >> 32) as u32),
+        applied_phase_offset: f32::from_bits(value as u32),
+    }
+}
+
 pub(crate) fn gain_reduction_db_from_linear(gain: f32) -> f32 {
     if !gain.is_finite() || gain >= 1.0 {
         return 0.0;
@@ -298,8 +360,8 @@ mod tests {
 
     use super::{
         extrapolate_phase, gain_reduction_db_from_linear, gain_reduction_meter_fraction,
-        monotonic_micros, smooth_gain_reduction_db, GuiStatus, GuiTransportTelemetry,
-        GAIN_REDUCTION_METER_MAX_DB, GAIN_REDUCTION_STALE_MICROS,
+        monotonic_micros, smooth_gain_reduction_db, GuiDspSnapshot, GuiStatus,
+        GuiTransportTelemetry, GAIN_REDUCTION_METER_MAX_DB, GAIN_REDUCTION_STALE_MICROS,
     };
 
     #[test]
@@ -417,6 +479,8 @@ mod tests {
                 beat_phase: 0.25,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         let last_audio_update = status
@@ -444,6 +508,8 @@ mod tests {
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(status.transport_beat_blink_active());
@@ -458,6 +524,8 @@ mod tests {
                 beat_phase: 0.5,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(!status.transport_beat_blink_active());
@@ -472,6 +540,8 @@ mod tests {
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(!status.transport_beat_blink_active());
@@ -486,6 +556,8 @@ mod tests {
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(status.transport_beat_blink_active());
@@ -504,6 +576,52 @@ mod tests {
     }
 
     #[test]
+    fn captured_dsp_snapshot_remains_authoritative_after_replacement() {
+        let status = GuiStatus::default();
+        let captured_snapshot = GuiDspSnapshot {
+            effective_phase: 0.2,
+            applied_phase_offset: 0.3,
+        };
+        let replacement_snapshot = GuiDspSnapshot {
+            effective_phase: 0.8,
+            applied_phase_offset: 0.9,
+        };
+
+        status.publish_dsp_telemetry(crate::dsp::DspTelemetry {
+            phase: captured_snapshot.effective_phase,
+            applied_phase_offset: captured_snapshot.applied_phase_offset,
+            gain: 1.0,
+            reduction_gain: 1.0,
+            input_active: false,
+            bypassed: false,
+        });
+        let captured = status
+            .dsp_snapshot()
+            .expect("the first DSP block should be available");
+
+        status.publish_dsp_telemetry(crate::dsp::DspTelemetry {
+            phase: replacement_snapshot.effective_phase,
+            applied_phase_offset: replacement_snapshot.applied_phase_offset,
+            gain: 1.0,
+            reduction_gain: 1.0,
+            input_active: false,
+            bypassed: false,
+        });
+
+        // Model a publication between projection reads without depending on
+        // thread scheduling: the surface owns this Copy snapshot after capture.
+        let projected_applied_phase_offset = captured.applied_phase_offset;
+        let projected_effective_phase = status.phase_from_dsp_snapshot(Some(captured));
+
+        assert_eq!(
+            projected_applied_phase_offset,
+            captured_snapshot.applied_phase_offset
+        );
+        assert_eq!(projected_effective_phase, captured_snapshot.effective_phase);
+        assert_eq!(status.dsp_snapshot(), Some(replacement_snapshot));
+    }
+
+    #[test]
     fn gui_status_phase_holds_when_last_update_timestamp_is_stale_future_value() {
         let status = GuiStatus::default();
         status.update(
@@ -516,6 +634,8 @@ mod tests {
                 beat_phase: 0.2,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         status.last_update_micros.store(
@@ -542,6 +662,8 @@ mod tests {
                 beat_phase: 0.73,
                 tempo_bpm: 123.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         status.last_update_micros.store(

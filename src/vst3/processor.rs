@@ -77,6 +77,84 @@ impl PumpVst3Processor {
             shared,
         }
     }
+
+    fn apply_pending_runtime_changes(&self, runtime: &mut PumpVst3Runtime) {
+        let pending = self.runtime_handoff.take_pending();
+        if let Some(sample_rate) = pending.sample_rate {
+            runtime.set_sample_rate(sample_rate.into(), self.shared.params.as_ref());
+        }
+        if pending.processing_reset {
+            self.shared
+                .status
+                .incoming_waveform_buffer()
+                .mark_unavailable();
+            runtime.waveform_writer.reset();
+            runtime
+                .engine
+                .reset_with_bypass(self.shared.params.bypassed());
+        }
+        if pending.state_restored {
+            runtime
+                .engine
+                .set_target_curve(self.shared.params.curve_snapshot());
+            runtime.last_curve_revision = self.shared.params.curve_revision();
+        }
+    }
+
+    fn process_zero_sample_parameter_flush(
+        &self,
+        process_data: &ProcessData,
+        runtime: &mut PumpVst3Runtime,
+    ) -> tresult {
+        self.apply_pending_runtime_changes(runtime);
+
+        // Presentation latency is a host-side input property. Load it once
+        // so a zero-sample parameter flush observes the same compensated
+        // transport contract as a normal block.
+        let input_latency_samples = self.runtime_handoff.input_presentation_latency_samples();
+
+        let revision = self.shared.params.curve_revision();
+        if revision != runtime.last_curve_revision {
+            runtime
+                .engine
+                .set_target_curve(self.shared.params.curve_snapshot());
+            runtime.last_curve_revision = revision;
+        }
+
+        let mut settings = dsp_settings_from_params(self.shared.params.as_ref());
+        runtime
+            .param_schedule
+            .apply_through(0, self.shared.params.as_ref(), &mut settings);
+        // `prepare_vst3_param_schedule` clamps every point in an exact
+        // zero-sample block to offset zero. Keep the end-boundary drain here
+        // so this path consumes the same schedule contract as block DSP.
+        runtime
+            .param_schedule
+            .apply_remaining(self.shared.params.as_ref(), &mut settings);
+
+        let transport = crate::transport::compensate_input_presentation_latency(
+            transport_state_from_vst3_process_context(process_data.processContext),
+            Some(input_latency_samples),
+            runtime.sample_rate.into(),
+        );
+        let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
+        self.shared.status.update_transport(
+            gui_phase,
+            gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
+        );
+
+        let mut waveform_capture = IncomingWaveformCapture::new_for_zero_frame(
+            self.shared.status.incoming_waveform_buffer(),
+            &mut runtime.waveform_writer,
+        );
+        waveform_capture.reconcile_cycle_mapping(
+            settings.beats_per_cycle,
+            settings.swing,
+            settings.timing_mode,
+        );
+        self.shared.status.mark_gain_reduction_inactive();
+        process_ok()
+    }
 }
 
 impl Drop for PumpVst3Processor {
@@ -198,6 +276,13 @@ impl IComponentTrait for PumpVst3Processor {
         if state == 0 {
             self.runtime_handoff.reset_input_presentation_latency();
         }
+        // Supported VST3 hosts serialize process with this lifecycle callback, so the
+        // immediate mark is safe; the audio-owned reset remains deferred via RuntimeHandoff.
+        // No extra RT lock or epoch machinery is intended here.
+        self.shared
+            .status
+            .incoming_waveform_buffer()
+            .mark_unavailable();
         self.runtime_handoff.publish_processing_reset();
         kResultOk
     }
@@ -299,6 +384,13 @@ impl IAudioProcessorTrait for PumpVst3Processor {
     }
 
     unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+        // Supported VST3 hosts serialize process with this lifecycle callback, so the
+        // immediate mark is safe; the audio-owned reset remains deferred via RuntimeHandoff.
+        // No extra RT lock or epoch machinery is intended here.
+        self.shared
+            .status
+            .incoming_waveform_buffer()
+            .mark_unavailable();
         self.runtime_handoff.publish_processing_reset();
         kResultOk
     }
@@ -309,7 +401,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         let process_data = unsafe { &*data };
-        let frame_count = process_data.numSamples.max(0) as usize;
+        if process_data.numSamples < 0 {
+            return kInvalidArgument;
+        }
+        let frame_count = process_data.numSamples as usize;
         let Some(mut runtime) = self.runtime.try_acquire() else {
             self.shared.status.mark_gain_reduction_inactive();
             apply_vst3_param_points_immediately(process_data, self.shared.params.as_ref());
@@ -335,6 +430,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             return process_ok();
         };
         prepare_vst3_param_schedule(&mut runtime.param_schedule, process_data, frame_count);
+
+        if process_data.numSamples == 0 {
+            return self.process_zero_sample_parameter_flush(process_data, &mut runtime);
+        }
 
         // VST3 hosts may omit a deactivated trailing output bus, including for
         // parameter-only flushes. With no output bus there is no writable audio
@@ -383,21 +482,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             return unsafe { silence_valid_stereo_output(process_data) };
         };
 
-        let pending = self.runtime_handoff.take_pending();
-        if let Some(sample_rate) = pending.sample_rate {
-            runtime.set_sample_rate(sample_rate.into(), self.shared.params.as_ref());
-        }
-        if pending.processing_reset {
-            runtime
-                .engine
-                .reset_with_bypass(self.shared.params.bypassed());
-        }
-        if pending.state_restored {
-            runtime
-                .engine
-                .set_target_curve(self.shared.params.curve_snapshot());
-            runtime.last_curve_revision = self.shared.params.curve_revision();
-        }
+        self.apply_pending_runtime_changes(&mut runtime);
 
         // Presentation latency is a host-side input property. Load it once
         // for the block so GUI, DSP, and waveform publication share one
@@ -424,14 +509,21 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
         self.shared.status.update_transport(
             gui_phase,
-            gui_transport_telemetry(
-                transport,
-                settings.beats_per_cycle,
-                self.shared.status.beat_phase(),
-            ),
+            gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
         );
 
         let runtime = &mut *runtime;
+        let waveform_capture = if frame_count == 0 {
+            IncomingWaveformCapture::new_for_zero_frame(
+                self.shared.status.incoming_waveform_buffer(),
+                &mut runtime.waveform_writer,
+            )
+        } else {
+            IncomingWaveformCapture::new(
+                self.shared.status.incoming_waveform_buffer(),
+                &mut runtime.waveform_writer,
+            )
+        };
         let telemetry = unsafe {
             process_stereo_block_raw(
                 &mut runtime.engine,
@@ -441,25 +533,18 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 &mut settings,
                 &mut runtime.last_curve_revision,
                 transport,
-                Some(IncomingWaveformCapture::new(
-                    self.shared.status.incoming_waveform_buffer(),
-                    &mut runtime.waveform_writer,
-                )),
+                Some(waveform_capture),
             )
         };
-        let last_phase = telemetry.map(|telemetry| telemetry.phase).unwrap_or(0.0);
         // SAFETY: successful stereo buffer extraction validated one writable
         // output bus, and the full range now contains processed audio.
         unsafe { (*process_data.outputs).silenceFlags = 0 };
-        self.shared.status.update_transport(
-            last_phase,
-            gui_transport_telemetry(
-                transport,
-                settings.beats_per_cycle,
-                self.shared.status.beat_phase(),
-            ),
-        );
         if let Some(telemetry) = telemetry {
+            self.shared.status.update_transport(
+                telemetry.phase,
+                gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
+            );
+            self.shared.status.publish_dsp_telemetry(telemetry);
             self.shared
                 .status
                 .publish_gain_reduction(telemetry.reduction_gain, telemetry.input_active);

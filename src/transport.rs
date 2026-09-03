@@ -52,16 +52,17 @@ pub(crate) fn gui_phase_from_transport(
     settings: DspSettings,
     fallback_phase: f32,
 ) -> f32 {
+    if settings.timing_mode == crate::params::TIMING_MODE_FREE {
+        return fallback_phase.rem_euclid(1.0);
+    }
     transport
         .song_pos_beats
         .map(|beats| {
             if settings.swing <= 0.0 {
-                // Preserve the legacy host-timeline phase calculation exactly.
-                phase_from_beats(beats, settings.beats_per_cycle, settings.phase_offset)
+                phase_from_beats(beats, settings.beats_per_cycle, 0.0)
             } else {
                 let raw_phase = phase_from_beats(beats, settings.beats_per_cycle, 0.0);
-                (swing_warp_phase(raw_phase, settings.swing) + settings.phase_offset)
-                    .rem_euclid(1.0)
+                swing_warp_phase(raw_phase, settings.swing)
             }
         })
         .unwrap_or_else(|| fallback_phase.rem_euclid(1.0))
@@ -85,16 +86,26 @@ pub(crate) fn phase_running_from_transport(transport: TransportState) -> bool {
 /// Build GUI transport telemetry from a host transport snapshot.
 pub(crate) fn gui_transport_telemetry(
     transport: TransportState,
-    beats_per_cycle: f32,
+    settings: DspSettings,
     fallback_beat_phase: f32,
 ) -> GuiTransportTelemetry {
     GuiTransportTelemetry {
-        is_playing: phase_running_from_transport(transport),
+        is_playing: if settings.timing_mode == crate::params::TIMING_MODE_FREE {
+            true
+        } else {
+            phase_running_from_transport(transport)
+        },
         transport_is_playing: transport.is_playing,
         has_host_beats_timeline: transport.song_pos_beats.is_some(),
         beat_phase: host_beat_phase(transport).unwrap_or(fallback_beat_phase),
         tempo_bpm: transport.tempo_bpm,
-        beats_per_cycle,
+        beats_per_cycle: settings.beats_per_cycle,
+        timing_mode: settings.timing_mode,
+        effective_cycle_rate_hz: if settings.timing_mode == crate::params::TIMING_MODE_FREE {
+            crate::params::clamp_free_rate_hz(settings.free_rate_hz)
+        } else {
+            0.0
+        },
     }
 }
 
@@ -107,6 +118,22 @@ mod tests {
         compensate_input_presentation_latency, gui_phase_from_transport, gui_transport_telemetry,
         host_beat_phase, phase_running_from_transport,
     };
+
+    fn test_settings(beats_per_cycle: f32) -> DspSettings {
+        DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: crate::params::TIMING_MODE_SYNC,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        }
+    }
 
     #[test]
     fn input_presentation_latency_compensation_uses_samples_and_tempo_units() {
@@ -205,7 +232,7 @@ mod tests {
             is_playing: true,
             song_pos_beats: Some(9.5),
         };
-        let expected = phase_from_beats(9.5, settings.beats_per_cycle, settings.phase_offset);
+        let expected = phase_from_beats(9.5, settings.beats_per_cycle, 0.0);
         let resolved = gui_phase_from_transport(transport, settings, 0.75);
         assert!((resolved - expected).abs() < 1.0e-6);
     }
@@ -231,11 +258,10 @@ mod tests {
             song_pos_beats: Some(2.0),
         };
         let raw_phase = phase_from_beats(2.0, settings.beats_per_cycle, 0.0);
-        let expected =
-            (swing_warp_phase(raw_phase, settings.swing) + settings.phase_offset).rem_euclid(1.0);
+        let expected = swing_warp_phase(raw_phase, settings.swing);
         let resolved = gui_phase_from_transport(transport, settings, 0.75);
         assert!((resolved - expected).abs() < 1.0e-6);
-        assert!((resolved - 0.575).abs() < 1.0e-6);
+        assert!((resolved - 0.375).abs() < 1.0e-6);
     }
 
     #[test]
@@ -276,7 +302,7 @@ mod tests {
             },
             0.0,
         );
-        assert!((wrapped - 0.075).abs() < 1.0e-6);
+        assert!((wrapped - 0.875).abs() < 1.0e-6);
     }
 
     #[test]
@@ -302,7 +328,24 @@ mod tests {
             settings,
             0.0,
         );
-        assert!((resolved - settings.phase_offset).abs() < 1.0e-6);
+        assert!(resolved.abs() < 1.0e-6);
+
+        let telemetry = gui_transport_telemetry(
+            TransportState {
+                tempo_bpm: 240.0,
+                is_playing: false,
+                song_pos_beats: Some(17.0),
+            },
+            DspSettings {
+                timing_mode: crate::params::TIMING_MODE_FREE,
+                free_rate_hz: 3.5,
+                ..settings
+            },
+            0.2,
+        );
+        assert!(telemetry.is_playing);
+        assert_eq!(telemetry.effective_cycle_rate_hz, 3.5);
+        assert!(!telemetry.transport_is_playing);
     }
 
     #[test]
@@ -369,7 +412,7 @@ mod tests {
             is_playing: true,
             song_pos_beats: None,
         };
-        let telemetry = gui_transport_telemetry(transport, 4.0, 0.37);
+        let telemetry = gui_transport_telemetry(transport, test_settings(4.0), 0.37);
         assert!(telemetry.is_playing);
         assert!(telemetry.transport_is_playing);
         assert!(!telemetry.has_host_beats_timeline);
@@ -384,7 +427,7 @@ mod tests {
             is_playing: false,
             song_pos_beats: None,
         };
-        let telemetry = gui_transport_telemetry(transport, 4.0, 0.37);
+        let telemetry = gui_transport_telemetry(transport, test_settings(4.0), 0.37);
 
         assert!(telemetry.is_playing, "phase fallback should keep advancing");
         assert!(

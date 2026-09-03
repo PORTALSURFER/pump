@@ -308,6 +308,8 @@ fn render_non_default_active_meter_case(
                 beat_phase: 0.25,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 4.0,
+                timing_mode: crate::params::TIMING_MODE_FREE,
+                effective_cycle_rate_hz: 2.5,
             },
         );
         let mut editor = RadiantPumpEditor::new(

@@ -1,6 +1,9 @@
 use super::*;
 use crate::gui::HostParamEditSink;
-use crate::params::{PumpParams, DEFAULT_FREE_RATE_HZ, TIMING_MODE_FREE, TIMING_MODE_SYNC};
+use crate::params::{
+    PumpParams, DEFAULT_FREE_RATE_HZ, PARAM_FREE_RATE_NUM, PARAM_PHASE_OFFSET_NUM, PARAM_SWING_NUM,
+    PARAM_SYNC_DIVISION_NUM, PARAM_TIMING_MODE_NUM, TIMING_MODE_FREE, TIMING_MODE_SYNC,
+};
 use std::ffi::c_void;
 use std::mem;
 use std::ptr;
@@ -173,6 +176,183 @@ impl IComponentHandlerTrait for RecordingComponentHandler {
     unsafe fn restartComponent(&self, _flags: i32) -> tresult {
         kResultOk
     }
+}
+
+#[repr(C)]
+struct TestParamValueQueue {
+    base: IParamValueQueue,
+    param_id: ParamID,
+    points: Vec<(int32, ParamValue)>,
+}
+
+impl TestParamValueQueue {
+    fn new(param_id: ParamID, points: Vec<(int32, ParamValue)>) -> Self {
+        Self {
+            base: IParamValueQueue {
+                vtbl: &TEST_PARAM_VALUE_QUEUE_VTABLE,
+            },
+            param_id,
+            points,
+        }
+    }
+}
+
+static TEST_PARAM_VALUE_QUEUE_VTABLE: IParamValueQueueVtbl = IParamValueQueueVtbl {
+    base: FUnknownVtbl {
+        queryInterface: test_param_queue_query_interface,
+        addRef: test_param_queue_add_ref,
+        release: test_param_queue_release,
+    },
+    getParameterId: test_param_queue_get_parameter_id,
+    getPointCount: test_param_queue_get_point_count,
+    getPoint: test_param_queue_get_point,
+    addPoint: test_param_queue_add_point,
+};
+
+unsafe extern "system" fn test_param_queue_query_interface(
+    _this: *mut FUnknown,
+    _iid: *const TUID,
+    obj: *mut *mut c_void,
+) -> tresult {
+    if !obj.is_null() {
+        unsafe { *obj = ptr::null_mut() };
+    }
+    kNoInterface
+}
+
+unsafe extern "system" fn test_param_queue_add_ref(_this: *mut FUnknown) -> u32 {
+    1
+}
+
+unsafe extern "system" fn test_param_queue_release(_this: *mut FUnknown) -> u32 {
+    1
+}
+
+unsafe extern "system" fn test_param_queue_get_parameter_id(
+    this: *mut IParamValueQueue,
+) -> ParamID {
+    unsafe { (&*(this as *const TestParamValueQueue)).param_id }
+}
+
+unsafe extern "system" fn test_param_queue_get_point_count(this: *mut IParamValueQueue) -> int32 {
+    let queue = unsafe { &*(this as *const TestParamValueQueue) };
+    int32::try_from(queue.points.len()).unwrap_or(int32::MAX)
+}
+
+unsafe extern "system" fn test_param_queue_get_point(
+    this: *mut IParamValueQueue,
+    index: int32,
+    sample_offset: *mut int32,
+    value: *mut ParamValue,
+) -> tresult {
+    let Some(index) = usize::try_from(index).ok() else {
+        return kInvalidArgument;
+    };
+    let queue = unsafe { &*(this as *const TestParamValueQueue) };
+    let Some((point_offset, point_value)) = queue.points.get(index).copied() else {
+        return kInvalidArgument;
+    };
+    if sample_offset.is_null() || value.is_null() {
+        return kInvalidArgument;
+    }
+    unsafe {
+        *sample_offset = point_offset;
+        *value = point_value;
+    }
+    kResultTrue
+}
+
+unsafe extern "system" fn test_param_queue_add_point(
+    _this: *mut IParamValueQueue,
+    _sample_offset: int32,
+    _value: ParamValue,
+    _index: *mut int32,
+) -> tresult {
+    kNotImplemented
+}
+
+#[repr(C)]
+struct TestParameterChanges {
+    base: IParameterChanges,
+    queues: Vec<TestParamValueQueue>,
+}
+
+impl TestParameterChanges {
+    fn new(queues: Vec<(ParamID, Vec<(int32, ParamValue)>)>) -> Self {
+        Self {
+            base: IParameterChanges {
+                vtbl: &TEST_PARAMETER_CHANGES_VTABLE,
+            },
+            queues: queues
+                .into_iter()
+                .map(|(param_id, points)| TestParamValueQueue::new(param_id, points))
+                .collect(),
+        }
+    }
+
+    fn as_ptr(&mut self) -> *mut IParameterChanges {
+        &mut self.base
+    }
+}
+
+static TEST_PARAMETER_CHANGES_VTABLE: IParameterChangesVtbl = IParameterChangesVtbl {
+    base: FUnknownVtbl {
+        queryInterface: test_parameter_changes_query_interface,
+        addRef: test_parameter_changes_add_ref,
+        release: test_parameter_changes_release,
+    },
+    getParameterCount: test_parameter_changes_get_parameter_count,
+    getParameterData: test_parameter_changes_get_parameter_data,
+    addParameterData: test_parameter_changes_add_parameter_data,
+};
+
+unsafe extern "system" fn test_parameter_changes_query_interface(
+    _this: *mut FUnknown,
+    _iid: *const TUID,
+    obj: *mut *mut c_void,
+) -> tresult {
+    if !obj.is_null() {
+        unsafe { *obj = ptr::null_mut() };
+    }
+    kNoInterface
+}
+
+unsafe extern "system" fn test_parameter_changes_add_ref(_this: *mut FUnknown) -> u32 {
+    1
+}
+
+unsafe extern "system" fn test_parameter_changes_release(_this: *mut FUnknown) -> u32 {
+    1
+}
+
+unsafe extern "system" fn test_parameter_changes_get_parameter_count(
+    this: *mut IParameterChanges,
+) -> int32 {
+    let changes = unsafe { &*(this as *const TestParameterChanges) };
+    int32::try_from(changes.queues.len()).unwrap_or(int32::MAX)
+}
+
+unsafe extern "system" fn test_parameter_changes_get_parameter_data(
+    this: *mut IParameterChanges,
+    index: int32,
+) -> *mut IParamValueQueue {
+    let Some(index) = usize::try_from(index).ok() else {
+        return ptr::null_mut();
+    };
+    let changes = unsafe { &mut *(this as *mut TestParameterChanges) };
+    changes
+        .queues
+        .get_mut(index)
+        .map(|queue| &mut queue.base as *mut IParamValueQueue)
+        .unwrap_or(ptr::null_mut())
+}
+
+unsafe extern "system" fn test_parameter_changes_add_parameter_data(
+    _this: *mut IParameterChanges,
+    _id: *const ParamID,
+    _index: *mut int32,
+) -> *mut IParamValueQueue {
+    ptr::null_mut()
 }
 
 struct StereoProcessFixture {
@@ -585,6 +765,40 @@ fn processor_resets_input_presentation_latency_when_deactivated() {
 }
 
 #[test]
+fn active_lifecycle_invalidates_waveform_without_process_and_republishes_after_restart() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(64, 9.0);
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(shared.status.incoming_waveform_snapshot().is_some());
+
+    assert_eq!(unsafe { processor.setActive(0) }, kResultOk);
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "deactivation must hide the old waveform before another process callback"
+    );
+    assert_eq!(unsafe { processor.setActive(1) }, kResultOk);
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "reactivation must not expose the old waveform"
+    );
+
+    let mut after_restart = stereo_process_fixture(64, 9.0);
+    assert_eq!(
+        unsafe { processor.process(&mut after_restart.process_data) },
+        process_ok()
+    );
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_some(),
+        "the next audio callback must republish a fresh waveform"
+    );
+}
+
+#[test]
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 fn controller_creates_editor_view_for_host_editor_request() {
@@ -810,6 +1024,288 @@ fn empty_vst3_blocks_do_not_refresh_a_stale_waveform() {
 }
 
 #[test]
+fn processing_reset_clears_stale_waveform_state() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(64, 9.0);
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(shared.status.incoming_waveform_snapshot().is_some());
+
+    assert_eq!(unsafe { processor.setProcessing(0) }, kResultOk);
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "setProcessing(0) must hide the old waveform immediately"
+    );
+    assert_eq!(unsafe { processor.setProcessing(1) }, kResultOk);
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "setProcessing(1) must keep the old waveform hidden"
+    );
+
+    fixture = stereo_process_fixture(64, 9.0);
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_some(),
+        "the next audio callback must republish a fresh waveform"
+    );
+}
+
+#[test]
+fn empty_free_vst3_block_preserves_last_dsp_phase_and_applied_offset() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared.params.set_timing_mode(TIMING_MODE_FREE as f32);
+    shared.params.set_free_rate_hz(2.5);
+    shared.params.set_phase_offset(0.7);
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(64, 9.0);
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    let before = shared
+        .status
+        .dsp_snapshot()
+        .expect("a non-empty block must publish DSP telemetry");
+    assert!(before.applied_phase_offset > 0.0);
+    assert!(before.applied_phase_offset < 0.7);
+
+    fixture.process_data.numSamples = 0;
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+
+    assert_eq!(
+        shared.status.dsp_snapshot(),
+        Some(before),
+        "an empty Free-mode callback must preserve the last valid DSP pair"
+    );
+}
+
+#[test]
+fn zero_sample_parameter_flush_without_buses_applies_all_points_and_preserves_state() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut initial = stereo_process_fixture(64, 9.0);
+    assert_eq!(
+        unsafe { processor.process(&mut initial.process_data) },
+        process_ok()
+    );
+
+    let generation_before = shared
+        .status
+        .incoming_waveform_buffer()
+        .generation_for_test();
+    let dsp_before = shared.status.dsp_snapshot();
+    shared
+        .status
+        .incoming_waveform_buffer()
+        .set_last_update_micros_for_test(1234);
+
+    let mut changes = TestParameterChanges::new(vec![
+        (
+            PARAM_PHASE_OFFSET_NUM,
+            vec![
+                (0, to_normalized(PARAM_PHASE_OFFSET_NUM, 0.2)),
+                (12, to_normalized(PARAM_PHASE_OFFSET_NUM, 0.4)),
+            ],
+        ),
+        (
+            PARAM_FREE_RATE_NUM,
+            vec![(7, to_normalized(PARAM_FREE_RATE_NUM, 17.0))],
+        ),
+    ]);
+    let mut process_data: ProcessData = unsafe { mem::zeroed() };
+    process_data.numSamples = 0;
+    process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    process_data.inputParameterChanges = changes.as_ptr();
+
+    assert_eq!(
+        unsafe { processor.process(&mut process_data) },
+        process_ok()
+    );
+    assert!((shared.params.phase_offset() - 0.4).abs() < 1.0e-6);
+    assert!((shared.params.free_rate_hz() - 17.0).abs() < 1.0e-5);
+    assert_eq!(
+        shared
+            .status
+            .incoming_waveform_buffer()
+            .generation_for_test(),
+        generation_before,
+        "offset and Free-rate-only flushes retain the current generation"
+    );
+    assert_eq!(
+        shared
+            .status
+            .incoming_waveform_buffer()
+            .last_update_micros_for_test(),
+        1234,
+        "a non-mapping flush must not refresh the waveform timestamp"
+    );
+    assert_eq!(shared.status.dsp_snapshot(), dsp_before);
+}
+
+#[test]
+fn zero_sample_parameter_flush_with_empty_stereo_buffers_preserves_host_state() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut initial = stereo_process_fixture(64, 9.0);
+    assert_eq!(
+        unsafe { processor.process(&mut initial.process_data) },
+        process_ok()
+    );
+
+    let generation_before = shared
+        .status
+        .incoming_waveform_buffer()
+        .generation_for_test();
+    shared
+        .status
+        .incoming_waveform_buffer()
+        .set_last_update_micros_for_test(2345);
+    let dsp_before = shared.status.dsp_snapshot();
+
+    let mut fixture = stereo_process_fixture(0, 9.0);
+    fixture._input_buses[0].silenceFlags = 0x11;
+    fixture.output_buses[0].silenceFlags = 0x22;
+    let mut changes = TestParameterChanges::new(vec![
+        (
+            PARAM_PHASE_OFFSET_NUM,
+            vec![(0, to_normalized(PARAM_PHASE_OFFSET_NUM, 0.3))],
+        ),
+        (
+            PARAM_FREE_RATE_NUM,
+            vec![(0, to_normalized(PARAM_FREE_RATE_NUM, 9.0))],
+        ),
+    ]);
+    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.inputParameterChanges = changes.as_ptr();
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert_eq!(fixture._input_buses[0].silenceFlags, 0x11);
+    assert_eq!(fixture.output_buses[0].silenceFlags, 0x22);
+    assert!((shared.params.phase_offset() - 0.3).abs() < 1.0e-6);
+    assert!((shared.params.free_rate_hz() - 9.0).abs() < 1.0e-5);
+    assert_eq!(
+        shared
+            .status
+            .incoming_waveform_buffer()
+            .generation_for_test(),
+        generation_before
+    );
+    assert_eq!(
+        shared
+            .status
+            .incoming_waveform_buffer()
+            .last_update_micros_for_test(),
+        2345
+    );
+    assert_eq!(shared.status.dsp_snapshot(), dsp_before);
+}
+
+#[test]
+fn zero_sample_parameter_flush_with_declared_null_buffers_reconciles_mapping_once() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut initial = stereo_process_fixture(64, 9.0);
+    assert_eq!(
+        unsafe { processor.process(&mut initial.process_data) },
+        process_ok()
+    );
+
+    let generation_before = shared
+        .status
+        .incoming_waveform_buffer()
+        .generation_for_test();
+    shared
+        .status
+        .incoming_waveform_buffer()
+        .set_last_update_micros_for_test(3456);
+    let dsp_before = shared.status.dsp_snapshot();
+
+    let mut fixture = stereo_process_fixture(0, 9.0);
+    fixture._input_buses[0].silenceFlags = 0x33;
+    fixture.output_buses[0].silenceFlags = 0x44;
+    fixture._input_buses[0].__field0.channelBuffers32 = ptr::null_mut();
+    fixture.output_buses[0].__field0.channelBuffers32 = ptr::null_mut();
+    let mut changes = TestParameterChanges::new(vec![
+        (
+            PARAM_TIMING_MODE_NUM,
+            vec![(
+                0,
+                to_normalized(PARAM_TIMING_MODE_NUM, TIMING_MODE_FREE as f64),
+            )],
+        ),
+        (
+            PARAM_SYNC_DIVISION_NUM,
+            vec![(0, to_normalized(PARAM_SYNC_DIVISION_NUM, 6.0))],
+        ),
+        (
+            PARAM_SWING_NUM,
+            vec![(0, to_normalized(PARAM_SWING_NUM, 0.35))],
+        ),
+    ]);
+    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.inputParameterChanges = changes.as_ptr();
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert_eq!(shared.params.timing_mode(), TIMING_MODE_FREE);
+    assert_eq!(shared.params.sync_division(), 6);
+    assert!((shared.params.swing() - 0.35).abs() < 1.0e-6);
+    let generation_after_mapping_change = generation_before.wrapping_add(1);
+    assert_eq!(
+        shared
+            .status
+            .incoming_waveform_buffer()
+            .generation_for_test(),
+        generation_after_mapping_change
+    );
+    assert_eq!(
+        shared
+            .status
+            .incoming_waveform_buffer()
+            .last_update_micros_for_test(),
+        0
+    );
+    assert!(shared.status.incoming_waveform_snapshot().is_none());
+    assert_eq!(shared.status.dsp_snapshot(), dsp_before);
+    assert_eq!(fixture._input_buses[0].silenceFlags, 0x33);
+    assert_eq!(fixture.output_buses[0].silenceFlags, 0x44);
+
+    let mut first_real_sample = stereo_process_fixture(1, 9.0);
+    assert_eq!(
+        unsafe { processor.process(&mut first_real_sample.process_data) },
+        process_ok()
+    );
+    assert_eq!(
+        shared
+            .status
+            .incoming_waveform_buffer()
+            .generation_for_test(),
+        generation_after_mapping_change,
+        "the first real sample must not invalidate the zero-frame transition again"
+    );
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "the first real block remains a fresh hidden capture"
+    );
+}
+
+#[test]
 fn silent_vst3_blocks_do_not_refresh_a_stale_waveform() {
     let shared = Arc::new(PumpVst3Shared::new());
     let processor = PumpVst3Processor::new(Arc::clone(&shared));
@@ -915,6 +1411,41 @@ fn processor_rejects_unsupported_sample_size_without_touching_output() {
     assert_eq!(result, kInvalidArgument);
     assert_eq!(fixture.output_left, vec![9.0; 32]);
     assert_eq!(fixture.output_right, vec![9.0; 32]);
+}
+
+#[test]
+fn processor_rejects_negative_sample_count_instead_of_treating_it_as_zero() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+    let mut fixture = stereo_process_fixture(1, 9.0);
+    fixture.process_data.numSamples = -1;
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        kInvalidArgument
+    );
+    assert_eq!(fixture.output_left, vec![9.0]);
+    assert_eq!(fixture.output_right, vec![9.0]);
+}
+
+#[test]
+fn processor_rejects_negative_sample_count_without_outputs_before_applying_parameters() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared.params.set_phase_offset(0.2);
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut changes = TestParameterChanges::new(vec![(
+        PARAM_PHASE_OFFSET_NUM,
+        vec![(0, to_normalized(PARAM_PHASE_OFFSET_NUM, 0.8))],
+    )]);
+    let mut process_data: ProcessData = unsafe { mem::zeroed() };
+    process_data.numSamples = -1;
+    process_data.numOutputs = 0;
+    process_data.inputParameterChanges = changes.as_ptr();
+
+    assert_eq!(
+        unsafe { processor.process(&mut process_data) },
+        kInvalidArgument
+    );
+    assert_eq!(shared.params.phase_offset(), 0.2);
 }
 
 #[test]
