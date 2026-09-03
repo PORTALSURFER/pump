@@ -243,6 +243,8 @@ All notable changes to this project are documented in this file.
 
 - (release) Bump Pump to v0.2.5 [skip ci] (169fa3f)
 
+- (release) Bump Pump to v0.2.6 [skip ci] (c1b0379)
+
 
 ### Documentation
 
@@ -506,6 +508,8 @@ All notable changes to this project are documented in this file.
 
 - (changelog) Update changelog [skip ci] (655a2ab)
 
+- (changelog) Update changelog [skip ci] (a62ff10)
+
 
 ### Features
 
@@ -544,6 +548,8 @@ All notable changes to this project are documented in this file.
 - (gui) Add option-click curve node deletion (e35efbc)
 
 - (gui) Make curve offset handle-only (923afb5)
+
+- (pump) Add extended beat sync divisions (0326372)
 
 
 ### Other
@@ -1513,6 +1519,10 @@ Fix Pump curve edge-node merging (16411e8)
 - Merge pull request #80 from PORTALSURFER/codex/pump-waveform-alignment
 
 Align Pump waveform with audio phase (72969b3)
+
+- Merge pull request #82 from PORTALSURFER/codex/pump-long-sync-steps
+
+feat(pump): add extended beat sync divisions (ab81d41)
 
 
 ### Refactoring
