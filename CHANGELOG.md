@@ -125,6 +125,16 @@ All notable changes to this project are documented in this file.
 
 - Invalidate waveform on swing remap (e917503)
 
+- Align waveform phases across DSP and GUI (c8f53a8)
+
+- Populate screenshot transport telemetry (d5ca642)
+
+- Publish applied waveform phase telemetry (09063a1)
+
+- Keep GUI phase projections snapshot-consistent (ab53796)
+
+- Align Pump phase offset convention (5d9a919)
+
 
 ### CI
 
@@ -230,6 +240,8 @@ All notable changes to this project are documented in this file.
 - (release) Bump Pump to v0.2.3 [skip ci] (27827ba)
 
 - (release) Bump Pump to v0.2.4 [skip ci] (6330cd4)
+
+- (release) Bump Pump to v0.2.5 [skip ci] (169fa3f)
 
 
 ### Documentation
@@ -491,6 +503,8 @@ All notable changes to this project are documented in this file.
 - (changelog) Update changelog [skip ci] (0cb00b4)
 
 - (changelog) Update changelog [skip ci] (bd2af9e)
+
+- (changelog) Update changelog [skip ci] (655a2ab)
 
 
 ### Features
@@ -1485,6 +1499,20 @@ Pump: keep waveform visible during Command-Shift offset sliding (53550f1)
 - Merge pull request #79 from PORTALSURFER/codex/pump-edge-single-node
 
 Fix Pump curve edge-node merging (16411e8)
+
+- Fix zero-frame waveform mapping transitions (146c963)
+
+- Fix default waveform test cfgs (771438d)
+
+- Document VST3 waveform lifecycle ordering (1dd48f1)
+
+- Fix VST3 zero-frame waveform parameter flush (e21350d)
+
+- Reject negative VST3 sample counts before flush (bde3ef0)
+
+- Merge pull request #80 from PORTALSURFER/codex/pump-waveform-alignment
+
+Align Pump waveform with audio phase (72969b3)
 
 
 ### Refactoring
