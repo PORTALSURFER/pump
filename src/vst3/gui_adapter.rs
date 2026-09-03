@@ -4,6 +4,14 @@ pub(super) struct Vst3HostParamEditSink {
     pub(super) shared: Arc<PumpVst3Shared>,
 }
 
+fn vst3_param_id_for_gui(param_id: toybox::clack_plugin::utils::ClapId) -> ParamID {
+    if param_id == PARAM_SYNC_DIVISION_ID {
+        PARAM_SYNC_DIVISION_VST3_V2_NUM
+    } else {
+        param_id.get()
+    }
+}
+
 impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
     fn edit(
         &self,
@@ -14,7 +22,8 @@ impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
         if !config.is_enabled(param_id) {
             return false;
         }
-        let Some(normalized) = normalized_from_plain_value(param_id, value) else {
+        let vst3_id = vst3_param_id_for_gui(param_id);
+        let Some(normalized) = normalized_from_vst3_plain_value(vst3_id, value) else {
             return false;
         };
         let Ok(handler) = self.shared.component_handler.lock() else {
@@ -23,13 +32,12 @@ impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
         let Some(handler) = handler.as_ref() else {
             return false;
         };
-        let id = param_id.get();
         unsafe {
-            if handler.beginEdit(id) != kResultOk {
+            if handler.beginEdit(vst3_id) != kResultOk {
                 return false;
             }
-            let performed = handler.performEdit(id, normalized) == kResultOk;
-            let _ended = handler.endEdit(id);
+            let performed = handler.performEdit(vst3_id, normalized) == kResultOk;
+            let _ended = handler.endEdit(vst3_id);
             performed
         }
     }
@@ -42,13 +50,14 @@ impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
         if !config.is_enabled(param_id) {
             return false;
         }
+        let vst3_id = vst3_param_id_for_gui(param_id);
         let Ok(handler) = self.shared.component_handler.lock() else {
             return false;
         };
         let Some(handler) = handler.as_ref() else {
             return false;
         };
-        unsafe { handler.beginEdit(param_id.get()) == kResultOk }
+        unsafe { handler.beginEdit(vst3_id) == kResultOk }
     }
 
     fn gesture_value(
@@ -60,7 +69,8 @@ impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
         if !config.is_enabled(param_id) {
             return false;
         }
-        let Some(normalized) = normalized_from_plain_value(param_id, value) else {
+        let vst3_id = vst3_param_id_for_gui(param_id);
+        let Some(normalized) = normalized_from_vst3_plain_value(vst3_id, value) else {
             return false;
         };
         let Ok(handler) = self.shared.component_handler.lock() else {
@@ -69,7 +79,7 @@ impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
         let Some(handler) = handler.as_ref() else {
             return false;
         };
-        unsafe { handler.performEdit(param_id.get(), normalized) == kResultOk }
+        unsafe { handler.performEdit(vst3_id, normalized) == kResultOk }
     }
 
     fn gesture_ended(
@@ -80,13 +90,14 @@ impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
         if !config.is_enabled(param_id) {
             return false;
         }
+        let vst3_id = vst3_param_id_for_gui(param_id);
         let Ok(handler) = self.shared.component_handler.lock() else {
             return false;
         };
         let Some(handler) = handler.as_ref() else {
             return false;
         };
-        unsafe { handler.endEdit(param_id.get()) == kResultOk }
+        unsafe { handler.endEdit(vst3_id) == kResultOk }
     }
 }
 
