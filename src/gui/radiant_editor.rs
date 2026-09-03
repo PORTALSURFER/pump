@@ -45,9 +45,9 @@ use crate::params::{
     plain_from_normalized_value, sync_division_label, PumpParams, PumpSoundState, SoundSide,
     BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS, DEFAULT_FREE_RATE_HZ, DEFAULT_MIX,
     DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, GLOBAL_CURVE_SLOT_COUNT, MAX_OUTPUT_GAIN_DB,
-    MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID,
-    PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID, SYNC_DIVISIONS, TIMING_MODE_FREE,
+    MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DELAY_ID, PARAM_FREE_RATE_ID,
+    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID,
+    PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID, SYNC_DIVISIONS, TIMING_MODE_FREE,
     TIMING_MODE_SYNC,
 };
 use crate::GuiStatus;
@@ -1728,6 +1728,7 @@ enum NumericEntryTarget {
     Smooth,
     Swing,
     FreeRate,
+    Delay,
 }
 
 impl NumericEntryTarget {
@@ -1738,6 +1739,7 @@ impl NumericEntryTarget {
             Self::Smooth => PARAM_SMOOTH_ID,
             Self::Swing => PARAM_SWING_ID,
             Self::FreeRate => PARAM_FREE_RATE_ID,
+            Self::Delay => PARAM_DELAY_ID,
         }
     }
 
@@ -1748,6 +1750,7 @@ impl NumericEntryTarget {
             Self::Smooth => "Smooth",
             Self::Swing => "Swing",
             Self::FreeRate => "Free Rate",
+            Self::Delay => "Delay",
         }
     }
 
@@ -1758,6 +1761,7 @@ impl NumericEntryTarget {
             Self::Smooth => "numeric-entry-smooth",
             Self::Swing => "numeric-entry-swing",
             Self::FreeRate => "numeric-entry-free-rate",
+            Self::Delay => "numeric-entry-delay",
         }
     }
 
@@ -1768,6 +1772,7 @@ impl NumericEntryTarget {
             Self::Smooth => params.smooth() as f64,
             Self::Swing => params.swing() as f64,
             Self::FreeRate => params.free_rate_hz() as f64,
+            Self::Delay => params.delay_beats() as f64,
         }
     }
 }
@@ -1878,6 +1883,9 @@ struct RadiantHistorySnapshot {
     output_gain_db: f32,
     sync_division: usize,
     mode: usize,
+    timing_mode: usize,
+    free_rate_hz: f32,
+    delay_beats: usize,
     curve: EditableCurve,
     active_sound: SoundSide,
     sound_states: [PumpSoundState; 2],
@@ -2305,6 +2313,9 @@ impl RadiantEditorState {
             output_gain_db: self.params.output_gain_db(),
             sync_division: self.params.sync_division(),
             mode: self.params.mode(),
+            timing_mode: self.params.timing_mode(),
+            free_rate_hz: self.params.free_rate_hz(),
+            delay_beats: self.params.delay_beats(),
             curve: self.params.editable_curve_snapshot(),
             active_sound: self.params.active_sound(),
             sound_states: [
@@ -2341,6 +2352,9 @@ impl RadiantEditorState {
         self.params.set_output_gain_db(snapshot.output_gain_db);
         self.params.set_sync_division(snapshot.sync_division as f32);
         self.params.set_mode(snapshot.mode as f32);
+        self.params.set_timing_mode(snapshot.timing_mode as f32);
+        self.params.set_free_rate_hz(snapshot.free_rate_hz);
+        self.params.set_delay_beats(snapshot.delay_beats as f32);
         self.params
             .set_editable_curve_preserving_phase(&snapshot.curve);
         self.params
@@ -2394,6 +2408,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let depth = params.depth_db();
     let floor = params.floor_db();
     let sync = params.sync_division();
+    let delay = params.delay_beats();
     let free_timing = params.timing_mode() == TIMING_MODE_FREE;
     let free_rate = params.free_rate_hz();
     let waveform_live_mode = state.status.waveform_live_mode();
@@ -2614,6 +2629,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             smooth,
             free_timing,
             free_rate,
+            delay,
             state.free_rate_unit,
         ),
         row([
@@ -2687,6 +2703,7 @@ fn hotkey_help_overlay() -> ViewNode<RadiantEditorMessage> {
     .fill()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parameter_deck(
     state: &RadiantEditorState,
     params: &PumpParams,
@@ -2694,6 +2711,7 @@ fn parameter_deck(
     smooth: f32,
     free_timing: bool,
     free_rate: f32,
+    delay: usize,
     free_rate_unit: FreeRateUnit,
 ) -> ViewNode<RadiantEditorMessage> {
     let mut controls = vec![
@@ -2729,6 +2747,17 @@ fn parameter_deck(
             normalized_from_plain_value(PARAM_FREE_RATE_ID, DEFAULT_FREE_RATE_HZ as f64)
                 .map(|value| value as f32)
                 .unwrap_or(0.0),
+            state.numeric_entry.as_ref(),
+        ));
+    } else {
+        controls.push(parameter_deck_divider());
+        controls.push(control_column(
+            NumericEntryTarget::Delay,
+            "DELAY",
+            format_plain_value_text(PARAM_DELAY_ID, delay as f64)
+                .unwrap_or_else(|| format_delay_beats_for_ui(delay)),
+            normalized_from_plain_value(PARAM_DELAY_ID, delay as f64).unwrap_or(0.0) as f32,
+            normalized_from_plain_value(PARAM_DELAY_ID, 0.0).unwrap_or(0.0) as f32,
             state.numeric_entry.as_ref(),
         ));
     }
@@ -2923,6 +2952,10 @@ fn knob_plain_value(target: NumericEntryTarget, value: f32) -> (ClapId, f32) {
             plain_from_normalized_value(PARAM_FREE_RATE_ID, value as f64)
                 .unwrap_or(DEFAULT_FREE_RATE_HZ as f64) as f32,
         ),
+        NumericEntryTarget::Delay => (
+            PARAM_DELAY_ID,
+            plain_from_normalized_value(PARAM_DELAY_ID, value as f64).unwrap_or(0.0) as f32,
+        ),
     }
 }
 
@@ -2934,6 +2967,7 @@ fn set_knob_param(params: &PumpParams, target: NumericEntryTarget, value: f32) -
         NumericEntryTarget::Smooth => params.set_smooth(value),
         NumericEntryTarget::Swing => params.set_swing(value),
         NumericEntryTarget::FreeRate => params.set_free_rate_hz(plain_value),
+        NumericEntryTarget::Delay => params.set_delay_beats(plain_value),
     }
     (param_id, plain_value)
 }
@@ -2945,6 +2979,13 @@ fn format_free_rate_for_unit(rate_hz: f32, unit: FreeRateUnit) -> String {
         FreeRateUnit::Seconds => format!("{value:.3} s"),
         FreeRateUnit::Hertz => format!("{value:.2} Hz"),
         FreeRateUnit::Kilohertz => format!("{value:.3} kHz"),
+    }
+}
+
+fn format_delay_beats_for_ui(delay: usize) -> String {
+    match delay {
+        1 => "1 beat".to_string(),
+        delay => format!("{delay} beats"),
     }
 }
 
@@ -2979,6 +3020,7 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
         RadiantEditorMessage::ToggleTimingMode => {
             state.push_history();
             state.timing_dropdown_open = false;
+            state.numeric_entry = None;
             let timing_mode = if state.params.timing_mode() == TIMING_MODE_FREE {
                 TIMING_MODE_SYNC
             } else {
@@ -3217,6 +3259,7 @@ fn apply_numeric_entry_value(
         NumericEntryTarget::Smooth => state.params.set_smooth(value as f32),
         NumericEntryTarget::Swing => state.params.set_swing(value as f32),
         NumericEntryTarget::FreeRate => state.params.set_free_rate_hz(value as f32),
+        NumericEntryTarget::Delay => state.params.set_delay_beats(value as f32),
     }
 
     push_radiant_param_update(state, target.param_id(), value);
@@ -7214,6 +7257,7 @@ mod tests {
     use super::*;
     use crate::curve::{editable_curve_to_table, sample_curve_segment};
     use crate::dsp::{DspSettings, PumpEngine};
+    use crate::params::MAX_DELAY_BEATS;
     #[cfg(feature = "vst3")]
     use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
@@ -9758,6 +9802,67 @@ mod tests {
 
         assert!((params.phase_offset() - 0.0).abs() < f32::EPSILON);
         assert!(state.numeric_entry.is_none());
+    }
+
+    #[test]
+    fn radiant_delay_numeric_entry_accepts_integer_beats_and_formats_units() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+
+        for (raw, expected) in [
+            ("0", 0),
+            ("1 beat", 1),
+            ("2 beats", 2),
+            ("32 beats", MAX_DELAY_BEATS),
+        ] {
+            reduce_editor_message(
+                &mut state,
+                RadiantEditorMessage::NumericEntry(NumericEntryMessage::Begin {
+                    target: NumericEntryTarget::Delay,
+                }),
+            );
+            let expected_draft = format_delay_beats_for_ui(params.delay_beats());
+            assert_eq!(
+                state
+                    .numeric_entry
+                    .as_ref()
+                    .map(|entry| entry.draft.as_str()),
+                Some(expected_draft.as_str())
+            );
+            reduce_editor_message(
+                &mut state,
+                RadiantEditorMessage::NumericEntry(NumericEntryMessage::Commit {
+                    target: NumericEntryTarget::Delay,
+                    draft: raw.to_string(),
+                }),
+            );
+            assert_eq!(params.delay_beats(), expected);
+            assert!(state.numeric_entry.is_none());
+        }
+
+        assert_eq!(format_delay_beats_for_ui(0), "0 beats");
+        assert_eq!(format_delay_beats_for_ui(1), "1 beat");
+        assert_eq!(format_delay_beats_for_ui(2), "2 beats");
+        assert_eq!(format_delay_beats_for_ui(MAX_DELAY_BEATS), "32 beats");
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Begin {
+                target: NumericEntryTarget::Delay,
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Commit {
+                target: NumericEntryTarget::Delay,
+                draft: "1.5 beats".to_string(),
+            }),
+        );
+        assert_eq!(params.delay_beats(), MAX_DELAY_BEATS);
+        assert_eq!(
+            state.numeric_entry.as_ref().map(|entry| entry.target),
+            Some(NumericEntryTarget::Delay)
+        );
     }
 
     #[test]
@@ -16384,6 +16489,7 @@ mod tests {
             phase_offset,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: TIMING_MODE_SYNC,
@@ -16445,6 +16551,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: TIMING_MODE_SYNC,
@@ -17072,6 +17179,7 @@ mod tests {
                 beat_phase: 0.0,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
                 timing_mode: TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -17086,6 +17194,7 @@ mod tests {
                 beat_phase: 0.0,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
                 timing_mode: TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -17115,6 +17224,7 @@ mod tests {
                 beat_phase: 0.1,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
                 timing_mode: TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -17140,6 +17250,7 @@ mod tests {
                 beat_phase: 0.6,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
                 timing_mode: TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -17472,6 +17583,44 @@ mod tests {
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "67%")
         }));
+    }
+
+    #[test]
+    fn parameter_deck_presents_delay_in_sync_and_rate_in_free() {
+        let viewport = Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32);
+        let sync_params = Arc::new(PumpParams::new());
+        sync_params.set_delay_beats(1.0);
+        let sync_frame =
+            radiant_editor_frame_for_params(sync_params, Arc::new(GuiStatus::default()), viewport);
+        let sync_texts: Vec<String> = sync_frame
+            .paint_plan
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) => Some(text.text.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(sync_texts.iter().any(|text| text == "DELAY"));
+        assert!(sync_texts.iter().any(|text| text == "1 beat"));
+        assert!(!sync_texts.iter().any(|text| text == "RATE"));
+
+        let free_params = Arc::new(PumpParams::new());
+        free_params.set_timing_mode(TIMING_MODE_FREE as f32);
+        let free_frame =
+            radiant_editor_frame_for_params(free_params, Arc::new(GuiStatus::default()), viewport);
+        let free_texts: Vec<String> = free_frame
+            .paint_plan
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) => Some(text.text.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(free_texts.iter().any(|text| text == "RATE"));
+        assert!(free_texts.iter().any(|text| text == "2.00 Hz"));
+        assert!(!free_texts.iter().any(|text| text == "DELAY"));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Shared transport-phase helpers used by both CLAP and VST3 paths.
 
-use crate::dsp::{swing_warp_phase, DspSettings};
+use crate::dsp::{swing_warp_phase, sync_phase_from_beats, DspSettings};
 use crate::GuiTransportTelemetry;
-use toybox::dsp::{phase_from_beats, TransportState};
+use toybox::dsp::TransportState;
 
 /// Compensate a host beat timeline for input presentation latency.
 ///
@@ -59,9 +59,10 @@ pub(crate) fn gui_phase_from_transport(
         .song_pos_beats
         .map(|beats| {
             if settings.swing <= 0.0 {
-                phase_from_beats(beats, settings.beats_per_cycle, 0.0)
+                sync_phase_from_beats(beats, settings.beats_per_cycle, settings.delay_beats)
             } else {
-                let raw_phase = phase_from_beats(beats, settings.beats_per_cycle, 0.0);
+                let raw_phase =
+                    sync_phase_from_beats(beats, settings.beats_per_cycle, settings.delay_beats);
                 swing_warp_phase(raw_phase, settings.swing)
             }
         })
@@ -100,6 +101,7 @@ pub(crate) fn gui_transport_telemetry(
         beat_phase: host_beat_phase(transport).unwrap_or(fallback_beat_phase),
         tempo_bpm: transport.tempo_bpm,
         beats_per_cycle: settings.beats_per_cycle,
+        delay_beats: settings.delay_beats,
         timing_mode: settings.timing_mode,
         effective_cycle_rate_hz: if settings.timing_mode == crate::params::TIMING_MODE_FREE {
             crate::params::clamp_free_rate_hz(settings.free_rate_hz)
@@ -127,6 +129,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::TIMING_MODE_SYNC,
@@ -221,6 +224,7 @@ mod tests {
             phase_offset: 0.2,
             output_gain_db: 0.0,
             beats_per_cycle: 4.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
@@ -246,6 +250,7 @@ mod tests {
             phase_offset: 0.2,
             output_gain_db: 0.0,
             beats_per_cycle: 4.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 1.0,
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
@@ -273,6 +278,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::TIMING_MODE_SYNC,
@@ -306,6 +312,45 @@ mod tests {
     }
 
     #[test]
+    fn gui_sync_phase_with_delay_holds_runs_one_cycle_and_repeats() {
+        let settings = DspSettings {
+            delay_beats: 1,
+            ..test_settings(2.0)
+        };
+        let phase_at = |host_beats| {
+            gui_phase_from_transport(
+                TransportState {
+                    song_pos_beats: Some(host_beats),
+                    ..TransportState::default()
+                },
+                settings,
+                0.75,
+            )
+        };
+
+        // D=1 holds [0, 1), then N=2 traverses one full cycle over [1, 3).
+        for (host_beats, expected) in [
+            (0.0, 0.0),
+            (0.5, 0.0),
+            (1.0, 0.0),
+            (1.5, 0.25),
+            (2.0, 0.5),
+            (2.5, 0.75),
+            (3.0, 0.0),
+        ] {
+            assert!((phase_at(host_beats) - expected).abs() < 1.0e-6);
+        }
+
+        for host_beats in [0.0, 0.5, 1.0, 1.5, 2.0, 2.5] {
+            assert!((phase_at(host_beats) - phase_at(host_beats + 3.0)).abs() < 1.0e-6);
+        }
+
+        for (host_beats, expected) in [(-0.5, 0.75), (-1.0, 0.5), (-2.0, 0.0), (-2.5, 0.0)] {
+            assert!((phase_at(host_beats) - expected).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
     fn gui_free_phase_keeps_raw_offset_origin() {
         let settings = DspSettings {
             mix: 1.0,
@@ -314,6 +359,7 @@ mod tests {
             phase_offset: 0.2,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::TIMING_MODE_FREE,
@@ -357,6 +403,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
@@ -412,12 +459,20 @@ mod tests {
             is_playing: true,
             song_pos_beats: None,
         };
-        let telemetry = gui_transport_telemetry(transport, test_settings(4.0), 0.37);
+        let telemetry = gui_transport_telemetry(
+            transport,
+            DspSettings {
+                delay_beats: 3,
+                ..test_settings(4.0)
+            },
+            0.37,
+        );
         assert!(telemetry.is_playing);
         assert!(telemetry.transport_is_playing);
         assert!(!telemetry.has_host_beats_timeline);
         assert!((telemetry.beat_phase - 0.37).abs() < 1.0e-6);
         assert!((telemetry.beats_per_cycle - 4.0).abs() < 1.0e-6);
+        assert_eq!(telemetry.delay_beats, 3);
     }
 
     #[test]

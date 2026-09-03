@@ -150,6 +150,67 @@ fn v15_extension_start(payload: &[u8]) -> usize {
     offset + 20
 }
 
+fn v17_extension_start(payload: &[u8]) -> usize {
+    let mut offset = first_preset_start(payload);
+    let preset_count = read_u32(payload, offset - 4) as usize;
+    for _ in 0..preset_count {
+        let name_len = read_u32(payload, offset) as usize;
+        offset += 4 + name_len + 6 * 4 + 1;
+        offset = skip_encoded_curve(payload, offset, true);
+        let quick_slot_count = read_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_slot_count {
+            offset = skip_encoded_curve(payload, offset, true);
+        }
+        offset += 4 + 4 + 4 + 1 + 4 + 8 + 4;
+    }
+    offset + 20
+}
+
+fn preset_delay_offsets(payload: &[u8]) -> Vec<usize> {
+    let mut offset = first_preset_start(payload);
+    let preset_count = read_u32(payload, offset - 4) as usize;
+    let mut delay_offsets = Vec::with_capacity(preset_count);
+    for _ in 0..preset_count {
+        let name_len = read_u32(payload, offset) as usize;
+        offset += 4 + name_len + 6 * 4 + 1;
+        offset = skip_encoded_curve(payload, offset, true);
+        let quick_slot_count = read_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_slot_count {
+            offset = skip_encoded_curve(payload, offset, true);
+        }
+        offset += 4 + 4 + 4 + 1 + 4 + 8;
+        delay_offsets.push(offset);
+        offset += 4;
+    }
+    delay_offsets
+}
+
+fn remove_v17_delay_fields(payload: &mut Vec<u8>) {
+    let mut delay_offsets = preset_delay_offsets(payload);
+    let extension_start = v17_extension_start(payload);
+    let (_, _, a_end) = sound_state_offsets(payload, extension_start + 4);
+    let b_start = a_end + 12;
+    let (_, _, b_end) = sound_state_offsets(payload, b_start);
+    let stored_a_start = b_end + 12;
+    let (_, _, stored_a_end) = sound_state_offsets(payload, stored_a_start);
+    let stored_b_start = stored_a_end + 12;
+    let (_, _, stored_b_end) = sound_state_offsets(payload, stored_b_start);
+
+    delay_offsets.extend([
+        a_end + 8,
+        b_end + 8,
+        stored_a_end + 8,
+        stored_b_end + 8,
+        stored_b_end + 20,
+    ]);
+    delay_offsets.sort_unstable();
+    for offset in delay_offsets.into_iter().rev() {
+        payload.drain(offset..offset + 4);
+    }
+}
+
 fn preset_timing_offsets(payload: &[u8]) -> Vec<usize> {
     let mut offset = first_preset_start(payload);
     let preset_count = read_u32(payload, offset - 4) as usize;
@@ -198,6 +259,12 @@ fn sound_state_offsets(payload: &[u8], start: usize) -> (usize, usize, usize) {
 
 pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 17 {
+        // Delay was appended to every current preset/sound record and to the
+        // top-level timing extension in v17. Remove those fields before
+        // applying the older v16/v15 migrations below.
+        remove_v17_delay_fields(&mut payload);
+    }
     if version < 16 {
         // Stored/reference snapshots were appended in v16. Remove both
         // variable-length records before applying the older field removals.
@@ -287,7 +354,7 @@ pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Ve
             let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
             payload.truncate(quick_slot_offset);
         }
-        5..=15 => {}
+        5..=17 => {}
         _ => panic!("unsupported test state version"),
     }
     payload
@@ -322,7 +389,7 @@ fn decode_v7_state_defaults_trigger_mode_to_host() {
 fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
     let source = sample_params();
     let mut payload = encode_state_payload(&source);
-    let extension_start = v15_extension_start(&payload);
+    let extension_start = v17_extension_start(&payload);
     write_f32(
         &mut payload,
         extension_start - 20,
@@ -345,13 +412,13 @@ fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
         super::PROCESSING_MODE_PUNCH as u32,
     );
     let (a_trigger, a_mode, a_end) = sound_state_offsets(&payload, extension_start + 4);
-    let b_start = a_end + 8;
+    let b_start = a_end + 12;
     let (b_trigger, b_mode, b_end) = sound_state_offsets(&payload, b_start);
-    assert_eq!(a_end + 8, b_start);
-    let (stored_a_trigger, stored_a_mode, stored_a_end) = sound_state_offsets(&payload, b_end + 8);
+    assert_eq!(a_end + 12, b_start);
+    let (stored_a_trigger, stored_a_mode, stored_a_end) = sound_state_offsets(&payload, b_end + 12);
     let (stored_b_trigger, stored_b_mode, stored_b_end) =
-        sound_state_offsets(&payload, stored_a_end + 8);
-    assert_eq!(stored_b_end + 8, payload.len() - 8);
+        sound_state_offsets(&payload, stored_a_end + 12);
+    assert_eq!(stored_b_end + 12, payload.len() - 12);
     write_u32(
         &mut payload,
         a_trigger,
@@ -627,7 +694,7 @@ fn decode_rejects_trailing_bytes_without_mutating_state() {
 fn decode_rejects_nonfinite_v14_ab_scalar_without_mutating_state() {
     let params = sample_params();
     let mut payload = encode_state_payload(&params);
-    let offset = v14_extension_start(&payload) + 4;
+    let offset = v17_extension_start(&payload) + 4;
     write_f32(&mut payload, offset, f32::NAN);
     assert_decode_error_preserves_state(&params, &payload, "invalid A/B scalar field");
 }
