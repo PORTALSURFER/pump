@@ -810,6 +810,27 @@ fn empty_vst3_blocks_do_not_refresh_a_stale_waveform() {
 }
 
 #[test]
+fn processing_reset_clears_stale_waveform_state() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(64, 9.0);
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(shared.status.incoming_waveform_snapshot().is_some());
+
+    unsafe { processor.setProcessing(0) };
+    fixture.process_data.numSamples = 0;
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(shared.status.incoming_waveform_snapshot().is_none());
+}
+
+#[test]
 fn silent_vst3_blocks_do_not_refresh_a_stale_waveform() {
     let shared = Arc::new(PumpVst3Shared::new());
     let processor = PumpVst3Processor::new(Arc::clone(&shared));

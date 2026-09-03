@@ -388,6 +388,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             runtime.set_sample_rate(sample_rate.into(), self.shared.params.as_ref());
         }
         if pending.processing_reset {
+            self.shared
+                .status
+                .incoming_waveform_buffer()
+                .mark_unavailable();
+            runtime.waveform_writer.reset();
             runtime
                 .engine
                 .reset_with_bypass(self.shared.params.bypassed());
@@ -424,11 +429,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         let gui_phase = gui_phase_from_transport(transport, settings, self.shared.status.phase());
         self.shared.status.update_transport(
             gui_phase,
-            gui_transport_telemetry(
-                transport,
-                settings.beats_per_cycle,
-                self.shared.status.beat_phase(),
-            ),
+            gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
         );
 
         let runtime = &mut *runtime;
@@ -453,11 +454,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         unsafe { (*process_data.outputs).silenceFlags = 0 };
         self.shared.status.update_transport(
             last_phase,
-            gui_transport_telemetry(
-                transport,
-                settings.beats_per_cycle,
-                self.shared.status.beat_phase(),
-            ),
+            gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
         );
         if let Some(telemetry) = telemetry {
             self.shared

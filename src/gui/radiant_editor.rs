@@ -1288,7 +1288,7 @@ struct CanonicalSeamDrag {
 
 fn seam_raw(phase_offset: f32) -> f32 {
     if phase_offset.is_finite() {
-        (-phase_offset).rem_euclid(1.0)
+        crate::dsp::authored_curve_phase(0.0, phase_offset)
     } else {
         0.0
     }
@@ -5569,7 +5569,7 @@ impl CurvePreviewWidget {
 
     fn raw_node_from_display_point(&self, bounds: Rect, position: Point) -> CurveNode {
         let display_node = Self::node_from_point(bounds, position);
-        let mut raw_x = (display_node.x - self.phase_offset).rem_euclid(1.0);
+        let mut raw_x = crate::dsp::authored_curve_phase(display_node.x, self.phase_offset);
         let at_viewport_seam = display_node.x <= CURVE_DISPLAY_SEAM_EPSILON
             || display_node.x >= 1.0 - CURVE_DISPLAY_SEAM_EPSILON;
         if at_viewport_seam
@@ -5654,6 +5654,8 @@ impl CurvePreviewWidget {
     }
 
     fn display_phase(raw_x: f32, phase_offset: f32) -> f32 {
+        // Positive offsets move authored curve features to the right. The
+        // inverse mapping for display/effective samples is shared with DSP.
         let shifted = raw_x + phase_offset;
         let wrapped = shifted.rem_euclid(1.0);
         if shifted > CURVE_DISPLAY_SEAM_EPSILON && wrapped <= CURVE_DISPLAY_SEAM_EPSILON {
@@ -5713,8 +5715,9 @@ impl CurvePreviewWidget {
         Self::curve_point(bounds, self.display_node(node))
     }
 
-    fn sample_display_curve(&self, phase: f32) -> f32 {
-        sample_editable_curve(&self.curve, phase - self.phase_offset)
+    fn sample_display_curve(&self, effective_phase: f32) -> f32 {
+        let authored_phase = crate::dsp::authored_curve_phase(effective_phase, self.phase_offset);
+        sample_editable_curve(&self.curve, authored_phase)
     }
 
     fn offset_pointer_x(bounds: Rect, position: Point) -> f32 {
@@ -6435,12 +6438,15 @@ impl CurvePreviewWidget {
     fn sample_smoothed_curve_points(&self, bounds: Rect) -> Vec<Point> {
         (0..=CURVE_SAMPLE_COUNT)
             .map(|step| {
-                let phase = step as f32 / CURVE_SAMPLE_COUNT as f32;
+                let effective_phase = step as f32 / CURVE_SAMPLE_COUNT as f32;
                 Self::curve_point(
                     bounds,
                     CurveNode {
-                        x: phase,
-                        y: self.sample_smoothed_curve(phase - self.phase_offset),
+                        x: effective_phase,
+                        y: self.sample_smoothed_curve(crate::dsp::authored_curve_phase(
+                            effective_phase,
+                            self.phase_offset,
+                        )),
                     },
                 )
             })
@@ -7179,7 +7185,8 @@ struct CurveHoverState {
 mod tests {
     use super::super::curve_paint::{BoundaryContact, BoundaryEdge, EdgeParameter};
     use super::*;
-    use crate::curve::sample_curve_segment;
+    use crate::curve::{editable_curve_to_table, sample_curve_segment};
+    use crate::dsp::{DspSettings, PumpEngine};
     #[cfg(feature = "vst3")]
     use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
@@ -7191,6 +7198,7 @@ mod tests {
     use toybox::clack_plugin::events::spaces::CoreEventSpace;
     use toybox::clack_plugin::events::Event;
     use toybox::clap::automation::{AutomationDropPolicy, AutomationQueueConfig};
+    use toybox::dsp::TransportState;
 
     const CURVE_PAINT_ASSERT_EPSILON: f32 = 1.0e-4;
 
@@ -16315,6 +16323,75 @@ mod tests {
     }
 
     #[test]
+    fn runtime_gain_matches_processed_waveform_at_the_effective_phase_bin() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.1 },
+                CurveNode { x: 0.2, y: 0.9 },
+                CurveNode { x: 0.63, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.7 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let phase_offset = 0.25;
+        let bin = 48;
+        let displayed_phase =
+            bin as f32 / (crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT - 1) as f32;
+        let mut waveform = [0.0; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
+        waveform[bin] = 1.0;
+
+        let widget = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_phase_offset(phase_offset)
+            .with_gain_mapping(120.0, -60.0);
+        let processed = widget
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: TIMING_MODE_SYNC,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(displayed_phase as f64),
+        };
+        let mut engine = PumpEngine::new(1_000.0, editable_curve_to_table(&curve));
+        let mut left = 1.0;
+        let mut right = 1.0;
+        let mut telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+        for _ in 0..512 {
+            left = 1.0;
+            right = 1.0;
+            telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+        }
+
+        assert!(
+            (telemetry.phase - displayed_phase).abs() < 1.0e-5,
+            "runtime effective phase must name the captured display bin: runtime={}, display={displayed_phase}",
+            telemetry.phase
+        );
+        assert!(
+            (telemetry.gain - processed[bin]).abs() < 1.0e-3,
+            "runtime gain and processed waveform must sample the same authored phase: runtime={}, processed={}",
+            telemetry.gain,
+            processed[bin]
+        );
+    }
+
+    #[test]
     fn curve_preview_widget_processed_waveform_preserves_unity_and_zero_gain() {
         let curve = EditableCurve {
             nodes: vec![
@@ -16885,6 +16962,8 @@ mod tests {
                 beat_phase: 0.0,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(status.gain_reduction_db() > 0.0);
@@ -16897,6 +16976,8 @@ mod tests {
                 beat_phase: 0.0,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         status.mark_gain_reduction_inactive();
@@ -16924,6 +17005,8 @@ mod tests {
                 beat_phase: 0.1,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         let mut editor = RadiantPumpEditor::new(
@@ -16947,6 +17030,8 @@ mod tests {
                 beat_phase: 0.6,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         let second_center = playhead_marker_center(editor.paint_plan())

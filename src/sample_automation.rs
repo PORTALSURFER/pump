@@ -198,8 +198,8 @@ pub(crate) fn process_stereo_block(
                 raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
-                settings.phase_offset,
                 settings.swing,
+                settings.timing_mode,
                 input_left,
                 input_right,
             );
@@ -300,8 +300,8 @@ pub(crate) unsafe fn process_stereo_block_raw(
                 raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
-                settings.phase_offset,
                 settings.swing,
+                settings.timing_mode,
                 input_left,
                 input_right,
             );

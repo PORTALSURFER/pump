@@ -238,8 +238,6 @@ impl IncomingWaveformBuffer {
 enum RemapCaptureState {
     #[default]
     Normal,
-    AwaitingRemappedBoundary,
-    CapturingRemappedCycle,
 }
 
 /// Audio-owned peak aggregator that holds the last completed cycle for the GUI.
@@ -351,12 +349,6 @@ impl IncomingWaveformWriter {
         self.live_mode = live_mode;
     }
 
-    fn start_remapped_capture(&mut self, buffer: &IncomingWaveformBuffer) {
-        self.open_next_capture(buffer, false);
-        self.clear_partial_capture();
-        self.live_publication_suppressed = true;
-    }
-
     fn complete_cycle(&mut self, buffer: &IncomingWaveformBuffer) {
         self.flush_current(buffer);
         if self.cycle_has_signal {
@@ -382,6 +374,7 @@ impl IncomingWaveformWriter {
         self.record_with_cycle_mapping(buffer, phase, phase, 1.0, 0.0, 0.0, left, right);
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_with_cycle_mapping(
         &mut self,
@@ -389,8 +382,32 @@ impl IncomingWaveformWriter {
         raw_cycle_phase: f32,
         phase: f32,
         beats_per_cycle: f32,
-        phase_offset: f32,
+        _phase_offset: f32,
         swing: f32,
+        left: f32,
+        right: f32,
+    ) {
+        self.record_with_cycle_mapping_and_timing_mode(
+            buffer,
+            raw_cycle_phase,
+            phase,
+            beats_per_cycle,
+            swing,
+            crate::params::TIMING_MODE_SYNC,
+            left,
+            right,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_with_cycle_mapping_and_timing_mode(
+        &mut self,
+        buffer: &IncomingWaveformBuffer,
+        raw_cycle_phase: f32,
+        phase: f32,
+        beats_per_cycle: f32,
+        swing: f32,
+        timing_mode: usize,
         left: f32,
         right: f32,
     ) {
@@ -398,8 +415,8 @@ impl IncomingWaveformWriter {
         let phase = phase.rem_euclid(1.0);
         let cycle_mapping = [
             beats_per_cycle.to_bits(),
-            phase_offset.to_bits(),
             swing.to_bits(),
+            timing_mode as u32,
         ];
         let cycle_mapping_changed = self
             .last_cycle_mapping
@@ -414,37 +431,16 @@ impl IncomingWaveformWriter {
             let moved_forward = raw_cycle_phase - previous > FORWARD_PHASE_DISCONTINUITY;
             (moved_backward && !raw_cycle_complete) || moved_forward
         });
-        let offset_only_mapping_change = self.last_cycle_mapping.is_some_and(|previous| {
-            previous[0] == cycle_mapping[0]
-                && previous[1] != cycle_mapping[1]
-                && previous[2] == cycle_mapping[2]
-                && !raw_discontinuity
-        });
         let transformed_cycle_wrap = self.last_phase.is_some_and(|previous| {
             previous > 0.5 && phase < 0.5 && phase + BACKWARD_PHASE_EPSILON < previous
         });
 
-        // The raw phase is the only seek/discontinuity witness. Mapping changes are
-        // handled separately so a transformed offset jump cannot clear the display.
-        if raw_discontinuity {
-            self.invalidate_capture(buffer);
-        } else if offset_only_mapping_change {
-            self.start_remapped_capture(buffer);
-            self.remap_state = RemapCaptureState::AwaitingRemappedBoundary;
-        } else if cycle_mapping_changed {
+        // Raw phase detects seeks; the remaining identity changes invalidate the
+        // capture, while phase offset is intentionally absent from that identity.
+        if raw_discontinuity || cycle_mapping_changed {
             self.invalidate_capture(buffer);
         } else if transformed_cycle_wrap {
-            match self.remap_state {
-                RemapCaptureState::Normal => self.complete_cycle(buffer),
-                RemapCaptureState::AwaitingRemappedBoundary => {
-                    self.start_remapped_capture(buffer);
-                    self.remap_state = RemapCaptureState::CapturingRemappedCycle;
-                }
-                RemapCaptureState::CapturingRemappedCycle => {
-                    self.complete_cycle(buffer);
-                    self.remap_state = RemapCaptureState::Normal;
-                }
-            }
+            self.complete_cycle(buffer);
         }
 
         self.last_raw_cycle_phase = Some(raw_cycle_phase);
@@ -535,18 +531,18 @@ impl<'a> IncomingWaveformCapture<'a> {
         raw_cycle_phase: f32,
         phase: f32,
         beats_per_cycle: f32,
-        phase_offset: f32,
         swing: f32,
+        timing_mode: usize,
         left: f32,
         right: f32,
     ) {
-        self.writer.record_with_cycle_mapping(
+        self.writer.record_with_cycle_mapping_and_timing_mode(
             self.buffer,
             raw_cycle_phase,
             phase,
             beats_per_cycle,
-            phase_offset,
             swing,
+            timing_mode,
             left,
             right,
         );
@@ -837,7 +833,57 @@ mod tests {
     }
 
     #[test]
-    fn phase_offset_remapping_retains_old_display_until_two_transformed_wraps() {
+    fn offset_only_changes_keep_effective_capture_continuous() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.2, 0.2, 1.0, 0.0, 0.0, 0.9, 0.0);
+        writer.finish_block(&buffer);
+        assert!(buffer.snapshot().is_some());
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping(&buffer, 0.21, 0.21, 1.0, 0.25, 0.0, 0.4, 0.0);
+        writer.finish_block(&buffer);
+
+        assert_eq!(
+            buffer.snapshot().unwrap()[(0.2 * INCOMING_WAVEFORM_BIN_COUNT as f32) as usize],
+            0.9,
+            "offset-only changes must not invalidate or remap effective bins"
+        );
+    }
+
+    #[test]
+    fn timing_mode_changes_invalidate_capture_near_wrap() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.98,
+            0.98,
+            1.0,
+            0.0,
+            crate::params::TIMING_MODE_SYNC,
+            0.9,
+            0.0,
+        );
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.01,
+            0.01,
+            1.0,
+            0.0,
+            crate::params::TIMING_MODE_FREE,
+            0.4,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+
+        assert!(buffer.snapshot().is_none());
+    }
+
+    #[test]
+    fn effective_phase_wraps_retain_old_display_until_next_cycle() {
         let buffer = IncomingWaveformBuffer::default();
         let mut writer = IncomingWaveformWriter::default();
         writer.begin_block(&buffer);

@@ -31,6 +31,10 @@ pub struct GuiTransportTelemetry {
     pub tempo_bpm: f32,
     /// Pump cycle length in quarter-note beats.
     pub beats_per_cycle: f32,
+    /// Active timing source used by Pump's phase generator.
+    pub timing_mode: usize,
+    /// Effective cycle frequency in hertz for GUI phase extrapolation.
+    pub effective_cycle_rate_hz: f32,
 }
 
 /// Shared GUI telemetry values updated by the audio thread.
@@ -121,7 +125,11 @@ impl GuiStatus {
             .store(transport.beat_phase.rem_euclid(1.0), Ordering::Relaxed);
         self.tempo_bpm.store(safe_tempo, Ordering::Relaxed);
         self.cycle_hz.store(
-            (safe_tempo / 60.0) / safe_beats_per_cycle,
+            if transport.timing_mode == crate::params::TIMING_MODE_FREE {
+                transport.effective_cycle_rate_hz.max(0.0)
+            } else {
+                (safe_tempo / 60.0) / safe_beats_per_cycle
+            },
             Ordering::Relaxed,
         );
         self.last_update_micros
@@ -417,6 +425,8 @@ mod tests {
                 beat_phase: 0.25,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         let last_audio_update = status
@@ -444,6 +454,8 @@ mod tests {
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(status.transport_beat_blink_active());
@@ -458,6 +470,8 @@ mod tests {
                 beat_phase: 0.5,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(!status.transport_beat_blink_active());
@@ -472,6 +486,8 @@ mod tests {
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(!status.transport_beat_blink_active());
@@ -486,6 +502,8 @@ mod tests {
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         assert!(status.transport_beat_blink_active());
@@ -516,6 +534,8 @@ mod tests {
                 beat_phase: 0.2,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         status.last_update_micros.store(
@@ -542,6 +562,8 @@ mod tests {
                 beat_phase: 0.73,
                 tempo_bpm: 123.0,
                 beats_per_cycle: 1.0,
+                timing_mode: crate::params::TIMING_MODE_SYNC,
+                effective_cycle_rate_hz: 0.0,
             },
         );
         status.last_update_micros.store(
