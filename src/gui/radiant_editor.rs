@@ -5887,6 +5887,12 @@ impl CurvePreviewWidget {
         })
     }
 
+    fn is_curve_segment_in_neutral_band(&self, bounds: Rect, position: Point) -> bool {
+        let (insert_radius, neutral_radius, _) = Self::curve_segment_hit_radii(bounds);
+        self.nearest_curve_segment_distance(bounds, position, neutral_radius)
+            .is_some_and(|(_, distance_squared)| distance_squared > insert_radius.powi(2))
+    }
+
     fn hit_segment(&self, bounds: Rect, position: Point, radius: f32) -> Option<usize> {
         let raw = self.raw_node_from_display_point(bounds, position);
         let curve_point = Self::curve_point(
@@ -6839,7 +6845,19 @@ impl Widget for CurvePreviewWidget {
                                     command_held: false,
                                 })
                         }
-                        (false, false, None, _) => None,
+                        (false, false, None, _)
+                            if self.is_curve_segment_in_neutral_band(bounds, position) =>
+                        {
+                            None
+                        }
+                        (false, false, None, _) => {
+                            self.insert_node_at(bounds, position).map(|node| {
+                                CurvePreviewMessage::InsertNode {
+                                    node,
+                                    command_held: false,
+                                }
+                            })
+                        }
                     }
                 }
             }
@@ -11272,6 +11290,21 @@ mod tests {
         assert_eq!(after.nodes[0].y, after.nodes[MAX_EDITABLE_NODES - 1].y);
     }
 
+    #[test]
+    fn curve_preview_widget_plain_empty_press_is_noop_at_capacity() {
+        let curve = max_capacity_curve();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.42, y: 0.1 });
+        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+
+        assert!(widget
+            .handle_input(
+                bounds,
+                WidgetInput::pointer_press(position, PointerButton::Primary, Default::default()),
+            )
+            .is_none());
+    }
+
     fn assert_edge_insert_is_single_visible_node(node: CurveNode, edge: CurveEdge) {
         let params = Arc::new(PumpParams::new());
         let before = params.editable_curve_snapshot();
@@ -14241,7 +14274,7 @@ mod tests {
     }
 
     #[test]
-    fn curve_segment_overlap_uses_lower_index_and_background_press_is_no_op() {
+    fn curve_segment_overlap_uses_lower_index_and_background_press_inserts_node() {
         let curve = EditableCurve {
             nodes: vec![
                 CurveNode { x: 0.0, y: 0.5 },
@@ -14264,12 +14297,19 @@ mod tests {
 
         let mut background = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
         let position = flat_segment_point(bounds, 0.5, proximity_radius + 10.0);
-        assert!(background
+        let output = background
             .handle_input(
                 bounds,
                 WidgetInput::pointer_press(position, PointerButton::Primary, Default::default()),
             )
-            .is_none());
+            .expect("plain background press should insert a node");
+        assert!(matches!(
+            output.typed_copied(),
+            Some(CurvePreviewMessage::InsertNode {
+                command_held: false,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -14876,38 +14916,75 @@ mod tests {
     }
 
     #[test]
-    fn curve_preview_widget_plain_empty_canvas_press_is_no_op() {
-        let curve = PumpParams::new().editable_curve_snapshot();
-        let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false);
+    fn curve_preview_widget_plain_empty_canvas_press_inserts_at_clicked_point() {
+        let params = Arc::new(PumpParams::new());
+        let before = params.editable_curve_snapshot();
+        let mut widget =
+            CurvePreviewWidget::new(before.clone(), None, None, None, None, None, false);
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
-        let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.72, y: 0.18 });
+        let clicked = CurveNode { x: 0.72, y: 0.18 };
+        let position = CurvePreviewWidget::curve_point(bounds, clicked);
 
-        assert!(widget
+        let output = widget
             .handle_input(
                 bounds,
                 WidgetInput::pointer_press(position, PointerButton::Primary, Default::default()),
             )
-            .is_none());
+            .expect("plain empty-space press should emit an insertion");
+        let message = output
+            .typed_copied::<CurvePreviewMessage>()
+            .expect("plain empty-space press should emit one curve message");
+        let CurvePreviewMessage::InsertNode {
+            node,
+            command_held: false,
+        } = message
+        else {
+            panic!("unexpected empty-space press output: {message:?}");
+        };
+        assert!((node.x - clicked.x).abs() < 1.0e-6);
+        assert!((node.y - clicked.y).abs() < 1.0e-6);
+
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_editor_message(&mut state, RadiantEditorMessage::Curve(message));
+        let after = params.editable_curve_snapshot();
+        assert_eq!(after.nodes.len(), before.nodes.len() + 1);
+        assert_eq!(
+            after
+                .nodes
+                .iter()
+                .filter(|node| {
+                    (node.x - clicked.x).abs() < 1.0e-6 && (node.y - clicked.y).abs() < 1.0e-6
+                })
+                .count(),
+            1
+        );
     }
 
     #[test]
-    fn curve_preview_widget_unmodified_blank_press_is_no_op_and_ignores_stale_shift_hover() {
+    fn curve_preview_widget_unmodified_blank_press_ignores_stale_shift_hover() {
         let curve = PumpParams::new().editable_curve_snapshot();
         let mut widget = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
             .with_shift_hover_held(true);
         let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
         let position = CurvePreviewWidget::curve_point(bounds, CurveNode { x: 0.72, y: 0.18 });
 
-        assert!(widget
+        let output = widget
             .handle_input(
                 bounds,
                 WidgetInput::pointer_press(
                     position,
                     PointerButton::Primary,
-                    PointerModifiers::default()
+                    PointerModifiers::default(),
                 ),
             )
-            .is_none());
+            .expect("stale shift hover should not block plain insertion");
+        assert!(matches!(
+            output.typed_copied(),
+            Some(CurvePreviewMessage::InsertNode {
+                command_held: false,
+                ..
+            })
+        ));
     }
 
     #[test]
