@@ -362,6 +362,8 @@ impl IncomingWaveformWriter {
         self.initial_snapshot_done = true;
         self.live_publication_suppressed = true;
         self.clear_partial_capture();
+        self.last_raw_cycle_phase = None;
+        self.last_phase = None;
         self.remap_state = RemapCaptureState::Normal;
         self.open_after_invalidation(buffer, generation);
         self.live_mode = live_mode;
@@ -946,8 +948,8 @@ mod tests {
             &buffer,
             0.25,
             0.25,
-            1.0,
-            0.0,
+            4.0,
+            0.2,
             crate::params::TIMING_MODE_SYNC,
             0.8,
             0.0,
@@ -957,15 +959,17 @@ mod tests {
 
         let generation_before = buffer.generation_for_test();
         buffer.set_last_update_micros_for_test(1234);
-        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_FREE);
+        writer.reconcile_cycle_mapping(&buffer, 8.0, 0.35, crate::params::TIMING_MODE_FREE);
         assert_eq!(
             buffer.generation_for_test(),
             generation_before.wrapping_add(1)
         );
         assert_eq!(buffer.last_update_micros_for_test(), 0);
         assert!(buffer.snapshot().is_none());
+        assert!(writer.last_raw_cycle_phase.is_none());
+        assert!(writer.last_phase.is_none());
 
-        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_FREE);
+        writer.reconcile_cycle_mapping(&buffer, 8.0, 0.35, crate::params::TIMING_MODE_FREE);
         assert_eq!(
             buffer.generation_for_test(),
             generation_before.wrapping_add(1)
@@ -974,15 +978,20 @@ mod tests {
         writer.begin_block(&buffer);
         writer.record_with_cycle_mapping_and_timing_mode(
             &buffer,
-            0.30,
-            0.30,
-            1.0,
-            0.0,
+            0.80,
+            0.80,
+            8.0,
+            0.35,
             crate::params::TIMING_MODE_FREE,
             0.6,
             0.0,
         );
         writer.finish_block(&buffer);
+        assert_eq!(
+            buffer.generation_for_test(),
+            generation_before.wrapping_add(1),
+            "the deliberately discontinuous first phase must not invalidate twice"
+        );
         assert!(
             buffer.snapshot().is_none(),
             "the first nonzero block after a mapping change must remain a fresh capture"
@@ -1019,10 +1028,30 @@ mod tests {
             generation_before.wrapping_add(1)
         );
         assert_eq!(buffer.last_update_micros_for_test(), 0);
+        assert!(writer.last_raw_cycle_phase.is_none());
+        assert!(writer.last_phase.is_none());
         writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_SYNC);
         assert_eq!(
             buffer.generation_for_test(),
             generation_after_mapping_change
+        );
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.80,
+            0.80,
+            1.0,
+            0.0,
+            crate::params::TIMING_MODE_SYNC,
+            0.6,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+        assert_eq!(
+            buffer.generation_for_test(),
+            generation_after_mapping_change,
+            "the first real sample must establish witnesses without another transition"
         );
     }
 
