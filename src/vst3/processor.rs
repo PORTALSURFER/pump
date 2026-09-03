@@ -401,7 +401,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         let process_data = unsafe { &*data };
-        let frame_count = process_data.numSamples.max(0) as usize;
+        if process_data.numSamples < 0 {
+            return kInvalidArgument;
+        }
+        let frame_count = process_data.numSamples as usize;
         let Some(mut runtime) = self.runtime.try_acquire() else {
             self.shared.status.mark_gain_reduction_inactive();
             apply_vst3_param_points_immediately(process_data, self.shared.params.as_ref());

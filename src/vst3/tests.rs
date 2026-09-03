@@ -1428,6 +1428,27 @@ fn processor_rejects_negative_sample_count_instead_of_treating_it_as_zero() {
 }
 
 #[test]
+fn processor_rejects_negative_sample_count_without_outputs_before_applying_parameters() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared.params.set_phase_offset(0.2);
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut changes = TestParameterChanges::new(vec![(
+        PARAM_PHASE_OFFSET_NUM,
+        vec![(0, to_normalized(PARAM_PHASE_OFFSET_NUM, 0.8))],
+    )]);
+    let mut process_data: ProcessData = unsafe { mem::zeroed() };
+    process_data.numSamples = -1;
+    process_data.numOutputs = 0;
+    process_data.inputParameterChanges = changes.as_ptr();
+
+    assert_eq!(
+        unsafe { processor.process(&mut process_data) },
+        kInvalidArgument
+    );
+    assert_eq!(shared.params.phase_offset(), 0.2);
+}
+
+#[test]
 fn processor_accepts_an_empty_no_buffer_block() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let mut process_data: ProcessData = unsafe { mem::zeroed() };
