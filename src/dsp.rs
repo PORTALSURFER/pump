@@ -65,6 +65,8 @@ pub(crate) fn smooth_time_constant_seconds(amount: f32) -> f32 {
 pub struct DspTelemetry {
     /// Last processed phase in `[0, 1)`.
     pub phase: f32,
+    /// Smoothed phase offset applied to the authored curve for this sample.
+    pub applied_phase_offset: f32,
     /// Last processed total linear gain, retained for DSP verification.
     #[cfg_attr(not(test), allow(dead_code))]
     pub gain: f32,
@@ -312,6 +314,7 @@ impl PumpEngine {
         (
             DspTelemetry {
                 phase,
+                applied_phase_offset: phase_offset,
                 gain,
                 reduction_gain: blend_gain.clamp(0.0, 1.0),
                 input_active: false,

@@ -585,6 +585,40 @@ fn processor_resets_input_presentation_latency_when_deactivated() {
 }
 
 #[test]
+fn active_lifecycle_invalidates_waveform_without_process_and_republishes_after_restart() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(64, 9.0);
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(shared.status.incoming_waveform_snapshot().is_some());
+
+    assert_eq!(unsafe { processor.setActive(0) }, kResultOk);
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "deactivation must hide the old waveform before another process callback"
+    );
+    assert_eq!(unsafe { processor.setActive(1) }, kResultOk);
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "reactivation must not expose the old waveform"
+    );
+
+    let mut after_restart = stereo_process_fixture(64, 9.0);
+    assert_eq!(
+        unsafe { processor.process(&mut after_restart.process_data) },
+        process_ok()
+    );
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_some(),
+        "the next audio callback must republish a fresh waveform"
+    );
+}
+
+#[test]
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 fn controller_creates_editor_view_for_host_editor_request() {
@@ -821,13 +855,59 @@ fn processing_reset_clears_stale_waveform_state() {
     );
     assert!(shared.status.incoming_waveform_snapshot().is_some());
 
-    unsafe { processor.setProcessing(0) };
+    assert_eq!(unsafe { processor.setProcessing(0) }, kResultOk);
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "setProcessing(0) must hide the old waveform immediately"
+    );
+    assert_eq!(unsafe { processor.setProcessing(1) }, kResultOk);
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_none(),
+        "setProcessing(1) must keep the old waveform hidden"
+    );
+
+    fixture = stereo_process_fixture(64, 9.0);
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(
+        shared.status.incoming_waveform_snapshot().is_some(),
+        "the next audio callback must republish a fresh waveform"
+    );
+}
+
+#[test]
+fn empty_free_vst3_block_preserves_last_dsp_phase_and_applied_offset() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared.params.set_timing_mode(TIMING_MODE_FREE as f32);
+    shared.params.set_free_rate_hz(2.5);
+    shared.params.set_phase_offset(0.7);
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(64, 9.0);
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    let before = shared
+        .status
+        .dsp_snapshot()
+        .expect("a non-empty block must publish DSP telemetry");
+    assert!(before.applied_phase_offset > 0.0);
+    assert!(before.applied_phase_offset < 0.7);
+
     fixture.process_data.numSamples = 0;
     assert_eq!(
         unsafe { processor.process(&mut fixture.process_data) },
         process_ok()
     );
-    assert!(shared.status.incoming_waveform_snapshot().is_none());
+
+    assert_eq!(
+        shared.status.dsp_snapshot(),
+        Some(before),
+        "an empty Free-mode callback must preserve the last valid DSP pair"
+    );
 }
 
 #[test]

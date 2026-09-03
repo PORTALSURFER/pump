@@ -198,6 +198,10 @@ impl IComponentTrait for PumpVst3Processor {
         if state == 0 {
             self.runtime_handoff.reset_input_presentation_latency();
         }
+        self.shared
+            .status
+            .incoming_waveform_buffer()
+            .mark_unavailable();
         self.runtime_handoff.publish_processing_reset();
         kResultOk
     }
@@ -299,6 +303,10 @@ impl IAudioProcessorTrait for PumpVst3Processor {
     }
 
     unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+        self.shared
+            .status
+            .incoming_waveform_buffer()
+            .mark_unavailable();
         self.runtime_handoff.publish_processing_reset();
         kResultOk
     }
@@ -448,15 +456,15 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 )),
             )
         };
-        let last_phase = telemetry.map(|telemetry| telemetry.phase).unwrap_or(0.0);
         // SAFETY: successful stereo buffer extraction validated one writable
         // output bus, and the full range now contains processed audio.
         unsafe { (*process_data.outputs).silenceFlags = 0 };
-        self.shared.status.update_transport(
-            last_phase,
-            gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
-        );
         if let Some(telemetry) = telemetry {
+            self.shared.status.update_transport(
+                telemetry.phase,
+                gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
+            );
+            self.shared.status.publish_dsp_telemetry(telemetry);
             self.shared
                 .status
                 .publish_gain_reduction(telemetry.reduction_gain, telemetry.input_active);

@@ -37,9 +37,18 @@ pub struct GuiTransportTelemetry {
     pub effective_cycle_rate_hz: f32,
 }
 
+/// The last DSP-owned phase pair published to the GUI.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub(crate) struct GuiDspSnapshot {
+    pub(crate) effective_phase: f32,
+    pub(crate) applied_phase_offset: f32,
+}
+
 /// Shared GUI telemetry values updated by the audio thread.
 pub struct GuiStatus {
     phase: AtomicF32,
+    dsp_snapshot: AtomicU64,
+    dsp_snapshot_valid: AtomicBool,
     gain_reduction_linear: AtomicF32,
     gain_reduction_active: AtomicBool,
     gain_reduction_last_update_micros: AtomicU64,
@@ -65,6 +74,8 @@ impl Default for GuiStatus {
     fn default() -> Self {
         Self {
             phase: AtomicF32::new(0.0),
+            dsp_snapshot: AtomicU64::new(0),
+            dsp_snapshot_valid: AtomicBool::new(false),
             gain_reduction_linear: AtomicF32::new(1.0),
             gain_reduction_active: AtomicBool::new(false),
             gain_reduction_last_update_micros: AtomicU64::new(0),
@@ -136,6 +147,28 @@ impl GuiStatus {
             .store(monotonic_micros(), Ordering::Relaxed);
     }
 
+    /// Publish the effective phase and applied phase offset from one DSP block.
+    pub(crate) fn publish_dsp_telemetry(&self, telemetry: crate::dsp::DspTelemetry) {
+        self.dsp_snapshot.store(
+            pack_dsp_snapshot(GuiDspSnapshot {
+                effective_phase: telemetry.phase,
+                applied_phase_offset: telemetry.applied_phase_offset,
+            }),
+            Ordering::Release,
+        );
+        self.dsp_snapshot_valid.store(true, Ordering::Release);
+    }
+
+    /// Read the latest coherent DSP phase pair, if a block has completed.
+    pub(crate) fn dsp_snapshot(&self) -> Option<GuiDspSnapshot> {
+        if !self.dsp_snapshot_valid.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(unpack_dsp_snapshot(
+            self.dsp_snapshot.load(Ordering::Acquire),
+        ))
+    }
+
     /// Publish one block's strongest Pump attenuation without touching the audio path.
     pub fn publish_gain_reduction(&self, reduction_gain: f32, input_active: bool) {
         if !input_active {
@@ -169,8 +202,12 @@ impl GuiStatus {
 
     /// Read latest phase value.
     pub fn phase(&self) -> f32 {
+        let phase = self
+            .dsp_snapshot()
+            .map(|snapshot| snapshot.effective_phase)
+            .unwrap_or_else(|| self.phase.load(Ordering::Relaxed));
         extrapolate_phase(
-            self.phase.load(Ordering::Relaxed),
+            phase,
             self.cycle_hz.load(Ordering::Relaxed),
             self.is_playing(),
             self.last_update_micros.load(Ordering::Relaxed),
@@ -261,6 +298,18 @@ impl GuiStatus {
         // Fallback activity mode: keep the transport indicator lit while
         // playing when the host does not expose a beat timeline.
         true
+    }
+}
+
+fn pack_dsp_snapshot(snapshot: GuiDspSnapshot) -> u64 {
+    (u64::from(snapshot.effective_phase.to_bits()) << 32)
+        | u64::from(snapshot.applied_phase_offset.to_bits())
+}
+
+fn unpack_dsp_snapshot(value: u64) -> GuiDspSnapshot {
+    GuiDspSnapshot {
+        effective_phase: f32::from_bits((value >> 32) as u32),
+        applied_phase_offset: f32::from_bits(value as u32),
     }
 }
 

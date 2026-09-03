@@ -312,13 +312,12 @@ impl PumpAudioProcessor<'_> {
                 &mut self.waveform_writer,
             )),
         );
-        let last_phase = telemetry.map(|telemetry| telemetry.phase).unwrap_or(0.0);
-
-        self.shared.status.update_transport(
-            last_phase,
-            gui_transport_telemetry(transport, *settings, self.shared.status.beat_phase()),
-        );
         if let Some(telemetry) = telemetry {
+            self.shared.status.update_transport(
+                telemetry.phase,
+                gui_transport_telemetry(transport, *settings, self.shared.status.beat_phase()),
+            );
+            self.shared.status.publish_dsp_telemetry(telemetry);
             self.shared
                 .status
                 .publish_gain_reduction(telemetry.reduction_gain, telemetry.input_active);

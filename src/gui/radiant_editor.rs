@@ -2390,6 +2390,11 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let free_timing = params.timing_mode() == TIMING_MODE_FREE;
     let free_rate = params.free_rate_hz();
     let waveform_live_mode = state.status.waveform_live_mode();
+    let applied_phase_offset = state
+        .status
+        .dsp_snapshot()
+        .map(|snapshot| snapshot.applied_phase_offset)
+        .unwrap_or_else(|| params.phase_offset());
     let playhead_phase = (state.status.has_host_beats_timeline() || state.status.is_playing())
         .then_some(state.status.phase());
     let active_sound = params.active_sound();
@@ -2577,6 +2582,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 .with_swing(swing)
                 .with_smooth(smooth)
                 .with_phase_offset(state.params.phase_offset())
+                .with_applied_phase_offset(applied_phase_offset)
                 .with_gain_mapping(depth, floor)
                 .with_playhead_phase(playhead_phase),
                 RadiantEditorMessage::Curve,
@@ -5374,6 +5380,7 @@ struct CurvePreviewWidget {
     swing: f32,
     smooth: f32,
     phase_offset: f32,
+    applied_phase_offset: f32,
     depth_db: f32,
     floor_db: f32,
 }
@@ -5420,6 +5427,7 @@ impl CurvePreviewWidget {
             swing: crate::params::DEFAULT_SWING,
             smooth: crate::params::DEFAULT_SMOOTH,
             phase_offset: crate::params::DEFAULT_PHASE_OFFSET,
+            applied_phase_offset: crate::params::DEFAULT_PHASE_OFFSET,
             depth_db: crate::params::DEFAULT_DEPTH_DB,
             floor_db: crate::params::DEFAULT_FLOOR_DB,
         }
@@ -5499,7 +5507,14 @@ impl CurvePreviewWidget {
     }
 
     fn with_phase_offset(mut self, phase_offset: f32) -> Self {
-        self.phase_offset = phase_offset.rem_euclid(1.0);
+        let phase_offset = phase_offset.rem_euclid(1.0);
+        self.phase_offset = phase_offset;
+        self.applied_phase_offset = phase_offset;
+        self
+    }
+
+    fn with_applied_phase_offset(mut self, phase_offset: f32) -> Self {
+        self.applied_phase_offset = phase_offset.rem_euclid(1.0);
         self
     }
 
@@ -5716,7 +5731,11 @@ impl CurvePreviewWidget {
     }
 
     fn sample_display_curve(&self, effective_phase: f32) -> f32 {
-        let authored_phase = crate::dsp::authored_curve_phase(effective_phase, self.phase_offset);
+        self.sample_curve_with_phase_offset(effective_phase, self.phase_offset)
+    }
+
+    fn sample_curve_with_phase_offset(&self, effective_phase: f32, phase_offset: f32) -> f32 {
+        let authored_phase = crate::dsp::authored_curve_phase(effective_phase, phase_offset);
         sample_editable_curve(&self.curve, authored_phase)
     }
 
@@ -6269,7 +6288,7 @@ impl CurvePreviewWidget {
             std::array::from_fn(|index| {
                 let viewport_phase = index as f32 / (waveform.len() - 1) as f32;
                 let gain = crate::dsp::curve_value_to_gain(
-                    self.sample_display_curve(viewport_phase),
+                    self.sample_curve_with_phase_offset(viewport_phase, self.applied_phase_offset),
                     self.depth_db,
                     self.floor_db,
                 );
@@ -16388,6 +16407,88 @@ mod tests {
             "runtime gain and processed waveform must sample the same authored phase: runtime={}, processed={}",
             telemetry.gain,
             processed[bin]
+        );
+    }
+
+    #[test]
+    fn processed_waveform_tracks_unsettled_applied_offset_from_dsp_snapshot() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.05 },
+                CurveNode { x: 0.23, y: 0.95 },
+                CurveNode { x: 0.61, y: 0.12 },
+                CurveNode { x: 1.0, y: 0.82 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let target_phase_offset = 0.7;
+        let bin = 24;
+        let effective_phase =
+            bin as f32 / (crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT - 1) as f32;
+        let mut waveform = [0.0; crate::incoming_waveform::INCOMING_WAVEFORM_BIN_COUNT];
+        waveform[bin] = 1.0;
+
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: TIMING_MODE_SYNC,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        let transition_settings = DspSettings {
+            phase_offset: target_phase_offset,
+            ..settings
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(effective_phase as f64),
+        };
+        let mut engine = PumpEngine::new(1_000.0, editable_curve_to_table(&curve));
+        engine.process_sample(&mut 1.0, &mut 1.0, settings, transport);
+        let telemetry = engine.process_sample(&mut 1.0, &mut 1.0, transition_settings, transport);
+        assert!(telemetry.applied_phase_offset > 0.0);
+        assert!(telemetry.applied_phase_offset < target_phase_offset);
+
+        let status = GuiStatus::default();
+        status.publish_dsp_telemetry(telemetry);
+        let applied_phase_offset = status
+            .dsp_snapshot()
+            .expect("DSP telemetry should publish a phase pair")
+            .applied_phase_offset;
+        assert_eq!(applied_phase_offset, telemetry.applied_phase_offset);
+
+        let processed = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_phase_offset(target_phase_offset)
+            .with_applied_phase_offset(applied_phase_offset)
+            .with_gain_mapping(120.0, -60.0)
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+        let target_processed = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_incoming_waveform(Some(waveform))
+            .with_phase_offset(target_phase_offset)
+            .with_gain_mapping(120.0, -60.0)
+            .processed_waveform()
+            .expect("incoming waveform should produce a wet preview");
+
+        assert!(
+            (telemetry.gain - processed[bin]).abs() < 1.0e-3,
+            "processed waveform must use the smoothed applied offset: runtime={}, processed={}",
+            telemetry.gain,
+            processed[bin]
+        );
+        assert!(
+            (processed[bin] - target_processed[bin]).abs() > 0.05,
+            "unsettled smoothing must not be rendered as the authored target offset"
         );
     }
 
