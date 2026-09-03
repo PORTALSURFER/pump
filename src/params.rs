@@ -37,13 +37,15 @@ pub(crate) use host_api::param_flags_for_index;
 pub use host_api::{
     apply_clap_param_event, clap_value_from_plain_value, plain_value_from_clap_value,
 };
-#[cfg(feature = "vst3")]
-pub use host_api::{
-    apply_normalized_param_value, clap_id_from_vst3_param_id, vst3_param_info_for_index,
-};
 pub use host_api::{
     apply_param_event, get_param_value, param_count, text_to_value, value_to_text,
     write_param_info, MAX_SYNC_DIVISION,
+};
+#[cfg(feature = "vst3")]
+pub use host_api::{
+    apply_vst3_normalized_param_value, clap_id_from_vst3_param_id, format_vst3_plain_value_text,
+    normalized_from_vst3_plain_value, parse_vst3_plain_value_text,
+    plain_from_vst3_normalized_value, vst3_param_count, vst3_param_info_for_index,
 };
 #[cfg(any(feature = "radiant-gui", feature = "vst3", test))]
 pub(crate) use host_api::{format_plain_value_text, parse_plain_value_text};

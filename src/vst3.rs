@@ -18,10 +18,11 @@ use crate::gui::{
 #[cfg(test)]
 use crate::params::PARAM_MIX_NUM;
 use crate::params::{
-    apply_normalized_param_value, clap_id_from_vst3_param_id, decode_state_payload,
-    encode_state_payload, format_plain_value_text, get_param_value, normalized_from_plain_value,
-    param_count, parse_plain_value_text, plain_from_normalized_value, vst3_param_info_for_index,
-    PumpParams,
+    apply_vst3_normalized_param_value, clap_id_from_vst3_param_id, decode_state_payload,
+    encode_state_payload, format_vst3_plain_value_text, get_param_value,
+    normalized_from_vst3_plain_value, parse_vst3_plain_value_text,
+    plain_from_vst3_normalized_value, vst3_param_count, vst3_param_info_for_index, PumpParams,
+    PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_VST3_V2_NUM,
 };
 use crate::plugin_metadata::PLUGIN_NAME;
 use crate::sample_automation::{

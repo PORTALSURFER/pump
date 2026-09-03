@@ -7,6 +7,11 @@ const AUTO_ENUM: u32 = AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags
 const AUTO_BYPASS: u32 =
     AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags::IS_BYPASS.bits();
 
+#[cfg(feature = "vst3")]
+const LEGACY_VST3_SYNC_DIVISION_MAX: f64 = 7.0;
+#[cfg(feature = "vst3")]
+const EXTENDED_VST3_SYNC_DIVISION_MAX: f64 = 9.0;
+
 #[derive(Copy, Clone)]
 struct ParamDef {
     #[cfg(feature = "vst3")]
@@ -275,7 +280,8 @@ fn param_def_for_vst3_id(param_id: u32) -> Option<ParamDef> {
 #[cfg(feature = "vst3")]
 fn vst3_step_count(def: ParamDef) -> i32 {
     if ParamInfoFlags::from_bits_truncate(def.flags).contains(ParamInfoFlags::IS_STEPPED) {
-        (def.max_value - def.min_value).round() as i32
+        let max_value = vst3_sync_division_max(def.vst3_id).unwrap_or(def.max_value);
+        (max_value - def.min_value).round() as i32
     } else {
         0
     }
@@ -310,6 +316,54 @@ fn normalized_to_plain(normalized: f64, min: f64, max: f64) -> f64 {
     min + normalized.clamp(0.0, 1.0) * (max - min)
 }
 
+/// Convert a VST3 parameter plain value using the parameter id's normalized range.
+#[cfg(feature = "vst3")]
+pub fn normalized_from_vst3_plain_value(param_id: u32, plain: f64) -> Option<f64> {
+    let clap_id = clap_id_from_vst3_param_id(param_id)?;
+    if let Some(max) = vst3_sync_division_max(param_id) {
+        return Some(plain_to_normalized(plain, 0.0, max));
+    }
+    normalized_from_plain_value(clap_id, plain)
+}
+
+/// Convert a VST3 normalized value using the parameter id's plain range.
+#[cfg(feature = "vst3")]
+pub fn plain_from_vst3_normalized_value(param_id: u32, normalized: f64) -> Option<f64> {
+    let clap_id = clap_id_from_vst3_param_id(param_id)?;
+    if let Some(max) = vst3_sync_division_max(param_id) {
+        return Some(normalized_to_plain(normalized, 0.0, max).round());
+    }
+    plain_from_normalized_value(clap_id, normalized)
+}
+
+/// Format a VST3 parameter plain value using the parameter id's text rules.
+#[cfg(feature = "vst3")]
+pub fn format_vst3_plain_value_text(param_id: u32, value: f64) -> Option<String> {
+    let clap_id = clap_id_from_vst3_param_id(param_id)?;
+    if let Some(max) = vst3_sync_division_max(param_id) {
+        if !value.is_finite() {
+            return None;
+        }
+        let index = value.round();
+        if !(0.0..=max).contains(&index) {
+            return None;
+        }
+        return Some(sync_division_label(index as usize).to_string());
+    }
+    format_plain_value_text(clap_id, value)
+}
+
+/// Parse VST3 parameter text using the parameter id's text rules.
+#[cfg(feature = "vst3")]
+pub fn parse_vst3_plain_value_text(param_id: u32, raw: &str) -> Option<f64> {
+    let clap_id = clap_id_from_vst3_param_id(param_id)?;
+    if let Some(max) = vst3_sync_division_max(param_id) {
+        let index = sync_division_index_from_text(raw)?;
+        return (index as f64 <= max).then_some(index as f64);
+    }
+    parse_plain_value_text(clap_id, raw)
+}
+
 /// Convert a parameter plain value to normalized host value.
 pub fn normalized_from_plain_value(param_id: ClapId, plain: f64) -> Option<f64> {
     let def = param_def_for_id(param_id)?;
@@ -339,13 +393,38 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
 /// Resolve a VST3 parameter id to the shared CLAP parameter id when recognized.
 #[cfg(feature = "vst3")]
 pub fn clap_id_from_vst3_param_id(param_id: u32) -> Option<ClapId> {
-    param_def_for_vst3_id(param_id).map(|def| def.id)
+    if param_id == PARAM_SYNC_DIVISION_VST3_V2_NUM {
+        Some(PARAM_SYNC_DIVISION_ID)
+    } else {
+        param_def_for_vst3_id(param_id).map(|def| def.id)
+    }
+}
+
+#[cfg(feature = "vst3")]
+fn vst3_sync_division_max(param_id: u32) -> Option<f64> {
+    match param_id {
+        PARAM_SYNC_DIVISION_NUM => Some(LEGACY_VST3_SYNC_DIVISION_MAX),
+        PARAM_SYNC_DIVISION_VST3_V2_NUM => Some(EXTENDED_VST3_SYNC_DIVISION_MAX),
+        _ => None,
+    }
 }
 
 /// Return VST3 metadata for one parameter index.
 #[cfg(feature = "vst3")]
 pub fn vst3_param_info_for_index(index: i32) -> Option<Vst3ParamInfo> {
     let index = usize::try_from(index).ok()?;
+    if index == PARAM_DEFS.len() {
+        return Some(Vst3ParamInfo {
+            id: PARAM_SYNC_DIVISION_VST3_V2_NUM,
+            title: "Division Extended",
+            short_title: "Div Ext",
+            units: "",
+            step_count: EXTENDED_VST3_SYNC_DIVISION_MAX as i32,
+            default_normalized: DEFAULT_SYNC_DIVISION_INDEX as f64
+                / EXTENDED_VST3_SYNC_DIVISION_MAX,
+            is_bypass: false,
+        });
+    }
     let def = PARAM_DEFS.get(index).copied()?;
     Some(Vst3ParamInfo {
         id: def.vst3_id,
@@ -353,10 +432,16 @@ pub fn vst3_param_info_for_index(index: i32) -> Option<Vst3ParamInfo> {
         short_title: def.short_name,
         units: def.units,
         step_count: vst3_step_count(def),
-        default_normalized: normalized_from_plain_value(def.id, def.default_value)?,
+        default_normalized: normalized_from_vst3_plain_value(def.vst3_id, def.default_value)?,
         is_bypass: ParamInfoFlags::from_bits_truncate(def.flags)
             .contains(ParamInfoFlags::IS_BYPASS),
     })
+}
+
+/// Return the number of host-visible VST3 parameters.
+#[cfg(feature = "vst3")]
+pub fn vst3_param_count() -> u32 {
+    (PARAM_DEFS.len() + 1) as u32
 }
 
 /// Return the number of host-visible scalar parameters.
@@ -443,6 +528,25 @@ pub fn apply_normalized_param_value(
         return false;
     };
     apply_plain_param_value(params, param_id, plain)
+}
+
+/// Apply one VST3 normalized parameter value using its VST3 parameter id.
+#[cfg(feature = "vst3")]
+pub fn apply_vst3_normalized_param_value(
+    params: &PumpParams,
+    param_id: u32,
+    normalized: f64,
+) -> bool {
+    let Some(clap_id) = clap_id_from_vst3_param_id(param_id) else {
+        return false;
+    };
+    if vst3_sync_division_max(param_id).is_none() {
+        return apply_normalized_param_value(params, clap_id, normalized);
+    }
+    let Some(plain) = plain_from_vst3_normalized_value(param_id, normalized) else {
+        return false;
+    };
+    apply_plain_param_value(params, clap_id, plain)
 }
 
 /// Convert a plain value into the normalized value used at the CLAP boundary.

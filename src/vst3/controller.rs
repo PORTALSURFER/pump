@@ -57,7 +57,7 @@ impl IEditControllerTrait for PumpVst3Controller {
     }
 
     unsafe fn getParameterCount(&self) -> int32 {
-        param_count() as int32
+        vst3_param_count() as int32
     }
 
     unsafe fn getParameterInfo(&self, param_index: int32, info: *mut ParameterInfo) -> tresult {
@@ -94,11 +94,11 @@ impl IEditControllerTrait for PumpVst3Controller {
             return kInvalidArgument;
         }
 
-        let Some(clap_id) = clap_id_from_vst3_param_id(id) else {
+        let Some(_clap_id) = clap_id_from_vst3_param_id(id) else {
             return kInvalidArgument;
         };
         let plain = from_normalized(id, value_normalized);
-        let Some(display) = format_plain_value_text(clap_id, plain) else {
+        let Some(display) = format_vst3_plain_value_text(id, plain) else {
             return kInvalidArgument;
         };
         copy_wstring(&display, unsafe { &mut *string });
@@ -115,13 +115,13 @@ impl IEditControllerTrait for PumpVst3Controller {
             return kInvalidArgument;
         }
 
-        let Some(clap_id) = clap_id_from_vst3_param_id(id) else {
+        let Some(_clap_id) = clap_id_from_vst3_param_id(id) else {
             return kInvalidArgument;
         };
         let Some(raw) = (unsafe { parse_tchar_string(string) }) else {
             return kInvalidArgument;
         };
-        let Some(plain) = parse_plain_value_text(clap_id, raw.trim()) else {
+        let Some(plain) = parse_vst3_plain_value_text(id, raw.trim()) else {
             return kInvalidArgument;
         };
 
