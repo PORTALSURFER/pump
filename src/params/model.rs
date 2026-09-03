@@ -103,6 +103,9 @@ pub const PARAM_PHASE_OFFSET_NUM: u32 = 3;
 pub const PARAM_OUTPUT_GAIN_NUM: u32 = 4;
 /// Host-visible numeric parameter id for beat-sync cycle division.
 pub const PARAM_SYNC_DIVISION_NUM: u32 = 5;
+/// Permanent VST3-only id for the extended beat-sync cycle division.
+#[cfg(feature = "vst3")]
+pub const PARAM_SYNC_DIVISION_VST3_V2_NUM: u32 = 15;
 /// Host-visible numeric parameter id for the minimum wet gain floor.
 pub const PARAM_FLOOR_NUM: u32 = 6;
 /// Host-visible numeric parameter id for the curve trigger source.
@@ -314,7 +317,7 @@ pub struct SyncDivision {
 }
 
 /// Supported beat-sync cycle divisions.
-pub const SYNC_DIVISIONS: [SyncDivision; 8] = [
+pub const SYNC_DIVISIONS: [SyncDivision; 10] = [
     SyncDivision {
         label: "1/16",
         beats: 0.25,
@@ -346,6 +349,14 @@ pub const SYNC_DIVISIONS: [SyncDivision; 8] = [
     SyncDivision {
         label: "2 Bars",
         beats: 8.0,
+    },
+    SyncDivision {
+        label: "4 Bars",
+        beats: 16.0,
+    },
+    SyncDivision {
+        label: "8 Bars",
+        beats: 32.0,
     },
 ];
 

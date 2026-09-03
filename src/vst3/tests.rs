@@ -2,7 +2,8 @@ use super::*;
 use crate::gui::HostParamEditSink;
 use crate::params::{
     PumpParams, DEFAULT_FREE_RATE_HZ, PARAM_FREE_RATE_NUM, PARAM_PHASE_OFFSET_NUM, PARAM_SWING_NUM,
-    PARAM_SYNC_DIVISION_NUM, PARAM_TIMING_MODE_NUM, TIMING_MODE_FREE, TIMING_MODE_SYNC,
+    PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM, PARAM_SYNC_DIVISION_VST3_V2_NUM,
+    PARAM_TIMING_MODE_NUM, TIMING_MODE_FREE, TIMING_MODE_SYNC,
 };
 use std::ffi::c_void;
 use std::mem;
@@ -416,7 +417,7 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 13);
+    assert_eq!(count, 14);
 }
 
 #[test]
@@ -519,6 +520,45 @@ fn vst3_ui_sink_delivers_continuous_begin_value_end_on_component_handler() {
             RecordedEditCall::Begin(crate::params::PARAM_MIX_NUM),
             RecordedEditCall::Perform(crate::params::PARAM_MIX_NUM, 0.375),
             RecordedEditCall::End(crate::params::PARAM_MIX_NUM),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_maps_clap_division_to_extended_vst3_id() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+    let config = toybox::clap::automation::AutomationConfig::default();
+    assert!(sink.edit(&config, PARAM_SYNC_DIVISION_ID, 8.0));
+    assert!(sink.edit(&config, PARAM_SYNC_DIVISION_ID, 9.0));
+
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(PARAM_SYNC_DIVISION_VST3_V2_NUM),
+            RecordedEditCall::Perform(PARAM_SYNC_DIVISION_VST3_V2_NUM, 8.0 / 9.0),
+            RecordedEditCall::End(PARAM_SYNC_DIVISION_VST3_V2_NUM),
+            RecordedEditCall::Begin(PARAM_SYNC_DIVISION_VST3_V2_NUM),
+            RecordedEditCall::Perform(PARAM_SYNC_DIVISION_VST3_V2_NUM, 1.0),
+            RecordedEditCall::End(PARAM_SYNC_DIVISION_VST3_V2_NUM),
         ]
     );
 }
@@ -919,6 +959,34 @@ fn controller_and_processor_share_param_state() {
 }
 
 #[test]
+fn controller_legacy_and_extended_division_ids_update_shared_state() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+
+    assert_eq!(
+        unsafe {
+            controller.setParamNormalized(
+                PARAM_SYNC_DIVISION_NUM,
+                to_normalized(PARAM_SYNC_DIVISION_NUM, 7.0),
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(shared.params.sync_division(), 7);
+
+    assert_eq!(
+        unsafe {
+            controller.setParamNormalized(
+                PARAM_SYNC_DIVISION_VST3_V2_NUM,
+                to_normalized(PARAM_SYNC_DIVISION_VST3_V2_NUM, 8.0),
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(shared.params.sync_division(), 8);
+}
+
+#[test]
 fn component_and_controller_restore_v14_state_with_sync_timing_defaults() {
     let source = PumpParams::new();
     source.set_timing_mode(TIMING_MODE_FREE as f32);
@@ -969,6 +1037,38 @@ fn processor_writes_the_full_normal_output_range() {
     assert!(fixture.output_right.iter().all(|sample| sample.is_finite()));
     assert!(fixture.output_left.iter().all(|sample| *sample != 9.0));
     assert!(fixture.output_right.iter().all(|sample| *sample != 9.0));
+}
+
+#[test]
+fn processor_applies_extended_division_in_sample_and_zero_frame_paths() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let processor = PumpVst3Processor::new(Arc::clone(&shared));
+    let mut fixture = stereo_process_fixture(2, 9.0);
+    let mut sample_changes = TestParameterChanges::new(vec![(
+        PARAM_SYNC_DIVISION_VST3_V2_NUM,
+        vec![(1, to_normalized(PARAM_SYNC_DIVISION_VST3_V2_NUM, 8.0))],
+    )]);
+    fixture.process_data.inputParameterChanges = sample_changes.as_ptr();
+
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert_eq!(shared.params.sync_division(), 8);
+
+    let mut zero_frame = stereo_process_fixture(0, 9.0);
+    let mut zero_frame_changes = TestParameterChanges::new(vec![(
+        PARAM_SYNC_DIVISION_VST3_V2_NUM,
+        vec![(0, to_normalized(PARAM_SYNC_DIVISION_VST3_V2_NUM, 9.0))],
+    )]);
+    zero_frame.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    zero_frame.process_data.inputParameterChanges = zero_frame_changes.as_ptr();
+
+    assert_eq!(
+        unsafe { processor.process(&mut zero_frame.process_data) },
+        process_ok()
+    );
+    assert_eq!(shared.params.sync_division(), 9);
 }
 
 #[test]

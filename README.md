@@ -95,7 +95,7 @@ Depth and Floor control the curve's wet gain mapping. Depth ranges from `0` to
 plus values above `−60` through `0 dB` finite values. Processing is curve → Depth → Floor → Mix →
 Output Gain. See [docs/depth-floor.md](docs/depth-floor.md) for the exact
 mapping and compatibility behavior.
-- `Division`: beat-synced cycle length from `1/16` to `2 Bars`.
+- `Division`: beat-synced cycle length from `1/16` to `8 Bars`.
 
 ## Quick Shape Strip
 
