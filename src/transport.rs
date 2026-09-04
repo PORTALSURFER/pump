@@ -102,12 +102,46 @@ pub(crate) fn gui_transport_telemetry(
         tempo_bpm: transport.tempo_bpm,
         beats_per_cycle: settings.beats_per_cycle,
         delay_beats: settings.delay_beats,
+        delay_progress: if settings.timing_mode == crate::params::TIMING_MODE_SYNC {
+            sync_delay_progress(
+                transport.song_pos_beats,
+                settings.beats_per_cycle,
+                settings.delay_beats,
+            )
+        } else {
+            0.0
+        },
         timing_mode: settings.timing_mode,
         effective_cycle_rate_hz: if settings.timing_mode == crate::params::TIMING_MODE_FREE {
             crate::params::clamp_free_rate_hz(settings.free_rate_hz)
         } else {
             0.0
         },
+    }
+}
+
+pub(crate) fn sync_delay_progress(
+    beat_position: Option<f64>,
+    beats_per_cycle: f32,
+    delay_beats: usize,
+) -> f32 {
+    let Some(beat_position) = beat_position else {
+        return 0.0;
+    };
+    if delay_beats == 0 || !beat_position.is_finite() || !beats_per_cycle.is_finite() {
+        return 0.0;
+    }
+    let delay = delay_beats as f64;
+    let cycle = f64::from(beats_per_cycle);
+    let period = delay + cycle;
+    if cycle <= 0.0 || !period.is_finite() || period <= 0.0 {
+        return 0.0;
+    }
+    let position = beat_position.rem_euclid(period);
+    if position < delay {
+        (position / delay) as f32
+    } else {
+        0.0
     }
 }
 
@@ -118,8 +152,17 @@ mod tests {
 
     use super::{
         compensate_input_presentation_latency, gui_phase_from_transport, gui_transport_telemetry,
-        host_beat_phase, phase_running_from_transport,
+        host_beat_phase, phase_running_from_transport, sync_delay_progress,
     };
+
+    #[test]
+    fn sync_delay_progress_fills_over_exact_delay_then_resets() {
+        assert_eq!(sync_delay_progress(Some(0.0), 4.0, 2), 0.0);
+        assert!((sync_delay_progress(Some(1.0), 4.0, 2) - 0.5).abs() < 1.0e-6);
+        assert_eq!(sync_delay_progress(Some(2.0), 4.0, 2), 0.0);
+        assert_eq!(sync_delay_progress(Some(6.0), 4.0, 2), 0.0);
+        assert!((sync_delay_progress(Some(7.0), 4.0, 2) - 0.5).abs() < 1.0e-6);
+    }
 
     fn test_settings(beats_per_cycle: f32) -> DspSettings {
         DspSettings {

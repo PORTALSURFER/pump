@@ -33,6 +33,8 @@ pub struct GuiTransportTelemetry {
     pub beats_per_cycle: f32,
     /// Number of quarter-note beats held at the cycle start in Sync mode.
     pub delay_beats: usize,
+    /// Fill fraction for the current Sync delay, empty at cycle start and full at its boundary.
+    pub delay_progress: f32,
     /// Active timing source used by Pump's phase generator.
     pub timing_mode: usize,
     /// Effective cycle frequency in hertz for GUI phase extrapolation.
@@ -63,6 +65,7 @@ pub struct GuiStatus {
     beat_phase: AtomicF32,
     tempo_bpm: AtomicF32,
     cycle_hz: AtomicF32,
+    delay_progress: AtomicF32,
     phase_extrapolation_enabled: AtomicBool,
     last_update_micros: AtomicU64,
     incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer,
@@ -91,6 +94,7 @@ impl Default for GuiStatus {
             beat_phase: AtomicF32::new(0.0),
             tempo_bpm: AtomicF32::new(120.0),
             cycle_hz: AtomicF32::new(0.0),
+            delay_progress: AtomicF32::new(0.0),
             phase_extrapolation_enabled: AtomicBool::new(true),
             last_update_micros: AtomicU64::new(0),
             incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer::default(),
@@ -139,6 +143,8 @@ impl GuiStatus {
         self.beat_phase
             .store(transport.beat_phase.rem_euclid(1.0), Ordering::Relaxed);
         self.tempo_bpm.store(safe_tempo, Ordering::Relaxed);
+        self.delay_progress
+            .store(transport.delay_progress.clamp(0.0, 1.0), Ordering::Relaxed);
         self.phase_extrapolation_enabled.store(
             transport.timing_mode != crate::params::TIMING_MODE_SYNC || transport.delay_beats == 0,
             Ordering::Relaxed,
@@ -306,6 +312,11 @@ impl GuiStatus {
         )
     }
 
+    /// Read the current delay fill fraction, empty at cycle start and full at its boundary.
+    pub fn delay_progress(&self) -> f32 {
+        self.delay_progress.load(Ordering::Relaxed).clamp(0.0, 1.0)
+    }
+
     /// Return whether transport beat blink should currently be lit.
     pub fn transport_beat_blink_active(&self) -> bool {
         const BEAT_FLASH_DUTY: f32 = 0.18;
@@ -393,6 +404,7 @@ mod tests {
             tempo_bpm: 120.0,
             beats_per_cycle: 2.0,
             delay_beats,
+            delay_progress: 0.0,
             timing_mode,
             effective_cycle_rate_hz,
         }
@@ -514,6 +526,7 @@ mod tests {
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
                 delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -544,6 +557,7 @@ mod tests {
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
                 delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -561,6 +575,7 @@ mod tests {
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
                 delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -578,6 +593,7 @@ mod tests {
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
                 delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -595,6 +611,7 @@ mod tests {
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
                 delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -783,6 +800,7 @@ mod tests {
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
                 delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -812,6 +830,7 @@ mod tests {
                 tempo_bpm: 123.0,
                 beats_per_cycle: 1.0,
                 delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
