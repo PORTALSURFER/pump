@@ -5,10 +5,10 @@ use super::{
     apply_vst3_normalized_param_value, clap_id_from_vst3_param_id, format_plain_value_text,
     format_vst3_plain_value_text, normalized_from_vst3_plain_value, parse_plain_value_text,
     parse_vst3_plain_value_text, plain_from_vst3_normalized_value, vst3_param_count,
-    vst3_param_info_for_index, PARAM_FREE_RATE_NUM, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM,
-    PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM, PARAM_SOUND_ID,
-    PARAM_SOUND_NUM, PARAM_SWING_NUM, PARAM_SYNC_DIVISION_NUM, PARAM_SYNC_DIVISION_VST3_V2_NUM,
-    PARAM_TIMING_MODE_ID, PARAM_TIMING_MODE_NUM,
+    vst3_param_info_for_index, PARAM_DELAY_VST3_NUM, PARAM_FREE_RATE_NUM, PARAM_MIX_NUM,
+    PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM,
+    PARAM_SOUND_ID, PARAM_SOUND_NUM, PARAM_SWING_NUM, PARAM_SYNC_DIVISION_NUM,
+    PARAM_SYNC_DIVISION_VST3_V2_NUM, PARAM_TIMING_MODE_ID, PARAM_TIMING_MODE_NUM,
 };
 use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
@@ -1307,7 +1307,10 @@ fn vst3_mapping_resolves_to_shared_clap_ids() {
         clap_id_from_vst3_param_id(PARAM_FREE_RATE_NUM),
         Some(PARAM_FREE_RATE_ID)
     );
-    assert_eq!(clap_id_from_vst3_param_id(16), Some(PARAM_DELAY_ID));
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_DELAY_VST3_NUM),
+        Some(PARAM_DELAY_ID)
+    );
     assert_eq!(clap_id_from_vst3_param_id(999), None);
 }
 
@@ -1413,6 +1416,28 @@ fn vst3_division_ids_apply_to_the_same_shared_state() {
 
 #[cfg(feature = "vst3")]
 #[test]
+fn vst3_delay_roundtrip_does_not_change_sync_division() {
+    let params = PumpParams::new();
+    params.set_sync_division(6.0);
+    params.set_delay_beats(2.0);
+
+    let normalized = normalized_from_vst3_plain_value(PARAM_DELAY_VST3_NUM, 6.0)
+        .expect("Delay should normalize through its public VST3 id");
+    assert!(apply_vst3_normalized_param_value(
+        &params,
+        PARAM_DELAY_VST3_NUM,
+        normalized
+    ));
+    assert_eq!(params.delay_beats(), 6);
+    assert_eq!(params.sync_division(), 6);
+    assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_SYNC_DIVISION_VST3_V2_NUM),
+        Some(PARAM_SYNC_DIVISION_ID)
+    );
+}
+
+#[cfg(feature = "vst3")]
+#[test]
 fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
     assert_eq!(vst3_param_count(), 14);
     let ids = (0..vst3_param_count() as i32)
@@ -1486,7 +1511,7 @@ fn vst3_info_and_text_conversions_share_param_rules() {
     );
 
     let delay_info = vst3_param_info_for_index(12).expect("delay info should exist");
-    assert_eq!(delay_info.id, 16);
+    assert_eq!(delay_info.id, PARAM_DELAY_VST3_NUM);
     assert_eq!(delay_info.title, "Delay");
     assert_eq!(delay_info.units, "beats");
     assert_eq!(delay_info.step_count, super::MAX_DELAY_BEATS as i32);
