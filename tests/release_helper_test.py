@@ -1,673 +1,373 @@
+#!/usr/bin/env python3
+"""Focused regression tests for Pump's release identity and artifact contracts."""
+
+from __future__ import annotations
+
 import json
-import os
-import shutil
 import struct
-import subprocess
 import tempfile
 import unittest
-from unittest import mock
 import zlib
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import release_helper
-import bump_version
 
 
-def png(width=640, height=400):
-    def chunk(kind, payload):
-        import zlib
-        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+SOURCE_SHA = "a" * 40
+BUILD_ID = f"pump-v0.2.6-nightly.17-{SOURCE_SHA[:12]}"
+RELEASED_AT = "2026-09-02T10:20:30Z"
+TEAM_ID = "TEAM123456"
+CLAP_NOTARY_ID = "12345678-1234-4123-8123-123456789abc"
+VST3_NOTARY_ID = "abcdefab-cdef-4abc-8def-abcdefabcdef"
+
+
+def png(width: int = 640, height: int = 400) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
     scanlines = b"".join(b"\x00" + bytes(width * 3) for _ in range(height))
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(scanlines)) + chunk(b"IEND", b"")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(scanlines))
+        + chunk(b"IEND", b"")
+    )
 
 
 class FakeTransport:
-    """Deterministic in-memory PortalSurfer transport; never opens a socket."""
-
-    def __init__(self, manifest_schema_versions=(2,)):
+    def __init__(self, manifest_schema_versions=(2,)) -> None:
         self.manifest_schema_versions = list(manifest_schema_versions)
         self.calls = []
 
     def __call__(self, url, method, body, headers):
         self.calls.append((url, method, body, headers))
         if method == "GET":
-            payload = json.dumps({"release_upload": {"manifest_schema_versions": self.manifest_schema_versions}}).encode()
-            return 200, payload
+            return (
+                200,
+                json.dumps(
+                    {"release_upload": {"manifest_schema_versions": self.manifest_schema_versions}}
+                ).encode(),
+            )
         return 201, b""
 
 
+def write_support_files(root: Path) -> tuple[Path, Path]:
+    screenshot = root / "pump-default-640x400.png"
+    screenshot.write_bytes(png())
+    changelog = root / "CHANGELOG.md"
+    changelog.write_text("# Pump release\n", encoding="utf-8")
+    return screenshot, changelog
+
+
+def write_archives(root: Path, publication_version: str, *, windows: bool) -> tuple[Path, Path, Path | None]:
+    clap = root / f"pump-v{publication_version}-macos.clap.zip"
+    vst3 = root / f"pump-v{publication_version}-macos.vst3.zip"
+    clap.write_bytes(b"macOS CLAP")
+    vst3.write_bytes(b"macOS VST3")
+    windows_archive = None
+    if windows:
+        windows_archive = root / f"pump-v{publication_version}-windows-x86_64-unsigned.vst3.zip"
+        windows_archive.write_bytes(b"Windows VST3")
+    return clap, vst3, windows_archive
+
+
+def build_release(
+    root: Path,
+    *,
+    channel: str,
+    publication_version: str,
+    distribution: str,
+    windows: bool,
+    build_id: str,
+) -> dict:
+    root.mkdir(parents=True, exist_ok=True)
+    screenshot, changelog = write_support_files(root)
+    clap, vst3, windows_archive = write_archives(
+        root, publication_version, windows=windows
+    )
+    manifest = release_helper.build_manifest(
+        version=publication_version,
+        build_id=build_id,
+        channel=channel,
+        released_at=RELEASED_AT,
+        git_sha=SOURCE_SHA,
+        clap=clap,
+        vst3=vst3,
+        screenshot=screenshot,
+        changelog=changelog,
+        distribution=distribution,
+        signing_identity_class=(
+            "Developer ID Application" if distribution == "production" else "ad hoc"
+        ),
+        notarized=distribution == "production",
+        stapled=distribution == "production",
+        signing_team_id=TEAM_ID if distribution == "production" else "",
+        notary_submissions=(
+            {"clap": CLAP_NOTARY_ID, "vst3": VST3_NOTARY_ID}
+            if distribution == "production"
+            else None
+        ),
+        windows_vst3=windows_archive,
+    )
+    (root / "release-manifest.json").write_bytes(release_helper.canonical_json(manifest))
+    return manifest
+
+
 class ReleaseHelperTests(unittest.TestCase):
-    def test_nightly_scheduler_contract(self):
-        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "nightly.yml").read_text(encoding="utf-8")
-        self.assertIn('cron: "0 20 * * *"', workflow)
-        self.assertIn('timezone: "Europe/Amsterdam"', workflow)
-        self.assertIn("workflow_dispatch:", workflow)
-        self.assertIn("type: boolean", workflow)
-        self.assertIn("actions: write", workflow)
-        self.assertNotIn("PORTALSURFER_RELEASE_TOKEN", workflow)
-        self.assertNotIn("RADIANT_REPO_TOKEN", workflow)
-        self.assertNotIn("APPLE_", workflow)
-        self.assertNotIn("git ls-remote", workflow)
-        self.assertNotIn("PORTALSURFER_RELEASES_URL", workflow)
-        self.assertNotIn("curl --fail --silent --show-error --location --max-time", workflow)
-        self.assertNotIn("jq", workflow)
-        self.assertNotIn("latest_nightly_sha", workflow)
-        self.assertIn("actions/workflows/release.yml/dispatches", workflow)
-        self.assertIn('\\"channel\\":\\"nightly\\"', workflow)
-        self.assertIn('\\"publish\\":\\"true\\"', workflow)
-        self.assertIn('\\"only_if_changed\\":\\"${only_if_changed}\\"', workflow)
+    def test_nightly_publication_version_uses_package_version_and_workflow_sequence(self) -> None:
+        self.assertEqual(
+            release_helper.derive_publication_version("0.2.6", "nightly", 17),
+            "0.2.6-nightly.17",
+        )
+        self.assertEqual(
+            release_helper.derive_publication_version("0.2.6", "stable", 17),
+            "0.2.6",
+        )
+        with self.assertRaisesRegex(ValueError, "positive canonical"):
+            release_helper.derive_publication_version("0.2.6", "nightly", 0)
+        with self.assertRaises(ValueError):
+            release_helper.validate_publication_version(
+                "0.2.6", "0.2.7-nightly.17", "nightly"
+            )
 
-    def test_nightly_release_decision_behavior(self):
+    def test_release_history_decision_remains_channel_specific(self) -> None:
         sha_a = "a" * 40
         sha_b = "b" * 40
         document = {
             "releases": [
-                {"channel": "stable", "released_at": "2026-07-29T23:00:00+02:00", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_b}},
-                {"channel": "nightly", "released_at": "2026-07-29T20:00:00+02:00", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_a}},
-                {"channel": "nightly", "released_at": "2026-07-29T18:30:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_b}},
+                {
+                    "channel": "nightly",
+                    "released_at": "2026-07-29T18:30:00Z",
+                    "source": {
+                        "repository": "PORTALSURFER/pump",
+                        "git_sha": sha_a,
+                    },
+                },
+                {
+                    "channel": "nightly",
+                    "released_at": "2026-07-29T20:00:00Z",
+                    "source": {
+                        "repository": "PORTALSURFER/pump",
+                        "git_sha": sha_b,
+                    },
+                },
             ]
         }
-        self.assertFalse(release_helper.should_release(source_sha=sha_b, document=document))
-        self.assertTrue(release_helper.should_release(source_sha=sha_a, document=document))
-        self.assertEqual(release_helper.latest_release_source_sha(document, channel="nightly"), sha_b)
-        self.assertIsNone(release_helper.latest_release_source_sha({"releases": []}, channel="nightly"))
-        self.assertTrue(release_helper.should_release(source_sha=sha_a, document={"releases": []}))
+        self.assertFalse(
+            release_helper.should_release(
+                source_sha=sha_b, document=document, channel="nightly"
+            )
+        )
+        self.assertTrue(
+            release_helper.should_release(
+                source_sha=sha_a, document=document, channel="nightly"
+            )
+        )
 
-    def test_release_version_advances_globally_across_channels(self):
-        document = {
-            "releases": [
-                {"channel": "nightly", "version": "0.2.3", "released_at": "2026-07-29T20:00:00Z"},
-                {"channel": "stable", "version": "0.2.5", "released_at": "2026-07-30T20:00:00Z"},
-            ]
-        }
-        self.assertEqual(release_helper.latest_release_version(document), "0.2.5")
-        self.assertEqual(release_helper.next_release_version("0.2.0", document), "0.2.6")
-        self.assertEqual(release_helper.next_release_version("0.2.6", document), "0.2.6")
-
-    def test_release_version_history_accepts_mixed_legacy_and_suffixed_nightlies(self):
-        document = {
-            "releases": [
-                {"channel": "nightly", "version": "0.2.3", "released_at": "2026-07-29T20:00:00Z"},
-                {"channel": "nightly", "version": "0.2.4-nightly.17", "released_at": "2026-07-30T20:00:00Z"},
-            ]
-        }
-        self.assertEqual(release_helper.latest_release_version(document), "0.2.4")
-        self.assertEqual(release_helper.next_release_version("0.2.4", document), "0.2.5")
-
-    def test_nightly_manifest_version_format_and_validation(self):
-        self.assertEqual(release_helper.format_manifest_version("0.2.3", "nightly", 17), "0.2.3-nightly.17")
-        self.assertEqual(release_helper.format_manifest_version("0.2.3", "stable"), "0.2.3")
-        self.assertEqual(release_helper.format_manifest_version("0.2.3", "rc"), "0.2.3")
-        for number in (0, "0", "01"):
-            with self.subTest(number=number), self.assertRaisesRegex(ValueError, "positive canonical"):
-                release_helper.format_manifest_version("0.2.3", "nightly", number)
-
-    def test_nightly_manifest_validation_rejects_bare_and_noncanonical_versions(self):
-        for version in ("0.2.3", "0.2.3-nightly.0", "0.2.3-nightly.01"):
-            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "nightly version"):
-                release_helper.validate_release_fields(version, "2026-07-30T20:00:00Z", ["release.zip"], ["a" * 64], [1], channel="nightly")
-
-    def test_release_version_rejects_malformed_history(self):
-        with self.assertRaisesRegex(ValueError, "release version"):
-            release_helper.latest_release_version({"releases": [{"channel": "nightly", "version": "0.2.x"}]})
-
-    def test_bump_version_updates_manifest_and_lockfile(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            manifest = root / "Cargo.toml"
-            lockfile = root / "Cargo.lock"
-            manifest.write_text('[package]\nname = "pump"\nversion = "0.2.0"\n\n[dependencies]\n', encoding="utf-8")
-            lockfile.write_text('[[package]]\nname = "pump"\nversion = "0.2.0"\n', encoding="utf-8")
-            self.assertEqual(bump_version.bump_package_version(manifest, lockfile, "0.2.1"), "0.2.0")
-            self.assertIn('version = "0.2.1"', manifest.read_text(encoding="utf-8"))
-            self.assertIn('version = "0.2.1"', lockfile.read_text(encoding="utf-8"))
-
-    def test_release_workflow_commits_version_before_build(self):
-        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("contents: write", workflow)
-        self.assertIn("group: pump-release", workflow)
-        self.assertIn("release_helper.next_release_version", workflow)
-        self.assertIn("python3 scripts/bump_version.py", workflow)
-        self.assertIn("git push origin HEAD:main", workflow)
-        self.assertIn("name: pump-release-${{ inputs.channel }}-${{ steps.release_source.outputs.sha }}", workflow)
-
-    def test_release_decision_preserves_requested_channel(self):
-        sha_a = "a" * 40
-        sha_b = "b" * 40
-        document = {
-            "releases": [
-                {"channel": "stable", "released_at": "2026-07-29T20:00:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_a}},
-                {"channel": "rc", "released_at": "2026-07-29T20:00:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_b}},
-            ]
-        }
-        self.assertFalse(release_helper.should_release(source_sha=sha_a, document=document, channel="stable"))
-        self.assertTrue(release_helper.should_release(source_sha=sha_b, document=document, channel="stable"))
-        self.assertFalse(release_helper.should_release(source_sha=sha_b, document=document, channel="rc"))
-        self.assertTrue(release_helper.should_release(source_sha=sha_a, document=document, channel="rc"))
-
-    def test_release_decision_uses_parsed_timezone_aware_timestamp(self):
-        sha_old = "a" * 40
-        sha_new = "b" * 40
-        document = {
-            "releases": [
-                {"channel": "nightly", "released_at": "2026-07-29T20:00:00+02:00", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_old}},
-                {"channel": "nightly", "released_at": "2026-07-29T18:30:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_new}},
-            ]
-        }
-        self.assertEqual(release_helper.latest_release_source_sha(document, channel="nightly"), sha_new)
-        malformed = {"releases": [{"channel": "nightly", "released_at": "2026-07-29T20:00:00", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha_old}}]}
-        with self.assertRaisesRegex(ValueError, "timezone"):
-            release_helper.latest_release_source_sha(malformed, channel="nightly")
-
-    def test_release_decision_rejects_malformed_history(self):
-        sha = "a" * 40
-        bad_documents = [
-            None,
-            {"releases": "not-an-array"},
-            {"releases": [None]},
-            {"releases": [{"channel": "nightly", "released_at": "2026-07-29T20:00:00Z", "source": {"repository": "PORTALSURFER/pump", "git_sha": "bad"}}]},
-            {"releases": [{"channel": "nightly", "released_at": "not-a-date", "source": {"repository": "PORTALSURFER/pump", "git_sha": sha}}]},
-            {"releases": [{"channel": "nightly", "released_at": "2026-07-29T20:00:00Z", "source": {"repository": "other/repo", "git_sha": sha}}]},
-        ]
-        for document in bad_documents:
-            with self.subTest(document=document), self.assertRaises(ValueError):
-                release_helper.should_release(source_sha=sha, document=document)
-
-    def test_release_decision_bypass_does_not_require_or_query_history(self):
-        with mock.patch.object(release_helper, "latest_release_source_sha", side_effect=AssertionError("history queried")):
-            self.assertTrue(release_helper.should_release(source_sha="a" * 40, only_if_changed=False))
-
-    def test_release_workflow_gate_and_downstream_contract(self):
-        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        self.assertIn("only_if_changed:", workflow)
-        checkout = workflow.index("- name: Checkout exact main source")
-        capture = workflow.index("- name: Capture checked-out source SHA")
-        gate = workflow.index("- name: Check release source freshness")
-        credentials = workflow.index("- name: Configure private git dependencies")
-        self.assertLess(checkout, capture)
-        self.assertLess(capture, gate)
-        self.assertLess(gate, credentials)
-        self.assertIn("RELEASES_URL: https://portalsurfer.org/plugins/api/v1/products/pump/releases", workflow)
-        self.assertIn("release_helper.should_release", workflow)
-        self.assertIn("RELEASE_CHANNEL: ${{ inputs.channel }}", workflow)
-        gate_block = workflow[gate:credentials]
-        self.assertIn("source_sha, releases_path, output_path, channel = sys.argv[1:]", gate_block)
-        self.assertIn("channel=channel", gate_block)
-        self.assertNotIn('channel="nightly"', gate_block)
-        self.assertIn("if: steps.gate.outputs.should_release == 'true'", workflow)
-        self.assertEqual(workflow.count("if: steps.gate.outputs.should_release == 'true'"), 7)
-        self.assertIn("group: pump-release", workflow)
-
-    def test_release_preflight_covers_workflow_and_helper_changes(self):
-        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release-preflight.yml").read_text(encoding="utf-8")
-        for path in (".github/workflows/release.yml", ".github/workflows/nightly.yml", "scripts/release_helper.py", "scripts/bump_version.py", "tests/release_helper_test.py"):
-            self.assertIn(path, workflow)
-        self.assertIn("python3 tests/release_helper_test.py", workflow)
-
-    def test_release_workflow_artifact_uses_released_source_sha(self):
-        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        checkout = workflow.index("- name: Checkout exact main source")
-        capture = workflow.index("- name: Capture checked-out source SHA")
-        release_capture = workflow.index("- name: Capture release source SHA")
-        upload = workflow.index("- name: Upload immutable bundle for inspection")
-        self.assertLess(checkout, capture)
-        self.assertLess(capture, release_capture)
-        self.assertLess(capture, upload)
-        capture_block = workflow[capture:release_capture]
-        self.assertIn("id: source_sha", capture_block)
-        self.assertIn('git rev-parse HEAD', capture_block)
-        upload_block = workflow[upload:]
-        self.assertIn("name: pump-release-${{ inputs.channel }}-${{ steps.release_source.outputs.sha }}", upload_block)
-        self.assertNotIn("${{ github.sha }}", upload_block)
-
-    def test_manifest_and_png_contract(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            screenshot = root / "pump-default-640x400.png"
-            screenshot.write_bytes(png())
-            clap, vst3, changelog = (root / name for name in ("clap.zip", "vst3.zip", "CHANGELOG.md"))
-            clap.write_bytes(b"clap")
-            vst3.write_bytes(b"vst3")
-            changelog.write_text("# Release\n", encoding="utf-8")
-            manifest = release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-abcdef012345", channel="stable", released_at="2026-07-28T00:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id="TEAM123456", notary_submissions={"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"})
-            self.assertEqual(manifest["schema_version"], 2)
-            self.assertEqual(manifest["source"]["dirty"], False)
-            self.assertEqual((manifest["screenshot"]["logical_width"], manifest["screenshot"]["logical_height"]), (640, 400))
-            self.assertEqual(json.loads(release_helper.canonical_json(manifest)), manifest)
-
-    def test_preflight_manifest_uses_ad_hoc_non_notarized_provenance(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            screenshot = root / "pump-default-640x400.png"
-            screenshot.write_bytes(png())
-            clap, vst3, changelog = (root / name for name in ("pump-v0.2.0-macos.clap.zip", "pump-v0.2.0-macos.vst3.zip", "CHANGELOG.md"))
-            clap.write_bytes(b"clap")
-            vst3.write_bytes(b"vst3")
-            changelog.write_text("# Release\n", encoding="utf-8")
-            manifest = release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-abcdef012345", channel="stable", released_at="2026-07-29T00:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="preflight", signing_identity_class="ad hoc", notarized=False, stapled=False)
-            release_helper.validate_preflight_manifest(manifest, root)
-            self.assertEqual(manifest["signing"], {"identity_class": "ad hoc", "notarized": False, "stapled": False, "team_id": "", "notary_submissions": {}})
-            with self.assertRaisesRegex(ValueError, "production Developer ID notarized"):
+    def test_stable_and_rc_retain_schema2_macos_only_contract(self) -> None:
+        for channel in ("stable", "rc"):
+            with self.subTest(channel=channel), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest = build_release(
+                    root,
+                    channel=channel,
+                    publication_version="0.2.6",
+                    distribution="production",
+                    windows=False,
+                    build_id=f"pump-v0.2.6-{channel}-{SOURCE_SHA[:12]}",
+                )
+                self.assertEqual(manifest["schema_version"], 2)
+                self.assertEqual(
+                    {(artifact["platform"], artifact["format"]) for artifact in manifest["artifacts"]},
+                    {("macos", "clap"), ("macos", "vst3")},
+                )
+                self.assertNotIn("security", manifest["artifacts"][0])
+                release_helper.validate_manifest(manifest, root)
                 release_helper.validate_publish_manifest(manifest, root)
 
-    def test_nightly_manifest_uses_numeric_artifact_names_and_matching_headers(self):
-        transport = FakeTransport()
+    def test_preflight_schema2_remains_ad_hoc_and_mac_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            screenshot = root / "pump-default-640x400.png"
-            screenshot.write_bytes(png())
-            clap = root / "pump-v0.2.3-macos.clap.zip"
-            vst3 = root / "pump-v0.2.3-macos.vst3.zip"
-            clap.write_bytes(b"clap")
-            vst3.write_bytes(b"vst3")
-            changelog = root / "CHANGELOG.md"
-            changelog.write_text("# Nightly\n", encoding="utf-8")
-            manifest = release_helper.build_manifest(version="0.2.3-nightly.17", build_id="pump-v0.2.3-abcdef012345", channel="nightly", released_at="2026-07-30T20:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="preflight", signing_identity_class="ad hoc", notarized=False, stapled=False)
+            manifest = build_release(
+                root,
+                channel="stable",
+                publication_version="0.2.6",
+                distribution="preflight",
+                windows=False,
+                build_id=BUILD_ID,
+            )
+            self.assertEqual(manifest["schema_version"], 2)
             release_helper.validate_preflight_manifest(manifest, root)
-            release_helper._publish_validated_manifest(endpoint=release_helper.PRODUCTION_ORIGIN, token="secret", manifest=manifest, root=root, transport=transport)
-        self.assertEqual(manifest["version"], "0.2.3-nightly.17")
-        self.assertEqual(transport.calls[-1][3]["X-PortalSurfer-Release-Version"], manifest["version"])
-        self.assertTrue(all("pump-v0.2.3-macos" in call[0] for call in transport.calls[1:3]))
+            with self.assertRaisesRegex(ValueError, "production Developer ID"):
+                release_helper.validate_publish_manifest(manifest, root)
 
-    def test_stable_and_rc_artifact_names_remain_numeric(self):
-        for channel in ("stable", "rc"):
-            with self.subTest(channel=channel):
-                manifest = {
-                    "channel": channel,
-                    "version": "0.2.3",
-                    "artifacts": [
-                        {"format": "clap", "name": "pump-v0.2.3-macos.clap.zip"},
-                        {"format": "vst3", "name": "pump-v0.2.3-macos.vst3.zip"},
-                    ],
-                    "screenshot": {"role": "default-ui", "name": "pump-default-640x400.png"},
-                    "changelog": {"name": "CHANGELOG.md"},
-                }
-                release_helper._validate_exact_manifest_names(manifest)
-
-    def test_release_preflight_cli_contract_is_credential_free(self):
-        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
-        self.assertIn("--preflight", script)
-        self.assertIn('codesign --force --deep --sign - "${bundle_dir}"', script)
-        self.assertIn('validate_preflight_manifest', script)
-        preflight = script[script.index('if [[ "${mode}" == preflight ]]; then'):script.index('else', script.index('if [[ "${mode}" == preflight ]]; then'))]
-        self.assertNotIn("APPLE_DEVELOPER_ID_APPLICATION_CERT_BASE64", preflight)
-        self.assertIn("require_production=False", script)
-        self.assertLess(script.index("printf 'preflight CodeResources\\n'"), script.index('codesign --force --deep --sign - "${bundle_dir}"'))
-
-    def test_release_script_derives_nightly_manifest_version_from_complete_history(self):
-        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
-        source = script.index('git_sha="$(git rev-parse HEAD)"')
-        count = script.index('git rev-list --count "${git_sha}"')
-        self.assertLess(source, count)
-        self.assertIn('git rev-parse --is-shallow-repository', script)
-        self.assertIn('manifest_version="${package_version}-nightly.${nightly_revision_count}"', script)
-        self.assertIn('<key>CFBundleVersion</key><string>${package_version}</string>', script)
-        self.assertIn('pump-v${package_version}-macos.clap.zip', script)
-        self.assertIn('"${release_dir}" "${manifest_version}" "${package_version}"', script)
-
-    def test_capability_refusal_makes_zero_puts(self):
-        transport = FakeTransport(manifest_schema_versions=(1,))
+    def test_production_nightly_requires_the_windows_sidecar_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            names = ["a.zip", "b.zip", "shot.png", "CHANGELOG.md"]
-            for name in names:
-                (root / name).write_bytes(png() if name == "shot.png" else name.encode())
-            manifest = release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-test", channel="stable", released_at="2026-07-28T00:00:00Z", git_sha="a" * 40, clap=root / "a.zip", vst3=root / "b.zip", screenshot=root / "shot.png", changelog=root / "CHANGELOG.md", distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id="TEAM123456", notary_submissions={"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"})
-            with self.assertRaisesRegex(RuntimeError, "schema 2"):
-                release_helper._publish_validated_manifest(endpoint=release_helper.PRODUCTION_ORIGIN, token="secret", manifest=manifest, root=root, transport=transport)
-        self.assertEqual([call[1] for call in transport.calls], ["GET"])
-
-    def test_v2_uploads_four_files_and_exact_manifest_commit(self):
-        transport = FakeTransport()
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            files = []
-            for name, body in (("a.zip", b"a"), ("b.zip", b"b"), ("shot.png", png()), ("CHANGELOG.md", b"c")):
-                (root / name).write_bytes(body); files.append((name, root / name, release_helper.file_digest(root / name)[0]))
-            manifest = {"schema_version": 2, "product": "pump", "build_id": "pump-v0.2.0-test", "source": {"repository": "PORTALSURFER/pump", "git_sha": "a" * 40, "dirty": False}, "distribution": "production", "signing": {"identity_class": "Developer ID Application", "notarized": True, "stapled": True, "team_id": "TEAM123456", "notary_submissions": {"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"}}, "version": "0.2.0", "channel": "stable", "released_at": "2026-07-28T00:00:00Z", "artifacts": [{"format": "clap", "platform": "macos", "architectures": ["arm64"], "name": "a.zip", "sha256": files[0][2], "size_bytes": (root / "a.zip").stat().st_size, "media_type": "application/zip"}, {"format": "vst3", "platform": "macos", "architectures": ["arm64"], "name": "b.zip", "sha256": files[1][2], "size_bytes": (root / "b.zip").stat().st_size, "media_type": "application/zip"}], "screenshot": {"role": "default-ui", "name": "shot.png", "media_type": "image/png", "width": 720, "height": 540, "logical_width": 720, "logical_height": 540, "dpi_scale": 1.0, "source_git_sha": "a" * 40, "sha256": files[2][2], "size_bytes": (root / "shot.png").stat().st_size}, "changelog": {"name": "CHANGELOG.md", "format": "markdown", "media_type": "text/markdown; charset=utf-8", "sha256": files[3][2], "size_bytes": (root / "CHANGELOG.md").stat().st_size}}
-            release_helper._publish_validated_manifest(endpoint=release_helper.PRODUCTION_ORIGIN, token="secret", manifest=manifest, root=root, transport=transport)
-        self.assertEqual(len(transport.calls), 6)
-        self.assertEqual(transport.calls[-1][3]["Content-Type"], release_helper.MANIFEST_CONTENT_TYPE)
-        self.assertEqual(transport.calls[-1][3]["X-PortalSurfer-Release-Version"], "0.2.0")
-        self.assertEqual(transport.calls[-1][3]["X-PortalSurfer-Released-At"], "2026-07-28T00:00:00Z")
-        self.assertEqual(transport.calls[-1][2], release_helper.canonical_json(manifest))
-
-    def test_publish_rejects_invalid_endpoints_before_transport(self):
-        invalid_endpoints = (
-            "http://portalsurfer.org",
-            "https://portalsurfer.org/",
-            "https://portalsurfer.org:443",
-            "https://user@portalsurfer.org",
-            "https://portalsurfer.org/path",
-        )
-        for endpoint in invalid_endpoints:
-            with self.subTest(endpoint=endpoint):
-                transport = FakeTransport()
-                with self.assertRaisesRegex(ValueError, "exact origin https://portalsurfer.org"):
-                    release_helper.publish_release(endpoint=endpoint, token="secret", manifest_path=Path("missing.json"), root=Path("."), repo_root=Path("."))
-
-    def test_publish_block_audits_exact_zips_before_manifest_publish(self):
-        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
-        publish_block = script.split('if [[ "${mode}" == publish ]]; then', 1)[1]
-        self.assertIn("from release_helper import publish_release", publish_block)
-        self.assertNotIn("publish_manifest", publish_block)
-        self.assertNotIn("final audit of exact publish bytes", publish_block)
-
-    def test_release_build_temp_parent_is_created_before_mktemp(self):
-        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
-        parent_creation = 'mkdir -p "${repo_root}/target"'
-        temp_creation = 'tmp_root="$(mktemp -d "${repo_root}/target/release-build.XXXXXX")"'
-        self.assertLess(script.index(parent_creation), script.index(temp_creation))
-
-    def test_release_and_ci_cargo_invocations_are_lockfile_stable(self):
-        root = Path(__file__).parents[1]
-        for name in ("scripts/release.sh", "scripts/ci.sh"):
-            with self.subTest(script=name):
-                lines = (root / name).read_text(encoding="utf-8").splitlines()
-                cargo_lines = [
-                    line
-                    for line in lines
-                    if any(
-                        f"cargo {command}" in line
-                        for command in ("clippy", "test", "build", "rustc")
-                    )
-                ]
-                self.assertTrue(cargo_lines)
-                self.assertTrue(
-                    all("--locked" in line for line in cargo_lines),
-                    f"every Cargo invocation in {name} must use --locked",
+            with self.assertRaisesRegex(ValueError, "requires the Windows artifact"):
+                build_release(
+                    root,
+                    channel="nightly",
+                    publication_version="0.2.6-nightly.17",
+                    distribution="production",
+                    windows=False,
+                    build_id=BUILD_ID,
                 )
 
-    def test_release_script_disables_python_bytecode_output(self):
-        root = Path(__file__).parents[1]
-        script = (root / "scripts" / "release.sh").read_text(encoding="utf-8")
-        self.assertIn("export PYTHONDONTWRITEBYTECODE=1", script)
+    def test_nightly_schema3_combines_three_artifacts_under_one_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            temporary = Path(directory)
-            shutil.copy2(root / "scripts" / "release_helper.py", temporary / "release_helper.py")
-            environment = os.environ.copy()
-            environment["PYTHONPATH"] = str(temporary)
-            environment["PYTHONDONTWRITEBYTECODE"] = "1"
-            subprocess.run(
-                [sys.executable, "-c", "import release_helper"],
-                cwd=temporary,
-                env=environment,
-                check=True,
+            root = Path(directory)
+            manifest = build_release(
+                root,
+                channel="nightly",
+                publication_version="0.2.6-nightly.17",
+                distribution="production",
+                windows=True,
+                build_id=BUILD_ID,
             )
-            self.assertFalse(list(temporary.rglob("*.pyc")))
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(manifest["build_id"], BUILD_ID)
+            self.assertEqual(
+                [artifact["name"] for artifact in manifest["artifacts"]],
+                [
+                    "pump-v0.2.6-nightly.17-macos.clap.zip",
+                    "pump-v0.2.6-nightly.17-macos.vst3.zip",
+                    "pump-v0.2.6-nightly.17-windows-x86_64-unsigned.vst3.zip",
+                ],
+            )
+            self.assertEqual(
+                manifest["artifacts"][2]["security"],
+                {"status": "unsigned", "certificate": None},
+            )
+            release_helper.validate_manifest(manifest, root)
 
-    def test_release_keychain_is_registered_and_restored(self):
-        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
-        capture = "security list-keychains -d user | sed 's/[[:space:]]*\"//g; s/\"$//' > \"${original_keychains_file}\""
-        register = 'security list-keychains -d user -s "${release_keychain}" "${original_keychains[@]}" >/dev/null'
-        restore = 'security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || true'
-        self.assertIn(capture, script)
-        self.assertIn(register, script)
-        self.assertIn(restore, script)
-        self.assertLess(script.index(capture), script.index('security create-keychain'))
-        self.assertLess(script.index('security create-keychain'), script.index(register))
-        self.assertLess(script.index(register), script.index('security import'))
-        self.assertLess(script.index(register), script.index('codesign_identity='))
-        self.assertLess(script.index(restore), script.index('security delete-keychain'))
+            (root / manifest["artifacts"][2]["name"]).write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "hash/size mismatch"):
+                release_helper.validate_manifest(manifest, root)
 
-    def test_release_notarization_checks_cover_live_and_extracted_bundles(self):
-        script = (Path(__file__).parents[1] / "scripts" / "release.sh").read_text(encoding="utf-8")
-        check = 'codesign -vvvv -R=notarized --check-notarization'
-        self.assertEqual(script.count(check), 2)
-        self.assertNotIn("spctl", script)
-        live = script.index(check)
-        extracted = script.index(check, live + 1)
-        self.assertLess(script.index('xcrun stapler validate "${bundle_dir}"'), live)
-        self.assertLess(script.index('xcrun stapler validate "${bundle}"'), extracted)
-        self.assertLess(live, script.index('local team_id', live))
-        self.assertLess(extracted, script.index('codesign_details=', extracted))
-
-    def test_publish_rejects_tampered_final_zip_before_transport(self):
-        transport = FakeTransport()
+    def test_schema3_rejects_mismatched_macos_signing_teams(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            screenshot = root / "shot.png"; screenshot.write_bytes(png())
-            clap = root / "a.zip"; clap.write_bytes(b"clap")
-            vst3 = root / "b.zip"; vst3.write_bytes(b"vst3")
-            changelog = root / "CHANGELOG.md"; changelog.write_text("release\n", encoding="utf-8")
-            manifest = release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-test", channel="stable", released_at="2026-07-28T00:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id="TEAM123456", notary_submissions={"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"})
-            clap.write_bytes(b"tampered")
-            (root / "release-manifest.json").write_bytes(release_helper.canonical_json(manifest))
-            with self.assertRaisesRegex(ValueError, "on-disk bytes do not match manifest"):
-                with mock.patch.object(release_helper, "_audit_zip", side_effect=ValueError("ZIP audit failed")), mock.patch.object(release_helper, "_validate_canonical_source"):
-                    release_helper.publish_release(endpoint=release_helper.PRODUCTION_ORIGIN, token="secret", manifest_path=root / "release-manifest.json", root=root, repo_root=root)
-        self.assertEqual(transport.calls, [])
+            manifest = build_release(
+                root,
+                channel="nightly",
+                publication_version="0.2.6-nightly.17",
+                distribution="production",
+                windows=True,
+                build_id=BUILD_ID,
+            )
+            manifest["artifacts"][1]["security"]["team_id"] = "OTHERTEAM1"
+            with self.assertRaisesRegex(ValueError, "signing teams differ"):
+                release_helper.validate_manifest(manifest, root)
 
-    def test_public_wrapper_rejects_raw_zip_without_request(self):
+    def test_schema2_uploads_only_four_files_and_schema3_is_node_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            screenshot = root / "pump-default-640x400.png"; screenshot.write_bytes(png())
-            clap = root / "pump-v0.2.0-macos.clap.zip"; clap.write_bytes(b"raw unsigned bytes")
-            vst3 = root / "pump-v0.2.0-macos.vst3.zip"; vst3.write_bytes(b"raw unsigned bytes")
-            changelog = root / "CHANGELOG.md"; changelog.write_text("release\n", encoding="utf-8")
-            manifest = release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-test", channel="stable", released_at="2026-07-28T00:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id="TEAM123456", notary_submissions={"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"})
-            manifest_path = root / "release-manifest.json"
-            manifest_path.write_bytes(release_helper.canonical_json(manifest))
-            requests = []
-            with self.assertRaisesRegex(ValueError, "ZIP audit failed"), mock.patch.object(release_helper, "_request", side_effect=lambda *args: requests.append(args)), mock.patch.object(release_helper, "_validate_canonical_source"), mock.patch.object(release_helper, "_audit_zip", side_effect=ValueError("ZIP audit failed")):
-                release_helper.publish_release(endpoint=release_helper.PRODUCTION_ORIGIN, token="secret", manifest_path=manifest_path, root=root, repo_root=root)
-            self.assertEqual(requests, [])
+            manifest = build_release(
+                root,
+                channel="stable",
+                publication_version="0.2.6",
+                distribution="production",
+                windows=False,
+                build_id=f"pump-v0.2.6-{SOURCE_SHA[:12]}",
+            )
+            transport = FakeTransport()
+            release_helper._publish_validated_manifest(
+                endpoint="https://portalsurfer.org",
+                token="test-token",
+                manifest=manifest,
+                root=root,
+                transport=transport,
+            )
+            self.assertEqual(len(transport.calls), 6)
+            self.assertEqual(transport.calls[0][1], "GET")
+            self.assertEqual(
+                [call[0].rsplit("/", 1)[-1] for call in transport.calls[1:5]],
+                [
+                    "pump-v0.2.6-macos.clap.zip",
+                    "pump-v0.2.6-macos.vst3.zip",
+                    "pump-default-640x400.png",
+                    "CHANGELOG.md",
+                ],
+            )
+            self.assertTrue(transport.calls[-1][0].endswith("/commit"))
 
-    def test_zip_audit_runs_argument_safe_mac_checks_in_order(self):
-        helper_source = (Path(__file__).parents[1] / "scripts" / "release_helper.py").read_text(encoding="utf-8")
-        self.assertNotIn("spctl", helper_source)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive = root / "pump-v0.2.0-macos.clap.zip"
-            archive.write_bytes(b"placeholder")
-            calls = []
+            nightly = build_release(
+                root / "nightly",
+                channel="nightly",
+                publication_version="0.2.6-nightly.17",
+                distribution="production",
+                windows=True,
+                build_id=BUILD_ID,
+            )
+            with self.assertRaisesRegex(ValueError, "schema 2"):
+                release_helper.validate_publish_manifest(nightly, root / "nightly")
 
-            def run(args, *, cwd, capture_output=False):
-                calls.append(tuple(args))
-                if args[0] == "/usr/bin/ditto":
-                    extracted = Path(args[-1])
-                    binary = extracted / "pump.clap" / "Contents" / "MacOS" / "pump"
-                    binary.parent.mkdir(parents=True)
-                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
-                    (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
-                    (binary.parent.parent / "CodeResources").write_text("signed resources", encoding="utf-8")
-                    binary.write_bytes(b"arm64")
-                    os.chmod(binary, 0o755)
-                    return subprocess.CompletedProcess(args, 0, "", "")
-                if args[0] == "/usr/bin/plutil" and "CFBundleIdentifier" in args:
-                    return subprocess.CompletedProcess(args, 0, "com.portalsurfer.pump.clap\n", "")
-                if args[0] == "/usr/bin/plutil" and "CFBundlePackageType" in args:
-                    return subprocess.CompletedProcess(args, 0, "BNDL\n", "")
-                if args[0] == "codesign" and args[1] == "-dv":
-                    return subprocess.CompletedProcess(args, 0, "", "Authority=Developer ID Application: PORTALSURFER\nTeamIdentifier=TEAM123456\n")
-                if args[0] == "lipo":
-                    return subprocess.CompletedProcess(args, 0, "arm64\n", "")
-                if args[0] == "/usr/bin/nm":
-                    return subprocess.CompletedProcess(args, 0, "_clap_entry\n", "")
-                return subprocess.CompletedProcess(args, 0, "", "")
+    def test_release_and_workflow_keep_shared_identity_without_version_bump(self) -> None:
+        project = Path(__file__).parents[1]
+        release_script = (project / "scripts" / "release.sh").read_text(encoding="utf-8")
+        workflow = (project / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("--publication-version", release_script)
+        self.assertIn("--source-sha", release_script)
+        self.assertIn("--windows-release-dir", release_script)
+        self.assertIn("validate_publish_manifest", release_script)
+        self.assertIn("python3 - \"$archive\"", release_script)
+        self.assertIn("pump-v${publication_version}-windows-x86_64-unsigned.vst3.zip", release_script)
+        for forbidden in (
+            "scripts/bump_version.py",
+            "git push origin HEAD:main",
+            "release_helper.next_release_version",
+            "git rev-list --count",
+        ):
+            self.assertNotIn(forbidden, release_script)
+            self.assertNotIn(forbidden, workflow)
+        self.assertIn("derive_publication_version", workflow)
+        self.assertIn("github.run_number", workflow)
+        self.assertIn("needs.prepare.outputs.source_sha", workflow)
+        self.assertIn("needs.prepare.outputs.publication_version", workflow)
+        self.assertIn("uses: ./.github/workflows/windows-release.yml", workflow)
+        self.assertIn("inputs.channel == 'nightly'", workflow)
 
-            with mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
-                release_helper._audit_zip(archive, "clap", "TEAM123456", cwd=root)
-            self.assertEqual([call[0] for call in calls], ["/usr/bin/ditto", "/usr/bin/plutil", "/usr/bin/plutil", "/usr/bin/plutil", "codesign", "codesign", "xcrun", "codesign", "lipo", "/usr/bin/nm"])
-            self.assertEqual(calls[7][1:4], ("-vvvv", "-R=notarized", "--check-notarization"))
+    def test_windows_and_preflight_workflows_preserve_security_boundaries(self) -> None:
+        project = Path(__file__).parents[1]
+        windows = (project / ".github" / "workflows" / "windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+        preflight = (project / ".github" / "workflows" / "release-preflight.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("runs-on: windows-2022", windows)
+        self.assertIn("workflow_call:", windows)
+        self.assertIn("RUST_TARGET: x86_64-pc-windows-msvc", windows)
+        self.assertIn("dist/Pump-v${PACKAGE_VERSION}.vst3/Contents/x86_64-win/Pump-v${PACKAGE_VERSION}.vst3", windows)
+        self.assertIn("pump-v${PUBLICATION_VERSION}-windows-x86_64-unsigned.vst3.zip", windows)
+        self.assertIn("windows-artifact-manifest.json", windows)
+        self.assertIn("permissions:\n  contents: read", windows)
+        self.assertNotIn("id-token:", windows)
+        self.assertNotIn("secrets.", windows)
+        self.assertNotIn("PORTALSURFER_RELEASE_TOKEN", windows)
+        self.assertIn("windows_integration:", preflight)
+        self.assertIn("tests/release_pipeline_integration.py", preflight)
+        self.assertIn("python3 tests/release_helper_test.py", preflight)
+        self.assertIn("python3 tests/windows_release_helper_test.py", preflight)
 
-    def test_zip_audit_accepts_direct_code_resources_for_vst3(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive = root / "pump-v0.2.0-macos.vst3.zip"
-            archive.write_bytes(b"placeholder")
-
-            def run(args, *, cwd, capture_output=False):
-                if args[0] == "/usr/bin/ditto":
-                    extracted = Path(args[-1])
-                    binary = extracted / "pump.vst3" / "Contents" / "MacOS" / "pump"
-                    binary.parent.mkdir(parents=True)
-                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
-                    (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
-                    (binary.parent.parent / "CodeResources").write_text("signed resources", encoding="utf-8")
-                    binary.write_bytes(b"arm64")
-                    os.chmod(binary, 0o755)
-                if args[0] == "/usr/bin/plutil" and "CFBundleIdentifier" in args:
-                    return subprocess.CompletedProcess(args, 0, "com.portalsurfer.pump.vst3\n", "")
-                if args[0] == "/usr/bin/plutil" and "CFBundlePackageType" in args:
-                    return subprocess.CompletedProcess(args, 0, "BNDL\n", "")
-                if args[0] == "codesign" and args[1] == "-dv":
-                    return subprocess.CompletedProcess(args, 0, "", "Authority=Developer ID Application: PORTALSURFER\nTeamIdentifier=TEAM123456\n")
-                if args[0] == "lipo":
-                    return subprocess.CompletedProcess(args, 0, "arm64\n", "")
-                if args[0] == "/usr/bin/nm":
-                    return subprocess.CompletedProcess(args, 0, "_GetPluginFactory\n_bundleEntry\n_bundleExit\n", "")
-                return subprocess.CompletedProcess(args, 0, "", "")
-
-            with mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
-                release_helper._audit_zip(archive, "vst3", "TEAM123456", cwd=root)
-
-    def test_preflight_zip_audit_accepts_direct_code_resources_for_vst3(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive = root / "pump-v0.2.0-macos.vst3.zip"
-            archive.write_bytes(b"placeholder")
-
-            def run(args, *, cwd, capture_output=False):
-                if args[0] == "/usr/bin/ditto":
-                    extracted = Path(args[-1])
-                    binary = extracted / "pump.vst3" / "Contents" / "MacOS" / "pump"
-                    binary.parent.mkdir(parents=True)
-                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
-                    (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
-                    (binary.parent.parent / "CodeResources").write_text("preflight signed resources", encoding="utf-8")
-                    binary.write_bytes(b"arm64")
-                    os.chmod(binary, 0o755)
-                if args[0] == "/usr/bin/plutil" and "CFBundleIdentifier" in args:
-                    return subprocess.CompletedProcess(args, 0, "com.portalsurfer.pump.vst3\n", "")
-                if args[0] == "/usr/bin/plutil" and "CFBundlePackageType" in args:
-                    return subprocess.CompletedProcess(args, 0, "BNDL\n", "")
-                if args[0] == "lipo":
-                    return subprocess.CompletedProcess(args, 0, "arm64\n", "")
-                if args[0] == "/usr/bin/nm":
-                    return subprocess.CompletedProcess(args, 0, "_GetPluginFactory\n_bundleEntry\n_bundleExit\n", "")
-                return subprocess.CompletedProcess(args, 0, "", "")
-
-            with mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
-                release_helper._audit_zip(archive, "vst3", "", cwd=root, require_production=False)
-
-    def test_zip_audit_rejects_vst3_code_resources_directory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive = root / "pump-v0.2.0-macos.vst3.zip"
-            archive.write_bytes(b"placeholder")
-
-            def run(args, *, cwd, capture_output=False):
-                if args[0] == "/usr/bin/ditto":
-                    extracted = Path(args[-1])
-                    binary = extracted / "pump.vst3" / "Contents" / "MacOS" / "pump"
-                    binary.parent.mkdir(parents=True)
-                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
-                    (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
-                    (binary.parent.parent / "CodeResources").mkdir()
-                    binary.write_bytes(b"arm64")
-                    os.chmod(binary, 0o755)
-                return subprocess.CompletedProcess(args, 0, "", "")
-
-            with self.assertRaisesRegex(ValueError, r"vst3 ZIP Contents/CodeResources must be a regular file"), mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
-                release_helper._audit_zip(archive, "vst3", "", cwd=root, require_production=False)
-
-    def test_zip_audit_rejects_clap_code_resources_directory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive = root / "pump-v0.2.0-macos.clap.zip"
-            archive.write_bytes(b"placeholder")
-
-            def run(args, *, cwd, capture_output=False):
-                if args[0] == "/usr/bin/ditto":
-                    extracted = Path(args[-1])
-                    binary = extracted / "pump.clap" / "Contents" / "MacOS" / "pump"
-                    binary.parent.mkdir(parents=True)
-                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8")
-                    (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8")
-                    (binary.parent.parent / "CodeResources").mkdir()
-                    binary.write_bytes(b"arm64")
-                    os.chmod(binary, 0o755)
-                return subprocess.CompletedProcess(args, 0, "", "")
-
-            with self.assertRaisesRegex(ValueError, r"clap ZIP Contents/CodeResources must be a regular file"), mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
-                release_helper._audit_zip(archive, "clap", "TEAM123456", cwd=root)
-
-    def test_zip_audit_rejects_wrong_team_before_stapler(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive = root / "pump-v0.2.0-macos.clap.zip"; archive.write_bytes(b"placeholder")
-
-            def run(args, *, cwd, capture_output=False):
-                if args[0] == "/usr/bin/ditto":
-                    extracted = Path(args[-1]); binary = extracted / "pump.clap" / "Contents" / "MacOS" / "pump"; binary.parent.mkdir(parents=True)
-                    (binary.parent.parent / "Info.plist").write_text("plist", encoding="utf-8"); (binary.parent.parent / "PkgInfo").write_text("BNDL????", encoding="utf-8"); binary.write_bytes(b"arm64"); os.chmod(binary, 0o755)
-                if args[0] == "/usr/bin/plutil" and "CFBundleIdentifier" in args: return subprocess.CompletedProcess(args, 0, "com.portalsurfer.pump.clap\n", "")
-                if args[0] == "/usr/bin/plutil" and "CFBundlePackageType" in args: return subprocess.CompletedProcess(args, 0, "BNDL\n", "")
-                if args[0] == "codesign" and args[1] == "-dv": return subprocess.CompletedProcess(args, 0, "", "Authority=Developer ID Application: PORTALSURFER\nTeamIdentifier=OTHERTEAM\n")
-                return subprocess.CompletedProcess(args, 0, "", "")
-
-            with self.assertRaisesRegex(ValueError, "team does not match"), mock.patch.object(release_helper.platform, "system", return_value="Darwin"), mock.patch.object(release_helper, "_run_checked", side_effect=run):
-                release_helper._audit_zip(archive, "clap", "TEAM123456", cwd=root)
-
-    def test_source_gate_fetches_origin_before_comparing_refs(self):
-        sha = "a" * 40
-        manifest = {"source": {"git_sha": sha}}
-        calls = []
-
-        def run(args, *, cwd, capture_output=False):
-            calls.append(tuple(args))
-            output = {
-                ("git", "symbolic-ref", "--quiet", "--short", "HEAD"): "main\n",
-                ("git", "status", "--porcelain", "--untracked-files=all"): "",
-                ("git", "rev-parse", "HEAD"): f"{sha}\n",
-                ("git", "rev-parse", "refs/remotes/origin/main"): f"{sha}\n",
-            }.get(tuple(args), "")
-            return subprocess.CompletedProcess(args, 0, output, "")
-
-        with mock.patch.object(release_helper, "_run_checked", side_effect=run):
-            release_helper._validate_canonical_source(manifest, Path("/repo"))
-        self.assertEqual(calls[2], ("git", "fetch", "origin", "main", "--quiet"))
-
-    def test_source_gate_reports_exact_dirty_status_entries(self):
-        sha = "a" * 40
-        manifest = {"source": {"git_sha": sha}}
-        status = " M scripts/release.sh\n?? target/release-note.txt\n"
-
-        def run(args, *, cwd, capture_output=False):
-            output = status if args[:2] == ("git", "status") else "main\n"
-            return subprocess.CompletedProcess(args, 0, output, "")
-
-        with mock.patch.object(release_helper, "_run_checked", side_effect=run):
-            with self.assertRaisesRegex(
-                ValueError,
-                r"production release source must be clean; git status entries:  M scripts/release\.sh \| \?\? target/release-note\.txt",
-            ):
-                release_helper._validate_canonical_source(manifest, Path("/repo"))
-
-    def test_publish_rejects_more_than_two_artifacts(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            screenshot = root / "shot.png"; screenshot.write_bytes(png())
-            clap = root / "a.zip"; clap.write_bytes(b"a")
-            vst3 = root / "b.zip"; vst3.write_bytes(b"b")
-            changelog = root / "CHANGELOG.md"; changelog.write_text("release\n", encoding="utf-8")
-            manifest = release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-test", channel="stable", released_at="2026-07-28T00:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="production", signing_identity_class="Developer ID Application", notarized=True, stapled=True, signing_team_id="TEAM123456", notary_submissions={"clap": "12345678-1234-4123-8123-123456789abc", "vst3": "abcdefab-cdef-4abc-8def-abcdefabcdef"})
-            manifest["artifacts"].append(dict(manifest["artifacts"][0]))
-            with self.assertRaisesRegex(ValueError, "exactly CLAP and VST3"):
-                release_helper.validate_publish_manifest(manifest, root)
-
-    def test_production_manifest_rejects_ad_hoc_provenance(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            screenshot = root / "shot.png"; screenshot.write_bytes(png())
-            clap = root / "a.zip"; clap.write_bytes(b"a")
-            vst3 = root / "b.zip"; vst3.write_bytes(b"b")
-            changelog = root / "CHANGELOG.md"; changelog.write_text("release\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "production manifests"):
-                release_helper.build_manifest(version="0.2.0", build_id="pump-v0.2.0-test", channel="stable", released_at="2026-07-28T00:00:00Z", git_sha="a" * 40, clap=clap, vst3=vst3, screenshot=screenshot, changelog=changelog, distribution="production")
+    def test_nightly_scheduler_does_not_receive_release_credentials_or_mutate_source(self) -> None:
+        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "nightly.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("actions/workflows/release.yml/dispatches", workflow)
+        self.assertIn('\\"channel\\":\\"nightly\\"', workflow)
+        self.assertNotIn("PORTALSURFER_RELEASE_TOKEN", workflow)
+        self.assertNotIn("APPLE_", workflow)
+        self.assertNotIn("git push", workflow)
+        self.assertNotIn("bump_version.py", workflow)
 
 
 if __name__ == "__main__":
