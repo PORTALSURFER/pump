@@ -357,6 +357,7 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertIn("tests/release_pipeline_integration.py", preflight)
         self.assertIn("python3 tests/release_helper_test.py", preflight)
         self.assertIn("python3 tests/windows_release_helper_test.py", preflight)
+        self.assertIn('PYTHONDONTWRITEBYTECODE: "1"', preflight)
 
     def test_nightly_scheduler_does_not_receive_release_credentials_or_mutate_source(self) -> None:
         workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "nightly.yml").read_text(

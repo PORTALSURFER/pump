@@ -27,6 +27,7 @@ permissions:
 
 env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  PYTHONDONTWRITEBYTECODE: "1"
 
 concurrency:
   group: pump-release-preflight-${{ github.ref }}
