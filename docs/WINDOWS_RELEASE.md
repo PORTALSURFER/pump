@@ -32,6 +32,5 @@ or RC release.
 The required dependency revisions are Toybox
 `a69df15593a5cb9320993dde8d9908bfe857a9f6` and Radiant
 `c1343993c973bdece3e8cd469415b0d08c7f6cf1`. The final publisher checkout is
-temporarily pinned to PortalSurfer commit
-`165776d6707ab6d9e8bb76b2a8866654140ca6bc` until the shared generic publisher
-change lands.
+pinned to PortalSurfer commit
+`12d2c089d3d135c6839013a097dbf3baebf5fdb3`, the merged generic publisher.
