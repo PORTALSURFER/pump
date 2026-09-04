@@ -106,6 +106,9 @@ pub const PARAM_SYNC_DIVISION_NUM: u32 = 5;
 /// Permanent VST3-only id for the extended beat-sync cycle division.
 #[cfg(feature = "vst3")]
 pub const PARAM_SYNC_DIVISION_VST3_V2_NUM: u32 = 15;
+/// Permanent VST3-only id for the synchronized cycle-start delay.
+#[cfg(feature = "vst3")]
+pub const PARAM_DELAY_VST3_NUM: u32 = 16;
 /// Host-visible numeric parameter id for the minimum wet gain floor.
 pub const PARAM_FLOOR_NUM: u32 = 6;
 /// Host-visible numeric parameter id for the curve trigger source.

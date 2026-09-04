@@ -1,9 +1,10 @@
 use super::*;
 use crate::gui::HostParamEditSink;
 use crate::params::{
-    PumpParams, DEFAULT_FREE_RATE_HZ, PARAM_FREE_RATE_NUM, PARAM_PHASE_OFFSET_NUM, PARAM_SWING_NUM,
-    PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM, PARAM_SYNC_DIVISION_VST3_V2_NUM,
-    PARAM_TIMING_MODE_NUM, TIMING_MODE_FREE, TIMING_MODE_SYNC,
+    apply_vst3_normalized_param_value, PumpParams, DEFAULT_FREE_RATE_HZ, MAX_DELAY_BEATS,
+    PARAM_DELAY_ID, PARAM_DELAY_VST3_NUM, PARAM_FREE_RATE_NUM, PARAM_PHASE_OFFSET_NUM,
+    PARAM_SWING_NUM, PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_NUM,
+    PARAM_SYNC_DIVISION_VST3_V2_NUM, PARAM_TIMING_MODE_NUM, TIMING_MODE_FREE, TIMING_MODE_SYNC,
 };
 use std::ffi::c_void;
 use std::mem;
@@ -561,6 +562,54 @@ fn vst3_ui_sink_maps_clap_division_to_extended_vst3_id() {
             RecordedEditCall::End(PARAM_SYNC_DIVISION_VST3_V2_NUM),
         ]
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn vst3_ui_sink_maps_delay_to_id_16_and_roundtrips_without_sync_mutation() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+
+    shared.params.set_sync_division(6.0);
+    shared.params.set_delay_beats(2.0);
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+    let config = toybox::clap::automation::AutomationConfig::default();
+    assert!(sink.edit(&config, PARAM_DELAY_ID, 6.0));
+
+    let calls = calls.lock().expect("recorded calls lock").clone();
+    assert_eq!(
+        calls,
+        vec![
+            RecordedEditCall::Begin(PARAM_DELAY_VST3_NUM),
+            RecordedEditCall::Perform(PARAM_DELAY_VST3_NUM, 6.0 / MAX_DELAY_BEATS as f64,),
+            RecordedEditCall::End(PARAM_DELAY_VST3_NUM),
+        ]
+    );
+    let RecordedEditCall::Perform(param_id, normalized) = calls[1] else {
+        panic!("Delay sink should emit one performEdit call");
+    };
+    assert!(apply_vst3_normalized_param_value(
+        shared.params.as_ref(),
+        param_id,
+        normalized
+    ));
+    assert_eq!(shared.params.delay_beats(), 6);
+    assert_eq!(shared.params.sync_division(), 6);
 }
 
 #[cfg(target_os = "macos")]

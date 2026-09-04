@@ -5096,10 +5096,10 @@ impl Widget for NumericValueLabelWidget {
             } else {
                 theme.text_muted
             },
-            align: if self.editing {
-                PaintTextAlign::Left
-            } else {
+            align: if self.target == NumericEntryTarget::Delay || !self.editing {
                 PaintTextAlign::Center
+            } else {
+                PaintTextAlign::Left
             },
             wrap: TextWrap::None,
         }));
@@ -18270,7 +18270,9 @@ mod tests {
     #[test]
     fn sync_delay_runtime_arrows_step_by_one_or_four_and_clamp_without_losing_focus() {
         let params = Arc::new(PumpParams::new());
+        params.set_sync_division(6.0);
         params.set_delay_beats(2.0);
+        let expected_sync_division = params.sync_division();
         let mut runtime = editor_runtime(Arc::clone(&params));
         runtime.refresh();
 
@@ -18324,6 +18326,7 @@ mod tests {
                 Some(delay_widget_id)
             );
             assert_eq!(runtime.focused_widget(), Some(delay_widget_id));
+            assert_eq!(params.sync_division(), expected_sync_division);
         };
 
         dispatch_key(&mut runtime, WidgetKey::ArrowUp, false);
@@ -18365,6 +18368,48 @@ mod tests {
             runtime.bridge().state().automation_flush_count,
             flushes_at_upper_bound
         );
+    }
+
+    #[test]
+    fn delay_numeric_value_label_keeps_text_geometry_centered_while_editing() {
+        let bounds = Rect::from_xy_size(12.0, 18.0, CONTROL_VALUE_WIDTH, DELAY_INPUT_HEIGHT);
+        let theme = pump_theme();
+        let paint_text = |widget: &NumericValueLabelWidget| {
+            let mut primitives = Vec::new();
+            widget.append_paint(&mut primitives, bounds, &LayoutOutput::default(), &theme);
+            primitives
+                .into_iter()
+                .find_map(|primitive| match primitive {
+                    PaintPrimitive::Text(text) => Some(text),
+                    _ => None,
+                })
+                .expect("Delay label should paint a text run")
+        };
+
+        let idle = NumericValueLabelWidget::new(
+            NumericEntryTarget::Delay,
+            "2 beats".to_string(),
+            false,
+            false,
+        );
+        let mut editing = NumericValueLabelWidget::new(
+            NumericEntryTarget::Delay,
+            "2 beats".to_string(),
+            true,
+            false,
+        );
+        editing.common_mut().state.focused = true;
+
+        let idle_text = paint_text(&idle);
+        let editing_text = paint_text(&editing);
+        assert_eq!(idle_text.text, editing_text.text);
+        assert_eq!(idle_text.rect, editing_text.rect);
+        assert_eq!(idle_text.align, PaintTextAlign::Center);
+        assert_eq!(editing_text.align, PaintTextAlign::Center);
+
+        let other_editing =
+            NumericValueLabelWidget::new(NumericEntryTarget::Mix, "50%".to_string(), true, false);
+        assert_eq!(paint_text(&other_editing).align, PaintTextAlign::Left);
     }
 
     #[test]

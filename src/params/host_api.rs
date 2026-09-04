@@ -266,7 +266,7 @@ const PARAM_DEFS: [ParamDef; 13] = [
     },
     ParamDef {
         #[cfg(feature = "vst3")]
-        vst3_id: 16,
+        vst3_id: PARAM_DELAY_VST3_NUM,
         id: PARAM_DELAY_ID,
         name: "Delay",
         #[cfg(feature = "vst3")]
