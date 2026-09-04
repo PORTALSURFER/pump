@@ -252,4 +252,3 @@ jobs:
           path: dist/releases/${{ steps.metadata.outputs.build_id }}/*
           if-no-files-found: error
           retention-days: 3
-
