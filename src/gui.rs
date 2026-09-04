@@ -29,7 +29,10 @@ pub(crate) use radiant_editor::try_toggle_bypass;
 ))]
 #[cfg(feature = "vst3")]
 pub(crate) use radiant_editor::HostParamEditSink;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(all(
+    any(target_os = "macos", target_os = "windows"),
+    any(feature = "radiant-gui", feature = "vst3", test)
+))]
 pub(crate) use radiant_editor::{HostParamFlushRequester, RadiantPumpEditor};
 
 /// Minimum supported logical editor size.
