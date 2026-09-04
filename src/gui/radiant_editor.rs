@@ -3272,6 +3272,11 @@ fn reduce_numeric_entry_message(state: &mut RadiantEditorState, message: Numeric
                 let Some(value) = parse_plain_value_text(target.param_id(), draft.trim()) else {
                     return;
                 };
+                if target == NumericEntryTarget::Delay
+                    && clamp_delay_beats(value as f32) != state.params.delay_beats()
+                {
+                    state.push_history();
+                }
                 apply_numeric_entry_value(state, target, value);
                 state.numeric_entry = None;
             }
@@ -9989,6 +9994,8 @@ mod tests {
                 }),
             );
             let expected_draft = format_delay_beats_for_ui(params.delay_beats());
+            let prior_delay = params.delay_beats();
+            let history_before_commit = state.undo_history.len();
             assert_eq!(
                 state
                     .numeric_entry
@@ -10004,6 +10011,12 @@ mod tests {
                 }),
             );
             assert_eq!(params.delay_beats(), expected);
+            let expected_history_len = if expected == prior_delay {
+                history_before_commit
+            } else {
+                history_before_commit + 1
+            };
+            assert_eq!(state.undo_history.len(), expected_history_len);
             assert!(state.numeric_entry.is_none());
         }
 
@@ -10018,6 +10031,7 @@ mod tests {
                 target: NumericEntryTarget::Delay,
             }),
         );
+        let history_before_invalid_commit = state.undo_history.len();
         reduce_editor_message(
             &mut state,
             RadiantEditorMessage::NumericEntry(NumericEntryMessage::Commit {
@@ -10029,6 +10043,11 @@ mod tests {
         assert_eq!(
             state.numeric_entry.as_ref().map(|entry| entry.target),
             Some(NumericEntryTarget::Delay)
+        );
+        assert_eq!(
+            state.undo_history.len(),
+            history_before_invalid_commit,
+            "invalid Delay commits must not add history"
         );
     }
 
@@ -18145,6 +18164,18 @@ mod tests {
             .is_some());
         assert_eq!(params.delay_beats(), 2);
         assert!(runtime.bridge().state().numeric_entry.is_none());
+        assert_eq!(runtime.bridge().state().undo_history.len(), 1);
+        assert!(runtime.bridge().state().redo_history.is_empty());
+
+        runtime.dispatch_message(RadiantEditorMessage::Undo);
+        assert_eq!(params.delay_beats(), 1);
+        assert!(runtime.bridge().state().undo_history.is_empty());
+        assert_eq!(runtime.bridge().state().redo_history.len(), 1);
+
+        runtime.dispatch_message(RadiantEditorMessage::Redo);
+        assert_eq!(params.delay_beats(), 2);
+        assert_eq!(runtime.bridge().state().undo_history.len(), 1);
+        assert!(runtime.bridge().state().redo_history.is_empty());
 
         let delay_bounds = runtime
             .layout()
