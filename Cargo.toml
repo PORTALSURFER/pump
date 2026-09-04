@@ -14,6 +14,9 @@ radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "c1343993
 toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "f09da33076a436a6c841e71622759f6e2fe705af", features = ["radiant-gui"] }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
+[build-dependencies]
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "f09da33076a436a6c841e71622759f6e2fe705af", default-features = false }
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 

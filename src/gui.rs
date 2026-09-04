@@ -5,7 +5,7 @@ use toybox::clack_extensions::gui::GuiSize;
 use crate::curve::{CurveNode, EditableCurve};
 
 #[cfg(all(
-    target_os = "macos",
+    any(target_os = "macos", target_os = "windows"),
     any(feature = "radiant-gui", feature = "vst3", test)
 ))]
 mod radiant_editor;
@@ -17,11 +17,22 @@ pub(crate) mod visual_system;
 #[cfg(all(target_os = "macos", feature = "screenshot-test", test))]
 mod screenshot_tests;
 
-#[cfg(all(target_os = "macos", feature = "vst3", test))]
+#[cfg(all(
+    any(target_os = "macos", target_os = "windows"),
+    feature = "vst3",
+    test
+))]
 pub(crate) use radiant_editor::try_toggle_bypass;
-#[cfg(all(target_os = "macos", any(feature = "radiant-gui", feature = "vst3")))]
+#[cfg(all(
+    any(target_os = "macos", target_os = "windows"),
+    any(feature = "radiant-gui", feature = "vst3")
+))]
 #[cfg(feature = "vst3")]
 pub(crate) use radiant_editor::HostParamEditSink;
+#[cfg(all(
+    any(target_os = "macos", target_os = "windows"),
+    any(feature = "radiant-gui", feature = "vst3", test)
+))]
 pub(crate) use radiant_editor::{HostParamFlushRequester, RadiantPumpEditor};
 
 /// Minimum supported logical editor size.
@@ -264,6 +275,30 @@ pub(crate) fn build_version_label() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_version_label_includes_current_git_sha() {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--short=7", "HEAD"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("git should be available in repository tests");
+        if !output.status.success() {
+            return;
+        }
+
+        let expected_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert!(!expected_sha.is_empty());
+        assert_eq!(
+            option_env!("PUMP_BUILD_GIT_SHA_SHORT"),
+            Some(expected_sha.as_str()),
+            "build.rs must export the current short Git SHA"
+        );
+        assert_eq!(
+            build_version_label(),
+            format!("{}+{expected_sha}", env!("CARGO_PKG_VERSION"))
+        );
+    }
 
     #[test]
     fn normalized_host_size_preserves_contract() {

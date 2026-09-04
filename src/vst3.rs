@@ -60,11 +60,11 @@ use shared_state::{shared_registry, SharedRegistryEntry};
 
 mod controller;
 mod factory;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod gui_adapter;
 
 use controller::PumpVst3Controller;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use gui_adapter::PumpVst3GuiAdapter;
 use processor::PumpVst3Processor;
 
