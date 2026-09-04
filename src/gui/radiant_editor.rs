@@ -25,7 +25,7 @@ use radiant::runtime::{
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
-    ButtonMessage, ButtonWidget, FocusBehavior, IconButtonWidget, PointerButton,
+    ButtonMessage, ButtonWidget, FocusBehavior, IconButtonWidget, KeyboardModifiers, PointerButton,
     PointerPressAdmission, TextWrap, Widget, WidgetCapabilities, WidgetCommon, WidgetInput,
     WidgetKey, WidgetOutput, WidgetSemantics, WidgetSizing,
 };
@@ -2013,8 +2013,19 @@ impl RadiantPumpEditor {
     }
 
     /// Route a focused key press into the Radiant runtime.
-    pub(crate) fn dispatch_key_press(&mut self, key: WidgetKey) -> bool {
-        self.runtime.dispatch_event(Event::key_press(key)).is_some()
+    pub(crate) fn dispatch_key_press(
+        &mut self,
+        key: WidgetKey,
+        modifiers: KeyboardModifiers,
+    ) -> bool {
+        self.runtime
+            .dispatch_event(Event::KeyPress {
+                key,
+                modifiers,
+                repeat: false,
+                timestamp: None,
+            })
+            .is_some()
     }
 
     /// Route a focused text character into the Radiant runtime.
@@ -2235,8 +2246,8 @@ impl toybox::radiant_gui::RadiantEditor for RadiantPumpEditor {
         Self::needs_realtime_redraw(self)
     }
 
-    fn dispatch_key_press(&mut self, key: WidgetKey) -> bool {
-        Self::dispatch_key_press(self, key)
+    fn dispatch_key_press(&mut self, key: WidgetKey, modifiers: KeyboardModifiers) -> bool {
+        Self::dispatch_key_press(self, key, modifiers)
     }
 
     fn dispatch_character(&mut self, character: char) -> bool {
@@ -18354,6 +18365,74 @@ mod tests {
             runtime.bridge().state().automation_flush_count,
             flushes_at_upper_bound
         );
+    }
+
+    #[test]
+    fn radiant_editor_dispatch_key_press_forwards_keyboard_modifiers() {
+        let params = Arc::new(PumpParams::new());
+        params.set_delay_beats(2.0);
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        editor.runtime.refresh();
+
+        let (delay_widget_id, delay_bounds) = editor
+            .runtime
+            .layout()
+            .rects
+            .iter()
+            .find_map(|(widget_id, bounds)| {
+                editor
+                    .runtime
+                    .surface()
+                    .find_widget(*widget_id)
+                    .and_then(|widget| {
+                        widget
+                            .widget()
+                            .as_any()
+                            .downcast_ref::<NumericValueLabelWidget>()
+                            .and_then(|value| {
+                                (value.target == NumericEntryTarget::Delay)
+                                    .then_some((*widget_id, *bounds))
+                            })
+                    })
+            })
+            .expect("Delay value should be an interactive runtime widget");
+        let delay_position = delay_bounds.center();
+        assert_eq!(
+            editor
+                .runtime
+                .dispatch_event(radiant::runtime::Event::pointer_press(
+                    delay_position,
+                    PointerButton::Primary,
+                    PointerModifiers::default(),
+                )),
+            Some(delay_widget_id)
+        );
+        editor
+            .runtime
+            .dispatch_event(radiant::runtime::Event::pointer_release(
+                delay_position,
+                PointerButton::Primary,
+                PointerModifiers::default(),
+            ));
+        assert_eq!(editor.runtime.focused_widget(), Some(delay_widget_id));
+
+        assert!(toybox::radiant_gui::RadiantEditor::dispatch_key_press(
+            &mut editor,
+            WidgetKey::ArrowUp,
+            KeyboardModifiers {
+                shift: true,
+                ..KeyboardModifiers::default()
+            },
+        ));
+        assert_eq!(params.delay_beats(), 6);
+        assert_eq!(editor.runtime.focused_widget(), Some(delay_widget_id));
     }
 
     #[test]
