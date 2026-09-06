@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import struct
 import tempfile
 import unittest
@@ -39,6 +40,40 @@ def png(width: int = 640, height: int = 400) -> bytes:
         + chunk(b"IDAT", zlib.compress(scanlines))
         + chunk(b"IEND", b"")
     )
+
+
+class ReleaseExitTests(unittest.TestCase):
+    """Exercise the producer's real cleanup trap, including Bash 3 nounset behavior."""
+
+    def run_cleanup(self, body: str):
+        producer = (Path(__file__).parents[1] / "scripts/release.sh").read_text()
+        cleanup = producer.split("cleanup() {", 1)[1].split("trap cleanup EXIT", 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            script = (
+                'set -euo pipefail\n'
+                'release_completed=0\noriginal_keychains=()\n'
+                'original_keychains_file=""\nrelease_keychain=""\n'
+                'tmp_root="$1/work"\nmkdir -p "$tmp_root"\n'
+                + "cleanup() {" + cleanup + "trap cleanup EXIT\n" + body
+            )
+            return subprocess.run(
+                ["/bin/bash", "-c", script, "release-test", temporary],
+                capture_output=True, text=True,
+            )
+
+    def test_unset_local_variable_fails_even_with_cleanup(self):
+        result = self.run_cleanup('bundle() { local path="$missing_evidence"; }; bundle\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unbound variable", result.stderr)
+
+    def test_incomplete_zero_exit_fails(self):
+        self.assertNotEqual(self.run_cleanup("exit 0\n").returncode, 0)
+
+    def test_original_failure_is_preserved(self):
+        self.assertEqual(self.run_cleanup("exit 42\n").returncode, 42)
+
+    def test_completed_release_succeeds(self):
+        self.assertEqual(self.run_cleanup("release_completed=1\n").returncode, 0)
 
 
 class FakeTransport:
