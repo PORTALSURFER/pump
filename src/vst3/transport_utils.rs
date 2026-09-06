@@ -1,5 +1,7 @@
 use super::*;
 
+// Bindgen flag signedness differs between the supported SDK targets.
+#[allow(clippy::unnecessary_cast)]
 pub(super) fn transport_state_from_vst3_process_context(
     process_context: *mut ProcessContext,
 ) -> TransportState {

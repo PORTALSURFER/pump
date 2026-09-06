@@ -2287,7 +2287,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "radiant"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/radiant.git?rev=c1343993c973bdece3e8cd469415b0d08c7f6cf1#c1343993c973bdece3e8cd469415b0d08c7f6cf1"
+source = "git+https://github.com/PORTALSURFER/radiant.git?rev=7001b84b2c7edd4a286d167c183a5b35366156fc#7001b84b2c7edd4a286d167c183a5b35366156fc"
 dependencies = [
  "arboard",
  "block2 0.5.1",
@@ -2302,10 +2302,15 @@ dependencies = [
  "raw-window-handle 0.6.2",
  "rfd",
  "roxmltree 0.21.1",
+ "rustybuzz",
  "serde",
  "serde_json",
  "skrifa",
  "tracing",
+ "unicode-bidi",
+ "unicode-linebreak",
+ "unicode-script",
+ "unicode-segmentation",
  "vello",
  "vello_svg",
  "windows",
@@ -2959,7 +2964,7 @@ dependencies = [
 [[package]]
 name = "toybox"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=f09da33076a436a6c841e71622759f6e2fe705af#f09da33076a436a6c841e71622759f6e2fe705af"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=e8fcd2e99b1fb62b3d869b6e5312a12700c82fdf#e8fcd2e99b1fb62b3d869b6e5312a12700c82fdf"
 dependencies = [
  "clack-common",
  "clack-extensions",
@@ -2977,12 +2982,12 @@ dependencies = [
 [[package]]
 name = "toybox-process-log"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=f09da33076a436a6c841e71622759f6e2fe705af#f09da33076a436a6c841e71622759f6e2fe705af"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=e8fcd2e99b1fb62b3d869b6e5312a12700c82fdf#e8fcd2e99b1fb62b3d869b6e5312a12700c82fdf"
 
 [[package]]
 name = "toybox-vst3-ffi"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/toybox.git?rev=f09da33076a436a6c841e71622759f6e2fe705af#f09da33076a436a6c841e71622759f6e2fe705af"
+source = "git+https://github.com/PORTALSURFER/toybox.git?rev=e8fcd2e99b1fb62b3d869b6e5312a12700c82fdf#e8fcd2e99b1fb62b3d869b6e5312a12700c82fdf"
 dependencies = [
  "vst3",
 ]
@@ -3061,6 +3066,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-linebreak"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
 
 [[package]]
 name = "unicode-properties"
