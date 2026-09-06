@@ -705,6 +705,8 @@ unsafe fn silence_valid_stereo_output(data: &ProcessData) -> tresult {
 }
 
 impl IProcessContextRequirementsTrait for PumpVst3Processor {
+    // Bindgen represents these SDK enum flags as i32 on some targets.
+    #[allow(clippy::unnecessary_cast)]
     unsafe fn getProcessContextRequirements(&self) -> u32 {
         (IProcessContextRequirements_::Flags_::kNeedTempo as u32)
             | (IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic as u32)

@@ -280,6 +280,10 @@ impl BypassControlWidget {
 }
 
 impl Widget for BypassControlWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        self.button.focused_key_disposition(key)
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -473,6 +477,10 @@ impl HotkeyHelpButtonWidget {
 }
 
 impl Widget for HotkeyHelpButtonWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        self.button.focused_key_disposition(key)
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -584,6 +592,14 @@ impl SoundSwitchButtonWidget {
 }
 
 impl Widget for SoundSwitchButtonWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        if matches!(key, WidgetKey::Enter | WidgetKey::Space) {
+            radiant::widgets::FocusedKeyDisposition::Consumed
+        } else {
+            radiant::widgets::FocusedKeyDisposition::Unhandled
+        }
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -733,6 +749,14 @@ impl SoundSideButtonWidget {
 }
 
 impl Widget for SoundSideButtonWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        if matches!(key, WidgetKey::Enter | WidgetKey::Space) {
+            radiant::widgets::FocusedKeyDisposition::Consumed
+        } else {
+            radiant::widgets::FocusedKeyDisposition::Unhandled
+        }
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -1085,6 +1109,10 @@ impl ActionIconButtonWidget {
 }
 
 impl Widget for ActionIconButtonWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        self.button.focused_key_disposition(key)
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -2018,14 +2046,12 @@ impl RadiantPumpEditor {
         key: WidgetKey,
         modifiers: KeyboardModifiers,
     ) -> bool {
-        self.runtime
-            .dispatch_event(Event::KeyPress {
-                key,
-                modifiers,
-                repeat: false,
-                timestamp: None,
-            })
-            .is_some()
+        self.runtime.dispatch_keyboard_event(Event::KeyPress {
+            key,
+            modifiers,
+            repeat: false,
+            timestamp: None,
+        })
     }
 
     /// Route a focused text character into the Radiant runtime.
@@ -2048,7 +2074,7 @@ impl RadiantPumpEditor {
                 return true;
             }
         }
-        self.runtime.dispatch_event(Event::character(ch)).is_some()
+        self.runtime.dispatch_keyboard_event(Event::character(ch))
     }
 
     /// Cancel active numeric value entry, if any.
@@ -4971,6 +4997,21 @@ impl NumericValueLabelWidget {
 }
 
 impl Widget for NumericValueLabelWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        if matches!(
+            key,
+            WidgetKey::Enter
+                | WidgetKey::Backspace
+                | WidgetKey::Delete
+                | WidgetKey::ArrowUp
+                | WidgetKey::ArrowDown
+        ) {
+            radiant::widgets::FocusedKeyDisposition::Consumed
+        } else {
+            radiant::widgets::FocusedKeyDisposition::Unhandled
+        }
+    }
+
     fn common(&self) -> &WidgetCommon {
         &self.common
     }
@@ -5245,6 +5286,10 @@ impl CurveSlotWidget {
 }
 
 impl Widget for CurveSlotWidget {
+    fn focused_key_disposition(&self, _key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        radiant::widgets::FocusedKeyDisposition::Unhandled
+    }
+
     fn common(&self) -> &WidgetCommon {
         &self.common
     }
@@ -6913,6 +6958,14 @@ impl CurvePreviewWidget {
 }
 
 impl Widget for CurvePreviewWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        if matches!(key, WidgetKey::Delete | WidgetKey::Backspace) {
+            radiant::widgets::FocusedKeyDisposition::Consumed
+        } else {
+            radiant::widgets::FocusedKeyDisposition::Unhandled
+        }
+    }
+
     fn common(&self) -> &WidgetCommon {
         &self.common
     }
@@ -8989,6 +9042,7 @@ mod tests {
 
         assert!(!editor.dispatch_character('u'));
         assert!(!editor.dispatch_character('U'));
+        assert!(!editor.dispatch_character(' '));
 
         let initial_swing = params.swing();
         editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
