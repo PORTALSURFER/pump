@@ -246,10 +246,17 @@ release_dir="${repo_root}/dist/releases/${build_id}"
 rm -rf -- "${release_dir}"
 mkdir -p "${release_dir}" "${repo_root}/target"
 tmp_root="$(mktemp -d "${repo_root}/target/release-build.XXXXXX")"
+evidence_dir="${tmp_root}/notary-evidence"
+mkdir -p "${evidence_dir}"
+release_completed=0
 original_keychains=()
 release_keychain=""
 original_keychains_file=""
 cleanup() {
+  local status=$?
+  if [[ "${release_completed}" != 1 && "${status}" == 0 ]]; then
+    status=1
+  fi
   if [[ -f "${original_keychains_file}" && "${#original_keychains[@]}" -gt 0 ]]; then
     security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || true
   fi
@@ -257,6 +264,7 @@ cleanup() {
     security delete-keychain "${release_keychain}" >/dev/null 2>&1 || true
   fi
   rm -rf -- "${tmp_root}"
+  exit "${status}"
 }
 trap cleanup EXIT
 
@@ -494,3 +502,5 @@ fi
 
 echo "[release] ${mode} Pump bundle ready: ${release_dir}"
 find "${release_dir}" -maxdepth 1 -type f -print | sort
+
+release_completed=1
