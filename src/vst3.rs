@@ -35,6 +35,13 @@ use toybox::dsp::TransportState;
 const PROCESSOR_CID: TUID = uid(0xE5A9A79F, 0xC4A94392, 0x97A8A8AA, 0xA9A90B3C);
 const CONTROLLER_CID: TUID = uid(0xB2EE267A, 0xE4314D5D, 0x96085F7A, 0x51681074);
 
+// Bindgen uses different signedness for SDK enums across supported targets.
+#[allow(clippy::unnecessary_cast)]
+const VST3_SAMPLE_32: i32 = SymbolicSampleSizes_::kSample32 as i32;
+#[cfg(test)]
+#[allow(clippy::unnecessary_cast)]
+const VST3_SAMPLE_64: i32 = SymbolicSampleSizes_::kSample64 as i32;
+
 const STATE_MAGIC: u32 = u32::from_le_bytes(*b"PUMP");
 const STATE_VERSION: u32 = 1;
 // The envelope version historically tracked the serialized payload version in

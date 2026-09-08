@@ -393,7 +393,7 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
     let mut input_buses = vec![input_bus];
     let mut output_buses = vec![output_bus];
     let mut process_data: ProcessData = unsafe { mem::zeroed() };
-    process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample32 as i32;
+    process_data.symbolicSampleSize = VST3_SAMPLE_32;
     process_data.numSamples = i32::try_from(samples).expect("sample count should fit i32");
     process_data.numInputs = 1;
     process_data.numOutputs = 1;
@@ -1061,7 +1061,7 @@ fn processor_applies_extended_division_in_sample_and_zero_frame_paths() {
         PARAM_SYNC_DIVISION_VST3_V2_NUM,
         vec![(0, to_normalized(PARAM_SYNC_DIVISION_VST3_V2_NUM, 9.0))],
     )]);
-    zero_frame.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    zero_frame.process_data.symbolicSampleSize = VST3_SAMPLE_64;
     zero_frame.process_data.inputParameterChanges = zero_frame_changes.as_ptr();
 
     assert_eq!(
@@ -1225,7 +1225,7 @@ fn zero_sample_parameter_flush_without_buses_applies_all_points_and_preserves_st
     ]);
     let mut process_data: ProcessData = unsafe { mem::zeroed() };
     process_data.numSamples = 0;
-    process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    process_data.symbolicSampleSize = VST3_SAMPLE_64;
     process_data.inputParameterChanges = changes.as_ptr();
 
     assert_eq!(
@@ -1286,7 +1286,7 @@ fn zero_sample_parameter_flush_with_empty_stereo_buffers_preserves_host_state() 
             vec![(0, to_normalized(PARAM_FREE_RATE_NUM, 9.0))],
         ),
     ]);
-    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.symbolicSampleSize = VST3_SAMPLE_64;
     fixture.process_data.inputParameterChanges = changes.as_ptr();
 
     assert_eq!(
@@ -1356,7 +1356,7 @@ fn zero_sample_parameter_flush_with_declared_null_buffers_reconciles_mapping_onc
             vec![(0, to_normalized(PARAM_SWING_NUM, 0.35))],
         ),
     ]);
-    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.symbolicSampleSize = VST3_SAMPLE_64;
     fixture.process_data.inputParameterChanges = changes.as_ptr();
 
     assert_eq!(
@@ -1504,7 +1504,7 @@ fn processor_rejects_unwritable_output_instead_of_claiming_success() {
 fn processor_rejects_unsupported_sample_size_without_touching_output() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let mut fixture = stereo_process_fixture(32, 9.0);
-    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.symbolicSampleSize = VST3_SAMPLE_64;
 
     let result = unsafe { processor.process(&mut fixture.process_data) };
 
@@ -1563,7 +1563,7 @@ fn processor_accepts_a_positive_length_zero_bus_parameter_flush() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let mut process_data: ProcessData = unsafe { mem::zeroed() };
     process_data.numSamples = 64;
-    process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    process_data.symbolicSampleSize = VST3_SAMPLE_64;
 
     let result = unsafe { processor.process(&mut process_data) };
 
@@ -1576,7 +1576,7 @@ fn processor_accepts_an_omitted_deactivated_output_bus() {
     let mut fixture = stereo_process_fixture(64, 9.0);
     fixture.process_data.numOutputs = 0;
     fixture.process_data.outputs = ptr::null_mut();
-    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.symbolicSampleSize = VST3_SAMPLE_64;
 
     let result = unsafe { processor.process(&mut fixture.process_data) };
 
@@ -1674,11 +1674,12 @@ fn setup_and_state_handoffs_remain_nonblocking_during_processing() {
 }
 
 #[test]
+#[allow(clippy::unnecessary_cast)] // SDK enum signedness differs by target.
 fn transport_state_uses_vst3_process_context_when_available() {
     let context = ProcessContext {
         state: (ProcessContext_::StatesAndFlags_::kTempoValid
             | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid
-            | ProcessContext_::StatesAndFlags_::kPlaying),
+            | ProcessContext_::StatesAndFlags_::kPlaying) as u32,
         sampleRate: 48_000.0,
         projectTimeSamples: 0,
         systemTime: 0,
