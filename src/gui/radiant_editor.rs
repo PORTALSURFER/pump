@@ -25,7 +25,7 @@ use radiant::runtime::{
 use radiant::runtime::{Event, SurfacePaintPlan};
 use radiant::theme::ThemeTokens;
 use radiant::widgets::{
-    ButtonMessage, ButtonWidget, FocusBehavior, IconButtonWidget, PointerButton,
+    ButtonMessage, ButtonWidget, FocusBehavior, IconButtonWidget, KeyboardModifiers, PointerButton,
     PointerPressAdmission, TextWrap, Widget, WidgetCapabilities, WidgetCommon, WidgetInput,
     WidgetKey, WidgetOutput, WidgetSemantics, WidgetSizing,
 };
@@ -41,13 +41,14 @@ use crate::curve::{
 };
 use crate::incoming_waveform::IncomingWaveformSnapshot;
 use crate::params::{
-    format_plain_value_text, normalized_from_plain_value, parse_plain_value_text,
-    plain_from_normalized_value, sync_division_label, PumpParams, PumpSoundState, SoundSide,
-    BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS, DEFAULT_FREE_RATE_HZ, DEFAULT_MIX,
-    DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, GLOBAL_CURVE_SLOT_COUNT, MAX_OUTPUT_GAIN_DB,
-    MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID,
-    PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID, SYNC_DIVISIONS, TIMING_MODE_FREE,
+    clamp_delay_beats, format_plain_value_text, normalized_from_plain_value,
+    parse_plain_value_text, plain_from_normalized_value, sync_division_label, PumpParams,
+    PumpSoundState, SoundSide, BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS,
+    DEFAULT_FREE_RATE_HZ, DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH,
+    GLOBAL_CURVE_SLOT_COUNT, MAX_DELAY_BEATS, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
+    MIN_DELAY_BEATS, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DELAY_ID, PARAM_FREE_RATE_ID,
+    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID,
+    PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID, SYNC_DIVISIONS, TIMING_MODE_FREE,
     TIMING_MODE_SYNC,
 };
 use crate::GuiStatus;
@@ -174,6 +175,10 @@ const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
 const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.divider;
 const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_OFFSET_BAR_HEIGHT: f32 = 10.2;
+// Keep the stacked timing control pixel-aligned while retaining the existing gap.
+const DELAY_PROGRESS_HEIGHT: f32 = 10.0;
+const DELAY_INPUT_HEIGHT: f32 =
+    TIMING_CONTROL_HEIGHT - DELAY_PROGRESS_HEIGHT - PUMP_VISUAL_METRICS.space_4;
 const CURVE_OFFSET_BAR_INSET: f32 = PUMP_VISUAL_METRICS.space_8;
 const CURVE_OFFSET_HANDLE_WIDTH: f32 = PUMP_VISUAL_METRICS.space_16;
 const CURVE_FILL_TOP_ALPHA: u8 = 96;
@@ -275,6 +280,10 @@ impl BypassControlWidget {
 }
 
 impl Widget for BypassControlWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        self.button.focused_key_disposition(key)
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -468,6 +477,10 @@ impl HotkeyHelpButtonWidget {
 }
 
 impl Widget for HotkeyHelpButtonWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        self.button.focused_key_disposition(key)
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -579,6 +592,14 @@ impl SoundSwitchButtonWidget {
 }
 
 impl Widget for SoundSwitchButtonWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        if matches!(key, WidgetKey::Enter | WidgetKey::Space) {
+            radiant::widgets::FocusedKeyDisposition::Consumed
+        } else {
+            radiant::widgets::FocusedKeyDisposition::Unhandled
+        }
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -728,6 +749,14 @@ impl SoundSideButtonWidget {
 }
 
 impl Widget for SoundSideButtonWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        if matches!(key, WidgetKey::Enter | WidgetKey::Space) {
+            radiant::widgets::FocusedKeyDisposition::Consumed
+        } else {
+            radiant::widgets::FocusedKeyDisposition::Unhandled
+        }
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -1080,6 +1109,10 @@ impl ActionIconButtonWidget {
 }
 
 impl Widget for ActionIconButtonWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        self.button.focused_key_disposition(key)
+    }
+
     fn common(&self) -> &WidgetCommon {
         self.button.common()
     }
@@ -1728,6 +1761,7 @@ enum NumericEntryTarget {
     Smooth,
     Swing,
     FreeRate,
+    Delay,
 }
 
 impl NumericEntryTarget {
@@ -1738,6 +1772,7 @@ impl NumericEntryTarget {
             Self::Smooth => PARAM_SMOOTH_ID,
             Self::Swing => PARAM_SWING_ID,
             Self::FreeRate => PARAM_FREE_RATE_ID,
+            Self::Delay => PARAM_DELAY_ID,
         }
     }
 
@@ -1748,6 +1783,7 @@ impl NumericEntryTarget {
             Self::Smooth => "Smooth",
             Self::Swing => "Swing",
             Self::FreeRate => "Free Rate",
+            Self::Delay => "Delay",
         }
     }
 
@@ -1758,6 +1794,7 @@ impl NumericEntryTarget {
             Self::Smooth => "numeric-entry-smooth",
             Self::Swing => "numeric-entry-swing",
             Self::FreeRate => "numeric-entry-free-rate",
+            Self::Delay => "numeric-entry-delay",
         }
     }
 
@@ -1768,6 +1805,7 @@ impl NumericEntryTarget {
             Self::Smooth => params.smooth() as f64,
             Self::Swing => params.swing() as f64,
             Self::FreeRate => params.free_rate_hz() as f64,
+            Self::Delay => params.delay_beats() as f64,
         }
     }
 }
@@ -1828,6 +1866,10 @@ enum NumericEntryMessage {
         target: NumericEntryTarget,
         draft: String,
     },
+    Step {
+        target: NumericEntryTarget,
+        delta: i32,
+    },
     Cancel {
         target: NumericEntryTarget,
     },
@@ -1878,6 +1920,9 @@ struct RadiantHistorySnapshot {
     output_gain_db: f32,
     sync_division: usize,
     mode: usize,
+    timing_mode: usize,
+    free_rate_hz: f32,
+    delay_beats: usize,
     curve: EditableCurve,
     active_sound: SoundSide,
     sound_states: [PumpSoundState; 2],
@@ -1996,8 +2041,17 @@ impl RadiantPumpEditor {
     }
 
     /// Route a focused key press into the Radiant runtime.
-    pub(crate) fn dispatch_key_press(&mut self, key: WidgetKey) -> bool {
-        self.runtime.dispatch_event(Event::key_press(key)).is_some()
+    pub(crate) fn dispatch_key_press(
+        &mut self,
+        key: WidgetKey,
+        modifiers: KeyboardModifiers,
+    ) -> bool {
+        self.runtime.dispatch_keyboard_event(Event::KeyPress {
+            key,
+            modifiers,
+            repeat: false,
+            timestamp: None,
+        })
     }
 
     /// Route a focused text character into the Radiant runtime.
@@ -2020,7 +2074,7 @@ impl RadiantPumpEditor {
                 return true;
             }
         }
-        self.runtime.dispatch_event(Event::character(ch)).is_some()
+        self.runtime.dispatch_keyboard_event(Event::character(ch))
     }
 
     /// Cancel active numeric value entry, if any.
@@ -2218,8 +2272,8 @@ impl toybox::radiant_gui::RadiantEditor for RadiantPumpEditor {
         Self::needs_realtime_redraw(self)
     }
 
-    fn dispatch_key_press(&mut self, key: WidgetKey) -> bool {
-        Self::dispatch_key_press(self, key)
+    fn dispatch_key_press(&mut self, key: WidgetKey, modifiers: KeyboardModifiers) -> bool {
+        Self::dispatch_key_press(self, key, modifiers)
     }
 
     fn dispatch_character(&mut self, character: char) -> bool {
@@ -2305,6 +2359,9 @@ impl RadiantEditorState {
             output_gain_db: self.params.output_gain_db(),
             sync_division: self.params.sync_division(),
             mode: self.params.mode(),
+            timing_mode: self.params.timing_mode(),
+            free_rate_hz: self.params.free_rate_hz(),
+            delay_beats: self.params.delay_beats(),
             curve: self.params.editable_curve_snapshot(),
             active_sound: self.params.active_sound(),
             sound_states: [
@@ -2341,6 +2398,9 @@ impl RadiantEditorState {
         self.params.set_output_gain_db(snapshot.output_gain_db);
         self.params.set_sync_division(snapshot.sync_division as f32);
         self.params.set_mode(snapshot.mode as f32);
+        self.params.set_timing_mode(snapshot.timing_mode as f32);
+        self.params.set_free_rate_hz(snapshot.free_rate_hz);
+        self.params.set_delay_beats(snapshot.delay_beats as f32);
         self.params
             .set_editable_curve_preserving_phase(&snapshot.curve);
         self.params
@@ -2394,6 +2454,7 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let depth = params.depth_db();
     let floor = params.floor_db();
     let sync = params.sync_division();
+    let delay = params.delay_beats();
     let free_timing = params.timing_mode() == TIMING_MODE_FREE;
     let free_rate = params.free_rate_hz();
     let waveform_live_mode = state.status.waveform_live_mode();
@@ -2450,6 +2511,11 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
         timing_dropdown
             .width(TIMING_DROPDOWN_WIDTH)
             .height(TIMING_CONTROL_HEIGHT),
+        if free_timing {
+            spacer().width(0.0).height(0.0)
+        } else {
+            sync_delay_control(state, delay)
+        },
     ])
     .spacing(PUMP_VISUAL_METRICS.space_4)
     .height(TIMING_CONTROL_HEIGHT);
@@ -2687,6 +2753,7 @@ fn hotkey_help_overlay() -> ViewNode<RadiantEditorMessage> {
     .fill()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parameter_deck(
     state: &RadiantEditorState,
     params: &PumpParams,
@@ -2756,6 +2823,28 @@ fn parameter_deck(
         .spacing(PUMP_VISUAL_METRICS.gap)
         .fill_width()
         .height(PARAMETER_DECK_HEIGHT)
+}
+
+fn sync_delay_control(state: &RadiantEditorState, delay: usize) -> ViewNode<RadiantEditorMessage> {
+    let value = format_plain_value_text(PARAM_DELAY_ID, delay as f64)
+        .unwrap_or_else(|| format_delay_beats_for_ui(delay));
+    column([
+        custom_widget(
+            DelayProgressWidget::new(state.status.delay_progress()),
+            |_| None,
+        )
+        .width(CONTROL_VALUE_WIDTH)
+        .height(DELAY_PROGRESS_HEIGHT),
+        value_label_node_with_background(
+            NumericEntryTarget::Delay,
+            value,
+            state.numeric_entry.as_ref(),
+        )
+        .height(DELAY_INPUT_HEIGHT),
+    ])
+    .spacing(PUMP_VISUAL_METRICS.space_4)
+    .width(CONTROL_VALUE_WIDTH)
+    .height(TIMING_CONTROL_HEIGHT)
 }
 
 fn parameter_deck_divider() -> ViewNode<RadiantEditorMessage> {
@@ -2923,6 +3012,10 @@ fn knob_plain_value(target: NumericEntryTarget, value: f32) -> (ClapId, f32) {
             plain_from_normalized_value(PARAM_FREE_RATE_ID, value as f64)
                 .unwrap_or(DEFAULT_FREE_RATE_HZ as f64) as f32,
         ),
+        NumericEntryTarget::Delay => (
+            PARAM_DELAY_ID,
+            plain_from_normalized_value(PARAM_DELAY_ID, value as f64).unwrap_or(0.0) as f32,
+        ),
     }
 }
 
@@ -2934,6 +3027,7 @@ fn set_knob_param(params: &PumpParams, target: NumericEntryTarget, value: f32) -
         NumericEntryTarget::Smooth => params.set_smooth(value),
         NumericEntryTarget::Swing => params.set_swing(value),
         NumericEntryTarget::FreeRate => params.set_free_rate_hz(plain_value),
+        NumericEntryTarget::Delay => params.set_delay_beats(plain_value),
     }
     (param_id, plain_value)
 }
@@ -2948,17 +3042,41 @@ fn format_free_rate_for_unit(rate_hz: f32, unit: FreeRateUnit) -> String {
     }
 }
 
+fn format_delay_beats_for_ui(delay: usize) -> String {
+    match delay {
+        1 => "1 beat".to_string(),
+        delay => format!("{delay} beats"),
+    }
+}
+
 fn value_label_node(
     target: NumericEntryTarget,
     value_label: String,
     active_entry: Option<&NumericEntryState>,
+) -> ViewNode<RadiantEditorMessage> {
+    value_label_node_inner(target, value_label, active_entry, false)
+}
+
+fn value_label_node_with_background(
+    target: NumericEntryTarget,
+    value_label: String,
+    active_entry: Option<&NumericEntryState>,
+) -> ViewNode<RadiantEditorMessage> {
+    value_label_node_inner(target, value_label, active_entry, true)
+}
+
+fn value_label_node_inner(
+    target: NumericEntryTarget,
+    value_label: String,
+    active_entry: Option<&NumericEntryState>,
+    background: bool,
 ) -> ViewNode<RadiantEditorMessage> {
     let (display, editing, dirty) = active_entry
         .filter(|entry| entry.target == target)
         .map(|entry| (entry.draft.clone(), true, entry.dirty))
         .unwrap_or((value_label, false, false));
     custom_widget_mapped(
-        NumericValueLabelWidget::new(target, display, editing, dirty),
+        NumericValueLabelWidget::new(target, display, editing, dirty).with_background(background),
         RadiantEditorMessage::NumericEntry,
     )
     .key(target.widget_key())
@@ -2979,6 +3097,7 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
         RadiantEditorMessage::ToggleTimingMode => {
             state.push_history();
             state.timing_dropdown_open = false;
+            state.numeric_entry = None;
             let timing_mode = if state.params.timing_mode() == TIMING_MODE_FREE {
                 TIMING_MODE_SYNC
             } else {
@@ -3190,9 +3309,44 @@ fn reduce_numeric_entry_message(state: &mut RadiantEditorState, message: Numeric
                 let Some(value) = parse_plain_value_text(target.param_id(), draft.trim()) else {
                     return;
                 };
+                if target == NumericEntryTarget::Delay
+                    && clamp_delay_beats(value as f32) != state.params.delay_beats()
+                {
+                    state.push_history();
+                }
                 apply_numeric_entry_value(state, target, value);
                 state.numeric_entry = None;
             }
+        }
+        NumericEntryMessage::Step { target, delta } => {
+            if target != NumericEntryTarget::Delay
+                || !state
+                    .numeric_entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.target == target)
+            {
+                return;
+            }
+
+            let current = state.params.delay_beats();
+            let magnitude = delta.unsigned_abs() as usize;
+            let next = if delta.is_negative() {
+                current.saturating_sub(magnitude)
+            } else {
+                current.saturating_add(magnitude)
+            }
+            .clamp(MIN_DELAY_BEATS, MAX_DELAY_BEATS);
+            if next == current {
+                return;
+            }
+
+            state.push_history();
+            apply_numeric_entry_value(state, target, next as f64);
+            state.numeric_entry = Some(NumericEntryState {
+                target,
+                draft: format_delay_beats_for_ui(next),
+                dirty: false,
+            });
         }
         NumericEntryMessage::Cancel { target } => {
             if state
@@ -3211,12 +3365,18 @@ fn apply_numeric_entry_value(
     target: NumericEntryTarget,
     value: f64,
 ) {
+    let value = if target == NumericEntryTarget::Delay {
+        clamp_delay_beats(value as f32) as f64
+    } else {
+        value
+    };
     match target {
         NumericEntryTarget::Mix => state.params.set_mix(value as f32),
         NumericEntryTarget::OutputGain => state.params.set_output_gain_db(value as f32),
         NumericEntryTarget::Smooth => state.params.set_smooth(value as f32),
         NumericEntryTarget::Swing => state.params.set_swing(value as f32),
         NumericEntryTarget::FreeRate => state.params.set_free_rate_hz(value as f32),
+        NumericEntryTarget::Delay => state.params.set_delay_beats(value as f32),
     }
 
     push_radiant_param_update(state, target.param_id(), value);
@@ -4772,6 +4932,7 @@ struct NumericValueLabelWidget {
     text: String,
     editing: bool,
     dirty: bool,
+    background: bool,
 }
 
 impl NumericValueLabelWidget {
@@ -4784,7 +4945,13 @@ impl NumericValueLabelWidget {
             text,
             editing,
             dirty,
+            background: false,
         }
+    }
+
+    fn with_background(mut self, background: bool) -> Self {
+        self.background = background;
+        self
     }
 
     fn draft_with_character(&self, ch: char) -> Option<String> {
@@ -4830,6 +4997,21 @@ impl NumericValueLabelWidget {
 }
 
 impl Widget for NumericValueLabelWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        if matches!(
+            key,
+            WidgetKey::Enter
+                | WidgetKey::Backspace
+                | WidgetKey::Delete
+                | WidgetKey::ArrowUp
+                | WidgetKey::ArrowDown
+        ) {
+            radiant::widgets::FocusedKeyDisposition::Consumed
+        } else {
+            radiant::widgets::FocusedKeyDisposition::Unhandled
+        }
+    }
+
     fn common(&self) -> &WidgetCommon {
         &self.common
     }
@@ -4852,9 +5034,11 @@ impl Widget for NumericValueLabelWidget {
             } if bounds.contains(position) => {
                 self.common.state.focused = true;
                 self.common.state.hovered = true;
-                modifiers.command.then_some(NumericEntryMessage::Begin {
-                    target: self.target,
-                })
+                (self.target == NumericEntryTarget::Delay || modifiers.command).then_some(
+                    NumericEntryMessage::Begin {
+                        target: self.target,
+                    },
+                )
             }
             WidgetInput::FocusChanged(focused) => {
                 self.common.state.focused = focused;
@@ -4893,6 +5077,22 @@ impl Widget for NumericValueLabelWidget {
                 key: WidgetKey::Delete,
                 ..
             } if self.editing => Some(self.changed(self.draft_after_delete())),
+            WidgetInput::KeyPress {
+                key: key @ (WidgetKey::ArrowUp | WidgetKey::ArrowDown),
+                modifiers,
+                ..
+            } if self.editing && self.target == NumericEntryTarget::Delay => {
+                let step = if modifiers.shift { 4 } else { 1 };
+                let delta = if key == WidgetKey::ArrowUp {
+                    step
+                } else {
+                    -step
+                };
+                Some(NumericEntryMessage::Step {
+                    target: self.target,
+                    delta,
+                })
+            }
             _ => None,
         }?;
         Some(WidgetOutput::typed(message))
@@ -4909,7 +5109,7 @@ impl Widget for NumericValueLabelWidget {
         _layout: &LayoutOutput,
         theme: &ThemeTokens,
     ) {
-        if self.editing {
+        if self.editing || self.background {
             primitives.push(PaintPrimitive::FillRect(PaintFillRect {
                 widget_id: self.common.id,
                 rect: bounds,
@@ -4954,6 +5154,71 @@ impl WidgetSemantics for NumericValueLabelWidget {
 
     fn automation_value_text(&self) -> Option<String> {
         Some(self.text.clone())
+    }
+}
+
+#[derive(Clone)]
+struct DelayProgressWidget {
+    common: WidgetCommon,
+    progress: f32,
+}
+
+impl DelayProgressWidget {
+    fn new(progress: f32) -> Self {
+        Self {
+            common: WidgetCommon::fixed(0, CONTROL_VALUE_WIDTH, DELAY_PROGRESS_HEIGHT)
+                .without_default_chrome(),
+            progress: progress.clamp(0.0, 1.0),
+        }
+    }
+}
+
+impl Widget for DelayProgressWidget {
+    fn common(&self) -> &WidgetCommon {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut WidgetCommon {
+        &mut self.common
+    }
+
+    fn handle_input(&mut self, _bounds: Rect, _input: WidgetInput) -> Option<WidgetOutput> {
+        None
+    }
+
+    fn append_paint(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        _layout: &LayoutOutput,
+        theme: &ThemeTokens,
+    ) {
+        primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+            widget_id: self.common.id,
+            rect: bounds,
+            color: theme.grid_soft,
+        }));
+
+        let inner = bounds.inset(
+            PUMP_VISUAL_METRICS.border,
+            PUMP_VISUAL_METRICS.border,
+            PUMP_VISUAL_METRICS.border,
+            PUMP_VISUAL_METRICS.border,
+        );
+        let fill_width = inner.width() * self.progress;
+        if fill_width > 0.0 {
+            primitives.push(PaintPrimitive::FillRect(PaintFillRect {
+                widget_id: self.common.id,
+                rect: Rect::from_xy_size(inner.min.x, inner.min.y, fill_width, inner.height()),
+                color: theme.accent_copper,
+            }));
+        }
+        primitives.push(PaintPrimitive::StrokeRect(PaintStrokeRect {
+            widget_id: self.common.id,
+            rect: bounds,
+            color: theme.border_emphasis,
+            width: PUMP_VISUAL_METRICS.border,
+        }));
     }
 }
 
@@ -5021,6 +5286,10 @@ impl CurveSlotWidget {
 }
 
 impl Widget for CurveSlotWidget {
+    fn focused_key_disposition(&self, _key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        radiant::widgets::FocusedKeyDisposition::Unhandled
+    }
+
     fn common(&self) -> &WidgetCommon {
         &self.common
     }
@@ -6695,6 +6964,14 @@ impl CurvePreviewWidget {
 }
 
 impl Widget for CurvePreviewWidget {
+    fn focused_key_disposition(&self, key: WidgetKey) -> radiant::widgets::FocusedKeyDisposition {
+        if matches!(key, WidgetKey::Delete | WidgetKey::Backspace) {
+            radiant::widgets::FocusedKeyDisposition::Consumed
+        } else {
+            radiant::widgets::FocusedKeyDisposition::Unhandled
+        }
+    }
+
     fn common(&self) -> &WidgetCommon {
         &self.common
     }
@@ -7232,10 +7509,11 @@ mod tests {
     use super::*;
     use crate::curve::{editable_curve_to_table, sample_curve_segment};
     use crate::dsp::{DspSettings, PumpEngine};
+    use crate::params::MAX_DELAY_BEATS;
     #[cfg(feature = "vst3")]
     use crate::GuiTransportTelemetry;
     use radiant::runtime::PaintPrimitive;
-    use radiant::widgets::{PointerModifiers, WidgetId};
+    use radiant::widgets::{KeyboardModifiers, PointerModifiers, WidgetId};
     use toybox::clack_plugin::events::event_types::{
         ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
     };
@@ -8782,6 +9060,7 @@ mod tests {
 
         assert!(!editor.dispatch_character('u'));
         assert!(!editor.dispatch_character('U'));
+        assert!(!editor.dispatch_character(' '));
 
         let initial_swing = params.swing();
         editor.runtime.dispatch_message(RadiantEditorMessage::Knob {
@@ -9779,7 +10058,84 @@ mod tests {
     }
 
     #[test]
-    fn numeric_value_label_starts_edit_only_on_command_click() {
+    fn radiant_delay_numeric_entry_accepts_integer_beats_and_formats_units() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+
+        for (raw, expected) in [
+            ("-1", 0),
+            ("0", 0),
+            ("1 beat", 1),
+            ("2 beats", 2),
+            ("33 beats", MAX_DELAY_BEATS),
+            ("32 beats", MAX_DELAY_BEATS),
+        ] {
+            reduce_editor_message(
+                &mut state,
+                RadiantEditorMessage::NumericEntry(NumericEntryMessage::Begin {
+                    target: NumericEntryTarget::Delay,
+                }),
+            );
+            let expected_draft = format_delay_beats_for_ui(params.delay_beats());
+            let prior_delay = params.delay_beats();
+            let history_before_commit = state.undo_history.len();
+            assert_eq!(
+                state
+                    .numeric_entry
+                    .as_ref()
+                    .map(|entry| entry.draft.as_str()),
+                Some(expected_draft.as_str())
+            );
+            reduce_editor_message(
+                &mut state,
+                RadiantEditorMessage::NumericEntry(NumericEntryMessage::Commit {
+                    target: NumericEntryTarget::Delay,
+                    draft: raw.to_string(),
+                }),
+            );
+            assert_eq!(params.delay_beats(), expected);
+            let expected_history_len = if expected == prior_delay {
+                history_before_commit
+            } else {
+                history_before_commit + 1
+            };
+            assert_eq!(state.undo_history.len(), expected_history_len);
+            assert!(state.numeric_entry.is_none());
+        }
+
+        assert_eq!(format_delay_beats_for_ui(0), "0 beats");
+        assert_eq!(format_delay_beats_for_ui(1), "1 beat");
+        assert_eq!(format_delay_beats_for_ui(2), "2 beats");
+        assert_eq!(format_delay_beats_for_ui(MAX_DELAY_BEATS), "32 beats");
+
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Begin {
+                target: NumericEntryTarget::Delay,
+            }),
+        );
+        let history_before_invalid_commit = state.undo_history.len();
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::NumericEntry(NumericEntryMessage::Commit {
+                target: NumericEntryTarget::Delay,
+                draft: "1.5 beats".to_string(),
+            }),
+        );
+        assert_eq!(params.delay_beats(), MAX_DELAY_BEATS);
+        assert_eq!(
+            state.numeric_entry.as_ref().map(|entry| entry.target),
+            Some(NumericEntryTarget::Delay)
+        );
+        assert_eq!(
+            state.undo_history.len(),
+            history_before_invalid_commit,
+            "invalid Delay commits must not add history"
+        );
+    }
+
+    #[test]
+    fn numeric_value_label_starts_edit_only_on_command_click_for_other_fields() {
         let bounds = Rect::from_xy_size(0.0, 0.0, CONTROL_VALUE_WIDTH, CONTROL_ROW_HEIGHT);
         let mut widget =
             NumericValueLabelWidget::new(NumericEntryTarget::Mix, "50%".to_string(), false, false);
@@ -9808,6 +10164,69 @@ mod tests {
                 target: NumericEntryTarget::Mix
             })
         );
+    }
+
+    #[test]
+    fn numeric_value_label_starts_delay_edit_on_plain_click() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, CONTROL_VALUE_WIDTH, DELAY_INPUT_HEIGHT);
+        let mut widget = NumericValueLabelWidget::new(
+            NumericEntryTarget::Delay,
+            "2 beats".to_string(),
+            false,
+            false,
+        );
+
+        let output = widget
+            .handle_input(bounds, WidgetInput::primary_press(Point::new(8.0, 8.0)))
+            .expect("plain click should begin Delay numeric entry");
+
+        assert_eq!(
+            output.typed_cloned::<NumericEntryMessage>(),
+            Some(NumericEntryMessage::Begin {
+                target: NumericEntryTarget::Delay
+            })
+        );
+    }
+
+    #[test]
+    fn numeric_value_label_emits_delay_arrow_steps_with_shift_multiplier() {
+        let bounds = Rect::from_xy_size(0.0, 0.0, CONTROL_VALUE_WIDTH, DELAY_INPUT_HEIGHT);
+        let widget = NumericValueLabelWidget::new(
+            NumericEntryTarget::Delay,
+            "2 beats".to_string(),
+            true,
+            false,
+        );
+
+        for (key, shift, delta) in [
+            (WidgetKey::ArrowUp, false, 1),
+            (WidgetKey::ArrowDown, false, -1),
+            (WidgetKey::ArrowUp, true, 4),
+            (WidgetKey::ArrowDown, true, -4),
+        ] {
+            let output = widget
+                .clone()
+                .handle_input(
+                    bounds,
+                    WidgetInput::KeyPress {
+                        key,
+                        modifiers: KeyboardModifiers {
+                            shift,
+                            ..KeyboardModifiers::default()
+                        },
+                        repeat: false,
+                        timestamp: None,
+                    },
+                )
+                .expect("Delay arrow should emit a numeric step");
+            assert_eq!(
+                output.typed_cloned::<NumericEntryMessage>(),
+                Some(NumericEntryMessage::Step {
+                    target: NumericEntryTarget::Delay,
+                    delta,
+                })
+            );
+        }
     }
 
     #[test]
@@ -16461,6 +16880,7 @@ mod tests {
             phase_offset,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: TIMING_MODE_SYNC,
@@ -16522,6 +16942,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: TIMING_MODE_SYNC,
@@ -17149,6 +17570,8 @@ mod tests {
                 beat_phase: 0.0,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -17163,6 +17586,8 @@ mod tests {
                 beat_phase: 0.0,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -17192,6 +17617,8 @@ mod tests {
                 beat_phase: 0.1,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -17217,6 +17644,8 @@ mod tests {
                 beat_phase: 0.6,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -17549,6 +17978,592 @@ mod tests {
         assert!(frame.paint_plan.primitives.iter().any(|primitive| {
             matches!(primitive, PaintPrimitive::Text(text) if text.text.as_str() == "67%")
         }));
+    }
+
+    #[test]
+    fn timing_header_presents_delay_in_sync_and_rate_in_free() {
+        let viewport = Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32);
+        let sync_params = Arc::new(PumpParams::new());
+        sync_params.set_delay_beats(1.0);
+        let sync_frame =
+            radiant_editor_frame_for_params(sync_params, Arc::new(GuiStatus::default()), viewport);
+        let sync_texts: Vec<String> = sync_frame
+            .paint_plan
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) => Some(text.text.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(sync_texts.iter().any(|text| text == "1 beat"));
+        assert!(!sync_texts.iter().any(|text| text == "RATE"));
+
+        let free_params = Arc::new(PumpParams::new());
+        free_params.set_timing_mode(TIMING_MODE_FREE as f32);
+        let free_frame =
+            radiant_editor_frame_for_params(free_params, Arc::new(GuiStatus::default()), viewport);
+        let free_texts: Vec<String> = free_frame
+            .paint_plan
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) => Some(text.text.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(free_texts.iter().any(|text| text == "RATE"));
+        assert!(free_texts.iter().any(|text| text == "2.00 Hz"));
+        assert!(!free_texts.iter().any(|text| text == "DELAY"));
+    }
+
+    #[test]
+    fn sync_delay_header_and_runtime_entry_follow_the_integrated_contract() {
+        let viewport = Vector2::new(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32);
+        let params = Arc::new(PumpParams::new());
+        params.set_delay_beats(1.0);
+        let mut runtime = editor_runtime(Arc::clone(&params));
+        let status = Arc::clone(&runtime.bridge().state().status);
+        let update_status = |delay_progress| {
+            status.update_transport(
+                0.0,
+                crate::GuiTransportTelemetry {
+                    is_playing: false,
+                    transport_is_playing: false,
+                    has_host_beats_timeline: false,
+                    beat_phase: 0.0,
+                    tempo_bpm: 120.0,
+                    beats_per_cycle: 4.0,
+                    delay_beats: 1,
+                    delay_progress,
+                    timing_mode: TIMING_MODE_SYNC,
+                    effective_cycle_rate_hz: 0.0,
+                },
+            );
+        };
+        update_status(0.5);
+        runtime.refresh();
+
+        let theme = pump_theme();
+        let frame = runtime.surface().frame_at_size(viewport, &theme);
+        let plan = &frame.paint_plan;
+        let near = |left: f32, right: f32| (left - right).abs() < 1.0e-5;
+
+        let (delay_text_index, delay_widget_id, delay_text_rect) = plan
+            .primitives
+            .iter()
+            .enumerate()
+            .find_map(|(index, primitive)| match primitive {
+                PaintPrimitive::Text(text) if text.text.as_str() == "1 beat" => {
+                    Some((index, text.widget_id, text.rect))
+                }
+                _ => None,
+            })
+            .expect("sync mode should paint the Delay value");
+        let delay_input = plan
+            .primitives
+            .iter()
+            .enumerate()
+            .find_map(|(index, primitive)| match primitive {
+                PaintPrimitive::StrokeRect(stroke)
+                    if stroke.widget_id == delay_widget_id
+                        && stroke.rect == delay_text_rect
+                        && near(stroke.width, 1.0) =>
+                {
+                    Some((index, stroke.rect))
+                }
+                _ => None,
+            })
+            .expect("Delay value should retain its input border");
+
+        let (progress_fill_index, progress_widget_id, progress_fill_rect) = plan
+            .primitives
+            .iter()
+            .enumerate()
+            .find_map(|(index, primitive)| match primitive {
+                PaintPrimitive::FillRect(fill)
+                    if fill.color == theme.accent_copper
+                        && fill.rect.width() > 0.0
+                        && fill.rect.height() < CURVE_OFFSET_BAR_HEIGHT =>
+                {
+                    Some((index, fill.widget_id, fill.rect))
+                }
+                _ => None,
+            })
+            .expect("half delay progress should paint an active fill");
+        let (progress_border_index, progress_rect) = plan
+            .primitives
+            .iter()
+            .enumerate()
+            .find_map(|(index, primitive)| match primitive {
+                PaintPrimitive::StrokeRect(stroke)
+                    if stroke.widget_id == progress_widget_id
+                        && stroke.color == theme.border_emphasis
+                        && near(stroke.width, PUMP_VISUAL_METRICS.border) =>
+                {
+                    Some((index, stroke.rect))
+                }
+                _ => None,
+            })
+            .expect("the sync header should paint the Delay progress border");
+        assert!(near(
+            progress_fill_rect.width(),
+            (progress_rect.width() - 2.0 * PUMP_VISUAL_METRICS.border) * 0.5
+        ));
+        assert!(progress_fill_rect.max.x <= progress_rect.max.x);
+
+        let progress_layout_bounds = runtime
+            .layout()
+            .rects
+            .iter()
+            .find_map(|(widget_id, bounds)| (*widget_id == progress_widget_id).then_some(*bounds))
+            .expect("Delay progress should retain a runtime layout slot");
+        let delay_layout_bounds = runtime
+            .layout()
+            .rects
+            .iter()
+            .find_map(|(widget_id, bounds)| (*widget_id == delay_widget_id).then_some(*bounds))
+            .expect("Delay value should retain a runtime layout slot");
+        assert!(near(progress_layout_bounds.height(), DELAY_PROGRESS_HEIGHT));
+        assert!(near(
+            delay_layout_bounds.height(),
+            DELAY_INPUT_HEIGHT.round()
+        ));
+        assert!(near(
+            delay_layout_bounds.min.y - progress_layout_bounds.max.y,
+            PUMP_VISUAL_METRICS.space_4.round()
+        ));
+        assert!(near(
+            DELAY_PROGRESS_HEIGHT + PUMP_VISUAL_METRICS.space_4 + DELAY_INPUT_HEIGHT,
+            TIMING_CONTROL_HEIGHT
+        ));
+        assert!(near(
+            progress_layout_bounds.height()
+                + (delay_layout_bounds.min.y - progress_layout_bounds.max.y)
+                + delay_layout_bounds.height(),
+            TIMING_CONTROL_HEIGHT
+        ));
+
+        let sync_trigger_id = plan
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) if text.text.as_str() == "Sync 1/4" => {
+                    Some(text.widget_id)
+                }
+                _ => None,
+            })
+            .expect("sync dropdown trigger should be painted");
+        let sync_trigger_right = plan
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::StrokePolygon(stroke) if stroke.widget_id == sync_trigger_id => {
+                    Some(
+                        stroke
+                            .points
+                            .iter()
+                            .fold(f32::NEG_INFINITY, |right, point| right.max(point.x)),
+                    )
+                }
+                _ => None,
+            })
+            .expect("sync dropdown trigger should retain its painted bounds");
+        let (undo_widget_id, _) = runtime
+            .layout()
+            .rects
+            .iter()
+            .find_map(|(widget_id, bounds)| {
+                runtime
+                    .surface()
+                    .find_widget(*widget_id)
+                    .and_then(|widget| {
+                        widget
+                            .widget()
+                            .as_any()
+                            .downcast_ref::<ActionIconButtonWidget>()
+                            .and_then(|button| {
+                                (button.label == "Undo").then_some((*widget_id, *bounds))
+                            })
+                    })
+            })
+            .expect("Undo action should be projected");
+        let undo_rect = plan
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::StrokeRect(stroke)
+                    if stroke.widget_id == undo_widget_id && near(stroke.width, 1.0) =>
+                {
+                    Some(stroke.rect)
+                }
+                _ => None,
+            })
+            .expect("Undo action should retain a painted control border");
+
+        assert!(progress_border_index < delay_text_index);
+        assert!(progress_fill_index < delay_text_index);
+        assert!(progress_rect.max.y < delay_input.1.min.y);
+        assert!(progress_rect.min.x > sync_trigger_right);
+        assert!(progress_rect.max.x < undo_rect.min.x);
+
+        update_status(0.0);
+        runtime.refresh();
+        let zero_frame = runtime.surface().frame_at_size(viewport, &theme);
+        let zero_progress_track = zero_frame
+            .paint_plan
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::StrokeRect(stroke)
+                    if stroke.widget_id == progress_widget_id
+                        && stroke.color == theme.border_emphasis
+                        && near(stroke.width, PUMP_VISUAL_METRICS.border) =>
+                {
+                    Some(stroke.rect)
+                }
+                _ => None,
+            })
+            .expect("zero delay progress should retain its track border");
+        assert_eq!(zero_progress_track, progress_rect);
+        assert!(zero_frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::FillRect(fill)
+                    if fill.widget_id == progress_widget_id
+                        && fill.rect == progress_rect
+                        && fill.color == theme.grid_soft
+            )
+        }));
+        let zero_progress_fills: Vec<_> = zero_frame
+            .paint_plan
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::FillRect(fill)
+                    if fill.widget_id == progress_widget_id
+                        && fill.color == theme.accent_copper =>
+                {
+                    Some(fill.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            zero_progress_fills.is_empty(),
+            "zero delay progress should paint no active fill"
+        );
+
+        let (delay_widget_id, delay_bounds) = runtime
+            .layout()
+            .rects
+            .iter()
+            .find_map(|(widget_id, bounds)| {
+                runtime
+                    .surface()
+                    .find_widget(*widget_id)
+                    .and_then(|widget| {
+                        widget
+                            .widget()
+                            .as_any()
+                            .downcast_ref::<NumericValueLabelWidget>()
+                            .and_then(|value| {
+                                (value.target == NumericEntryTarget::Delay)
+                                    .then_some((*widget_id, *bounds))
+                            })
+                    })
+            })
+            .expect("Delay value should be an interactive runtime widget");
+        let delay_position = delay_bounds.center();
+        assert_eq!(
+            runtime.dispatch_event(radiant::runtime::Event::pointer_press(
+                delay_position,
+                PointerButton::Primary,
+                PointerModifiers::default(),
+            )),
+            Some(delay_widget_id),
+        );
+        runtime.dispatch_event(radiant::runtime::Event::pointer_release(
+            delay_position,
+            PointerButton::Primary,
+            PointerModifiers::default(),
+        ));
+        assert_eq!(runtime.focused_widget(), Some(delay_widget_id));
+        assert_eq!(
+            runtime
+                .bridge()
+                .state()
+                .numeric_entry
+                .as_ref()
+                .map(|entry| entry.target),
+            Some(NumericEntryTarget::Delay)
+        );
+        assert!(runtime
+            .dispatch_event(radiant::runtime::Event::character('2'))
+            .is_some());
+        assert!(runtime
+            .dispatch_event(radiant::runtime::Event::key_press(WidgetKey::Enter))
+            .is_some());
+        assert_eq!(params.delay_beats(), 2);
+        assert!(runtime.bridge().state().numeric_entry.is_none());
+        assert_eq!(runtime.bridge().state().undo_history.len(), 1);
+        assert!(runtime.bridge().state().redo_history.is_empty());
+
+        runtime.dispatch_message(RadiantEditorMessage::Undo);
+        assert_eq!(params.delay_beats(), 1);
+        assert!(runtime.bridge().state().undo_history.is_empty());
+        assert_eq!(runtime.bridge().state().redo_history.len(), 1);
+
+        runtime.dispatch_message(RadiantEditorMessage::Redo);
+        assert_eq!(params.delay_beats(), 2);
+        assert_eq!(runtime.bridge().state().undo_history.len(), 1);
+        assert!(runtime.bridge().state().redo_history.is_empty());
+
+        let delay_bounds = runtime
+            .layout()
+            .rects
+            .iter()
+            .find_map(|(widget_id, bounds)| {
+                (Some(*widget_id) == Some(delay_widget_id))
+                    .then_some(*bounds)
+                    .filter(|_| runtime.surface().find_widget(*widget_id).is_some())
+            })
+            .expect("committed Delay field should remain projected");
+        let delay_position = delay_bounds.center();
+        assert_eq!(
+            runtime.dispatch_event(radiant::runtime::Event::pointer_press(
+                delay_position,
+                PointerButton::Primary,
+                PointerModifiers {
+                    command: true,
+                    ..PointerModifiers::default()
+                },
+            )),
+            Some(delay_widget_id)
+        );
+        runtime.dispatch_event(radiant::runtime::Event::pointer_release(
+            delay_position,
+            PointerButton::Primary,
+            PointerModifiers::default(),
+        ));
+        assert!(runtime
+            .dispatch_event(radiant::runtime::Event::character('3'))
+            .is_some());
+        assert_eq!(
+            runtime
+                .bridge()
+                .state()
+                .numeric_entry
+                .as_ref()
+                .map(|entry| entry.draft.as_str()),
+            Some("3")
+        );
+        runtime.dispatch_event(radiant::runtime::Event::clear_focus());
+        assert_eq!(params.delay_beats(), 2);
+        assert!(runtime.bridge().state().numeric_entry.is_none());
+
+        params.set_timing_mode(TIMING_MODE_FREE as f32);
+        runtime.refresh();
+        let free_frame = runtime.surface().frame_at_size(viewport, &theme);
+        let free_texts: Vec<_> = free_frame
+            .paint_plan
+            .primitives
+            .iter()
+            .filter_map(|primitive| match primitive {
+                PaintPrimitive::Text(text) => Some(text.text.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(free_texts.iter().any(|text| text == "RATE"));
+        assert!(free_texts.iter().any(|text| text == "2.00 Hz"));
+        let delay_value = format_delay_beats_for_ui(params.delay_beats());
+        assert!(!free_texts.iter().any(|text| text == "DELAY"));
+        assert!(!free_texts.iter().any(|text| text == &delay_value));
+        assert!(runtime.layout().rects.iter().all(|(widget_id, _)| {
+            runtime
+                .surface()
+                .find_widget(*widget_id)
+                .and_then(|widget| {
+                    widget
+                        .widget()
+                        .as_any()
+                        .downcast_ref::<NumericValueLabelWidget>()
+                        .map(|value| value.target != NumericEntryTarget::Delay)
+                })
+                .unwrap_or(true)
+        }));
+        assert!(!free_frame.paint_plan.primitives.iter().any(|primitive| {
+            matches!(primitive, PaintPrimitive::FillRect(fill) if fill.widget_id == progress_widget_id)
+                || matches!(primitive, PaintPrimitive::StrokeRect(stroke) if stroke.widget_id == progress_widget_id)
+        }));
+    }
+
+    #[test]
+    fn sync_delay_runtime_arrows_step_by_one_or_four_and_clamp_without_losing_focus() {
+        let params = Arc::new(PumpParams::new());
+        params.set_delay_beats(2.0);
+        let mut runtime = editor_runtime(Arc::clone(&params));
+        runtime.refresh();
+
+        let (delay_widget_id, delay_bounds) = runtime
+            .layout()
+            .rects
+            .iter()
+            .find_map(|(widget_id, bounds)| {
+                runtime
+                    .surface()
+                    .find_widget(*widget_id)
+                    .and_then(|widget| {
+                        widget
+                            .widget()
+                            .as_any()
+                            .downcast_ref::<NumericValueLabelWidget>()
+                            .and_then(|value| {
+                                (value.target == NumericEntryTarget::Delay)
+                                    .then_some((*widget_id, *bounds))
+                            })
+                    })
+            })
+            .expect("Delay value should be an interactive runtime widget");
+        assert_eq!(
+            runtime.dispatch_event(radiant::runtime::Event::pointer_press(
+                delay_bounds.center(),
+                PointerButton::Primary,
+                PointerModifiers::default(),
+            )),
+            Some(delay_widget_id)
+        );
+        runtime.dispatch_event(radiant::runtime::Event::pointer_release(
+            delay_bounds.center(),
+            PointerButton::Primary,
+            PointerModifiers::default(),
+        ));
+        assert_eq!(runtime.focused_widget(), Some(delay_widget_id));
+
+        let key_press = |key, shift| radiant::runtime::Event::KeyPress {
+            key,
+            modifiers: KeyboardModifiers {
+                shift,
+                ..KeyboardModifiers::default()
+            },
+            repeat: false,
+            timestamp: None,
+        };
+        let dispatch_key = |runtime: &mut EditorSurfaceRuntime, key, shift| {
+            assert_eq!(
+                runtime.dispatch_event(key_press(key, shift)),
+                Some(delay_widget_id)
+            );
+            assert_eq!(runtime.focused_widget(), Some(delay_widget_id));
+        };
+
+        dispatch_key(&mut runtime, WidgetKey::ArrowUp, false);
+        assert_eq!(params.delay_beats(), 3);
+        dispatch_key(&mut runtime, WidgetKey::ArrowDown, false);
+        assert_eq!(params.delay_beats(), 2);
+        dispatch_key(&mut runtime, WidgetKey::ArrowUp, true);
+        assert_eq!(params.delay_beats(), 6);
+        dispatch_key(&mut runtime, WidgetKey::ArrowDown, true);
+        assert_eq!(params.delay_beats(), 2);
+        dispatch_key(&mut runtime, WidgetKey::ArrowDown, true);
+        assert_eq!(params.delay_beats(), MIN_DELAY_BEATS);
+        let history_at_lower_bound = runtime.bridge().state().undo_history.len();
+        let flushes_at_lower_bound = runtime.bridge().state().automation_flush_count;
+        dispatch_key(&mut runtime, WidgetKey::ArrowDown, false);
+        assert_eq!(params.delay_beats(), MIN_DELAY_BEATS);
+        assert_eq!(
+            runtime.bridge().state().undo_history.len(),
+            history_at_lower_bound
+        );
+        assert_eq!(
+            runtime.bridge().state().automation_flush_count,
+            flushes_at_lower_bound
+        );
+
+        for _ in 0..8 {
+            dispatch_key(&mut runtime, WidgetKey::ArrowUp, true);
+        }
+        assert_eq!(params.delay_beats(), MAX_DELAY_BEATS);
+        let history_at_upper_bound = runtime.bridge().state().undo_history.len();
+        let flushes_at_upper_bound = runtime.bridge().state().automation_flush_count;
+        dispatch_key(&mut runtime, WidgetKey::ArrowUp, true);
+        assert_eq!(params.delay_beats(), MAX_DELAY_BEATS);
+        assert_eq!(
+            runtime.bridge().state().undo_history.len(),
+            history_at_upper_bound
+        );
+        assert_eq!(
+            runtime.bridge().state().automation_flush_count,
+            flushes_at_upper_bound
+        );
+    }
+
+    #[test]
+    fn radiant_editor_dispatch_key_press_forwards_keyboard_modifiers() {
+        let params = Arc::new(PumpParams::new());
+        params.set_delay_beats(2.0);
+        let mut editor = RadiantPumpEditor::new(
+            Arc::clone(&params),
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        editor.runtime.refresh();
+
+        let (delay_widget_id, delay_bounds) = editor
+            .runtime
+            .layout()
+            .rects
+            .iter()
+            .find_map(|(widget_id, bounds)| {
+                editor
+                    .runtime
+                    .surface()
+                    .find_widget(*widget_id)
+                    .and_then(|widget| {
+                        widget
+                            .widget()
+                            .as_any()
+                            .downcast_ref::<NumericValueLabelWidget>()
+                            .and_then(|value| {
+                                (value.target == NumericEntryTarget::Delay)
+                                    .then_some((*widget_id, *bounds))
+                            })
+                    })
+            })
+            .expect("Delay value should be an interactive runtime widget");
+        let delay_position = delay_bounds.center();
+        assert_eq!(
+            editor
+                .runtime
+                .dispatch_event(radiant::runtime::Event::pointer_press(
+                    delay_position,
+                    PointerButton::Primary,
+                    PointerModifiers::default(),
+                )),
+            Some(delay_widget_id)
+        );
+        editor
+            .runtime
+            .dispatch_event(radiant::runtime::Event::pointer_release(
+                delay_position,
+                PointerButton::Primary,
+                PointerModifiers::default(),
+            ));
+        assert_eq!(editor.runtime.focused_widget(), Some(delay_widget_id));
+
+        assert!(toybox::radiant_gui::RadiantEditor::dispatch_key_press(
+            &mut editor,
+            WidgetKey::ArrowUp,
+            KeyboardModifiers {
+                shift: true,
+                ..KeyboardModifiers::default()
+            },
+        ));
+        assert_eq!(params.delay_beats(), 6);
+        assert_eq!(editor.runtime.focused_widget(), Some(delay_widget_id));
     }
 
     #[test]

@@ -149,6 +149,7 @@ impl PumpVst3Processor {
         );
         waveform_capture.reconcile_cycle_mapping(
             settings.beats_per_cycle,
+            settings.delay_beats,
             settings.swing,
             settings.timing_mode,
         );
@@ -652,7 +653,7 @@ fn schedule_vst3_param_point(
     let Some(clap_id) = clap_id_from_vst3_param_id(param_id) else {
         return;
     };
-    let Some(plain) = plain_from_normalized_value(clap_id, normalized) else {
+    let Some(plain) = plain_from_vst3_normalized_value(param_id, normalized) else {
         return;
     };
     schedule.push(i64::from(sample_offset), clap_id, plain as f32);
@@ -704,17 +705,21 @@ unsafe fn silence_valid_stereo_output(data: &ProcessData) -> tresult {
 }
 
 impl IProcessContextRequirementsTrait for PumpVst3Processor {
+    // Bindgen represents these SDK enum flags as i32 on some targets.
+    #[allow(clippy::unnecessary_cast)]
     unsafe fn getProcessContextRequirements(&self) -> u32 {
-        IProcessContextRequirements_::Flags_::kNeedTempo
-            | IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic
-            | IProcessContextRequirements_::Flags_::kNeedTransportState
+        (IProcessContextRequirements_::Flags_::kNeedTempo as u32)
+            | (IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic as u32)
+            | (IProcessContextRequirements_::Flags_::kNeedTransportState as u32)
     }
 }
 
 #[cfg(test)]
 mod parameter_automation_tests {
     use super::*;
-    use crate::params::{PARAM_BYPASS_NUM, PARAM_SYNC_DIVISION_NUM};
+    use crate::params::{
+        PARAM_BYPASS_NUM, PARAM_SYNC_DIVISION_NUM, PARAM_SYNC_DIVISION_VST3_V2_NUM,
+    };
 
     #[test]
     fn vst3_points_share_offset_clamping_ordering_and_step_conversion() {
@@ -757,5 +762,47 @@ mod parameter_automation_tests {
         assert!(settings.bypassed);
         schedule.apply_remaining(&params, &mut settings);
         assert!((params.mix() - 0.8).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn legacy_and_extended_division_points_share_state_and_preserve_event_order() {
+        let params = PumpParams::new();
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(0);
+        schedule_vst3_param_point(
+            &mut schedule,
+            PARAM_SYNC_DIVISION_NUM,
+            0,
+            to_normalized(PARAM_SYNC_DIVISION_NUM, 7.0),
+        );
+        schedule_vst3_param_point(
+            &mut schedule,
+            PARAM_SYNC_DIVISION_VST3_V2_NUM,
+            0,
+            to_normalized(PARAM_SYNC_DIVISION_VST3_V2_NUM, 8.0),
+        );
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+        schedule.apply_remaining(&params, &mut settings);
+        assert_eq!(params.sync_division(), 8);
+
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(0);
+        schedule_vst3_param_point(
+            &mut schedule,
+            PARAM_SYNC_DIVISION_VST3_V2_NUM,
+            0,
+            to_normalized(PARAM_SYNC_DIVISION_VST3_V2_NUM, 8.0),
+        );
+        schedule_vst3_param_point(
+            &mut schedule,
+            PARAM_SYNC_DIVISION_NUM,
+            0,
+            to_normalized(PARAM_SYNC_DIVISION_NUM, 7.0),
+        );
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+        schedule.apply_remaining(&params, &mut settings);
+        assert_eq!(params.sync_division(), 7);
     }
 }

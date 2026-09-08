@@ -18,6 +18,8 @@ pub struct DspSettings {
     pub output_gain_db: f32,
     /// Length of one modulation cycle in beats.
     pub beats_per_cycle: f32,
+    /// Number of quarter-note beats held at the cycle start in Sync mode.
+    pub delay_beats: usize,
     /// Evaluated wet-gain smoothing amount in `[0, 1]`.
     pub smooth: f32,
     /// Alternating-subdivision swing amount in `[0, 1]`.
@@ -81,6 +83,33 @@ pub struct DspTelemetry {
 /// Map an effective/display phase to the authored curve phase.
 pub(crate) fn authored_curve_phase(effective_phase: f32, phase_offset: f32) -> f32 {
     (effective_phase + phase_offset).rem_euclid(1.0)
+}
+
+/// Map an absolute host beat position to the raw synchronized cycle phase.
+///
+/// The delay is a hold before each selected division cycle. Keeping this
+/// mapper pure lets audio processing and GUI transport use the same absolute
+/// timeline, including Euclidean wrapping for negative positions.
+pub(crate) fn sync_phase_from_beats(
+    beat_position: f64,
+    beats_per_cycle: f32,
+    delay_beats: usize,
+) -> f32 {
+    if delay_beats == 0 {
+        return toybox::dsp::phase_from_beats(beat_position, beats_per_cycle, 0.0);
+    }
+
+    let division = f64::from(beats_per_cycle);
+    if !beat_position.is_finite() || !division.is_finite() || division <= 0.0 {
+        return 0.0;
+    }
+    let delay = delay_beats as f64;
+    let position_in_period = beat_position.rem_euclid(delay + division);
+    if position_in_period < delay {
+        0.0
+    } else {
+        ((position_in_period - delay) / division).clamp(0.0, 1.0) as f32
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -276,7 +305,11 @@ impl PumpEngine {
             raw_cycle_phase
         } else {
             self.free_phase_active = false;
-            frame.phase_for_cycle(settings.beats_per_cycle, 0.0)
+            sync_phase_from_beats(
+                frame.beat_position,
+                settings.beats_per_cycle,
+                settings.delay_beats,
+            )
         };
         let phase = if swing <= 0.0 {
             raw_cycle_phase
@@ -512,7 +545,8 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 mod tests {
     use super::{
         curve_value_to_gain, db_to_linear, smooth_time_constant_seconds, swing_warp_phase,
-        DspSettings, PumpEngine, MAX_SMOOTH_TIME_SECONDS, SMOOTH_COMPATIBILITY_KNEE,
+        sync_phase_from_beats, DspSettings, PumpEngine, MAX_SMOOTH_TIME_SECONDS,
+        SMOOTH_COMPATIBILITY_KNEE,
     };
     use crate::curve::{default_editable_curve, editable_curve_to_table, sample_curve};
     use toybox::dsp::TransportState;
@@ -529,6 +563,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
@@ -570,6 +605,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
@@ -597,6 +633,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
@@ -718,6 +755,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 12.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
@@ -753,6 +791,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
@@ -791,6 +830,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::TIMING_MODE_FREE,
@@ -844,6 +884,7 @@ mod tests {
             phase_offset: 0.2,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::TIMING_MODE_FREE,
@@ -869,6 +910,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing: 0.0,
             timing_mode: crate::params::TIMING_MODE_FREE,
@@ -918,6 +960,7 @@ mod tests {
             phase_offset: 0.0,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: amount,
             swing: 0.0,
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
@@ -1125,6 +1168,58 @@ mod tests {
         assert!((super::swing_warp_phase(1.0, 1.0) - 0.0).abs() < 1.0e-6);
     }
 
+    #[test]
+    fn sync_phase_delay_holds_then_traverses_one_cycle_and_wraps_negative() {
+        for (beat_position, expected) in [
+            (0.0, 0.0),
+            (0.5, 0.0),
+            (1.0, 0.0),
+            (1.5, 0.25),
+            (2.0, 0.5),
+            (2.5, 0.75),
+            (3.0, 0.0),
+            (-0.5, 0.75),
+            (-1.0, 0.5),
+            (-2.0, 0.0),
+        ] {
+            let phase = sync_phase_from_beats(beat_position, 2.0, 1);
+            assert!((phase - expected).abs() < 1.0e-6, "beat={beat_position}");
+        }
+
+        for beat_position in [0.0, 0.5, 1.0, 1.5, 2.0, 2.5] {
+            assert_eq!(
+                sync_phase_from_beats(beat_position, 2.0, 1),
+                sync_phase_from_beats(beat_position + 3.0, 2.0, 1)
+            );
+        }
+    }
+
+    #[test]
+    fn sync_phase_delay_boundary_values_remain_finite_and_bounded() {
+        assert!((sync_phase_from_beats(0.5, 2.0, 0) - 0.25).abs() < 1.0e-6);
+        assert_eq!(
+            sync_phase_from_beats(0.0, 2.0, crate::params::MAX_DELAY_BEATS),
+            0.0
+        );
+        assert_eq!(
+            sync_phase_from_beats(
+                crate::params::MAX_DELAY_BEATS as f64,
+                2.0,
+                crate::params::MAX_DELAY_BEATS,
+            ),
+            0.0
+        );
+        let after_max_delay = sync_phase_from_beats(
+            crate::params::MAX_DELAY_BEATS as f64 + 1.0,
+            2.0,
+            crate::params::MAX_DELAY_BEATS,
+        );
+        assert!((after_max_delay - 0.5).abs() < 1.0e-6);
+        assert_eq!(sync_phase_from_beats(f64::NAN, 2.0, 1), 0.0);
+        assert_eq!(sync_phase_from_beats(0.0, 0.0, 1), 0.0);
+        assert!((0.0..1.0).contains(&after_max_delay));
+    }
+
     fn sync_test_settings(phase_offset: f32, swing: f32) -> DspSettings {
         DspSettings {
             mix: 1.0,
@@ -1133,6 +1228,7 @@ mod tests {
             phase_offset,
             output_gain_db: 0.0,
             beats_per_cycle: 1.0,
+            delay_beats: 0,
             smooth: 0.0,
             swing,
             timing_mode: crate::params::TIMING_MODE_SYNC,

@@ -39,29 +39,36 @@ Restart the DAW or fully unload the previous plugin before testing a replacement
 ## Production releases
 
 The same producer is used locally and by the manual `Pump release` Actions
-workflow. On a clean macOS arm64 checkout, with `VST3_SDK_DIR` set to the pinned
-Steinberg SDK and the Apple Developer ID/notarization credentials configured,
-run:
+workflow. Stable and RC releases remain macOS-only schema 2. On a clean macOS
+arm64 checkout, with `VST3_SDK_DIR` set to the pinned Steinberg SDK and the
+Apple Developer ID/notarization credentials configured, run:
 
 ```bash
 bash scripts/release.sh --package-only --channel stable
 ```
 
-Every production Actions release selects the next unused global patch version
-across stable, RC, and nightly releases, commits that version to `main`, and
-builds from the resulting exact commit. Nightlies use the same serialized
-release path, so a published nightly also advances the patch version.
+Nightly releases use the package version already on `main` and derive a
+publication version such as `0.2.6-nightly.123` from the workflow sequence. The
+workflow does not edit `main`, create a version-bump commit, or rebuild from a
+different source SHA: prepare, Windows, and macOS all use one immutable source
+and build identity.
 
-This creates `dist/releases/pump-v<version>-<12-char HEAD>/` containing only the
-two host-installable ZIP bundles, `pump-default-640x400.png`, `CHANGELOG.md`, and
-`release-manifest.json` schema 2. Add `--publish` and set
+Stable/RC creates `dist/releases/<build-id>/` containing the two macOS
+host-installable ZIP bundles, `pump-default-640x400.png`, `CHANGELOG.md`, and
+`release-manifest.json` schema 2. A nightly adds the validated unsigned Windows
+x86_64 VST3 ZIP and emits schema 3 with all three platform artifacts. Add
+`--publish` and set
 `PORTALSURFER_RELEASE_TOKEN` in the environment to capability-check and publish
 the immutable bundle. The token is never accepted as a command-line argument.
 
 `--package-only` is still a production release: it signs, notarizes, staples, and
-verifies notarization on both bundles. The Actions workflow cannot run until the production
-environment has all Apple certificate/notary secrets, `RADIANT_REPO_TOKEN`, and
-the PortalSurfer release token for publish runs.
+verifies notarization on both macOS bundles. The macOS Actions job cannot run
+until the production environment has all Apple certificate/notary secrets;
+publish runs also need the PortalSurfer release token and scoped publisher App
+credentials. Public Toybox and Radiant dependencies need no repository token. The
+Windows job receives no publishing or OIDC credentials and never signs the
+Windows binary. See [docs/WINDOWS_RELEASE.md](docs/WINDOWS_RELEASE.md) for its
+exact bundle and sidecar contract.
 
 Publishing is fail-closed to the exact `https://portalsurfer.org` origin. Immediately
 before a publish, the producer re-audits the final ZIP bytes, bundle signatures and
@@ -85,6 +92,9 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 - `Phase Offset`: shifts where the curve starts in the sync cycle. In Sync,
   raw Offset 0 is the host-cycle/transport origin.
 - `Output Gain`: level trim after ducking.
+- `Delay`: in Sync mode, holds the cycle-start phase for an integer number of
+  quarter-note beats (`0` to `32`) before the selected division runs. The
+  control is hidden in Free mode, where the same slot shows `Rate`.
 - The curve always follows the host beat/transport timeline.
 
 Depth and Floor control the curve's wet gain mapping. Depth ranges from `0` to
@@ -92,7 +102,7 @@ Depth and Floor control the curve's wet gain mapping. Depth ranges from `0` to
 plus values above `−60` through `0 dB` finite values. Processing is curve → Depth → Floor → Mix →
 Output Gain. See [docs/depth-floor.md](docs/depth-floor.md) for the exact
 mapping and compatibility behavior.
-- `Division`: beat-synced cycle length from `1/16` to `2 Bars`.
+- `Division`: beat-synced cycle length from `1/16` to `8 Bars`.
 
 ## Quick Shape Strip
 
@@ -115,8 +125,10 @@ mapping and compatibility behavior.
 Pump has two timing sources:
 
 - **Sync** follows the host beat timeline and the selected Sync division (for
-  example, 1/4 or 1/8). Host tempo and song position therefore determine the
-  modulation phase when that timeline is available.
+  example, 1/4 or 1/8). A nonzero Delay extends each period by holding phase
+  zero for the requested number of quarter-note beats before the division
+  cycle runs. Host tempo and song position therefore determine the modulation
+  phase when that timeline is available.
 - **Free** runs continuously at the selected Free Rate in hertz. It is
   independent of host tempo and song position, so it remains continuous even
   when the host transport is stopped or does not provide beat-position data.

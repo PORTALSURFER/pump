@@ -43,8 +43,6 @@ use crate::sample_automation::{
 use crate::time_utils::monotonic_micros;
 
 mod automation_queue;
-#[cfg(test)]
-mod build_support;
 mod curve;
 mod curve_presets;
 mod dsp;

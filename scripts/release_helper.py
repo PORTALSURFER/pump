@@ -1,93 +1,61 @@
 #!/usr/bin/env python3
-"""Small, dependency-free helpers for the Pump release producer."""
+"""Dependency-free manifest and PortalSurfer transport helpers for Pump."""
 
 from __future__ import annotations
 
+import ast
 import datetime as dt
 import hashlib
 import json
 import os
 import platform
-import struct
 import re
+import struct
 import subprocess
 import tempfile
-from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+import zlib
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+
 MANIFEST_SCHEMA = 2
-MANIFEST_CONTENT_TYPE = "application/vnd.portalsurfer.release-manifest+json;version=2"
+MANIFEST_SCHEMA_V2 = 2
+MANIFEST_SCHEMA_V3 = 3
+MANIFEST_CONTENT_TYPES = {
+    MANIFEST_SCHEMA_V2: "application/vnd.portalsurfer.release-manifest+json;version=2",
+    MANIFEST_SCHEMA_V3: "application/vnd.portalsurfer.release-manifest+json;version=3",
+}
+MANIFEST_CONTENT_TYPE = MANIFEST_CONTENT_TYPES[MANIFEST_SCHEMA_V2]
 PRODUCTION_ORIGIN = "https://portalsurfer.org"
+PRODUCT = "pump"
+REPOSITORY = "PORTALSURFER/pump"
 SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+SAFE_BUILD_ID = re.compile(r"[a-z0-9][a-z0-9._-]{1,127}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 TEAM_ID = re.compile(r"[A-Z0-9]{10}\Z")
-NOTARY_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\Z")
-SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\Z")
-CORE_SEMVER = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)\Z")
+NOTARY_ID = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\Z"
+)
+BASE_VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+SEMVER = re.compile(rf"{BASE_VERSION}(?:-[0-9A-Za-z.-]+)?\Z")
+CORE_SEMVER = re.compile(rf"{BASE_VERSION}\Z")
+RELEASE_CHANNELS = frozenset(("stable", "rc", "nightly"))
+CHANNEL_VERSION_PATTERNS = {
+    "stable": re.compile(rf"{BASE_VERSION}\Z"),
+    "rc": re.compile(rf"{BASE_VERSION}\Z"),
+    "nightly": re.compile(rf"{BASE_VERSION}-nightly\.[1-9][0-9]*\Z"),
+}
 NIGHTLY_NUMBER = re.compile(r"[1-9][0-9]*\Z")
 NIGHTLY_VERSION = re.compile(
-    r"(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)-nightly\.(?P<number>[1-9][0-9]*)\Z"
+    rf"(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)-nightly\."
+    rf"(?P<number>[1-9][0-9]*)\Z"
 )
+WORKFLOW_SEQUENCE = re.compile(r"[1-9][0-9]*\Z")
 GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
-
-
-def latest_release_source_sha(document: Any, *, channel: str) -> Optional[str]:
-    """Return the newest validated source SHA for ``channel``.
-
-    The releases endpoint is an external release decision input, so malformed
-    matching records fail closed instead of being silently ignored.  Selection
-    uses parsed timezone-aware RFC3339 timestamps rather than response order.
-    """
-    if channel not in {"stable", "rc", "nightly"}:
-        raise ValueError(f"invalid release channel: {channel}")
-    if not isinstance(document, dict) or not isinstance(document.get("releases"), list):
-        raise ValueError("release history must contain a releases array")
-
-    latest: tuple[dt.datetime, str] | None = None
-    for release in document["releases"]:
-        if not isinstance(release, dict):
-            raise ValueError("release history contains a non-object release")
-        release_channel = release.get("channel")
-        if not isinstance(release_channel, str):
-            raise ValueError("release history contains a release without a channel")
-        if release_channel != channel:
-            continue
-        released_at = release.get("released_at")
-        if not isinstance(released_at, str):
-            raise ValueError("matching release is missing released_at")
-        try:
-            parsed = dt.datetime.fromisoformat(released_at.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise ValueError("matching release released_at must be RFC3339") from error
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            raise ValueError("matching release released_at must include a timezone")
-        source = release.get("source")
-        if not isinstance(source, dict) or source.get("repository") != "PORTALSURFER/pump":
-            raise ValueError("matching release source repository is invalid")
-        source_sha = source.get("git_sha")
-        if not isinstance(source_sha, str) or not GIT_SHA.fullmatch(source_sha):
-            raise ValueError("matching release source git_sha is invalid")
-        candidate = (parsed, source_sha)
-        if latest is None or candidate[0] > latest[0]:
-            latest = candidate
-    return latest[1] if latest is not None else None
-
-
-def should_release(*, source_sha: str, document: Any = None, channel: str = "nightly", only_if_changed: bool = True) -> bool:
-    """Decide whether a release workflow should perform production work.
-
-    The bypass path intentionally does not inspect ``document``; ordinary
-    stable/RC/manual releases therefore preserve their existing behavior and
-    make zero public API requests.
-    """
-    if not isinstance(source_sha, str) or not GIT_SHA.fullmatch(source_sha):
-        raise ValueError("checked-out source SHA is invalid")
-    if not only_if_changed:
-        return True
-    latest = latest_release_source_sha(document, channel=channel)
-    return latest is None or latest != source_sha
+SCREENSHOT_NAME = re.compile(r"pump-default-[0-9]+x[0-9]+\.png\Z")
 
 
 def _parse_core_version(version: Any, *, field: str) -> tuple[int, int, int]:
@@ -96,7 +64,7 @@ def _parse_core_version(version: Any, *, field: str) -> tuple[int, int, int]:
     match = CORE_SEMVER.fullmatch(version)
     if match is None:
         raise ValueError(f"{field} must be a numeric semver")
-    return tuple(int(part) for part in match.groups())
+    return tuple(int(part) for part in version.split("."))
 
 
 def _format_core_version(version: tuple[int, int, int]) -> str:
@@ -115,33 +83,59 @@ def _canonical_nightly_number(value: Any) -> str:
     raise ValueError("nightly suffix must be a positive canonical decimal")
 
 
-def format_manifest_version(package_version: str, channel: str, nightly_number: Any = None) -> str:
-    """Format the version sent in a release manifest for ``channel``."""
-    if channel not in {"stable", "rc", "nightly"}:
+def _parse_channel_version(version: Any, channel: Any, *, field: str) -> tuple[int, int, int]:
+    if not isinstance(channel, str) or channel not in CHANNEL_VERSION_PATTERNS:
+        raise ValueError(f"{field} has an invalid release channel")
+    if not isinstance(version, str) or CHANNEL_VERSION_PATTERNS[channel].fullmatch(version) is None:
+        if channel == "nightly":
+            raise ValueError(f"{field} must be X.Y.Z-nightly.N with a positive canonical decimal suffix")
+        raise ValueError(f"{field} must be a numeric semver")
+    return _parse_core_version(version.split("-", 1)[0], field=field)
+
+
+def validate_channel_version(version: str, channel: str) -> None:
+    _parse_channel_version(version, channel, field="publication version")
+
+
+def validate_publication_version(package_version: str, publication_version: str, channel: str) -> None:
+    package_core = _parse_core_version(package_version, field="package version")
+    publication_core = _parse_channel_version(publication_version, channel, field="publication version")
+    if publication_core != package_core:
+        raise ValueError(
+            f"publication version {publication_version} does not match package version {package_version}"
+        )
+    if channel in {"stable", "rc"} and publication_version != package_version:
+        raise ValueError(f"{channel} publication version must equal package version")
+
+
+def derive_publication_version(package_version: str, channel: str, sequence: Any) -> str:
+    if channel not in RELEASE_CHANNELS:
         raise ValueError(f"invalid release channel: {channel}")
-    if channel != "nightly":
-        return package_version
-    _parse_core_version(package_version, field="package version")
-    return f"{package_version}-nightly.{_canonical_nightly_number(nightly_number)}"
+    package_text = _format_core_version(_parse_core_version(package_version, field="package version"))
+    if channel == "nightly":
+        publication_version = f"{package_text}-nightly.{_canonical_nightly_number(sequence)}"
+    else:
+        publication_version = package_text
+    validate_publication_version(package_text, publication_version, channel)
+    return publication_version
+
+
+def format_manifest_version(package_version: str, channel: str, nightly_number: Any = None) -> str:
+    """Format the channel-specific version carried by a release manifest."""
+    if channel not in RELEASE_CHANNELS:
+        raise ValueError(f"invalid release channel: {channel}")
+    package_text = _format_core_version(_parse_core_version(package_version, field="package version"))
+    if channel == "nightly":
+        return f"{package_text}-nightly.{_canonical_nightly_number(nightly_number)}"
+    return package_text
 
 
 def _parse_nightly_core_version(version: Any, *, field: str) -> tuple[int, int, int]:
-    if not isinstance(version, str):
-        raise ValueError(f"{field} must be X.Y.Z-nightly.N")
-    match = NIGHTLY_VERSION.fullmatch(version)
-    if match is None:
-        raise ValueError(f"{field} must be X.Y.Z-nightly.N with a positive canonical decimal suffix")
-    return tuple(int(match.group(part)) for part in ("major", "minor", "patch"))
+    return _parse_channel_version(version, "nightly", field=field)
 
 
 def validate_manifest_version(version: Any, channel: str) -> None:
-    """Validate the channel-specific version carried by a release manifest."""
-    if channel not in {"stable", "rc", "nightly"}:
-        raise ValueError(f"invalid release channel: {channel}")
-    if channel == "nightly":
-        _parse_nightly_core_version(version, field="nightly version")
-    elif not isinstance(version, str) or not SEMVER.fullmatch(version):
-        raise ValueError("version must be semver-like")
+    _parse_channel_version(version, channel, field="version")
 
 
 def _parse_release_history_core_version(version: Any, *, channel: str) -> tuple[int, int, int]:
@@ -150,17 +144,59 @@ def _parse_release_history_core_version(version: Any, *, channel: str) -> tuple[
     return _parse_core_version(version, field="release version")
 
 
-def latest_release_version(document: Any) -> Optional[str]:
-    """Return the highest numeric version published on any release channel."""
+def latest_release_source_sha(document: Any, *, channel: str) -> Optional[str]:
+    """Return the newest validated source SHA for one release channel."""
+    if channel not in RELEASE_CHANNELS:
+        raise ValueError(f"invalid release channel: {channel}")
     if not isinstance(document, dict) or not isinstance(document.get("releases"), list):
         raise ValueError("release history must contain a releases array")
+    latest: tuple[dt.datetime, str] | None = None
+    for release in document["releases"]:
+        if not isinstance(release, dict):
+            raise ValueError("release history contains a non-object release")
+        if release.get("channel") != channel:
+            continue
+        released_at = release.get("released_at")
+        if not isinstance(released_at, str):
+            raise ValueError("matching release is missing released_at")
+        try:
+            parsed = dt.datetime.fromisoformat(released_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("matching release released_at must be RFC3339") from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("matching release released_at must include a timezone")
+        source = release.get("source")
+        if not isinstance(source, dict) or source.get("repository") != REPOSITORY:
+            raise ValueError("matching release source repository is invalid")
+        source_sha = source.get("git_sha")
+        if not isinstance(source_sha, str) or not GIT_SHA.fullmatch(source_sha):
+            raise ValueError("matching release source git_sha is invalid")
+        if latest is None or parsed > latest[0]:
+            latest = (parsed, source_sha)
+    return latest[1] if latest is not None else None
 
+
+def should_release(
+    *, source_sha: str, document: Any = None, channel: str = "nightly", only_if_changed: bool = True
+) -> bool:
+    if not isinstance(source_sha, str) or not GIT_SHA.fullmatch(source_sha):
+        raise ValueError("checked-out source SHA is invalid")
+    if not only_if_changed:
+        return True
+    latest = latest_release_source_sha(document, channel=channel)
+    return latest is None or latest != source_sha
+
+
+def latest_release_version(document: Any) -> Optional[str]:
+    """Return the highest numeric core version in release history."""
+    if not isinstance(document, dict) or not isinstance(document.get("releases"), list):
+        raise ValueError("release history must contain a releases array")
     latest: tuple[int, int, int] | None = None
     for release in document["releases"]:
         if not isinstance(release, dict):
             raise ValueError("release history contains a non-object release")
         channel = release.get("channel")
-        if channel not in {"stable", "rc", "nightly"}:
+        if channel not in RELEASE_CHANNELS:
             raise ValueError("release history contains an invalid channel")
         candidate = _parse_release_history_core_version(release.get("version"), channel=channel)
         if latest is None or candidate > latest:
@@ -169,13 +205,7 @@ def latest_release_version(document: Any) -> Optional[str]:
 
 
 def next_release_version(package_version: str, document: Any) -> str:
-    """Select one globally increasing patch version for the next release.
-
-    A package version already ahead of public history is treated as a pending
-    bump from a previously interrupted release.  Reusing it avoids consuming
-    another patch number on retry; otherwise every successful release advances
-    the highest published version by exactly one patch.
-    """
+    """Retained compatibility helper for callers that inspect release history."""
     current = _parse_core_version(package_version, field="package version")
     latest_text = latest_release_version(document)
     latest = _parse_core_version(latest_text, field="latest release version") if latest_text else None
@@ -185,25 +215,34 @@ def next_release_version(package_version: str, document: Any) -> str:
     return _format_core_version((base[0], base[1], base[2] + 1))
 
 
-def validate_release_fields(version: str, released_at: str, names: list[str], hashes: list[str], sizes: list[int], channel: str = "stable") -> None:
+def validate_release_fields(
+    version: str,
+    released_at: str,
+    names: list[str],
+    hashes: list[str],
+    sizes: list[int],
+    channel: str = "stable",
+) -> None:
     validate_manifest_version(version, channel)
     try:
         parsed = dt.datetime.fromisoformat(released_at.replace("Z", "+00:00"))
     except ValueError as error:
         raise ValueError("released_at must be RFC3339") from error
-    if parsed.tzinfo is None:
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("released_at must include a timezone")
     if len(names) != len(set(names)) or any(not SAFE_NAME.fullmatch(name) for name in names):
         raise ValueError("release file names must be unique safe basenames")
-    if any(not SHA256.fullmatch(value) for value in hashes):
+    if any(not isinstance(value, str) or not SHA256.fullmatch(value) for value in hashes):
         raise ValueError("release hashes must be lowercase SHA-256")
-    if any(not isinstance(size, int) or size <= 0 for size in sizes):
+    if any(not isinstance(size, int) or isinstance(size, bool) or size <= 0 for size in sizes):
         raise ValueError("release sizes must be positive integers")
 
 
 def canonical_json(value: Any) -> bytes:
-    """Encode JSON deterministically; this byte representation is the commit body."""
-    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    """Encode JSON deterministically for manifests and commit bodies."""
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
+    )
 
 
 def file_digest(path: Path) -> tuple[str, int]:
@@ -216,17 +255,28 @@ def file_digest(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+def _validate_regular_file(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} must be a regular file: {path}")
+
+
+def _validated_file_digest(path: Path, label: str) -> tuple[str, int]:
+    _validate_regular_file(path, label)
+    digest, size = file_digest(path)
+    if size <= 0 or not SHA256.fullmatch(digest):
+        raise ValueError(f"{label} is empty or has an invalid hash")
+    return digest, size
+
+
 def validate_png(path: Path, width: int = 640, height: int = 400) -> dict[str, Any]:
-    """Validate the structural PNG contract used by the default UI capture."""
+    """Validate the structural PNG contract used by Pump's default capture."""
+    _validate_regular_file(path, "screenshot")
     data = path.read_bytes()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError(f"{path} is not a PNG")
     offset = 8
-    seen_ihdr = False
-    seen_iend = False
-    seen_idat = False
-    dimensions: Optional[tuple[int, int]] = None
-    color_type: int | None = None
+    seen_ihdr = seen_iend = seen_idat = False
+    dimensions: tuple[int, int] | None = None
     dpi = 1.0
     while offset + 12 <= len(data):
         length = struct.unpack(">I", data[offset : offset + 4])[0]
@@ -236,15 +286,14 @@ def validate_png(path: Path, width: int = 640, height: int = 400) -> dict[str, A
             raise ValueError(f"{path} has a truncated PNG chunk")
         payload = data[offset + 8 : offset + 8 + length]
         crc = struct.unpack(">I", data[offset + 8 + length : end])[0]
-        if crc != (zlib_crc32(kind + payload)):
+        if crc != (zlib.crc32(kind + payload) & 0xFFFFFFFF):
             raise ValueError(f"{path} has an invalid {kind.decode('ascii', 'replace')} CRC")
         if kind == b"IHDR":
-            if length != 13 or seen_ihdr:
+            if offset != 8 or seen_ihdr or length != 13:
                 raise ValueError(f"{path} has an invalid IHDR")
             seen_ihdr = True
             dimensions = struct.unpack(">II", payload[:8])
-            bit_depth, color_type = payload[8], payload[9]
-            if bit_depth != 8 or color_type not in (2, 6):
+            if payload[8] != 8 or payload[9] not in (2, 6) or payload[10:] != b"\x00\x00\x00":
                 raise ValueError(f"{path} must use 8-bit RGB or RGBA pixels")
         elif kind == b"pHYs" and length == 9:
             x, y, unit = struct.unpack(">IIB", payload)
@@ -253,29 +302,295 @@ def validate_png(path: Path, width: int = 640, height: int = 400) -> dict[str, A
                     raise ValueError(f"{path} has a non-1.0 pixel scale")
                 dpi = 1.0
         elif kind == b"IDAT":
+            if not seen_ihdr:
+                raise ValueError(f"{path} IDAT precedes IHDR")
             seen_idat = True
         elif kind == b"IEND":
-            if length != 0:
+            if length != 0 or end != len(data):
                 raise ValueError(f"{path} has an invalid IEND")
             seen_iend = True
-            if end != len(data):
-                raise ValueError(f"{path} has bytes after IEND")
             break
         offset = end
     if not seen_ihdr or not seen_idat or not seen_iend or dimensions != (width, height):
-        missing = []
-        if not seen_ihdr: missing.append("IHDR")
-        if not seen_idat: missing.append("IDAT")
-        if not seen_iend: missing.append("IEND")
-        raise ValueError(f"{path} must be {width}x{height} with IHDR, IDAT, and IEND (missing {', '.join(missing) or 'valid dimensions'})")
+        raise ValueError(f"{path} must be {width}x{height} with IHDR, IDAT, and IEND")
     digest, size = file_digest(path)
     return {"width": width, "height": height, "dpi": dpi, "hash": digest, "size": size}
 
 
-def zlib_crc32(data: bytes) -> int:
-    import zlib
+def _validate_common(
+    *, product: str, repository: str, version: str, build_id: str, channel: str, released_at: str, git_sha: str
+) -> None:
+    if product != PRODUCT or repository != REPOSITORY:
+        raise ValueError("unknown or mismatched Portal product")
+    if not isinstance(version, str) or SEMVER.fullmatch(version) is None or "+" in version:
+        raise ValueError("version must be SemVer without build metadata")
+    validate_manifest_version(version, channel)
+    if not isinstance(build_id, str) or not SAFE_BUILD_ID.fullmatch(build_id):
+        raise ValueError("source SHA or build id is invalid")
+    if not isinstance(git_sha, str) or not GIT_SHA.fullmatch(git_sha):
+        raise ValueError("source SHA or build id is invalid")
+    try:
+        parsed = dt.datetime.fromisoformat(released_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("released_at must be RFC3339") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("released_at must include a timezone")
 
-    return zlib.crc32(data) & 0xFFFFFFFF
+
+def _screenshot_metadata(screenshot: Path, git_sha: str) -> dict[str, Any]:
+    if screenshot.name != "pump-default-640x400.png" or not SCREENSHOT_NAME.fullmatch(screenshot.name):
+        raise ValueError("screenshot name must be pump-default-640x400.png")
+    info = validate_png(screenshot)
+    return {
+        "role": "default-ui",
+        "name": screenshot.name,
+        "media_type": "image/png",
+        "width": info["width"],
+        "height": info["height"],
+        "logical_width": info["width"],
+        "logical_height": info["height"],
+        "dpi_scale": info["dpi"],
+        "source_git_sha": git_sha,
+        "sha256": info["hash"],
+        "size_bytes": info["size"],
+    }
+
+
+def _changelog_metadata(changelog: Path) -> dict[str, Any]:
+    if changelog.name != "CHANGELOG.md":
+        raise ValueError("CHANGELOG.md is missing or invalid")
+    digest, size = _validated_file_digest(changelog, "CHANGELOG.md")
+    return {
+        "name": "CHANGELOG.md",
+        "format": "markdown",
+        "media_type": "text/markdown; charset=utf-8",
+        "sha256": digest,
+        "size_bytes": size,
+    }
+
+
+def _schema2_signing(
+    *,
+    distribution: str,
+    signing_identity_class: str,
+    notarized: bool,
+    stapled: bool,
+    signing_team_id: str,
+    notary_submissions: Optional[dict[str, str]],
+) -> dict[str, Any]:
+    submissions = notary_submissions or {}
+    if distribution == "production":
+        if (
+            signing_identity_class != "Developer ID Application"
+            or notarized is not True
+            or stapled is not True
+            or not TEAM_ID.fullmatch(signing_team_id)
+            or set(submissions) != {"clap", "vst3"}
+            or any(not isinstance(value, str) or not NOTARY_ID.fullmatch(value) for value in submissions.values())
+        ):
+            raise ValueError("production manifests require Developer ID signing and a stapled notarization")
+    elif distribution == "preflight":
+        if signing_identity_class != "ad hoc" or notarized or stapled or signing_team_id or submissions:
+            raise ValueError("preflight manifests require ad hoc, non-notarized provenance")
+    else:
+        raise ValueError("invalid distribution")
+    return {
+        "identity_class": signing_identity_class,
+        "notarized": notarized,
+        "stapled": stapled,
+        "team_id": signing_team_id,
+        "notary_submissions": submissions,
+    }
+
+
+def _schema2_artifact(*, format_name: str, path: Path, version: str, channel: str) -> dict[str, Any]:
+    core_version = _format_core_version(_parse_nightly_core_version(version, field="nightly version")) if channel == "nightly" else version
+    expected_name = f"pump-v{core_version}-macos.{format_name}.zip"
+    if path.name != expected_name or not SAFE_NAME.fullmatch(path.name):
+        raise ValueError(f"{format_name} artifact must be named {expected_name}")
+    digest, size = _validated_file_digest(path, f"{format_name} artifact")
+    return {
+        "format": format_name,
+        "platform": "macos",
+        "architectures": ["arm64"],
+        "name": path.name,
+        "media_type": "application/zip",
+        "sha256": digest,
+        "size_bytes": size,
+    }
+
+
+def _build_schema2_manifest(
+    *,
+    version: str,
+    build_id: str,
+    channel: str,
+    released_at: str,
+    git_sha: str,
+    clap: Path,
+    vst3: Path,
+    screenshot: Path,
+    changelog: Path,
+    distribution: str,
+    signing_identity_class: str,
+    notarized: bool,
+    stapled: bool,
+    signing_team_id: str,
+    notary_submissions: Optional[dict[str, str]],
+) -> dict[str, Any]:
+    _validate_common(
+        product=PRODUCT,
+        repository=REPOSITORY,
+        version=version,
+        build_id=build_id,
+        channel=channel,
+        released_at=released_at,
+        git_sha=git_sha,
+    )
+    signing = _schema2_signing(
+        distribution=distribution,
+        signing_identity_class=signing_identity_class,
+        notarized=notarized,
+        stapled=stapled,
+        signing_team_id=signing_team_id,
+        notary_submissions=notary_submissions,
+    )
+    artifacts = [
+        _schema2_artifact(format_name="clap", path=clap, version=version, channel=channel),
+        _schema2_artifact(format_name="vst3", path=vst3, version=version, channel=channel),
+    ]
+    screenshot_metadata = _screenshot_metadata(screenshot, git_sha)
+    changelog_metadata = _changelog_metadata(changelog)
+    names = [artifact["name"] for artifact in artifacts] + [screenshot.name, changelog.name]
+    if len(names) != len(set(names)):
+        raise ValueError("release file names must be unique")
+    return {
+        "schema_version": MANIFEST_SCHEMA_V2,
+        "product": PRODUCT,
+        "build_id": build_id,
+        "version": version,
+        "channel": channel,
+        "released_at": released_at,
+        "source": {"repository": REPOSITORY, "git_sha": git_sha, "dirty": False},
+        "distribution": distribution,
+        "signing": signing,
+        "artifacts": artifacts,
+        "screenshot": screenshot_metadata,
+        "changelog": changelog_metadata,
+    }
+
+
+def _build_schema3_manifest(
+    *,
+    version: str,
+    build_id: str,
+    channel: str,
+    released_at: str,
+    git_sha: str,
+    clap: Path,
+    vst3: Path,
+    windows_vst3: Path,
+    screenshot: Path,
+    changelog: Path,
+    signing_team_id: str,
+    notary_submissions: Optional[dict[str, str]],
+) -> dict[str, Any]:
+    _validate_common(
+        product=PRODUCT,
+        repository=REPOSITORY,
+        version=version,
+        build_id=build_id,
+        channel=channel,
+        released_at=released_at,
+        git_sha=git_sha,
+    )
+    expected_build_id = f"pump-v{version}-{git_sha[:12]}"
+    if channel != "nightly" or build_id != expected_build_id:
+        raise ValueError(f"schema 3 build id must be {expected_build_id}")
+    if not TEAM_ID.fullmatch(signing_team_id):
+        raise ValueError("schema 3 requires a valid Apple team ID")
+    submissions = notary_submissions or {}
+    if set(submissions) != {"clap", "vst3"} or any(
+        not isinstance(value, str) or not NOTARY_ID.fullmatch(value) for value in submissions.values()
+    ):
+        raise ValueError("schema 3 signing/notarization evidence is incomplete")
+
+    expected_names = {
+        "clap": f"pump-v{version}-macos.clap.zip",
+        "vst3": f"pump-v{version}-macos.vst3.zip",
+        "windows": f"pump-v{version}-windows-x86_64-unsigned.vst3.zip",
+    }
+    paths = {"clap": clap, "vst3": vst3, "windows": windows_vst3}
+    hashes: dict[str, tuple[str, int]] = {}
+    for key, path in paths.items():
+        if path.name != expected_names[key] or not SAFE_NAME.fullmatch(path.name):
+            raise ValueError(f"{key} artifact name does not match the schema 3 identity")
+        hashes[key] = _validated_file_digest(path, f"{key} artifact")
+
+    artifacts = [
+        {
+            "format": "clap",
+            "platform": "macos",
+            "architectures": ["arm64"],
+            "name": clap.name,
+            "media_type": "application/zip",
+            "sha256": hashes["clap"][0],
+            "size_bytes": hashes["clap"][1],
+            "security": {
+                "status": "signed",
+                "certificate": "Developer ID Application",
+                "team_id": signing_team_id,
+                "notarized": True,
+                "stapled": True,
+                "notary_submission": submissions["clap"],
+            },
+        },
+        {
+            "format": "vst3",
+            "platform": "macos",
+            "architectures": ["arm64"],
+            "name": vst3.name,
+            "media_type": "application/zip",
+            "sha256": hashes["vst3"][0],
+            "size_bytes": hashes["vst3"][1],
+            "security": {
+                "status": "signed",
+                "certificate": "Developer ID Application",
+                "team_id": signing_team_id,
+                "notarized": True,
+                "stapled": True,
+                "notary_submission": submissions["vst3"],
+            },
+        },
+        {
+            "format": "vst3",
+            "platform": "windows",
+            "architectures": ["x86_64"],
+            "name": windows_vst3.name,
+            "media_type": "application/zip",
+            "sha256": hashes["windows"][0],
+            "size_bytes": hashes["windows"][1],
+            "security": {"status": "unsigned", "certificate": None},
+        },
+    ]
+    screenshot_metadata = _screenshot_metadata(screenshot, git_sha)
+    changelog_metadata = _changelog_metadata(changelog)
+    names = [artifact["name"] for artifact in artifacts] + [screenshot.name, changelog.name]
+    if len(names) != len(set(names)):
+        raise ValueError("release file names must be unique")
+    return {
+        "schema_version": MANIFEST_SCHEMA_V3,
+        "product": PRODUCT,
+        "build_id": build_id,
+        "version": version,
+        "channel": channel,
+        "released_at": released_at,
+        "source": {"repository": REPOSITORY, "git_sha": git_sha, "dirty": False},
+        "distribution": "production",
+        "artifacts": artifacts,
+        "screenshot": screenshot_metadata,
+        "changelog": changelog_metadata,
+    }
 
 
 def build_manifest(
@@ -295,78 +610,384 @@ def build_manifest(
     stapled: bool = True,
     signing_team_id: str = "",
     notary_submissions: Optional[dict[str, str]] = None,
+    windows_vst3: Optional[Path] = None,
 ) -> dict[str, Any]:
-    if channel not in {"stable", "rc", "nightly"}:
-        raise ValueError(f"invalid channel: {channel}")
-    if distribution not in {"production", "preflight"}:
-        raise ValueError(f"invalid distribution: {distribution}")
-    if distribution == "production" and (signing_identity_class != "Developer ID Application" or not notarized or not stapled or not isinstance(signing_team_id, str) or not TEAM_ID.fullmatch(signing_team_id) or set(notary_submissions or {}) != {"clap", "vst3"} or any(not isinstance(notary_id, str) or not NOTARY_ID.fullmatch(notary_id) for notary_id in (notary_submissions or {}).values())):
-        raise ValueError("production manifests require Developer ID signing and a stapled notarization")
-    if distribution == "preflight" and (signing_identity_class != "ad hoc" or notarized or stapled or signing_team_id or notary_submissions):
-        raise ValueError("preflight manifests require ad hoc, non-notarized provenance")
-    screenshot_info = validate_png(screenshot)
-    artifacts = []
-    for fmt, path in (("clap", clap), ("vst3", vst3)):
-        digest, size = file_digest(path)
-        artifacts.append(
-            {
-                "format": fmt,
-                "platform": "macos",
-                "architectures": ["arm64"],
-                "name": path.name,
-                "media_type": "application/zip",
-                "sha256": digest,
-                "size_bytes": size,
-            }
+    if windows_vst3 is None:
+        if channel == "nightly" and distribution == "production":
+            raise ValueError("production Pump nightly requires the Windows artifact")
+        return _build_schema2_manifest(
+            version=version,
+            build_id=build_id,
+            channel=channel,
+            released_at=released_at,
+            git_sha=git_sha,
+            clap=clap,
+            vst3=vst3,
+            screenshot=screenshot,
+            changelog=changelog,
+            distribution=distribution,
+            signing_identity_class=signing_identity_class,
+            notarized=notarized,
+            stapled=stapled,
+            signing_team_id=signing_team_id,
+            notary_submissions=notary_submissions,
         )
-    changelog_hash, changelog_size = file_digest(changelog)
-    if changelog_size == 0:
-        raise ValueError("CHANGELOG.md must not be empty")
-    validate_release_fields(version, released_at, [item["name"] for item in artifacts] + [screenshot.name, changelog.name], [item["sha256"] for item in artifacts] + [screenshot_info["hash"], changelog_hash], [item["size_bytes"] for item in artifacts] + [screenshot_info["size"], changelog_size], channel=channel)
-    return {
-        "schema_version": MANIFEST_SCHEMA,
-        "product": "pump",
-        "build_id": build_id,
-        "version": version,
-        "channel": channel,
-        "released_at": released_at,
-        "source": {"repository": "PORTALSURFER/pump", "git_sha": git_sha, "dirty": False},
-        "distribution": distribution,
-        "signing": {
-            "identity_class": signing_identity_class,
-            "notarized": notarized,
-            "stapled": stapled,
-            "team_id": signing_team_id,
-            "notary_submissions": notary_submissions or {},
-        },
-        "artifacts": artifacts,
-        "screenshot": {
-            "role": "default-ui",
-            "name": screenshot.name,
-            "media_type": "image/png",
-            "width": screenshot_info["width"],
-            "height": screenshot_info["height"],
-            "logical_width": screenshot_info["width"],
-            "logical_height": screenshot_info["height"],
-            "dpi_scale": screenshot_info["dpi"],
-            "source_git_sha": git_sha,
-            "sha256": screenshot_info["hash"],
-            "size_bytes": screenshot_info["size"],
-        },
-        "changelog": {
-            "name": changelog.name,
-            "format": "markdown",
-            "media_type": "text/markdown; charset=utf-8",
-            "sha256": changelog_hash,
-            "size_bytes": changelog_size,
-        },
+    if channel != "nightly" or distribution != "production":
+        raise ValueError("schema 3 is only available for production Pump nightlies")
+    return _build_schema3_manifest(
+        version=version,
+        build_id=build_id,
+        channel=channel,
+        released_at=released_at,
+        git_sha=git_sha,
+        clap=clap,
+        vst3=vst3,
+        windows_vst3=windows_vst3,
+        screenshot=screenshot,
+        changelog=changelog,
+        signing_team_id=signing_team_id,
+        notary_submissions=notary_submissions,
+    )
+
+
+def _validate_schema2_manifest(manifest: Mapping[str, Any], root: Path, *, require_production: bool) -> None:
+    required = {
+        "schema_version",
+        "product",
+        "build_id",
+        "version",
+        "channel",
+        "released_at",
+        "source",
+        "distribution",
+        "signing",
+        "artifacts",
+        "screenshot",
+        "changelog",
     }
+    if set(manifest) != required or manifest.get("schema_version") != MANIFEST_SCHEMA_V2:
+        raise ValueError("manifest schema or fields are invalid")
+    source = manifest["source"]
+    if not isinstance(source, dict) or set(source) != {"repository", "git_sha", "dirty"} or source.get("dirty") is not False:
+        raise ValueError("manifest source is invalid")
+    _validate_common(
+        product=manifest["product"],
+        repository=source.get("repository"),
+        version=manifest["version"],
+        build_id=manifest["build_id"],
+        channel=manifest["channel"],
+        released_at=manifest["released_at"],
+        git_sha=source.get("git_sha"),
+    )
+    distribution = manifest["distribution"]
+    signing = manifest["signing"]
+    expected_preflight = {
+        "identity_class": "ad hoc",
+        "notarized": False,
+        "stapled": False,
+        "team_id": "",
+        "notary_submissions": {},
+    }
+    if not isinstance(signing, dict) or set(signing) != set(expected_preflight):
+        raise ValueError("manifest signing fields are invalid")
+    if distribution == "production":
+        if (
+            signing["identity_class"] != "Developer ID Application"
+            or signing["notarized"] is not True
+            or signing["stapled"] is not True
+            or not TEAM_ID.fullmatch(signing["team_id"])
+            or set(signing["notary_submissions"]) != {"clap", "vst3"}
+            or any(not isinstance(value, str) or not NOTARY_ID.fullmatch(value) for value in signing["notary_submissions"].values())
+        ):
+            raise ValueError("production signing evidence is invalid")
+        if not require_production:
+            raise ValueError("preflight requires ad hoc non-notarized provenance")
+    elif distribution == "preflight":
+        if signing != expected_preflight:
+            raise ValueError("preflight signing evidence is invalid")
+        if require_production:
+            raise ValueError("publish requires production Developer ID notarized provenance")
+    else:
+        raise ValueError("manifest distribution is invalid")
+
+    artifacts = manifest["artifacts"]
+    if not isinstance(artifacts, list) or len(artifacts) != 2:
+        raise ValueError("publish requires exactly CLAP and VST3 artifacts")
+    formats = {artifact.get("format") for artifact in artifacts if isinstance(artifact, dict)}
+    if formats != {"clap", "vst3"} or not all(isinstance(artifact, dict) for artifact in artifacts):
+        raise ValueError("publish requires exactly CLAP and VST3 artifacts")
+    expected_core = (
+        _format_core_version(_parse_nightly_core_version(manifest["version"], field="nightly version"))
+        if manifest["channel"] == "nightly"
+        else manifest["version"]
+    )
+    expected_names = {
+        "clap": f"pump-v{expected_core}-macos.clap.zip",
+        "vst3": f"pump-v{expected_core}-macos.vst3.zip",
+    }
+    entries: list[Mapping[str, Any]] = []
+    for artifact in artifacts:
+        if set(artifact) != {"format", "platform", "architectures", "name", "media_type", "sha256", "size_bytes"}:
+            raise ValueError("macOS artifact metadata is invalid")
+        if (
+            artifact["platform"] != "macos"
+            or artifact["architectures"] != ["arm64"]
+            or artifact["media_type"] != "application/zip"
+            or artifact["name"] != expected_names[artifact["format"]]
+        ):
+            raise ValueError("macOS artifact metadata is invalid")
+        entries.append(artifact)
+
+    screenshot = manifest["screenshot"]
+    screenshot_fields = {
+        "role", "name", "media_type", "width", "height", "logical_width", "logical_height",
+        "dpi_scale", "source_git_sha", "sha256", "size_bytes",
+    }
+    if (
+        not isinstance(screenshot, dict)
+        or set(screenshot) != screenshot_fields
+        or screenshot["role"] != "default-ui"
+        or screenshot["name"] != "pump-default-640x400.png"
+        or screenshot["media_type"] != "image/png"
+        or screenshot["width"] != 640
+        or screenshot["height"] != 400
+        or screenshot["logical_width"] != 640
+        or screenshot["logical_height"] != 400
+        or screenshot["dpi_scale"] != 1.0
+        or screenshot["source_git_sha"] != source["git_sha"]
+        or not SHA256.fullmatch(screenshot["sha256"])
+        or not isinstance(screenshot["size_bytes"], int)
+        or isinstance(screenshot["size_bytes"], bool)
+        or screenshot["size_bytes"] <= 0
+    ):
+        raise ValueError("screenshot metadata is invalid")
+    changelog = manifest["changelog"]
+    if (
+        not isinstance(changelog, dict)
+        or set(changelog) != {"name", "format", "media_type", "sha256", "size_bytes"}
+        or changelog["name"] != "CHANGELOG.md"
+        or changelog["format"] != "markdown"
+        or changelog["media_type"] != "text/markdown; charset=utf-8"
+        or not SHA256.fullmatch(changelog["sha256"])
+        or not isinstance(changelog["size_bytes"], int)
+        or isinstance(changelog["size_bytes"], bool)
+        or changelog["size_bytes"] <= 0
+    ):
+        raise ValueError("changelog metadata is invalid")
+
+    all_entries = [*entries, screenshot, changelog]
+    validate_release_fields(
+        manifest["version"],
+        manifest["released_at"],
+        [entry["name"] for entry in all_entries],
+        [entry["sha256"] for entry in all_entries],
+        [entry["size_bytes"] for entry in all_entries],
+        channel=manifest["channel"],
+    )
+    for entry in all_entries:
+        path = root / entry["name"]
+        _validate_regular_file(path, "release file")
+        digest, size = file_digest(path)
+        if digest != entry["sha256"] or size != entry["size_bytes"]:
+            raise ValueError(f"manifest hash/size mismatch: {entry['name']}")
+    png_info = validate_png(root / screenshot["name"])
+    if png_info["width"] != 640 or png_info["height"] != 400:
+        raise ValueError("screenshot dimensions do not match its manifest")
+    manifest_path = root / "release-manifest.json"
+    if manifest_path.is_file():
+        _validate_regular_file(manifest_path, "release manifest")
+        if manifest_path.read_bytes() != canonical_json(dict(manifest)):
+            raise ValueError("release-manifest.json is not canonical JSON")
+
+
+def _validate_schema3_manifest(manifest: Mapping[str, Any], root: Path) -> None:
+    required = {
+        "schema_version", "product", "build_id", "version", "channel", "released_at", "source",
+        "distribution", "artifacts", "screenshot", "changelog",
+    }
+    if set(manifest) != required or manifest.get("schema_version") != MANIFEST_SCHEMA_V3:
+        raise ValueError("schema 3 manifest fields are invalid")
+    source = manifest["source"]
+    if not isinstance(source, dict) or set(source) != {"repository", "git_sha", "dirty"} or source.get("dirty") is not False:
+        raise ValueError("manifest source is invalid")
+    _validate_common(
+        product=manifest["product"],
+        repository=source.get("repository"),
+        version=manifest["version"],
+        build_id=manifest["build_id"],
+        channel=manifest["channel"],
+        released_at=manifest["released_at"],
+        git_sha=source.get("git_sha"),
+    )
+    expected_build_id = f"pump-v{manifest['version']}-{source['git_sha'][:12]}"
+    if manifest["channel"] != "nightly" or manifest["distribution"] != "production":
+        raise ValueError("schema 3 is only available for production Pump nightlies")
+    if manifest["build_id"] != expected_build_id:
+        raise ValueError(f"schema 3 build id must be {expected_build_id}")
+
+    artifacts = manifest["artifacts"]
+    if not isinstance(artifacts, list) or len(artifacts) != 3:
+        raise ValueError("schema 3 manifest must contain exactly three artifacts")
+    expected_targets = {
+        ("macos", "arm64", "clap"): f"pump-v{manifest['version']}-macos.clap.zip",
+        ("macos", "arm64", "vst3"): f"pump-v{manifest['version']}-macos.vst3.zip",
+        ("windows", "x86_64", "vst3"): f"pump-v{manifest['version']}-windows-x86_64-unsigned.vst3.zip",
+    }
+    seen_targets: set[tuple[str, str, str]] = set()
+    mac_team_id: str | None = None
+    names: set[str] = set()
+    for artifact in artifacts:
+        required_artifact_fields = {
+            "format", "platform", "architectures", "name", "media_type", "sha256", "size_bytes", "security"
+        }
+        if (
+            not isinstance(artifact, dict)
+            or set(artifact) != required_artifact_fields
+            or not isinstance(artifact.get("format"), str)
+            or not isinstance(artifact.get("platform"), str)
+            or artifact.get("media_type") != "application/zip"
+            or artifact.get("architectures") not in (["arm64"], ["x86_64"])
+            or not isinstance(artifact.get("name"), str)
+        ):
+            raise ValueError("schema 3 artifact metadata is invalid")
+        target = (artifact["platform"], artifact["architectures"][0], artifact["format"])
+        if target not in expected_targets or target in seen_targets or artifact["name"] != expected_targets[target] or artifact["name"] in names:
+            raise ValueError("schema 3 artifact identity is invalid")
+        security = artifact["security"]
+        if target[0] == "windows":
+            if security != {"status": "unsigned", "certificate": None}:
+                raise ValueError("schema 3 Windows security metadata is invalid")
+        else:
+            if (
+                not isinstance(security, dict)
+                or set(security) != {"status", "certificate", "team_id", "notarized", "stapled", "notary_submission"}
+                or security["status"] != "signed"
+                or security["certificate"] != "Developer ID Application"
+                or not TEAM_ID.fullmatch(security["team_id"])
+                or security["notarized"] is not True
+                or security["stapled"] is not True
+                or not isinstance(security["notary_submission"], str)
+                or not NOTARY_ID.fullmatch(security["notary_submission"])
+            ):
+                raise ValueError("schema 3 macOS security metadata is invalid")
+            if mac_team_id is None:
+                mac_team_id = security["team_id"]
+            elif security["team_id"] != mac_team_id:
+                raise ValueError("schema 3 macOS signing teams differ")
+        if not SHA256.fullmatch(artifact["sha256"]) or not isinstance(artifact["size_bytes"], int) or isinstance(artifact["size_bytes"], bool) or artifact["size_bytes"] <= 0:
+            raise ValueError("schema 3 artifact hash or size is invalid")
+        path = root / artifact["name"]
+        _validate_regular_file(path, "schema 3 artifact")
+        digest, size = file_digest(path)
+        if digest != artifact["sha256"] or size != artifact["size_bytes"]:
+            raise ValueError(f"manifest hash/size mismatch: {artifact['name']}")
+        seen_targets.add(target)
+        names.add(artifact["name"])
+    if seen_targets != set(expected_targets):
+        raise ValueError("schema 3 artifact targets are incomplete")
+
+    screenshot = manifest["screenshot"]
+    screenshot_fields = {
+        "role", "name", "media_type", "width", "height", "logical_width", "logical_height",
+        "dpi_scale", "source_git_sha", "sha256", "size_bytes",
+    }
+    if (
+        not isinstance(screenshot, dict)
+        or set(screenshot) != screenshot_fields
+        or screenshot["role"] != "default-ui"
+        or screenshot["name"] in names
+        or screenshot["name"] != "pump-default-640x400.png"
+        or screenshot["media_type"] != "image/png"
+        or screenshot["width"] != 640
+        or screenshot["height"] != 400
+        or screenshot["logical_width"] != 640
+        or screenshot["logical_height"] != 400
+        or screenshot["dpi_scale"] != 1.0
+        or screenshot["source_git_sha"] != source["git_sha"]
+        or not SHA256.fullmatch(screenshot["sha256"])
+        or not isinstance(screenshot["size_bytes"], int)
+        or isinstance(screenshot["size_bytes"], bool)
+        or screenshot["size_bytes"] <= 0
+    ):
+        raise ValueError("screenshot metadata is invalid")
+    _validate_regular_file(root / screenshot["name"], "screenshot")
+    digest, size = file_digest(root / screenshot["name"])
+    if digest != screenshot["sha256"] or size != screenshot["size_bytes"]:
+        raise ValueError("manifest hash/size mismatch: pump-default-640x400.png")
+    validate_png(root / screenshot["name"])
+    names.add(screenshot["name"])
+
+    changelog = manifest["changelog"]
+    if (
+        not isinstance(changelog, dict)
+        or set(changelog) != {"name", "format", "media_type", "sha256", "size_bytes"}
+        or changelog["name"] != "CHANGELOG.md"
+        or changelog["name"] in names
+        or changelog["format"] != "markdown"
+        or changelog["media_type"] != "text/markdown; charset=utf-8"
+        or not SHA256.fullmatch(changelog["sha256"])
+        or not isinstance(changelog["size_bytes"], int)
+        or isinstance(changelog["size_bytes"], bool)
+        or changelog["size_bytes"] <= 0
+    ):
+        raise ValueError("changelog metadata is invalid")
+    _validate_regular_file(root / changelog["name"], "CHANGELOG.md")
+    digest, size = file_digest(root / changelog["name"])
+    if digest != changelog["sha256"] or size != changelog["size_bytes"]:
+        raise ValueError("manifest hash/size mismatch: CHANGELOG.md")
+
+    manifest_path = root / "release-manifest.json"
+    if manifest_path.is_file():
+        _validate_regular_file(manifest_path, "release manifest")
+        if manifest_path.read_bytes() != canonical_json(dict(manifest)):
+            raise ValueError("release-manifest.json is not canonical JSON")
+
+
+def validate_manifest(manifest: Mapping[str, Any], root: Path) -> None:
+    if not isinstance(manifest, Mapping):
+        raise ValueError("manifest must be an object")
+    schema = manifest.get("schema_version")
+    if schema == MANIFEST_SCHEMA_V2:
+        _validate_schema2_manifest(
+            manifest, root, require_production=manifest.get("distribution") == "production"
+        )
+    elif schema == MANIFEST_SCHEMA_V3:
+        _validate_schema3_manifest(manifest, root)
+    else:
+        raise ValueError("manifest schema or fields are invalid")
+
+
+def _validate_exact_manifest_names(manifest: Mapping[str, Any]) -> None:
+    if manifest.get("schema_version") == MANIFEST_SCHEMA_V3:
+        version = manifest.get("version")
+        expected = {
+            "clap-macos": f"pump-v{version}-macos.clap.zip",
+            "vst3-macos": f"pump-v{version}-macos.vst3.zip",
+            "vst3-windows": f"pump-v{version}-windows-x86_64-unsigned.vst3.zip",
+        }
+        actual = {
+            f"{artifact.get('format')}-{artifact.get('platform')}": artifact.get("name")
+            for artifact in manifest.get("artifacts", [])
+        }
+        if actual != expected:
+            raise ValueError("manifest artifact names do not match the exact Pump ZIP contract")
+    else:
+        channel = manifest.get("channel")
+        version = manifest.get("version")
+        if channel == "nightly":
+            version = _format_core_version(_parse_nightly_core_version(version, field="nightly version"))
+        expected = {"clap": f"pump-v{version}-macos.clap.zip", "vst3": f"pump-v{version}-macos.vst3.zip"}
+        actual = {artifact.get("format"): artifact.get("name") for artifact in manifest.get("artifacts", [])}
+        if actual != expected:
+            raise ValueError("manifest artifact names do not match the exact Pump ZIP contract")
+    if manifest.get("screenshot", {}).get("role") != "default-ui" or manifest.get("screenshot", {}).get("name") != "pump-default-640x400.png" or manifest.get("changelog", {}).get("name") != "CHANGELOG.md":
+        raise ValueError("manifest support-file roles or names do not match the Pump release contract")
 
 
 def _request(url: str, method: str, body: Optional[bytes], headers: dict[str, str]) -> tuple[int, bytes]:
     request = Request(url, method=method, data=body, headers=headers)
     try:
-        with urlopen(request) as response:
+        with urlopen(request, timeout=60) as response:
             return response.status, response.read()
     except (HTTPError, URLError) as error:
         if isinstance(error, HTTPError):
@@ -379,17 +1000,11 @@ Transport = Callable[[str, str, Optional[bytes], dict[str, str]], tuple[int, byt
 
 
 def _publish_validated_manifest(
-    *,
-    endpoint: str,
-    token: str,
-    manifest: dict[str, Any],
-    root: Path,
-    transport: Transport,
+    *, endpoint: str, token: str, manifest: Mapping[str, Any], root: Path, transport: Transport
 ) -> None:
-    """Publish a manifest after the caller has completed all local validation."""
-    request = transport
-    base = endpoint
-    status, payload = request(f"{base}/plugins/api/v1/products/pump/releases", "GET", None, {"Accept": "application/json"})
+    status, payload = transport(
+        f"{endpoint}/plugins/api/v1/products/{PRODUCT}/releases", "GET", None, {"Accept": "application/json"}
+    )
     if status < 200 or status >= 300:
         raise RuntimeError(f"capability check failed ({status})")
     try:
@@ -397,16 +1012,14 @@ def _publish_validated_manifest(
     except json.JSONDecodeError as error:
         raise RuntimeError("capability response was not JSON") from error
     versions = capability.get("release_upload", {}).get("manifest_schema_versions", [])
-    if MANIFEST_SCHEMA not in versions:
+    if MANIFEST_SCHEMA_V2 not in versions:
         raise RuntimeError("server does not support release manifest schema 2; no files were uploaded")
 
     files: list[tuple[str, Path, str]] = []
     for artifact in manifest["artifacts"]:
         files.append((artifact["name"], root / artifact["name"], artifact["sha256"]))
-    screenshot = manifest["screenshot"]
-    files.append((screenshot["name"], root / screenshot["name"], screenshot["sha256"]))
-    changelog = manifest["changelog"]
-    files.append((changelog["name"], root / changelog["name"], changelog["sha256"]))
+    for entry in (manifest["screenshot"], manifest["changelog"]):
+        files.append((entry["name"], root / entry["name"], entry["sha256"]))
     metadata = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/octet-stream",
@@ -416,42 +1029,32 @@ def _publish_validated_manifest(
     }
     for name, path, digest in files:
         data = path.read_bytes()
-        headers = {**metadata, "Content-Length": str(len(data)), "X-PortalSurfer-Sha256": digest}
-        request(
-            f"{base}/plugins/api/v1/products/pump/release-uploads/{manifest['build_id']}/staging/files/{name}",
+        transport(
+            f"{endpoint}/plugins/api/v1/products/{PRODUCT}/release-uploads/{manifest['build_id']}/staging/files/{name}",
             "PUT",
             data,
-            headers,
+            {**metadata, "Content-Length": str(len(data)), "X-PortalSurfer-Sha256": digest},
         )
-
-    body = canonical_json(manifest)
-    manifest_hash = hashlib.sha256(body).hexdigest()
-    commit_headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": MANIFEST_CONTENT_TYPE,
-        "Content-Length": str(len(body)),
-        "X-PortalSurfer-Manifest-Sha256": manifest_hash,
-        "X-PortalSurfer-Release-Version": manifest["version"],
-        "X-PortalSurfer-Release-Channel": manifest["channel"],
-        "X-PortalSurfer-Released-At": manifest["released_at"],
-    }
-    request(
-        f"{base}/plugins/api/v1/products/pump/release-uploads/{manifest['build_id']}/commit",
+    body = canonical_json(dict(manifest))
+    transport(
+        f"{endpoint}/plugins/api/v1/products/{PRODUCT}/release-uploads/{manifest['build_id']}/commit",
         "PUT",
         body,
-        commit_headers,
+        {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": MANIFEST_CONTENT_TYPE,
+            "Content-Length": str(len(body)),
+            "X-PortalSurfer-Manifest-Sha256": hashlib.sha256(body).hexdigest(),
+            "X-PortalSurfer-Release-Version": manifest["version"],
+            "X-PortalSurfer-Release-Channel": manifest["channel"],
+            "X-PortalSurfer-Released-At": manifest["released_at"],
+        },
     )
 
 
 def _run_checked(args: Sequence[str], *, cwd: Path, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            list(args),
-            cwd=str(cwd),
-            check=True,
-            capture_output=capture_output,
-            text=True,
-        )
+        return subprocess.run(list(args), cwd=str(cwd), check=True, capture_output=capture_output, text=True)
     except FileNotFoundError as error:
         raise RuntimeError(f"required release command is unavailable: {args[0]}") from error
     except subprocess.CalledProcessError as error:
@@ -463,17 +1066,15 @@ def _repo_output(args: Sequence[str], repo_root: Path) -> str:
     return _run_checked(args, cwd=repo_root, capture_output=True).stdout.strip()
 
 
-def _validate_canonical_source(manifest: dict[str, Any], repo_root: Path) -> None:
+def _validate_canonical_source(manifest: Mapping[str, Any], repo_root: Path) -> None:
     try:
         branch = _repo_output(("git", "symbolic-ref", "--quiet", "--short", "HEAD"), repo_root)
     except ValueError:
         branch = ""
-    if not branch:
-        raise ValueError("production publishing requires a non-detached checkout")
+    if branch != "main":
+        raise ValueError("production release source must be a non-detached main checkout")
     dirty_status = _run_checked(
-        ("git", "status", "--porcelain", "--untracked-files=all"),
-        cwd=repo_root,
-        capture_output=True,
+        ("git", "status", "--porcelain", "--untracked-files=all"), cwd=repo_root, capture_output=True
     ).stdout.rstrip("\r\n")
     if dirty_status:
         entries = " | ".join(dirty_status.splitlines())
@@ -509,7 +1110,11 @@ def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path, r
             contents / "MacOS",
             contents / "MacOS" / "pump",
         }
-        allowed = required | {contents / "CodeResources", contents / "_CodeSignature", contents / "_CodeSignature" / "CodeResources"}
+        allowed = required | {
+            contents / "CodeResources",
+            contents / "_CodeSignature",
+            contents / "_CodeSignature" / "CodeResources",
+        }
         code_resources = contents / "CodeResources"
         if code_resources.exists() and (code_resources.is_symlink() or not code_resources.is_file()):
             raise ValueError(f"{format_name} ZIP Contents/CodeResources must be a regular file")
@@ -523,7 +1128,7 @@ def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path, r
                 _assert_no_symlinks(child)
                 if child not in allowed:
                     raise ValueError(f"{format_name} ZIP contains unexpected topology: {child.relative_to(extracted)}")
-        if not all(p.exists() for p in required) or not (contents / "MacOS" / "pump").is_file() or not os.access(contents / "MacOS" / "pump", os.X_OK):
+        if not all(path.exists() for path in required) or not (contents / "MacOS" / "pump").is_file() or not os.access(contents / "MacOS" / "pump", os.X_OK):
             raise ValueError(f"{format_name} ZIP bundle layout is invalid")
         info = contents / "Info.plist"
         binary = contents / "MacOS" / "pump"
@@ -554,21 +1159,16 @@ def _audit_zip(path: Path, format_name: str, expected_team: str, *, cwd: Path, r
             raise ValueError(f"{format_name} ZIP required export is missing")
 
 
-def _validate_exact_manifest_names(manifest: dict[str, Any]) -> None:
-    channel = manifest.get("channel")
-    version = manifest.get("version")
-    if channel == "nightly":
-        version = _format_core_version(_parse_nightly_core_version(version, field="nightly version"))
-    expected = {"clap": f"pump-v{version}-macos.clap.zip", "vst3": f"pump-v{version}-macos.vst3.zip"}
-    actual = {artifact["format"]: artifact["name"] for artifact in manifest["artifacts"]}
-    if actual != expected:
-        raise ValueError("manifest artifact names do not match the exact Pump ZIP contract")
-    if manifest["screenshot"]["role"] != "default-ui" or manifest["screenshot"]["name"] != "pump-default-640x400.png" or manifest["changelog"]["name"] != "CHANGELOG.md":
-        raise ValueError("manifest support-file roles or names do not match the Pump release contract")
+def validate_publish_manifest(manifest: Mapping[str, Any], root: Path, *, require_production: bool = True) -> None:
+    if manifest.get("schema_version") != MANIFEST_SCHEMA_V2 or manifest.get("product") != PRODUCT:
+        raise ValueError("publish requires Pump manifest schema 2")
+    _validate_schema2_manifest(manifest, root, require_production=require_production)
 
 
-def publish_release(*, endpoint: str, token: str, manifest_path: Path, root: Optional[Path] = None, repo_root: Optional[Path] = None) -> None:
-    """Validate and publish one production Pump manifest through the real request path."""
+def publish_release(
+    *, endpoint: str, token: str, manifest_path: Path, root: Optional[Path] = None, repo_root: Optional[Path] = None
+) -> None:
+    """Validate and publish one production schema-2 Pump manifest."""
     if endpoint != PRODUCTION_ORIGIN:
         raise ValueError(f"production publishing requires exact origin {PRODUCTION_ORIGIN}")
     if not token:
@@ -576,8 +1176,7 @@ def publish_release(*, endpoint: str, token: str, manifest_path: Path, root: Opt
     manifest_path = Path(manifest_path)
     artifact_root = Path(root) if root is not None else manifest_path.parent
     source_root = Path(repo_root) if repo_root is not None else Path.cwd()
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise ValueError("release manifest must be a regular file")
+    _validate_regular_file(manifest_path, "release manifest")
     try:
         manifest_bytes = manifest_path.read_bytes()
         manifest = json.loads(manifest_bytes)
@@ -601,63 +1200,14 @@ def publish_release(*, endpoint: str, token: str, manifest_path: Path, root: Opt
     _publish_validated_manifest(endpoint=endpoint, token=token, manifest=manifest, root=artifact_root, transport=_request)
 
 
-def validate_publish_manifest(manifest: dict[str, Any], root: Path, *, require_production: bool = True) -> None:
-    if manifest.get("schema_version") != MANIFEST_SCHEMA or manifest.get("product") != "pump":
-        raise ValueError("publish requires Pump manifest schema 2")
-    build_id = manifest.get("build_id")
-    source = manifest.get("source", {})
-    signing = manifest.get("signing", {})
-    channel = manifest.get("channel")
-    if channel not in {"stable", "rc", "nightly"}:
-        raise ValueError("publish manifest has invalid channel")
-    if not isinstance(signing, dict):
-        raise ValueError("publish manifest has invalid signing provenance")
-    if not isinstance(build_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,127}", build_id) or not isinstance(source, dict) or source != {"repository": "PORTALSURFER/pump", "git_sha": source.get("git_sha"), "dirty": False} or not isinstance(source.get("git_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", source["git_sha"]):
-        raise ValueError("publish manifest has invalid immutable source")
-    if require_production:
-        if manifest.get("distribution") != "production" or signing.get("identity_class") != "Developer ID Application" or signing.get("notarized") is not True or signing.get("stapled") is not True:
-            raise ValueError("publish requires production Developer ID notarized provenance")
-        if not TEAM_ID.fullmatch(signing.get("team_id", "")):
-            raise ValueError("publish requires a valid Developer Team ID")
-    elif manifest.get("distribution") != "preflight" or signing.get("identity_class") != "ad hoc" or signing.get("notarized") is not False or signing.get("stapled") is not False or signing.get("team_id") != "":
+def validate_preflight_manifest(manifest: Mapping[str, Any], root: Path) -> None:
+    """Validate preflight provenance and the stable schema-2 file contract."""
+    if manifest.get("distribution") != "preflight":
         raise ValueError("preflight requires ad hoc non-notarized provenance")
-    submissions = signing.get("notary_submissions", {})
-    if require_production:
-        if set(submissions) != {"clap", "vst3"} or any(not isinstance(value, str) or not NOTARY_ID.fullmatch(value) for value in submissions.values()):
-            raise ValueError("publish requires accepted notarization submission ids")
-    elif submissions:
-        raise ValueError("preflight manifests cannot contain notarization submission ids")
-    artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, list) or len(artifacts) != 2 or not all(isinstance(a, dict) for a in artifacts) or {a.get("format") for a in artifacts} != {"clap", "vst3"}:
-        raise ValueError("publish requires exactly CLAP and VST3 artifacts")
-    screenshot = manifest.get("screenshot")
-    changelog = manifest.get("changelog")
-    entries = list(artifacts) + [screenshot, changelog]
-    for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not isinstance(entry.get("sha256"), str) or not isinstance(entry.get("size_bytes"), int):
-            raise ValueError("publish manifest has invalid file metadata")
-    validate_release_fields(manifest.get("version", ""), manifest.get("released_at", ""), [entry["name"] for entry in entries], [entry["sha256"] for entry in entries], [entry["size_bytes"] for entry in entries], channel=channel)
-    for entry in entries:
-        path = root / entry["name"]
-        digest, size = file_digest(path)
-        if digest != entry["sha256"] or size != entry["size_bytes"]:
-            raise ValueError(f"on-disk bytes do not match manifest: {entry['name']}")
-    for artifact in artifacts:
-        if artifact.get("platform") != "macos" or artifact.get("architectures") != ["arm64"] or artifact.get("media_type") != "application/zip":
-            raise ValueError("publish artifacts must be macOS arm64")
-    screenshot = manifest["screenshot"]
-    if (screenshot.get("role") != "default-ui" or screenshot.get("media_type") != "image/png" or
-            screenshot.get("width") != 640 or screenshot.get("height") != 400 or
-            screenshot.get("logical_width") != 640 or screenshot.get("logical_height") != 400 or
-            screenshot.get("dpi_scale") != 1.0 or screenshot.get("source_git_sha") != source["git_sha"]):
-        raise ValueError("publish screenshot metadata does not match the Pump UI contract")
-    validate_png(root / screenshot["name"])
-    changelog = manifest["changelog"]
-    if changelog.get("format") != "markdown" or changelog.get("media_type") != "text/markdown; charset=utf-8":
-        raise ValueError("publish changelog metadata does not match the release contract")
-
-
-def validate_preflight_manifest(manifest: dict[str, Any], root: Path) -> None:
-    """Validate local preflight provenance and the same file/metadata contract as publish."""
-    validate_publish_manifest(manifest, root, require_production=False)
+    validate_manifest(manifest, root)
     _validate_exact_manifest_names(manifest)
+
+
+if __name__ == "__main__":
+    print("This helper is imported by scripts/release.sh; it does not publish by itself.", file=__import__("sys").stderr)
+    raise SystemExit(2)

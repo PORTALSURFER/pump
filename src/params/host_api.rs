@@ -4,8 +4,14 @@ pub const MAX_SYNC_DIVISION: f32 = (SYNC_DIVISIONS.len() - 1) as f32;
 
 const AUTO: u32 = ParamInfoFlags::IS_AUTOMATABLE.bits();
 const AUTO_ENUM: u32 = AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags::IS_ENUM.bits();
+const AUTO_STEPPED: u32 = AUTO | ParamInfoFlags::IS_STEPPED.bits();
 const AUTO_BYPASS: u32 =
     AUTO | ParamInfoFlags::IS_STEPPED.bits() | ParamInfoFlags::IS_BYPASS.bits();
+
+#[cfg(feature = "vst3")]
+const LEGACY_VST3_SYNC_DIVISION_MAX: f64 = 7.0;
+#[cfg(feature = "vst3")]
+const EXTENDED_VST3_SYNC_DIVISION_MAX: f64 = 9.0;
 
 #[derive(Copy, Clone)]
 struct ParamDef {
@@ -77,7 +83,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 12] = [
+const PARAM_DEFS: [ParamDef; 13] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -258,6 +264,21 @@ const PARAM_DEFS: [ParamDef; 12] = [
         default_value: DEFAULT_FREE_RATE_HZ as f64,
         flags: AUTO,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 16,
+        id: PARAM_DELAY_ID,
+        name: "Delay",
+        #[cfg(feature = "vst3")]
+        short_name: "Delay",
+        #[cfg(feature = "vst3")]
+        units: "beats",
+        module: "Pump",
+        min_value: MIN_DELAY_BEATS as f64,
+        max_value: MAX_DELAY_BEATS as f64,
+        default_value: DEFAULT_DELAY_BEATS as f64,
+        flags: AUTO_STEPPED,
+    },
 ];
 
 fn param_def_for_id(param_id: ClapId) -> Option<ParamDef> {
@@ -275,7 +296,8 @@ fn param_def_for_vst3_id(param_id: u32) -> Option<ParamDef> {
 #[cfg(feature = "vst3")]
 fn vst3_step_count(def: ParamDef) -> i32 {
     if ParamInfoFlags::from_bits_truncate(def.flags).contains(ParamInfoFlags::IS_STEPPED) {
-        (def.max_value - def.min_value).round() as i32
+        let max_value = vst3_sync_division_max(def.vst3_id).unwrap_or(def.max_value);
+        (max_value - def.min_value).round() as i32
     } else {
         0
     }
@@ -310,6 +332,54 @@ fn normalized_to_plain(normalized: f64, min: f64, max: f64) -> f64 {
     min + normalized.clamp(0.0, 1.0) * (max - min)
 }
 
+/// Convert a VST3 parameter plain value using the parameter id's normalized range.
+#[cfg(feature = "vst3")]
+pub fn normalized_from_vst3_plain_value(param_id: u32, plain: f64) -> Option<f64> {
+    let clap_id = clap_id_from_vst3_param_id(param_id)?;
+    if let Some(max) = vst3_sync_division_max(param_id) {
+        return Some(plain_to_normalized(plain, 0.0, max));
+    }
+    normalized_from_plain_value(clap_id, plain)
+}
+
+/// Convert a VST3 normalized value using the parameter id's plain range.
+#[cfg(feature = "vst3")]
+pub fn plain_from_vst3_normalized_value(param_id: u32, normalized: f64) -> Option<f64> {
+    let clap_id = clap_id_from_vst3_param_id(param_id)?;
+    if let Some(max) = vst3_sync_division_max(param_id) {
+        return Some(normalized_to_plain(normalized, 0.0, max).round());
+    }
+    plain_from_normalized_value(clap_id, normalized)
+}
+
+/// Format a VST3 parameter plain value using the parameter id's text rules.
+#[cfg(feature = "vst3")]
+pub fn format_vst3_plain_value_text(param_id: u32, value: f64) -> Option<String> {
+    let clap_id = clap_id_from_vst3_param_id(param_id)?;
+    if let Some(max) = vst3_sync_division_max(param_id) {
+        if !value.is_finite() {
+            return None;
+        }
+        let index = value.round();
+        if !(0.0..=max).contains(&index) {
+            return None;
+        }
+        return Some(sync_division_label(index as usize).to_string());
+    }
+    format_plain_value_text(clap_id, value)
+}
+
+/// Parse VST3 parameter text using the parameter id's text rules.
+#[cfg(feature = "vst3")]
+pub fn parse_vst3_plain_value_text(param_id: u32, raw: &str) -> Option<f64> {
+    let clap_id = clap_id_from_vst3_param_id(param_id)?;
+    if let Some(max) = vst3_sync_division_max(param_id) {
+        let index = sync_division_index_from_text(raw)?;
+        return (index as f64 <= max).then_some(index as f64);
+    }
+    parse_plain_value_text(clap_id, raw)
+}
+
 /// Convert a parameter plain value to normalized host value.
 pub fn normalized_from_plain_value(param_id: ClapId, plain: f64) -> Option<f64> {
     let def = param_def_for_id(param_id)?;
@@ -329,7 +399,11 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
     };
     if matches!(
         param_id,
-        PARAM_SYNC_DIVISION_ID | PARAM_BYPASS_ID | PARAM_SOUND_ID | PARAM_TIMING_MODE_ID
+        PARAM_SYNC_DIVISION_ID
+            | PARAM_BYPASS_ID
+            | PARAM_SOUND_ID
+            | PARAM_TIMING_MODE_ID
+            | PARAM_DELAY_ID
     ) {
         return Some(plain.round());
     }
@@ -339,13 +413,38 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
 /// Resolve a VST3 parameter id to the shared CLAP parameter id when recognized.
 #[cfg(feature = "vst3")]
 pub fn clap_id_from_vst3_param_id(param_id: u32) -> Option<ClapId> {
-    param_def_for_vst3_id(param_id).map(|def| def.id)
+    if param_id == PARAM_SYNC_DIVISION_VST3_V2_NUM {
+        Some(PARAM_SYNC_DIVISION_ID)
+    } else {
+        param_def_for_vst3_id(param_id).map(|def| def.id)
+    }
+}
+
+#[cfg(feature = "vst3")]
+fn vst3_sync_division_max(param_id: u32) -> Option<f64> {
+    match param_id {
+        PARAM_SYNC_DIVISION_NUM => Some(LEGACY_VST3_SYNC_DIVISION_MAX),
+        PARAM_SYNC_DIVISION_VST3_V2_NUM => Some(EXTENDED_VST3_SYNC_DIVISION_MAX),
+        _ => None,
+    }
 }
 
 /// Return VST3 metadata for one parameter index.
 #[cfg(feature = "vst3")]
 pub fn vst3_param_info_for_index(index: i32) -> Option<Vst3ParamInfo> {
     let index = usize::try_from(index).ok()?;
+    if index == PARAM_DEFS.len() {
+        return Some(Vst3ParamInfo {
+            id: PARAM_SYNC_DIVISION_VST3_V2_NUM,
+            title: "Division Extended",
+            short_title: "Div Ext",
+            units: "",
+            step_count: EXTENDED_VST3_SYNC_DIVISION_MAX as i32,
+            default_normalized: DEFAULT_SYNC_DIVISION_INDEX as f64
+                / EXTENDED_VST3_SYNC_DIVISION_MAX,
+            is_bypass: false,
+        });
+    }
     let def = PARAM_DEFS.get(index).copied()?;
     Some(Vst3ParamInfo {
         id: def.vst3_id,
@@ -353,10 +452,16 @@ pub fn vst3_param_info_for_index(index: i32) -> Option<Vst3ParamInfo> {
         short_title: def.short_name,
         units: def.units,
         step_count: vst3_step_count(def),
-        default_normalized: normalized_from_plain_value(def.id, def.default_value)?,
+        default_normalized: normalized_from_vst3_plain_value(def.vst3_id, def.default_value)?,
         is_bypass: ParamInfoFlags::from_bits_truncate(def.flags)
             .contains(ParamInfoFlags::IS_BYPASS),
     })
+}
+
+/// Return the number of host-visible VST3 parameters.
+#[cfg(feature = "vst3")]
+pub fn vst3_param_count() -> u32 {
+    (PARAM_DEFS.len() + 1) as u32
 }
 
 /// Return the number of host-visible scalar parameters.
@@ -394,6 +499,7 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_SOUND_ID => Some(params.active_sound().index() as f64),
         PARAM_TIMING_MODE_ID => Some(params.timing_mode() as f64),
         PARAM_FREE_RATE_ID => Some(params.free_rate_hz() as f64),
+        PARAM_DELAY_ID => Some(params.delay_beats() as f64),
         _ => None,
     }
 }
@@ -425,6 +531,7 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         }
         PARAM_TIMING_MODE_ID => params.set_timing_mode(value as f32),
         PARAM_FREE_RATE_ID => params.set_free_rate_hz(value as f32),
+        PARAM_DELAY_ID => params.set_delay_beats(value as f32),
         _ => return false,
     }
     true
@@ -443,6 +550,25 @@ pub fn apply_normalized_param_value(
         return false;
     };
     apply_plain_param_value(params, param_id, plain)
+}
+
+/// Apply one VST3 normalized parameter value using its VST3 parameter id.
+#[cfg(feature = "vst3")]
+pub fn apply_vst3_normalized_param_value(
+    params: &PumpParams,
+    param_id: u32,
+    normalized: f64,
+) -> bool {
+    let Some(clap_id) = clap_id_from_vst3_param_id(param_id) else {
+        return false;
+    };
+    if vst3_sync_division_max(param_id).is_none() {
+        return apply_normalized_param_value(params, clap_id, normalized);
+    }
+    let Some(plain) = plain_from_vst3_normalized_value(param_id, normalized) else {
+        return false;
+    };
+    apply_plain_param_value(params, clap_id, plain)
 }
 
 /// Convert a plain value into the normalized value used at the CLAP boundary.
@@ -543,6 +669,7 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
             .get(clamp_timing_mode(value as f32))
             .map(|label| (*label).to_string()),
         PARAM_FREE_RATE_ID => Some(format_free_rate(value as f32)),
+        PARAM_DELAY_ID => Some(format_delay_beats(value)),
         _ => None,
     }
 }
@@ -622,6 +749,7 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
                     .map(|value| clamp_timing_mode(value as f32) as f64)
             }),
         PARAM_FREE_RATE_ID => parse_free_rate(raw).map(|value| value as f64),
+        PARAM_DELAY_ID => parse_delay_beats(raw),
         _ => None,
     }
 }
@@ -665,6 +793,34 @@ fn parse_free_rate(raw: &str) -> Option<f32> {
         number * multiplier
     };
     Some(clamp_free_rate_hz(value))
+}
+
+fn format_delay_beats(value: f64) -> String {
+    let beats = if value.is_finite() {
+        value
+            .round()
+            .clamp(MIN_DELAY_BEATS as f64, MAX_DELAY_BEATS as f64) as usize
+    } else {
+        DEFAULT_DELAY_BEATS
+    };
+    match beats {
+        1 => "1 beat".to_string(),
+        beats => format!("{beats} beats"),
+    }
+}
+
+fn parse_delay_beats(raw: &str) -> Option<f64> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    let number = normalized
+        .strip_suffix("beats")
+        .or_else(|| normalized.strip_suffix("beat"))
+        .unwrap_or(normalized.as_str())
+        .trim();
+    let value = number.parse::<f64>().ok()?;
+    if !value.is_finite() || value.fract() != 0.0 {
+        return None;
+    }
+    Some(value.clamp(MIN_DELAY_BEATS as f64, MAX_DELAY_BEATS as f64))
 }
 
 /// Apply one host automation event value into shared parameter state.

@@ -13,7 +13,9 @@ on:
         type: boolean
 
 # The scheduler only dispatches the existing release workflow. That workflow
-# owns all source, signing, notarization, and PortalSurfer secrets.
+# owns all source, publication-version/build identity, signing, notarization,
+# and PortalSurfer secrets. The release workflow derives the nightly suffix
+# from its own run sequence and never mutates main to do so.
 permissions:
   actions: write
 

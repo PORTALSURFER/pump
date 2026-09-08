@@ -142,6 +142,7 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         phase_offset: params.phase_offset(),
         output_gain_db: params.output_gain_db(),
         beats_per_cycle: params.sync_beats_per_cycle(),
+        delay_beats: params.delay_beats(),
         smooth: params.smooth(),
         swing: params.swing(),
         timing_mode: params.timing_mode(),
@@ -198,6 +199,7 @@ pub(crate) fn process_stereo_block(
                 raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
+                settings.delay_beats,
                 settings.swing,
                 settings.timing_mode,
                 input_left,
@@ -213,6 +215,7 @@ pub(crate) fn process_stereo_block(
         if let Some(capture) = waveform.as_mut() {
             capture.reconcile_cycle_mapping(
                 settings.beats_per_cycle,
+                settings.delay_beats,
                 settings.swing,
                 settings.timing_mode,
             );
@@ -306,6 +309,7 @@ pub(crate) unsafe fn process_stereo_block_raw(
                 raw_cycle_phase,
                 telemetry.phase,
                 settings.beats_per_cycle,
+                settings.delay_beats,
                 settings.swing,
                 settings.timing_mode,
                 input_left,
@@ -325,6 +329,7 @@ pub(crate) unsafe fn process_stereo_block_raw(
         if let Some(capture) = waveform.as_mut() {
             capture.reconcile_cycle_mapping(
                 settings.beats_per_cycle,
+                settings.delay_beats,
                 settings.swing,
                 settings.timing_mode,
             );
@@ -352,8 +357,8 @@ mod tests {
     use crate::incoming_waveform::IncomingWaveformBuffer;
     use crate::incoming_waveform::IncomingWaveformWriter;
     use crate::params::{
-        PARAM_BYPASS_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
-        PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID,
+        PARAM_BYPASS_ID, PARAM_DELAY_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID, PARAM_FREE_RATE_ID,
+        PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID,
         PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID,
     };
 
@@ -518,6 +523,43 @@ mod tests {
         assert_eq!(left, right);
     }
 
+    #[test]
+    fn delay_automation_takes_effect_at_its_sample_offset_without_phase_restart() {
+        let params = PumpParams::new();
+        params.set_sync_division(5.0);
+        let mut engine = PumpEngine::new(1_000.0, ramp_curve());
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(4);
+        schedule.push(2, PARAM_DELAY_ID, 1.0);
+        schedule.prepare();
+        let mut settings = dsp_settings_from_params(&params);
+        let mut last_curve_revision = params.curve_revision();
+        let mut left = [1.0; 4];
+        let mut right = [1.0; 4];
+
+        process_stereo_block(
+            &mut engine,
+            StereoBlockSlices {
+                left: &mut left,
+                right: &mut right,
+            },
+            &params,
+            &mut schedule,
+            &mut settings,
+            &mut last_curve_revision,
+            playing_transport(1.5),
+            None,
+        );
+
+        assert_eq!(params.delay_beats(), 1);
+        assert_eq!(settings.delay_beats, 1);
+        assert!((left[0] - 0.75).abs() < 0.01);
+        assert!((left[1] - 0.75).abs() < 0.01);
+        assert!((left[2] - 0.25).abs() < 0.01);
+        assert!((left[3] - 0.25).abs() < 0.01);
+        assert_eq!(left, right);
+    }
+
     #[cfg(feature = "vst3")]
     #[test]
     fn zero_frame_offset_and_free_rate_automation_retain_waveform_generation() {
@@ -531,6 +573,7 @@ mod tests {
             0.25,
             0.25,
             1.0,
+            0,
             0.0,
             crate::params::TIMING_MODE_FREE,
             0.8,

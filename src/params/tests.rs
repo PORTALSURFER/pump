@@ -1,18 +1,23 @@
+#[cfg(all(test, feature = "vst3"))]
+use super::host_api::apply_normalized_param_value;
 #[cfg(feature = "vst3")]
 use super::{
-    apply_normalized_param_value, clap_id_from_vst3_param_id, format_plain_value_text,
-    parse_plain_value_text, vst3_param_info_for_index, PARAM_FREE_RATE_NUM, PARAM_MIX_NUM,
-    PARAM_OUTPUT_GAIN_NUM, PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM,
-    PARAM_SOUND_ID, PARAM_SOUND_NUM, PARAM_SWING_NUM, PARAM_SYNC_DIVISION_ID,
-    PARAM_SYNC_DIVISION_NUM, PARAM_TIMING_MODE_ID, PARAM_TIMING_MODE_NUM,
+    apply_vst3_normalized_param_value, clap_id_from_vst3_param_id, format_plain_value_text,
+    format_vst3_plain_value_text, normalized_from_vst3_plain_value, parse_plain_value_text,
+    parse_vst3_plain_value_text, plain_from_vst3_normalized_value, vst3_param_count,
+    vst3_param_info_for_index, PARAM_FREE_RATE_NUM, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM,
+    PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM, PARAM_SOUND_ID,
+    PARAM_SOUND_NUM, PARAM_SWING_NUM, PARAM_SYNC_DIVISION_NUM, PARAM_SYNC_DIVISION_VST3_V2_NUM,
+    PARAM_TIMING_MODE_ID, PARAM_TIMING_MODE_NUM,
 };
 use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
-    sync_division_index_from_text, PresetMutationError, PumpParams, PumpPreset, PumpPresetBank,
-    SavePresetOutcome, DEFAULT_FLOOR_DB, MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DEPTH_ID,
-    PARAM_FLOOR_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID,
-    PARAM_SMOOTH_ID, PARAM_SWING_ID, PROCESSING_MODE_CLASSIC, PROCESSING_MODE_PUNCH,
-    TRIGGER_MODE_HOST, TRIGGER_MODE_SIDECHAIN,
+    sync_division_beats, sync_division_index_from_text, sync_division_label, PresetMutationError,
+    PumpParams, PumpPreset, PumpPresetBank, SavePresetOutcome, DEFAULT_FLOOR_DB,
+    MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DELAY_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID,
+    PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID,
+    PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PROCESSING_MODE_CLASSIC, PROCESSING_MODE_PUNCH,
+    SYNC_DIVISIONS, TRIGGER_MODE_HOST, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::curve::{
     cyclically_offset_editable_curve, editable_curve_to_table, sample_editable_curve, CurveNode,
@@ -60,6 +65,8 @@ fn test_quick_slot_curve(offset: f32) -> EditableCurve {
 fn sync_division_parser_accepts_labels() {
     assert_eq!(sync_division_index_from_text("1/4"), Some(4));
     assert_eq!(sync_division_index_from_text("2 bars"), Some(7));
+    assert_eq!(sync_division_index_from_text("4 Bars"), Some(8));
+    assert_eq!(sync_division_index_from_text("8 Bars"), Some(9));
     assert_eq!(sync_division_index_from_text("bogus"), None);
 }
 
@@ -70,9 +77,48 @@ fn sync_division_clamping_is_bounded() {
 }
 
 #[test]
+fn sync_division_options_append_long_cycle_choices() {
+    assert_eq!(
+        SYNC_DIVISIONS
+            .iter()
+            .map(|division| division.label)
+            .collect::<Vec<_>>(),
+        vec!["1/16", "1/8T", "1/8", "1/4T", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars", "8 Bars"]
+    );
+    assert_eq!(sync_division_beats(8), 16.0);
+    assert_eq!(sync_division_beats(9), 32.0);
+}
+
+#[test]
+fn sync_division_host_text_and_normalized_max_include_eight_bars() {
+    assert_eq!(super::param_count(), 13);
+    assert_eq!(MAX_SYNC_DIVISION, 9.0);
+    let flags = super::param_flags_for_index(3).expect("CLAP division metadata");
+    assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
+    assert!(flags.contains(ParamInfoFlags::IS_ENUM));
+    assert_eq!(sync_division_label(MAX_SYNC_DIVISION as usize), "8 Bars");
+    assert_eq!(
+        super::format_plain_value_text(PARAM_SYNC_DIVISION_ID, 999.0),
+        Some("8 Bars".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_SYNC_DIVISION_ID, "8 Bars"),
+        Some(MAX_SYNC_DIVISION as f64)
+    );
+    assert_eq!(
+        super::plain_from_normalized_value(PARAM_SYNC_DIVISION_ID, 1.0),
+        Some(MAX_SYNC_DIVISION as f64)
+    );
+    assert_eq!(
+        super::normalized_from_plain_value(PARAM_SYNC_DIVISION_ID, MAX_SYNC_DIVISION as f64),
+        Some(1.0)
+    );
+}
+
+#[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 12);
+    assert_eq!(super::param_count(), 13);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -182,7 +228,7 @@ fn free_rate_clap_and_vst3_normalized_mapping_agree() {
 #[test]
 fn free_timing_parameters_use_stable_ids_and_lossless_units() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 12);
+    assert_eq!(super::param_count(), 13);
     assert_eq!(
         super::get_param_value(&params, super::PARAM_TIMING_MODE_ID),
         Some(0.0)
@@ -222,6 +268,48 @@ fn free_timing_parameters_use_stable_ids_and_lossless_units() {
     decode_state_payload(&restored, &payload).expect("free timing state should decode");
     assert_eq!(restored.timing_mode(), super::TIMING_MODE_FREE);
     assert!((restored.free_rate_hz() - 1234.5).abs() < 1.0e-4);
+}
+
+#[test]
+fn delay_parameter_has_integer_beats_text_default_and_automation_contract() {
+    let params = PumpParams::new();
+    assert_eq!(
+        super::get_param_value(&params, PARAM_DELAY_ID),
+        Some(super::DEFAULT_DELAY_BEATS as f64)
+    );
+    let flags = super::param_flags_for_index((super::param_count() - 1) as usize)
+        .expect("delay metadata should exist");
+    assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
+    assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
+    assert!(!flags.contains(ParamInfoFlags::IS_ENUM));
+
+    for (value, text) in [
+        (0.0, "0 beats"),
+        (1.0, "1 beat"),
+        (2.0, "2 beats"),
+        (super::MAX_DELAY_BEATS as f64, "32 beats"),
+    ] {
+        assert_eq!(
+            super::format_plain_value_text(PARAM_DELAY_ID, value),
+            Some(text.into())
+        );
+        assert_eq!(
+            super::parse_plain_value_text(PARAM_DELAY_ID, text),
+            Some(value)
+        );
+    }
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_DELAY_ID, "1.5 beats"),
+        None
+    );
+    assert_eq!(
+        super::parse_plain_value_text(PARAM_DELAY_ID, "33 beats"),
+        Some(super::MAX_DELAY_BEATS as f64)
+    );
+
+    super::apply_param_event(&params, PARAM_DELAY_ID, 12.0);
+    assert_eq!(params.delay_beats(), 12);
+    assert_eq!(super::get_param_value(&params, PARAM_DELAY_ID), Some(12.0));
 }
 
 #[test]
@@ -421,7 +509,7 @@ fn editor_closed_host_switch_preserves_active_side_curve_during_scalar_save() {
 
 #[test]
 fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
-    assert_eq!(super::param_count(), 12);
+    assert_eq!(super::param_count(), 13);
     let flags = super::param_flags_for_index(7).expect("bypass metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -447,6 +535,7 @@ fn state_roundtrip_preserves_values() {
     params.set_timing_mode(super::TIMING_MODE_FREE as f32);
     params.set_free_rate_hz(37.5);
     params.set_sync_division(6.0);
+    params.set_delay_beats(7.0);
     params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
     params.set_mode(PROCESSING_MODE_PUNCH as f32);
     params.set_bypass(1.0);
@@ -483,11 +572,13 @@ fn state_roundtrip_preserves_values() {
     assert_eq!(restored.timing_mode(), super::TIMING_MODE_FREE);
     assert!((restored.free_rate_hz() - 37.5).abs() < 1.0e-6);
     assert_eq!(restored.sync_division(), 6);
+    assert_eq!(restored.delay_beats(), 7);
     assert_eq!(restored.trigger_mode(), TRIGGER_MODE_HOST);
     assert_eq!(restored.mode(), PROCESSING_MODE_CLASSIC);
     assert!(restored.bypassed());
     assert!((restored.preset_bank_snapshot().presets[0].smooth - 0.67).abs() < 1.0e-6);
     assert!((restored.preset_bank_snapshot().presets[0].swing - 0.42).abs() < 1.0e-6);
+    assert_eq!(restored.preset_bank_snapshot().presets[0].delay_beats, 7);
     assert_eq!(
         restored.preset_bank_snapshot().presets[0].mode,
         PROCESSING_MODE_CLASSIC
@@ -1045,6 +1136,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     swing: super::DEFAULT_SWING,
                     timing_mode: super::DEFAULT_TIMING_MODE,
                     free_rate_hz: super::DEFAULT_FREE_RATE_HZ,
+                    delay_beats: super::DEFAULT_DELAY_BEATS,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1065,6 +1157,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     swing: super::DEFAULT_SWING,
                     timing_mode: super::DEFAULT_TIMING_MODE,
                     free_rate_hz: super::DEFAULT_FREE_RATE_HZ,
+                    delay_beats: super::DEFAULT_DELAY_BEATS,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1191,6 +1284,10 @@ fn vst3_mapping_resolves_to_shared_clap_ids() {
         Some(PARAM_SYNC_DIVISION_ID)
     );
     assert_eq!(
+        clap_id_from_vst3_param_id(PARAM_SYNC_DIVISION_VST3_V2_NUM),
+        Some(PARAM_SYNC_DIVISION_ID)
+    );
+    assert_eq!(
         clap_id_from_vst3_param_id(PARAM_SMOOTH_NUM),
         Some(PARAM_SMOOTH_ID)
     );
@@ -1210,7 +1307,137 @@ fn vst3_mapping_resolves_to_shared_clap_ids() {
         clap_id_from_vst3_param_id(PARAM_FREE_RATE_NUM),
         Some(PARAM_FREE_RATE_ID)
     );
+    assert_eq!(clap_id_from_vst3_param_id(16), Some(PARAM_DELAY_ID));
     assert_eq!(clap_id_from_vst3_param_id(999), None);
+}
+
+#[cfg(feature = "vst3")]
+#[test]
+fn vst3_division_ids_keep_distinct_normalized_and_text_ranges() {
+    for index in 0..=7 {
+        let normalized = index as f64 / 7.0;
+        assert_eq!(
+            plain_from_vst3_normalized_value(PARAM_SYNC_DIVISION_NUM, normalized),
+            Some(index as f64)
+        );
+        assert!(
+            (normalized_from_vst3_plain_value(PARAM_SYNC_DIVISION_NUM, index as f64)
+                .expect("legacy division should normalize")
+                - normalized)
+                .abs()
+                < 1.0e-12
+        );
+        let text = format_vst3_plain_value_text(PARAM_SYNC_DIVISION_NUM, index as f64)
+            .expect("legacy division should format");
+        assert_eq!(
+            parse_vst3_plain_value_text(PARAM_SYNC_DIVISION_NUM, &text),
+            Some(index as f64)
+        );
+    }
+    assert_eq!(
+        format_vst3_plain_value_text(PARAM_SYNC_DIVISION_NUM, 7.0),
+        Some("2 Bars".into())
+    );
+    assert_eq!(
+        parse_vst3_plain_value_text(PARAM_SYNC_DIVISION_NUM, "2 Bars"),
+        Some(7.0)
+    );
+    assert_eq!(
+        parse_vst3_plain_value_text(PARAM_SYNC_DIVISION_NUM, "4 Bars"),
+        None
+    );
+    assert_eq!(
+        parse_vst3_plain_value_text(PARAM_SYNC_DIVISION_NUM, "8 Bars"),
+        None
+    );
+    assert_eq!(
+        format_vst3_plain_value_text(PARAM_SYNC_DIVISION_NUM, 8.0),
+        None
+    );
+
+    for index in 0..=9 {
+        let normalized = index as f64 / 9.0;
+        assert_eq!(
+            plain_from_vst3_normalized_value(PARAM_SYNC_DIVISION_VST3_V2_NUM, normalized),
+            Some(index as f64)
+        );
+        assert!(
+            (normalized_from_vst3_plain_value(PARAM_SYNC_DIVISION_VST3_V2_NUM, index as f64)
+                .expect("extended division should normalize")
+                - normalized)
+                .abs()
+                < 1.0e-12
+        );
+        let text = format_vst3_plain_value_text(PARAM_SYNC_DIVISION_VST3_V2_NUM, index as f64)
+            .expect("extended division should format");
+        assert_eq!(
+            parse_vst3_plain_value_text(PARAM_SYNC_DIVISION_VST3_V2_NUM, &text),
+            Some(index as f64)
+        );
+    }
+    assert_eq!(
+        format_vst3_plain_value_text(PARAM_SYNC_DIVISION_VST3_V2_NUM, 8.0),
+        Some("4 Bars".into())
+    );
+    assert_eq!(
+        format_vst3_plain_value_text(PARAM_SYNC_DIVISION_VST3_V2_NUM, 9.0),
+        Some("8 Bars".into())
+    );
+    assert_eq!(
+        parse_vst3_plain_value_text(PARAM_SYNC_DIVISION_VST3_V2_NUM, "4 Bars"),
+        Some(8.0)
+    );
+    assert_eq!(
+        parse_vst3_plain_value_text(PARAM_SYNC_DIVISION_VST3_V2_NUM, "8 Bars"),
+        Some(9.0)
+    );
+}
+
+#[cfg(feature = "vst3")]
+#[test]
+fn vst3_division_ids_apply_to_the_same_shared_state() {
+    let params = PumpParams::new();
+    assert!(apply_vst3_normalized_param_value(
+        &params,
+        PARAM_SYNC_DIVISION_NUM,
+        1.0
+    ));
+    assert_eq!(params.sync_division(), 7);
+    assert!(apply_vst3_normalized_param_value(
+        &params,
+        PARAM_SYNC_DIVISION_VST3_V2_NUM,
+        8.0 / 9.0
+    ));
+    assert_eq!(params.sync_division(), 8);
+}
+
+#[cfg(feature = "vst3")]
+#[test]
+fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
+    assert_eq!(vst3_param_count(), 14);
+    let ids = (0..vst3_param_count() as i32)
+        .map(|index| {
+            vst3_param_info_for_index(index)
+                .expect("every advertised VST3 index should have metadata")
+                .id
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec![1, 3, 4, 5, 2, 6, 8, 10, 11, 12, 13, 14, 16, 15]);
+    let mut sorted_ids = ids.clone();
+    sorted_ids.sort_unstable();
+    sorted_ids.dedup();
+    assert_eq!(sorted_ids.len(), ids.len(), "VST3 ids must be unique");
+
+    let legacy = vst3_param_info_for_index(3).expect("legacy division metadata");
+    assert_eq!(legacy.id, PARAM_SYNC_DIVISION_NUM);
+    assert_eq!(legacy.step_count, 7);
+    assert_eq!(legacy.default_normalized, 4.0 / 7.0);
+
+    let extended = vst3_param_info_for_index(13).expect("extended division metadata");
+    assert_eq!(extended.id, PARAM_SYNC_DIVISION_VST3_V2_NUM);
+    assert_eq!(extended.title, "Division Extended");
+    assert_eq!(extended.step_count, 9);
+    assert_eq!(extended.default_normalized, 4.0 / 9.0);
 }
 
 #[cfg(feature = "vst3")]
@@ -1223,7 +1450,7 @@ fn vst3_info_and_text_conversions_share_param_rules() {
 
     let division_info = vst3_param_info_for_index(3).expect("division info should exist");
     assert_eq!(division_info.id, PARAM_SYNC_DIVISION_NUM);
-    assert_eq!(division_info.step_count, MAX_SYNC_DIVISION as i32);
+    assert_eq!(division_info.step_count, 7);
     let smooth_info = vst3_param_info_for_index(6).expect("smooth info should exist");
     assert_eq!(smooth_info.id, PARAM_SMOOTH_NUM);
     let bypass_info = vst3_param_info_for_index(7).expect("bypass info should exist");
@@ -1257,6 +1484,18 @@ fn vst3_info_and_text_conversions_share_param_rules() {
         (super::plain_from_normalized_value(PARAM_FREE_RATE_ID, normalized).unwrap() - 2.0).abs()
             < 1.0e-6
     );
+
+    let delay_info = vst3_param_info_for_index(12).expect("delay info should exist");
+    assert_eq!(delay_info.id, 16);
+    assert_eq!(delay_info.title, "Delay");
+    assert_eq!(delay_info.units, "beats");
+    assert_eq!(delay_info.step_count, super::MAX_DELAY_BEATS as i32);
+    assert_eq!(delay_info.default_normalized, 0.0);
+    assert_eq!(
+        format_plain_value_text(PARAM_DELAY_ID, 1.0),
+        Some("1 beat".into())
+    );
+    assert_eq!(parse_plain_value_text(PARAM_DELAY_ID, "2 beats"), Some(2.0));
 
     let mix_text = format_plain_value_text(PARAM_MIX_ID, 0.5).expect("mix text");
     assert_eq!(mix_text, "50%");

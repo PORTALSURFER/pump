@@ -31,6 +31,10 @@ pub struct GuiTransportTelemetry {
     pub tempo_bpm: f32,
     /// Pump cycle length in quarter-note beats.
     pub beats_per_cycle: f32,
+    /// Number of quarter-note beats held at the cycle start in Sync mode.
+    pub delay_beats: usize,
+    /// Fill fraction for the current Sync delay, empty at cycle start and full at its boundary.
+    pub delay_progress: f32,
     /// Active timing source used by Pump's phase generator.
     pub timing_mode: usize,
     /// Effective cycle frequency in hertz for GUI phase extrapolation.
@@ -61,6 +65,8 @@ pub struct GuiStatus {
     beat_phase: AtomicF32,
     tempo_bpm: AtomicF32,
     cycle_hz: AtomicF32,
+    delay_progress: AtomicF32,
+    phase_extrapolation_enabled: AtomicBool,
     last_update_micros: AtomicU64,
     incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer,
 }
@@ -88,6 +94,8 @@ impl Default for GuiStatus {
             beat_phase: AtomicF32::new(0.0),
             tempo_bpm: AtomicF32::new(120.0),
             cycle_hz: AtomicF32::new(0.0),
+            delay_progress: AtomicF32::new(0.0),
+            phase_extrapolation_enabled: AtomicBool::new(true),
             last_update_micros: AtomicU64::new(0),
             incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer::default(),
         }
@@ -135,6 +143,12 @@ impl GuiStatus {
         self.beat_phase
             .store(transport.beat_phase.rem_euclid(1.0), Ordering::Relaxed);
         self.tempo_bpm.store(safe_tempo, Ordering::Relaxed);
+        self.delay_progress
+            .store(transport.delay_progress.clamp(0.0, 1.0), Ordering::Relaxed);
+        self.phase_extrapolation_enabled.store(
+            transport.timing_mode != crate::params::TIMING_MODE_SYNC || transport.delay_beats == 0,
+            Ordering::Relaxed,
+        );
         self.cycle_hz.store(
             if transport.timing_mode == crate::params::TIMING_MODE_FREE {
                 transport.effective_cycle_rate_hz.max(0.0)
@@ -201,17 +215,24 @@ impl GuiStatus {
     }
 
     /// Project phase from a caller-captured DSP snapshot, preserving fallback
-    /// and extrapolation when no DSP block has completed yet.
+    /// and mode-specific extrapolation when no DSP block has completed yet.
     pub(crate) fn phase_from_dsp_snapshot(&self, snapshot: Option<GuiDspSnapshot>) -> f32 {
+        self.phase_from_dsp_snapshot_at(snapshot, monotonic_micros())
+    }
+
+    fn phase_from_dsp_snapshot_at(&self, snapshot: Option<GuiDspSnapshot>, now_micros: u64) -> f32 {
         let phase = snapshot
             .map(|snapshot| snapshot.effective_phase)
             .unwrap_or_else(|| self.phase.load(Ordering::Relaxed));
+        if !self.phase_extrapolation_enabled.load(Ordering::Relaxed) {
+            return phase.rem_euclid(1.0);
+        }
         extrapolate_phase(
             phase,
             self.cycle_hz.load(Ordering::Relaxed),
             self.is_playing(),
             self.last_update_micros.load(Ordering::Relaxed),
-            monotonic_micros(),
+            now_micros,
         )
     }
 
@@ -291,6 +312,11 @@ impl GuiStatus {
         )
     }
 
+    /// Read the current delay fill fraction, empty at cycle start and full at its boundary.
+    pub fn delay_progress(&self) -> f32 {
+        self.delay_progress.load(Ordering::Relaxed).clamp(0.0, 1.0)
+    }
+
     /// Return whether transport beat blink should currently be lit.
     pub fn transport_beat_blink_active(&self) -> bool {
         const BEAT_FLASH_DUTY: f32 = 0.18;
@@ -363,6 +389,26 @@ mod tests {
         monotonic_micros, smooth_gain_reduction_db, GuiDspSnapshot, GuiStatus,
         GuiTransportTelemetry, GAIN_REDUCTION_METER_MAX_DB, GAIN_REDUCTION_STALE_MICROS,
     };
+
+    fn test_transport(
+        timing_mode: usize,
+        delay_beats: usize,
+        beat_phase: f32,
+        effective_cycle_rate_hz: f32,
+    ) -> GuiTransportTelemetry {
+        GuiTransportTelemetry {
+            is_playing: true,
+            transport_is_playing: true,
+            has_host_beats_timeline: true,
+            beat_phase,
+            tempo_bpm: 120.0,
+            beats_per_cycle: 2.0,
+            delay_beats,
+            delay_progress: 0.0,
+            timing_mode,
+            effective_cycle_rate_hz,
+        }
+    }
 
     #[test]
     fn db_to_linear_matches_unity_at_zero_db() {
@@ -479,6 +525,8 @@ mod tests {
                 beat_phase: 0.25,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -508,6 +556,8 @@ mod tests {
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -524,6 +574,8 @@ mod tests {
                 beat_phase: 0.5,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -540,6 +592,8 @@ mod tests {
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -556,6 +610,8 @@ mod tests {
                 beat_phase: 0.05,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -573,6 +629,115 @@ mod tests {
     fn extrapolate_phase_holds_when_not_playing() {
         let phase = extrapolate_phase(0.25, 2.0, false, 1_000_000, 2_000_000);
         assert!((phase - 0.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn gui_status_sync_delay_holds_phase_inside_start_value_hold() {
+        let status = GuiStatus::default();
+        let transport = test_transport(crate::params::TIMING_MODE_SYNC, 1, 0.5, 0.0);
+        status.update_transport(0.0, transport);
+        status
+            .last_update_micros
+            .store(1_000_000, Ordering::Relaxed);
+
+        let phase = status.phase_from_dsp_snapshot_at(
+            Some(GuiDspSnapshot {
+                effective_phase: 0.0,
+                applied_phase_offset: 0.0,
+            }),
+            1_250_000,
+        );
+
+        assert_eq!(transport.delay_beats, 1);
+        assert_eq!(phase, 0.0, "phase must hold during the delayed start");
+    }
+
+    #[test]
+    fn gui_status_sync_delay_respects_hold_boundary_and_next_callback() {
+        let status = GuiStatus::default();
+
+        // The host is still in the delayed start-value hold.
+        status.update_transport(
+            0.0,
+            test_transport(crate::params::TIMING_MODE_SYNC, 1, 0.5, 0.0),
+        );
+        status
+            .last_update_micros
+            .store(1_000_000, Ordering::Relaxed);
+        assert_eq!(
+            status.phase_from_dsp_snapshot_at(
+                Some(GuiDspSnapshot {
+                    effective_phase: 0.0,
+                    applied_phase_offset: 0.0,
+                }),
+                1_250_000,
+            ),
+            0.0
+        );
+
+        // At the hold boundary the mapper still reports the start value; a
+        // later GUI read must not advance it past the callback's value.
+        status.update_transport(
+            0.0,
+            test_transport(crate::params::TIMING_MODE_SYNC, 1, 0.0, 0.0),
+        );
+        status
+            .last_update_micros
+            .store(2_000_000, Ordering::Relaxed);
+        assert_eq!(
+            status.phase_from_dsp_snapshot_at(
+                Some(GuiDspSnapshot {
+                    effective_phase: 0.0,
+                    applied_phase_offset: 0.0,
+                }),
+                2_250_000,
+            ),
+            0.0
+        );
+
+        // The next transport callback advances into the cycle, and that
+        // callback value remains authoritative until another callback.
+        status.update_transport(
+            0.25,
+            test_transport(crate::params::TIMING_MODE_SYNC, 1, 0.5, 0.0),
+        );
+        status
+            .last_update_micros
+            .store(3_000_000, Ordering::Relaxed);
+        let phase = status.phase_from_dsp_snapshot_at(
+            Some(GuiDspSnapshot {
+                effective_phase: 0.25,
+                applied_phase_offset: 0.0,
+            }),
+            3_250_000,
+        );
+        assert_eq!(phase, 0.25);
+    }
+
+    #[test]
+    fn gui_status_preserves_extrapolation_for_free_and_zero_delay_sync() {
+        for (timing_mode, delay_beats, effective_cycle_rate_hz) in [
+            (crate::params::TIMING_MODE_FREE, 4, 1.0),
+            (crate::params::TIMING_MODE_SYNC, 0, 0.0),
+        ] {
+            let status = GuiStatus::default();
+            status.update_transport(
+                0.25,
+                test_transport(timing_mode, delay_beats, 0.0, effective_cycle_rate_hz),
+            );
+            status
+                .last_update_micros
+                .store(1_000_000, Ordering::Relaxed);
+
+            let phase = status.phase_from_dsp_snapshot_at(
+                Some(GuiDspSnapshot {
+                    effective_phase: 0.25,
+                    applied_phase_offset: 0.0,
+                }),
+                1_250_000,
+            );
+            assert!((phase - 0.5).abs() < 1.0e-6);
+        }
     }
 
     #[test]
@@ -634,6 +799,8 @@ mod tests {
                 beat_phase: 0.2,
                 tempo_bpm: 120.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },
@@ -662,6 +829,8 @@ mod tests {
                 beat_phase: 0.73,
                 tempo_bpm: 123.0,
                 beats_per_cycle: 1.0,
+                delay_beats: 0,
+                delay_progress: 0.0,
                 timing_mode: crate::params::TIMING_MODE_SYNC,
                 effective_cycle_rate_hz: 0.0,
             },

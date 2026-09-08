@@ -6,8 +6,10 @@ Pump stores two complete editable sound snapshots. Side A is the compatibility
 default for v2-v13 project payloads; those payloads migrate by cloning the
 legacy active state into both sides and selecting A. v14 and v15 payloads append
 the active side and both working snapshots. v16 appends one durable
-stored/reference snapshot for each side; older payloads seed those references
-from their working snapshots and therefore reopen clean.
+stored/reference snapshot for each side, and v17 appends the synchronized
+cycle-start Delay to the top-level, preset, and sound-state timing records.
+Older payloads seed references from their working snapshots and default Delay
+to zero, so they reopen clean.
 
 Changing A/B publishes the selected snapshot through the existing atomic audio
 parameter boundary. The processor never reads the UI-owned snapshot lock.

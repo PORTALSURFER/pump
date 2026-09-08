@@ -250,9 +250,23 @@ enum RemapCaptureState {
     Normal,
 }
 
-fn cycle_mapping(beats_per_cycle: f32, swing: f32, timing_mode: usize) -> [u32; 3] {
+fn cycle_mapping(
+    beats_per_cycle: f32,
+    delay_beats: usize,
+    swing: f32,
+    timing_mode: usize,
+) -> [u32; 4] {
+    // Delay is part of the mapping identity only in Sync mode. Free-mode DSP
+    // ignores it, so automation of the hidden control must not invalidate the
+    // displayed capture.
+    let delay_beats = if timing_mode == crate::params::TIMING_MODE_FREE {
+        0
+    } else {
+        delay_beats
+    };
     [
         beats_per_cycle.to_bits(),
+        delay_beats as u32,
         swing.to_bits(),
         timing_mode as u32,
     ]
@@ -267,7 +281,7 @@ pub(crate) struct IncomingWaveformWriter {
     initial_snapshot_done: bool,
     last_raw_cycle_phase: Option<f32>,
     last_phase: Option<f32>,
-    last_cycle_mapping: Option<[u32; 3]>,
+    last_cycle_mapping: Option<[u32; 4]>,
     remap_state: RemapCaptureState,
     live_publication_suppressed: bool,
     current_bin: Option<usize>,
@@ -412,6 +426,7 @@ impl IncomingWaveformWriter {
             raw_cycle_phase,
             phase,
             beats_per_cycle,
+            0,
             swing,
             crate::params::TIMING_MODE_SYNC,
             left,
@@ -426,6 +441,7 @@ impl IncomingWaveformWriter {
         raw_cycle_phase: f32,
         phase: f32,
         beats_per_cycle: f32,
+        delay_beats: usize,
         swing: f32,
         timing_mode: usize,
         left: f32,
@@ -433,7 +449,7 @@ impl IncomingWaveformWriter {
     ) {
         let raw_cycle_phase = raw_cycle_phase.rem_euclid(1.0);
         let phase = phase.rem_euclid(1.0);
-        let cycle_mapping = cycle_mapping(beats_per_cycle, swing, timing_mode);
+        let cycle_mapping = cycle_mapping(beats_per_cycle, delay_beats, swing, timing_mode);
         let cycle_mapping_changed = self
             .last_cycle_mapping
             .is_some_and(|previous| previous != cycle_mapping);
@@ -485,10 +501,11 @@ impl IncomingWaveformWriter {
         &mut self,
         buffer: &IncomingWaveformBuffer,
         beats_per_cycle: f32,
+        delay_beats: usize,
         swing: f32,
         timing_mode: usize,
     ) {
-        let cycle_mapping = cycle_mapping(beats_per_cycle, swing, timing_mode);
+        let cycle_mapping = cycle_mapping(beats_per_cycle, delay_beats, swing, timing_mode);
         if self
             .last_cycle_mapping
             .is_some_and(|previous| previous != cycle_mapping)
@@ -576,6 +593,7 @@ impl<'a> IncomingWaveformCapture<'a> {
         raw_cycle_phase: f32,
         phase: f32,
         beats_per_cycle: f32,
+        delay_beats: usize,
         swing: f32,
         timing_mode: usize,
         left: f32,
@@ -586,6 +604,7 @@ impl<'a> IncomingWaveformCapture<'a> {
             raw_cycle_phase,
             phase,
             beats_per_cycle,
+            delay_beats,
             swing,
             timing_mode,
             left,
@@ -596,11 +615,17 @@ impl<'a> IncomingWaveformCapture<'a> {
     pub(crate) fn reconcile_cycle_mapping(
         &mut self,
         beats_per_cycle: f32,
+        delay_beats: usize,
         swing: f32,
         timing_mode: usize,
     ) {
-        self.writer
-            .reconcile_cycle_mapping(self.buffer, beats_per_cycle, swing, timing_mode);
+        self.writer.reconcile_cycle_mapping(
+            self.buffer,
+            beats_per_cycle,
+            delay_beats,
+            swing,
+            timing_mode,
+        );
     }
 
     pub(crate) fn finish(self) {
@@ -888,6 +913,159 @@ mod tests {
     }
 
     #[test]
+    fn delay_mapping_change_with_zero_raw_phase_invalidates_instead_of_mixing_generations() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.0,
+            0.0,
+            1.0,
+            0,
+            0.0,
+            crate::params::TIMING_MODE_SYNC,
+            0.9,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+        assert!(buffer.snapshot().is_some());
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.0,
+            0.0,
+            1.0,
+            1,
+            0.0,
+            crate::params::TIMING_MODE_SYNC,
+            0.4,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+
+        assert!(
+            buffer.snapshot().is_none(),
+            "a delay change must not expose bins from mixed mapping generations"
+        );
+    }
+
+    #[test]
+    fn free_mode_delay_change_with_constant_raw_and_effective_phase_preserves_capture() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.25,
+            0.25,
+            1.0,
+            0,
+            0.0,
+            crate::params::TIMING_MODE_FREE,
+            0.8,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+
+        let snapshot_before = buffer.snapshot().expect("the first capture is visible");
+        let generation_before = buffer.generation_for_test();
+
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.25,
+            0.25,
+            1.0,
+            1,
+            0.0,
+            crate::params::TIMING_MODE_FREE,
+            0.4,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+
+        assert_eq!(
+            buffer.generation_for_test(),
+            generation_before.wrapping_add(1),
+            "a normal block rotation should be the only generation advance"
+        );
+        assert_eq!(
+            buffer
+                .snapshot()
+                .expect("the prior capture remains visible"),
+            snapshot_before,
+            "a hidden Free-mode Delay change must not discard the displayed capture"
+        );
+    }
+
+    #[test]
+    fn zero_frame_delay_change_invalidates_the_capture() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.25,
+            0.25,
+            1.0,
+            0,
+            0.0,
+            crate::params::TIMING_MODE_SYNC,
+            0.8,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+        assert!(buffer.snapshot().is_some());
+
+        let generation_before = buffer.generation_for_test();
+        buffer.set_last_update_micros_for_test(1234);
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 1, 0.0, crate::params::TIMING_MODE_SYNC);
+
+        assert_eq!(
+            buffer.generation_for_test(),
+            generation_before.wrapping_add(1)
+        );
+        assert_eq!(buffer.last_update_micros_for_test(), 0);
+        assert!(buffer.snapshot().is_none());
+    }
+
+    #[test]
+    fn zero_frame_free_delay_change_preserves_generation_and_snapshot() {
+        let buffer = IncomingWaveformBuffer::default();
+        let mut writer = IncomingWaveformWriter::default();
+        writer.begin_block(&buffer);
+        writer.record_with_cycle_mapping_and_timing_mode(
+            &buffer,
+            0.25,
+            0.25,
+            1.0,
+            0,
+            0.0,
+            crate::params::TIMING_MODE_FREE,
+            0.8,
+            0.0,
+        );
+        writer.finish_block(&buffer);
+        let snapshot_before = buffer.snapshot().expect("the first capture is visible");
+
+        let generation_before = buffer.generation_for_test();
+        let last_update_before = buffer.last_update_micros_for_test();
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 1, 0.0, crate::params::TIMING_MODE_FREE);
+
+        assert_eq!(buffer.generation_for_test(), generation_before);
+        assert_eq!(buffer.last_update_micros_for_test(), last_update_before);
+        assert_eq!(
+            buffer
+                .snapshot()
+                .expect("the prior capture remains visible"),
+            snapshot_before,
+            "a hidden Free-mode Delay change must not discard the displayed capture"
+        );
+    }
+
+    #[test]
     fn offset_only_changes_keep_effective_capture_continuous() {
         let buffer = IncomingWaveformBuffer::default();
         let mut writer = IncomingWaveformWriter::default();
@@ -917,6 +1095,7 @@ mod tests {
             0.98,
             0.98,
             1.0,
+            0,
             0.0,
             crate::params::TIMING_MODE_SYNC,
             0.9,
@@ -927,6 +1106,7 @@ mod tests {
             0.01,
             0.01,
             1.0,
+            0,
             0.0,
             crate::params::TIMING_MODE_FREE,
             0.4,
@@ -949,6 +1129,7 @@ mod tests {
             0.25,
             0.25,
             4.0,
+            0,
             0.2,
             crate::params::TIMING_MODE_SYNC,
             0.8,
@@ -959,7 +1140,7 @@ mod tests {
 
         let generation_before = buffer.generation_for_test();
         buffer.set_last_update_micros_for_test(1234);
-        writer.reconcile_cycle_mapping(&buffer, 8.0, 0.35, crate::params::TIMING_MODE_FREE);
+        writer.reconcile_cycle_mapping(&buffer, 8.0, 0, 0.35, crate::params::TIMING_MODE_FREE);
         assert_eq!(
             buffer.generation_for_test(),
             generation_before.wrapping_add(1)
@@ -969,7 +1150,7 @@ mod tests {
         assert!(writer.last_raw_cycle_phase.is_none());
         assert!(writer.last_phase.is_none());
 
-        writer.reconcile_cycle_mapping(&buffer, 8.0, 0.35, crate::params::TIMING_MODE_FREE);
+        writer.reconcile_cycle_mapping(&buffer, 8.0, 0, 0.35, crate::params::TIMING_MODE_FREE);
         assert_eq!(
             buffer.generation_for_test(),
             generation_before.wrapping_add(1)
@@ -981,6 +1162,7 @@ mod tests {
             0.80,
             0.80,
             8.0,
+            0,
             0.35,
             crate::params::TIMING_MODE_FREE,
             0.6,
@@ -1008,6 +1190,7 @@ mod tests {
             0.25,
             0.25,
             1.0,
+            0,
             0.0,
             crate::params::TIMING_MODE_FREE,
             0.8,
@@ -1017,11 +1200,11 @@ mod tests {
 
         let generation_before = buffer.generation_for_test();
         buffer.set_last_update_micros_for_test(1234);
-        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_FREE);
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 0, 0.0, crate::params::TIMING_MODE_FREE);
         assert_eq!(buffer.generation_for_test(), generation_before);
         assert_eq!(buffer.last_update_micros_for_test(), 1234);
 
-        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_SYNC);
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 0, 0.0, crate::params::TIMING_MODE_SYNC);
         let generation_after_mapping_change = buffer.generation_for_test();
         assert_eq!(
             generation_after_mapping_change,
@@ -1030,7 +1213,7 @@ mod tests {
         assert_eq!(buffer.last_update_micros_for_test(), 0);
         assert!(writer.last_raw_cycle_phase.is_none());
         assert!(writer.last_phase.is_none());
-        writer.reconcile_cycle_mapping(&buffer, 1.0, 0.0, crate::params::TIMING_MODE_SYNC);
+        writer.reconcile_cycle_mapping(&buffer, 1.0, 0, 0.0, crate::params::TIMING_MODE_SYNC);
         assert_eq!(
             buffer.generation_for_test(),
             generation_after_mapping_change
@@ -1042,6 +1225,7 @@ mod tests {
             0.80,
             0.80,
             1.0,
+            0,
             0.0,
             crate::params::TIMING_MODE_SYNC,
             0.6,

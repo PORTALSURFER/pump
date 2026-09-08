@@ -13,6 +13,7 @@ fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
         && float_near_eq(left.swing, right.swing)
         && left.timing_mode == right.timing_mode
         && float_near_eq(left.free_rate_hz, right.free_rate_hz)
+        && left.delay_beats == right.delay_beats
         && curve_near_eq(&left.editable_curve, &right.editable_curve)
         && left.quick_slots.len() == right.quick_slots.len()
         && left
@@ -45,6 +46,7 @@ impl PumpParams {
             swing: AtomicF32::new(DEFAULT_SWING),
             timing_mode: AtomicU32::new(DEFAULT_TIMING_MODE as u32),
             free_rate_hz: AtomicF32::new(DEFAULT_FREE_RATE_HZ),
+            delay_beats: AtomicU32::new(DEFAULT_DELAY_BEATS as u32),
             bypass: AtomicBool::new(false),
             bypass_revision: AtomicU32::new(1),
             bypass_last_automation_micros: AtomicU64::new(0),
@@ -76,6 +78,9 @@ impl PumpParams {
                 AtomicU32::new(DEFAULT_TIMING_MODE as u32)
             }),
             realtime_free_rate_hz: std::array::from_fn(|_| AtomicF32::new(DEFAULT_FREE_RATE_HZ)),
+            realtime_delay_beats: std::array::from_fn(|_| {
+                AtomicU32::new(DEFAULT_DELAY_BEATS as u32)
+            }),
             realtime_curve: std::array::from_fn(|_| {
                 std::array::from_fn(|index| AtomicF32::new(default_curve[index]))
             }),
@@ -178,6 +183,13 @@ impl PumpParams {
     pub fn free_rate_hz(&self) -> f32 {
         clamp_free_rate_hz(
             self.realtime_free_rate_hz[self.realtime_index()].load(Ordering::Relaxed),
+        )
+    }
+
+    /// Get the synchronized cycle-start delay in quarter-note beats.
+    pub fn delay_beats(&self) -> usize {
+        clamp_delay_beats(
+            self.realtime_delay_beats[self.realtime_index()].load(Ordering::Relaxed) as f32,
         )
     }
 
@@ -326,6 +338,14 @@ impl PumpParams {
         let value = clamp_free_rate_hz(value);
         self.free_rate_hz.store(value, Ordering::Relaxed);
         self.realtime_free_rate_hz[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the synchronized cycle-start delay in quarter-note beats.
+    pub fn set_delay_beats(&self, value: f32) {
+        let value = clamp_delay_beats(value) as u32;
+        self.delay_beats.store(value, Ordering::Relaxed);
+        self.realtime_delay_beats[self.realtime_index()].store(value, Ordering::Relaxed);
         self.mark_active_sound_dirty();
     }
 
@@ -634,6 +654,7 @@ impl PumpParams {
             swing: self.swing(),
             timing_mode: self.timing_mode(),
             free_rate_hz: self.free_rate_hz(),
+            delay_beats: self.delay_beats(),
             editable_curve,
             quick_slots,
         }
@@ -691,6 +712,7 @@ impl PumpParams {
                 swing: self.realtime_swing[index].load(Ordering::Acquire),
                 timing_mode: self.realtime_timing_mode[index].load(Ordering::Acquire) as usize,
                 free_rate_hz: self.realtime_free_rate_hz[index].load(Ordering::Acquire),
+                delay_beats: self.realtime_delay_beats[index].load(Ordering::Acquire) as usize,
                 editable_curve,
                 quick_slots,
             };
@@ -814,6 +836,16 @@ impl PumpParams {
         );
         self.realtime_free_rate_hz[index]
             .store(clamp_free_rate_hz(state.free_rate_hz), Ordering::Relaxed);
+        if index == active_index {
+            self.delay_beats.store(
+                clamp_delay_beats(state.delay_beats as f32) as u32,
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_delay_beats[index].store(
+            clamp_delay_beats(state.delay_beats as f32) as u32,
+            Ordering::Relaxed,
+        );
         let normalized = state.editable_curve.clone().normalized();
         let curve_table = editable_curve_to_table(&normalized);
         for (curve, value) in self.realtime_curve[index]
@@ -869,6 +901,7 @@ impl PumpParams {
             swing: self.swing(),
             timing_mode: self.timing_mode(),
             free_rate_hz: self.free_rate_hz(),
+            delay_beats: self.delay_beats(),
             editable_curve: self.editable_curve_snapshot(),
             quick_slots: self.sound_state_snapshot(self.active_sound()).quick_slots,
         }
@@ -938,6 +971,7 @@ impl PumpParams {
             };
             preset.timing_mode = clamp_timing_mode(preset.timing_mode as f32);
             preset.free_rate_hz = clamp_free_rate_hz(preset.free_rate_hz);
+            preset.delay_beats = preset.delay_beats.clamp(MIN_DELAY_BEATS, MAX_DELAY_BEATS);
             preset.smooth = if preset.smooth.is_finite() {
                 preset.smooth.clamp(MIN_SMOOTH, MAX_SMOOTH)
             } else {
@@ -976,6 +1010,7 @@ impl PumpParams {
         self.set_swing(preset.swing);
         self.set_timing_mode(preset.timing_mode as f32);
         self.set_free_rate_hz(preset.free_rate_hz);
+        self.set_delay_beats(preset.delay_beats as f32);
         self.set_editable_curve_preserving_phase(&preset.editable_curve);
         let _ = self.set_active_sound_quick_slots(preset.quick_slots.clone());
     }
@@ -1286,6 +1321,9 @@ impl PumpParams {
                 existing.smooth = snapshot.smooth;
                 existing.mode = snapshot.mode;
                 existing.swing = snapshot.swing;
+                existing.timing_mode = snapshot.timing_mode;
+                existing.free_rate_hz = snapshot.free_rate_hz;
+                existing.delay_beats = snapshot.delay_beats;
                 existing.editable_curve = snapshot.editable_curve;
                 existing.quick_slots = snapshot.quick_slots;
             }
@@ -1333,6 +1371,9 @@ impl PumpParams {
             || !float_near_eq(current.smooth, selected.smooth)
             || current.mode != selected.mode
             || !float_near_eq(current.swing, selected.swing)
+            || current.timing_mode != selected.timing_mode
+            || !float_near_eq(current.free_rate_hz, selected.free_rate_hz)
+            || current.delay_beats != selected.delay_beats
             || !curve_near_eq(&current.editable_curve, &selected.editable_curve)
     }
 
