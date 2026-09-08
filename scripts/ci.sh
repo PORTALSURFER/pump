@@ -78,6 +78,13 @@ if [[ "${want_screenshots}" == "1" ]]; then
   required_captures=(
     target/ui-screenshots/pump/pump-min-640x400.png
     target/ui-screenshots/pump/pump-default-640x400.png
+    target/ui-screenshots/pump/pump-curve-node-hover-640x400.png
+    target/ui-screenshots/pump/pump-curve-segment-proximity-640x400.png
+    target/ui-screenshots/pump/pump-curve-segment-command-hover-640x400.png
+    target/ui-screenshots/pump/pump-curve-offset-active-640x400.png
+    target/ui-screenshots/pump/pump-curve-offset-sliding-640x400.png
+    target/ui-screenshots/pump/pump-curve-marquee-active-640x400.png
+    target/ui-screenshots/pump/pump-curve-paint-preview-640x400.png
     target/ui-screenshots/pump/pump-max-1280x800.png
     target/ui-screenshots/pump/pump-responsive-800x500.png
     target/ui-screenshots/pump/pump-numeric-focused-640x400.png

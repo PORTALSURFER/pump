@@ -28,7 +28,6 @@ use crate::params::{
 };
 use crate::GuiStatus;
 
-#[cfg(test)]
 use super::curve_paint::PaintRun;
 use super::curve_paint::{
     reconstruct_paint, PaintCommitOutcome, RectBounds, RectPoint, StrokeRecorder,
@@ -592,7 +591,6 @@ impl ActiveCurvePaint {
         self.recorder.observe_outside(sample.raw_position());
     }
 
-    #[cfg(test)]
     fn preview_runs(&self) -> Vec<PaintRun> {
         self.recorder.runs().to_vec()
     }
@@ -1080,6 +1078,70 @@ impl PumpEditorState {
         self.active_curve_node
     }
 
+    /// Return the retained node hover used by the renderer.
+    pub(crate) fn hover_node(&self) -> Option<usize> {
+        self.hover_curve_node
+    }
+
+    /// Return the insertion preview point used by the renderer.
+    pub(crate) fn preview_node(&self) -> Option<CurveNode> {
+        self.preview_curve_node
+    }
+
+    /// Return the retained segment hover used by the renderer.
+    pub(crate) fn hover_segment(&self) -> Option<usize> {
+        self.hover_curve_segment
+    }
+
+    /// Return whether the retained segment hover is in the outer proximity
+    /// zone. The renderer uses this to keep direct proximity feedback blue.
+    pub(crate) fn hover_segment_is_proximity(&self) -> bool {
+        self.hover_curve_segment_zone == Some(CurveSegmentHitZone::OuterProximity)
+    }
+
+    /// Return whether the active segment gesture moves a node pair.
+    pub(crate) fn active_segment_is_move(&self) -> bool {
+        self.active_curve_segment
+            .as_ref()
+            .is_some_and(|drag| drag.mode == CurveSegmentDragMode::MovePair)
+    }
+
+    /// Return the active segment index, if a segment gesture is in progress.
+    pub(crate) fn active_segment(&self) -> Option<usize> {
+        self.active_curve_segment.as_ref().map(|drag| drag.index)
+    }
+
+    /// Return whether the curve offset is being auditioned.
+    pub(crate) fn active_curve_offset(&self) -> bool {
+        self.active_curve_offset.is_some()
+    }
+
+    /// Return whether a freehand paint gesture is being previewed.
+    /// Return the bounded freehand runs captured so far for live preview.
+    pub(crate) fn curve_paint_runs(&self) -> Option<Vec<PaintRun>> {
+        self.active_curve_paint
+            .as_ref()
+            .map(ActiveCurvePaint::preview_runs)
+    }
+
+    /// Return the retained marquee geometry in authored coordinates.
+    pub(crate) fn active_curve_marquee(&self) -> Option<(CurveNode, CurveNode)> {
+        self.active_curve_marquee
+            .map(|marquee| (marquee.start, marquee.current))
+    }
+
+    pub(crate) fn option_hover_held(&self) -> bool {
+        self.option_hover_held
+    }
+
+    pub(crate) fn command_hover_held(&self) -> bool {
+        self.command_hover_held
+    }
+
+    pub(crate) fn shift_hover_held(&self) -> bool {
+        self.shift_hover_held
+    }
+
     /// Return the loaded quick slot, if one is active.
     pub(crate) fn loaded_slot(&self) -> Option<usize> {
         self.loaded_global_curve_slot
@@ -1476,6 +1538,7 @@ fn reduce_numeric_entry_message(state: &mut PumpEditorState, message: NumericEnt
                 .is_some_and(|entry| entry.target == target);
             if entry_active {
                 let Some(value) = parse_plain_value_text(target.param_id(), draft.trim()) else {
+                    state.numeric_entry = None;
                     return;
                 };
                 let current = target.current_plain_value(state.params.as_ref());
@@ -3351,6 +3414,32 @@ mod tests {
             ]
         );
         assert_eq!(state.undo_history.len(), 1);
+    }
+
+    #[test]
+    fn invalid_numeric_commit_clears_the_active_entry() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(sink);
+        state.params().set_delay_beats(4.0);
+        let target = NumericEntryTarget::Delay;
+
+        state.dispatch(EditorMessage::NumericEntry(NumericEntryMessage::Begin {
+            target,
+        }));
+        state.dispatch(EditorMessage::NumericEntry(
+            NumericEntryMessage::DraftChanged {
+                target,
+                draft: String::new(),
+                dirty: true,
+            },
+        ));
+        state.dispatch(EditorMessage::NumericEntry(NumericEntryMessage::Commit {
+            target,
+            draft: String::new(),
+        }));
+
+        assert!(!state.numeric_entry_active());
+        assert_eq!(state.params().delay_beats(), 4);
     }
 
     #[test]

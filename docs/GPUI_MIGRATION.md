@@ -57,3 +57,23 @@ active UI gestures while retaining applied audio settings.
 CI and release preflight results are attached to the migration pull request.
 Fresh ad-hoc review bundles are audited separately; DAW and audible acceptance
 remain manual. This migration does not publish a release.
+
+## Curve and numeric input parity
+
+Curve hover uses the rendered segment geometry, with highlighted nodes, an
+insertion preview, blue move-range segments and a widened amber curve while
+sliding. Paint previews and marquee selection remain visible during editing.
+Right-button drags paint; plain left drags in empty space do not. Option-click
+removes interior points while protecting endpoints and distinguishing a drag.
+
+Admitted knob and curve gestures own native movement until matching release,
+including outside-window movement. Capture loss cancels paint previews and
+ends accepted knob edits. The timing menu occludes the curve beneath it.
+Delay drafts contain digits only, allow temporary empty text, support Backspace,
+and consume arrows without changing Sync. An empty submission restores the
+prior value and exits editing.
+
+Native tests cover these mouse and keyboard paths, and screenshot assertions
+check the blue segment overlay rather than merely writing image files. Synthetic
+hover events target the installed tracking-area owner, matching AppKit's tracking
+route without changing the host window's mouse-move or first-responder settings.

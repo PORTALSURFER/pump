@@ -18,6 +18,7 @@ mod macos {
     const OUTPUT_WIDTH: u32 = WINDOW_WIDTH;
     const OUTPUT_HEIGHT: u32 = WINDOW_HEIGHT;
     const COMMAND: u64 = 1_u64 << 20;
+    const OPTION: u64 = 1_u64 << 19;
     const SHIFT: u64 = 1_u64 << 17;
 
     const DELAY_X: f64 = 193.0;
@@ -32,6 +33,14 @@ mod macos {
     const SMOOTH_VALUE_Y: f64 = 365.0;
     const BYPASS_X: f64 = 570.0;
     const BYPASS_Y: f64 = 383.0;
+    const CURVE_ENDPOINT_X: f64 = 52.0;
+    const CURVE_ENDPOINT_Y: f64 = 63.0;
+    const CURVE_NODE_X: f64 = 95.0;
+    const CURVE_NODE_Y: f64 = 217.0;
+    const CURVE_SEGMENT_X: f64 = 170.0;
+    const CURVE_SEGMENT_Y: f64 = 185.0;
+    const CURVE_PLOT_X: f64 = 300.0;
+    const CURVE_PLOT_Y: f64 = 90.0;
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
@@ -275,6 +284,22 @@ mod macos {
         ns_string(value)
     }
 
+    unsafe fn set_pasteboard_string(value: &str) {
+        let pasteboard: id = msg_send![class!(NSPasteboard), generalPasteboard];
+        let type_name = CString::new("public.utf8-plain-text").expect("static type name");
+        let type_object: id = msg_send![
+            class!(NSString),
+            stringWithUTF8String: type_name.as_ptr()
+        ];
+        let value = CString::new(value).expect("pasteboard text has no nul");
+        let value_object: id = msg_send![
+            class!(NSString),
+            stringWithUTF8String: value.as_ptr()
+        ];
+        let _: isize = msg_send![pasteboard, clearContents];
+        let _: BOOL = msg_send![pasteboard, setString: value_object forType: type_object];
+    }
+
     unsafe fn pump_appkit(app: id, gui: &toybox::gpui_gui::GpuiHostedGui, seconds: f64) {
         let deadline = Instant::now() + Duration::from_secs_f64(seconds);
         while Instant::now() < deadline {
@@ -296,13 +321,18 @@ mod macos {
     }
 
     fn capture_frame(gui: &toybox::gpui_gui::GpuiHostedGui, context: &str) {
-        let (width, height, pixels) = gui
-            .capture_rgba()
-            .unwrap_or_else(|error| panic!("{context} should render a GPUI frame: {error}"));
+        let (width, height, pixels) = capture_pixels(gui, context);
         assert!(
             width > 0 && height > 0 && !pixels.is_empty(),
             "{context} should produce visible GPUI pixels"
         );
+    }
+
+    fn capture_pixels(gui: &toybox::gpui_gui::GpuiHostedGui, context: &str) -> (u32, u32, Vec<u8>) {
+        let capture = gui
+            .capture_rgba()
+            .unwrap_or_else(|error| panic!("{context} should render a GPUI frame: {error}"));
+        capture
     }
 
     unsafe fn send_mouse_event(window: id, event_type: usize, x: f64, top_y: f64, modifiers: u64) {
@@ -320,11 +350,41 @@ mod macos {
             clickCount: 1_isize
             pressure: 1.0_f64
         ];
-        let _: () = msg_send![window, sendEvent: event];
+        if event_type == 5 {
+            // WindowServer tracking-area events target their registered owner.
+            // A raw NSWindow sendEvent(mouseMoved) instead targets the first
+            // responder, so explicitly emulate the documented tracking route.
+            let content: id = msg_send![window, contentView];
+            let children: id = msg_send![content, subviews];
+            let child: id = msg_send![children, lastObject];
+            let areas: id = msg_send![child, trackingAreas];
+            let area: id = msg_send![areas, firstObject];
+            assert!(
+                !area.is_null(),
+                "native GPUI child must install a tracking area"
+            );
+            let owner: id = msg_send![area, owner];
+            assert_eq!(owner, child, "tracking-area owner must be the GPUI child");
+            if x < 0.0
+                || x >= f64::from(WINDOW_WIDTH)
+                || top_y < 0.0
+                || top_y >= f64::from(WINDOW_HEIGHT)
+            {
+                let _: () = msg_send![owner, mouseExited: event];
+            } else {
+                let _: () = msg_send![owner, mouseMoved: event];
+            }
+        } else {
+            let _: () = msg_send![window, sendEvent: event];
+        }
     }
 
     unsafe fn send_mouse_move(window: id, x: f64, top_y: f64) {
-        send_mouse_event(window, 5, x, top_y, 0);
+        send_mouse_move_with_modifiers(window, x, top_y, 0);
+    }
+
+    unsafe fn send_mouse_move_with_modifiers(window: id, x: f64, top_y: f64, modifiers: u64) {
+        send_mouse_event(window, 5, x, top_y, modifiers);
     }
 
     unsafe fn send_mouse_down(window: id, x: f64, top_y: f64, modifiers: u64) {
@@ -337,6 +397,18 @@ mod macos {
 
     unsafe fn send_mouse_up(window: id, x: f64, top_y: f64, modifiers: u64) {
         send_mouse_event(window, 2, x, top_y, modifiers);
+    }
+
+    unsafe fn send_secondary_mouse_down(window: id, x: f64, top_y: f64, modifiers: u64) {
+        send_mouse_event(window, 3, x, top_y, modifiers);
+    }
+
+    unsafe fn send_secondary_mouse_dragged(window: id, x: f64, top_y: f64, modifiers: u64) {
+        send_mouse_event(window, 7, x, top_y, modifiers);
+    }
+
+    unsafe fn send_secondary_mouse_up(window: id, x: f64, top_y: f64, modifiers: u64) {
+        send_mouse_event(window, 4, x, top_y, modifiers);
     }
 
     unsafe fn send_scroll_wheel(
@@ -553,6 +625,7 @@ mod macos {
         // sync subdivision must update the shared parameter and close it.
         let selected_sync_division = if initial_sync_division == 6 { 5 } else { 6 };
         send_click(fixture.window, TIMING_VALUE_X, TIMING_VALUE_Y, 0);
+        pump_appkit(app, &gui, 0.04);
         capture_frame(&gui, "opened timing dropdown");
         send_click(
             fixture.window,
@@ -567,18 +640,210 @@ mod macos {
             "native timing dropdown should select a sync subdivision"
         );
 
+        // Exercise the curve's retained visual feedback through real native
+        // hover/modifier/drag events before mutating its authored points.
+        let curve_before_feedback = params.editable_curve_snapshot();
+        pump_appkit(app, &gui, 0.04);
+        let curve_idle_capture = capture_pixels(&gui, "idle curve feedback");
+        send_mouse_move(fixture.window, CURVE_NODE_X, CURVE_NODE_Y);
+        pump_appkit(app, &gui, 0.04);
+        let node_hover_capture = capture_pixels(&gui, "node hover feedback");
+        assert!(
+            curve_idle_capture.2 != node_hover_capture.2,
+            "native node hover should repaint the curve"
+        );
+        send_mouse_move(fixture.window, CURVE_SEGMENT_X, CURVE_SEGMENT_Y);
+        pump_appkit(app, &gui, 0.04);
+        let segment_hover_capture = capture_pixels(&gui, "segment proximity feedback");
+        let blue_pixels = segment_hover_capture
+            .2
+            .chunks_exact(4)
+            .filter(|rgba| {
+                rgba[2] > 180
+                    && rgba[2].saturating_sub(rgba[0]) > 70
+                    && rgba[1].saturating_sub(rgba[0]) > 30
+            })
+            .count();
+        assert!(
+            blue_pixels > 50,
+            "segment move-range hover must paint a blue overlay, got {blue_pixels} pixels"
+        );
+        assert!(
+            node_hover_capture.2 != segment_hover_capture.2,
+            "native segment proximity hover should repaint the curve"
+        );
+        send_mouse_move_with_modifiers(
+            fixture.window,
+            CURVE_SEGMENT_X,
+            CURVE_SEGMENT_Y + 11.0,
+            COMMAND,
+        );
+        pump_appkit(app, &gui, 0.04);
+        let command_hover_capture = capture_pixels(&gui, "command segment feedback");
+        assert!(
+            command_hover_capture
+                .2
+                .chunks_exact(4)
+                .filter(|rgba| {
+                    rgba[2] > 180
+                        && rgba[2].saturating_sub(rgba[0]) > 70
+                        && rgba[1].saturating_sub(rgba[0]) > 30
+                })
+                .count()
+                > 50,
+            "Command segment hover must paint the blue move overlay"
+        );
+
+        let endpoint_count = curve_before_feedback.nodes.len();
+        send_mouse_down(fixture.window, CURVE_ENDPOINT_X, CURVE_ENDPOINT_Y, OPTION);
+        send_mouse_up(fixture.window, CURVE_ENDPOINT_X, CURVE_ENDPOINT_Y, OPTION);
+        pump_appkit(app, &gui, 0.04);
+        assert_eq!(
+            params.editable_curve_snapshot().nodes.len(),
+            endpoint_count,
+            "Option-click must protect curve endpoints"
+        );
+        send_mouse_down(fixture.window, 222.0, 143.0, OPTION);
+        send_mouse_up(fixture.window, 222.0, 143.0, OPTION);
+        pump_appkit(app, &gui, 0.04);
+        assert_eq!(
+            params.editable_curve_snapshot().nodes.len(),
+            endpoint_count.saturating_sub(1),
+            "Option-click should delete an interior curve node"
+        );
+
+        let curve_before_left_blank = params.editable_curve_snapshot();
+        send_mouse_down(fixture.window, CURVE_PLOT_X, CURVE_PLOT_Y, 0);
+        send_mouse_dragged(fixture.window, CURVE_PLOT_X + 40.0, 200.0, 0);
+        send_mouse_up(fixture.window, CURVE_PLOT_X + 40.0, 200.0, 0);
+        pump_appkit(app, &gui, 0.04);
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            curve_before_left_blank,
+            "left drag on empty curve space must not freehand paint"
+        );
+        pump_appkit(app, &gui, 0.04);
+        let paint_idle_capture = capture_pixels(&gui, "idle right paint");
+        send_secondary_mouse_down(fixture.window, CURVE_NODE_X, CURVE_NODE_Y, 0);
+        send_secondary_mouse_dragged(fixture.window, CURVE_PLOT_X, CURVE_PLOT_Y, 0);
+        pump_appkit(app, &gui, 0.04);
+        let paint_preview_capture = capture_pixels(&gui, "right paint preview");
+        assert!(
+            paint_idle_capture.2 != paint_preview_capture.2,
+            "right drag should show a live paint preview"
+        );
+        send_secondary_mouse_up(fixture.window, CURVE_PLOT_X, CURVE_PLOT_Y, 0);
+        pump_appkit(app, &gui, 0.04);
+        assert_ne!(
+            params.editable_curve_snapshot(),
+            curve_before_left_blank,
+            "right drag should commit freehand painting"
+        );
+
+        let phase_before_offset = params.phase_offset();
+        send_mouse_down(fixture.window, 58.0, 245.0, COMMAND | SHIFT);
+        pump_appkit(app, &gui, 0.04);
+        let offset_active_capture = capture_pixels(&gui, "active curve offset");
+        send_mouse_dragged(fixture.window, 105.0, 245.0, COMMAND | SHIFT);
+        pump_appkit(app, &gui, 0.04);
+        let offset_sliding_capture = capture_pixels(&gui, "sliding curve offset");
+        assert!(
+            offset_active_capture.2 != offset_sliding_capture.2,
+            "offset drag should repaint the widened yellow curve"
+        );
+        send_mouse_up(fixture.window, 105.0, 245.0, COMMAND | SHIFT);
+        pump_appkit(app, &gui, 0.04);
+        assert_ne!(
+            params.phase_offset(),
+            phase_before_offset,
+            "Cmd+Shift drag should commit curve offset"
+        );
+
+        send_mouse_down(fixture.window, 300.0, 100.0, SHIFT);
+        send_mouse_dragged(fixture.window, 400.0, 210.0, SHIFT);
+        pump_appkit(app, &gui, 0.04);
+        let marquee_capture = capture_pixels(&gui, "marquee feedback");
+        assert!(
+            offset_sliding_capture.2 != marquee_capture.2,
+            "Shift drag should repaint the marquee"
+        );
+        send_mouse_up(fixture.window, 400.0, 210.0, SHIFT);
+        send_mouse_move(fixture.window, -20.0, 100.0);
+        pump_appkit(app, &gui, 0.04);
+        let curve_leave_capture = capture_pixels(&gui, "curve leave feedback reset");
+        assert!(
+            marquee_capture.2 != curve_leave_capture.2,
+            "native curve leave/release should clear transient feedback"
+        );
+
         // The delay field is reached by a native click, and its text is
         // inserted through AppKit's interpretKeyEvents path.
         assert_delay_text_edit(app, fixture, &gui, "7");
         assert_eq!(params.delay_beats(), 7, "native delay text should commit 7");
+
+        // Delay drafts admit digits only. Invalid text and invalid paste are
+        // rejected atomically, while Backspace can clear the active draft so
+        // a new integer can be entered.
+        send_click(fixture.window, DELAY_X, DELAY_Y, 0);
+        send_key(app, fixture.window, &gui, "a", 0, COMMAND);
+        send_text(app, fixture.window, &gui, "x");
+        send_key(app, fixture.window, &gui, "\r", 36, 0);
+        assert_eq!(
+            params.delay_beats(),
+            7,
+            "invalid Delay text must be rejected without changing the value"
+        );
+        let invalid_delay_pasteboard_restore = PasteboardRestore::capture();
+        set_pasteboard_string("not beats");
+        send_click(fixture.window, DELAY_X, DELAY_Y, 0);
+        send_key(app, fixture.window, &gui, "a", 0, COMMAND);
+        send_key(app, fixture.window, &gui, "v", 9, COMMAND);
+        send_key(app, fixture.window, &gui, "\r", 36, 0);
+        assert_eq!(
+            params.delay_beats(),
+            7,
+            "invalid Delay paste must be rejected without changing the value"
+        );
+        drop(invalid_delay_pasteboard_restore);
+        send_click(fixture.window, DELAY_X, DELAY_Y, 0);
+        send_key(app, fixture.window, &gui, "\u{8}", 51, 0);
+        send_text(app, fixture.window, &gui, "7");
+        send_key(app, fixture.window, &gui, "\r", 36, 0);
+        assert_eq!(
+            params.delay_beats(),
+            7,
+            "Delay Backspace clear and retype should commit the replacement integer"
+        );
+
+        let sync_before_active_delay_arrow = params.sync_division();
+        send_click(fixture.window, DELAY_X, DELAY_Y, 0);
         send_key(app, fixture.window, &gui, "\u{f700}", 126, 0);
         send_key(app, fixture.window, &gui, "\u{f701}", 125, SHIFT);
-        assert_eq!(params.delay_beats(), 4, "Up then Shift+Down should yield 4");
+        assert_eq!(
+            params.delay_beats(),
+            4,
+            "active Delay Up then Shift+Down should update the delay"
+        );
         assert_eq!(
             params.sync_division(),
-            selected_sync_division,
+            sync_before_active_delay_arrow,
+            "active Delay arrows must not change sync division"
+        );
+        send_key(app, fixture.window, &gui, "\r", 36, 0);
+
+        send_key(app, fixture.window, &gui, "\u{f700}", 126, 0);
+        send_key(app, fixture.window, &gui, "\u{f701}", 125, SHIFT);
+        assert_eq!(
+            params.delay_beats(),
+            1,
+            "focused inactive Up then Shift+Down should step the delay"
+        );
+        assert_eq!(
+            params.sync_division(),
+            sync_before_active_delay_arrow,
             "delay arrows must not change sync division"
         );
+        assert_delay_text_edit(app, fixture, &gui, "4");
 
         // Exercise selection plus the real native pasteboard, then restore the
         // committed value after cut/paste and after an invalid Escape draft.
@@ -617,6 +882,11 @@ mod macos {
             "Escape should restore committed delay"
         );
         drop(delay_pasteboard_restore);
+        send_click(fixture.window, DELAY_X, DELAY_Y, 0);
+        send_key(app, fixture.window, &gui, "a", 0, COMMAND);
+        send_key(app, fixture.window, &gui, "\u{8}", 51, 0);
+        send_key(app, fixture.window, &gui, "\r", 36, 0);
+        assert_eq!(params.delay_beats(), 4, "empty Enter reverts the delay");
 
         // A plain drag on the Smooth knob changes its parameter through the
         // native pointer path. Command-clicking the value enters the numeric
@@ -626,7 +896,33 @@ mod macos {
         send_mouse_down(fixture.window, SMOOTH_X, SMOOTH_KNOB_Y, 0);
         send_mouse_dragged(fixture.window, SMOOTH_X, SMOOTH_KNOB_Y, 0);
         send_mouse_dragged(fixture.window, SMOOTH_X, 300.0, 0);
-        send_mouse_up(fixture.window, SMOOTH_X, 300.0, 0);
+        let before_crossing = params.smooth();
+        // Cross the curve and then leave the native window before releasing.
+        // The admitted knob gesture must retain ownership throughout.
+        send_mouse_dragged(fixture.window, 300.0, 150.0, 0);
+        assert!(
+            params.smooth() > before_crossing,
+            "knob must continue over the curve"
+        );
+        let before_leaving = params.smooth();
+        send_mouse_dragged(fixture.window, 650.0, 180.0, 0);
+        assert!(
+            (params.smooth() - (before_leaving - 0.12)).abs() < 0.001,
+            "knob must continue outside the right edge"
+        );
+        send_mouse_dragged(fixture.window, -20.0, 200.0, 0);
+        assert!(
+            (params.smooth() - (before_leaving - 0.20)).abs() < 0.001,
+            "knob must continue outside the left edge"
+        );
+        send_mouse_up(fixture.window, -20.0, 200.0, 0);
+        let after_release = params.smooth();
+        send_mouse_move(fixture.window, 300.0, 120.0);
+        assert_eq!(
+            params.smooth(),
+            after_release,
+            "release ends drag ownership"
+        );
         pump_appkit(app, &gui, 0.05);
         assert!(
             params.smooth() > initial_smooth,
@@ -708,7 +1004,7 @@ mod macos {
         send_key(app, fixture.window, &gui, "c", 8, COMMAND);
         assert_eq!(
             pasteboard_string(),
-            Some("4 beats".to_owned()),
+            Some("4".to_owned()),
             "free-rate unit selection should close its menu before the native delay field is reachable"
         );
         send_key(app, fixture.window, &gui, "\u{1b}", 53, 0);

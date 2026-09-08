@@ -4981,10 +4981,7 @@ fn radiant_numeric_entry_rejects_invalid_commit_without_corrupting_param() {
     );
 
     assert!((params.output_gain_db() + 3.0).abs() < f32::EPSILON);
-    assert_eq!(
-        state.numeric_entry.as_ref().map(|entry| entry.target),
-        Some(NumericEntryTarget::OutputGain)
-    );
+    assert!(state.numeric_entry.is_none());
 }
 
 #[test]
@@ -5151,10 +5148,7 @@ fn radiant_delay_numeric_entry_accepts_integer_beats_and_formats_units() {
         }),
     );
     assert_eq!(params.delay_beats(), MAX_DELAY_BEATS);
-    assert_eq!(
-        state.numeric_entry.as_ref().map(|entry| entry.target),
-        Some(NumericEntryTarget::Delay)
-    );
+    assert!(state.numeric_entry.is_none());
     assert_eq!(
         state.undo_history.len(),
         history_before_invalid_commit,
