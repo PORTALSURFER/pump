@@ -4299,7 +4299,10 @@ fn curve_slot_reducer_loads_and_command_stores_curves() {
     let path = std::env::temp_dir().join(format!(
         "pump-model-curve-slots-{}-{}.bin",
         std::process::id(),
-        std::thread::current().name().unwrap_or("test")
+        std::thread::current()
+            .name()
+            .unwrap_or("test")
+            .replace(':', "_")
     ));
     let _ = std::fs::remove_file(&path);
 
