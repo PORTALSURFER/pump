@@ -14,7 +14,10 @@ mod curve_paint;
 mod model;
 mod projection;
 
-pub(crate) use model::{try_toggle_bypass, HostParamEditSink};
+#[cfg(all(feature = "vst3", test))]
+pub(crate) use model::try_toggle_bypass;
+#[cfg(feature = "vst3")]
+pub(crate) use model::HostParamEditSink;
 
 pub(crate) mod visual_system;
 
@@ -31,6 +34,7 @@ pub const MAX_WINDOW_HEIGHT: u32 = 800;
 const PRESET_WARNING_STORAGE: &str = "NOT SAVED - CHECK PRESET FOLDER";
 
 /// Return a stable preferred size before a host has opened the child view.
+#[allow(dead_code)]
 pub(crate) fn preferred_window_size() -> (u32, u32) {
     (WINDOW_WIDTH, WINDOW_HEIGHT)
 }

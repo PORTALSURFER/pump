@@ -87,7 +87,10 @@ pub(crate) fn processed_waveform(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::curve::{CurveNode, CurveSegment};
+    use crate::curve::{editable_curve_to_table, CurveNode, CurveSegment};
+    use crate::dsp::{DspSettings, PumpEngine};
+    use crate::params::{DEFAULT_FREE_RATE_HZ, TIMING_MODE_SYNC};
+    use toybox::dsp::TransportState;
 
     fn curve() -> EditableCurve {
         EditableCurve {
@@ -131,5 +134,122 @@ mod tests {
         let waveform = processed_waveform(&curve, &[0.0, 1.0], 0.0, 120.0, -12.0);
         assert!(waveform[1] > 0.2);
         assert!(waveform[1] < 0.3);
+    }
+
+    #[test]
+    fn runtime_gain_matches_processed_waveform_at_effective_phase_bin() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.1 },
+                CurveNode { x: 0.2, y: 0.9 },
+                CurveNode { x: 0.63, y: 0.2 },
+                CurveNode { x: 1.0, y: 0.7 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let phase_offset = 0.25;
+        let bin = 48;
+        let displayed_phase = bin as f32 / 95.0;
+        let mut waveform = [0.0; 96];
+        waveform[bin] = 1.0;
+        let processed = processed_waveform(&curve, &waveform, phase_offset, 120.0, -60.0);
+
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            delay_beats: 0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: TIMING_MODE_SYNC,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(displayed_phase as f64),
+        };
+        let mut engine = PumpEngine::new(1_000.0, editable_curve_to_table(&curve));
+        let mut left = 1.0;
+        let mut right = 1.0;
+        let mut telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+        for _ in 0..512 {
+            left = 1.0;
+            right = 1.0;
+            telemetry = engine.process_sample(&mut left, &mut right, settings, transport);
+        }
+
+        assert!((telemetry.phase - displayed_phase).abs() < 1.0e-5);
+        assert!((telemetry.gain - processed[bin]).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn processed_waveform_tracks_unsettled_applied_offset_from_dsp_snapshot() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.05 },
+                CurveNode { x: 0.23, y: 0.95 },
+                CurveNode { x: 0.61, y: 0.12 },
+                CurveNode { x: 1.0, y: 0.82 },
+            ],
+            segments: vec![CurveSegment { tension: 0.0 }; 3],
+            ..EditableCurve::default()
+        }
+        .normalized();
+        let target_phase_offset = 0.7;
+        let bin = 24;
+        let effective_phase = bin as f32 / 95.0;
+        let mut waveform = [0.0; 96];
+        waveform[bin] = 1.0;
+        let settings = DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            delay_beats: 0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: TIMING_MODE_SYNC,
+            free_rate_hz: DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+        };
+        let transition_settings = DspSettings {
+            phase_offset: target_phase_offset,
+            ..settings
+        };
+        let transport = TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(effective_phase as f64),
+        };
+        let mut engine = PumpEngine::new(1_000.0, editable_curve_to_table(&curve));
+        let mut left = 1.0;
+        let mut right = 1.0;
+        engine.process_sample(&mut left, &mut right, settings, transport);
+        let telemetry =
+            engine.process_sample(&mut left, &mut right, transition_settings, transport);
+        assert!(telemetry.applied_phase_offset > 0.0);
+        assert!(telemetry.applied_phase_offset < target_phase_offset);
+
+        let status = crate::GuiStatus::default();
+        status.publish_dsp_telemetry(telemetry);
+        let applied = status
+            .dsp_snapshot()
+            .expect("DSP telemetry should publish a phase pair")
+            .applied_phase_offset;
+        let processed = processed_waveform(&curve, &waveform, applied, 120.0, -60.0);
+        let target_processed =
+            processed_waveform(&curve, &waveform, target_phase_offset, 120.0, -60.0);
+
+        assert!((telemetry.gain - processed[bin]).abs() < 1.0e-3);
+        assert!((processed[bin] - target_processed[bin]).abs() > 0.05);
     }
 }

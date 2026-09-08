@@ -73,15 +73,16 @@ if [[ "${want_screenshots}" == "1" ]]; then
   rm -rf target/ui-screenshots
   mkdir -p target/ui-screenshots
 
-  TOYBOX_UI_SCREENSHOT=1 cargo test --locked -r --features screenshot-test --test gpui_screenshot -- --nocapture
+  TOYBOX_UI_SCREENSHOT=1 cargo test --locked -r --features screenshot-test --test gpui_screenshot --test gpui_input -- --nocapture
 
   required_captures=(
     target/ui-screenshots/pump/pump-min-640x400.png
     target/ui-screenshots/pump/pump-default-640x400.png
     target/ui-screenshots/pump/pump-max-1280x800.png
-    target/ui-screenshots/pump/pump-default-640x400-dpi-1_25.png
-    target/ui-screenshots/pump/pump-components-states-720x360-1x.png
-    target/ui-screenshots/pump/pump-components-states-720x360-2x.png
+    target/ui-screenshots/pump/pump-responsive-800x500.png
+    target/ui-screenshots/pump/pump-numeric-focused-640x400.png
+    target/ui-screenshots/pump/pump-knob-drag-640x400.png
+    target/ui-screenshots/pump/pump-free-rate-640x400.png
     target/ui-screenshots/pump/pump-bypass-active-640x400.png
     target/ui-screenshots/pump/pump-bypass-bypassed-640x400.png
     target/ui-screenshots/pump/pump-header-normal-640x400.png

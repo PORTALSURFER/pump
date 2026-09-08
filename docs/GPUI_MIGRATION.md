@@ -39,6 +39,21 @@ on macOS and Windows, and both independently linked plugin load orders on macOS.
 Audit fresh CLAP/VST3 review artifacts and the existing Windows release sidecar
 contract. Manual DAW keyboard and audible acceptance remains user-owned.
 
-## Status
+## Verification coverage
 
-Baseline captured; migration in progress. No release is published by this work.
+The GPUI implementation retains 107 editor-model regressions. Local default
+checks cover 367 library tests; the VST3 configuration covers 426. Native macOS
+fixtures exercise typing, selection, clipboard, arrows, wheel/drag edits, explicit
+RATE units, focused-button repeat handling, host updates, and close/reopen.
+Screenshots cover supported sizes and control states, with pixel assertions for
+expanded layout and idle numeric-label updates. Windows CI exercises the real
+HWND through VST3 input and hide/reopen operations.
+
+Toybox owns resize notification ordering and native repeat metadata. Pump also
+tracks focused button presses through key-up to support host callbacks that do
+not carry repeat information. Focus loss cancels numeric drafts; hiding ends
+active UI gestures while retaining applied audio settings.
+
+CI and release preflight results are attached to the migration pull request.
+Fresh ad-hoc review bundles are audited separately; DAW and audible acceptance
+remain manual. This migration does not publish a release.

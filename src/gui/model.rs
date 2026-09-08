@@ -17,18 +17,21 @@ use crate::curve::{
     MIN_SEGMENT_TENSION,
 };
 use crate::params::{
-    clamp_delay_beats, format_plain_value_text, parse_plain_value_text,
-    plain_from_normalized_value, PumpParams, PumpSoundState, SoundSide, BYPASS_ACTIVE_VALUE,
-    BYPASS_BYPASSED_VALUE, DEFAULT_FREE_RATE_HZ, MAX_DELAY_BEATS, MAX_OUTPUT_GAIN_DB,
-    MAX_SYNC_DIVISION, MIN_DELAY_BEATS, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DELAY_ID,
-    PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID,
-    PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID, TIMING_MODE_FREE,
-    TIMING_MODE_SYNC,
+    clamp_delay_beats, format_plain_value_text, normalized_from_plain_value,
+    parse_plain_value_text, plain_from_normalized_value, PumpParams, PumpSoundState, SoundSide,
+    BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, DEFAULT_DELAY_BEATS, DEFAULT_FREE_RATE_HZ,
+    DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, DEFAULT_SWING, MAX_DELAY_BEATS,
+    MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_DELAY_BEATS, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID,
+    PARAM_DELAY_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
+    PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID,
+    TIMING_MODE_FREE, TIMING_MODE_SYNC,
 };
 use crate::GuiStatus;
 
+#[cfg(test)]
+use super::curve_paint::PaintRun;
 use super::curve_paint::{
-    reconstruct_paint, PaintCommitOutcome, PaintRun, RectBounds, RectPoint, StrokeRecorder,
+    reconstruct_paint, PaintCommitOutcome, RectBounds, RectPoint, StrokeRecorder,
 };
 use super::{snap_curve_time_to_beat_grid_with_swing, WINDOW_WIDTH};
 
@@ -59,6 +62,7 @@ impl Vector2 {
 }
 
 const SURFACE_PADDING: f32 = 10.2;
+#[cfg(test)]
 const CURVE_REFERENCE_GUTTER_WIDTH: f32 = 40.8;
 const CURVE_DISPLAY_SEAM_EPSILON: f32 = 1.0e-5;
 const CURVE_STRUCTURAL_ENDPOINT_RAW_EPSILON: f32 = 1.0e-3;
@@ -163,14 +167,17 @@ pub(crate) fn clap_edit_sink(
     Arc::new(ClapHostParamEditSink { queue, requester })
 }
 
+#[cfg(test)]
 fn curve_reference_gutter_width(preview_width: f32) -> f32 {
     CURVE_REFERENCE_GUTTER_WIDTH.min((preview_width - 1.0).max(0.0))
 }
 
+#[cfg(test)]
 fn curve_viewport_width(preview_width: f32) -> f32 {
     (preview_width - curve_reference_gutter_width(preview_width)).max(1.0)
 }
 
+#[cfg(test)]
 fn curve_node_push_through_threshold_x(preview_width: f32) -> f32 {
     CURVE_NODE_PUSH_THROUGH_MARGIN_PX
         / (curve_viewport_width(preview_width).max(1.0) - 1.0).max(1.0)
@@ -186,41 +193,7 @@ fn curve_width_from_push_through_threshold_x(threshold_x: f32) -> f32 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CurveSegmentHitZone {
-    OnLine,
     OuterProximity,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CurveSegmentHit {
-    index: usize,
-    zone: CurveSegmentHitZone,
-    distance_squared: f32,
-}
-
-fn point_to_segment_distance_squared(point: Point, start: Point, end: Point) -> f32 {
-    let dx = end.x - start.x;
-    let dy = end.y - start.y;
-    let length_squared = dx * dx + dy * dy;
-    if !length_squared.is_finite() || length_squared <= f32::EPSILON {
-        return (point.x - start.x).powi(2) + (point.y - start.y).powi(2);
-    }
-
-    let projection =
-        (((point.x - start.x) * dx + (point.y - start.y) * dy) / length_squared).clamp(0.0, 1.0);
-    let closest = Point::new(start.x + projection * dx, start.y + projection * dy);
-    (point.x - closest.x).powi(2) + (point.y - closest.y).powi(2)
-}
-
-fn point_to_polyline_distance_squared(point: Point, points: &[Point]) -> Option<f32> {
-    let first = points.first().copied()?;
-    if points.len() == 1 {
-        return Some((point.x - first.x).powi(2) + (point.y - first.y).powi(2));
-    }
-
-    points
-        .windows(2)
-        .map(|pair| point_to_segment_distance_squared(point, pair[0], pair[1]))
-        .min_by(f32::total_cmp)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -619,6 +592,7 @@ impl ActiveCurvePaint {
         self.recorder.observe_outside(sample.raw_position());
     }
 
+    #[cfg(test)]
     fn preview_runs(&self) -> Vec<PaintRun> {
         self.recorder.runs().to_vec()
     }
@@ -653,7 +627,6 @@ struct ActiveCurveSegmentDrag {
 #[derive(Clone)]
 struct ActiveCurveOffsetDrag {
     origin_phase_offset: f32,
-    start_pointer_x: f32,
     raw_delta: f32,
     quantized: bool,
 }
@@ -699,17 +672,6 @@ impl NumericEntryTarget {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Mix => "Mix",
-            Self::OutputGain => "Output",
-            Self::Smooth => "Smooth",
-            Self::Swing => "Swing",
-            Self::FreeRate => "Free Rate",
-            Self::Delay => "Delay",
-        }
-    }
-
     pub(crate) fn widget_key(self) -> &'static str {
         match self {
             Self::Mix => "numeric-entry-mix",
@@ -742,14 +704,14 @@ pub(crate) enum FreeRateUnit {
 }
 
 impl FreeRateUnit {
-    const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 4] = [
         Self::Milliseconds,
         Self::Seconds,
         Self::Hertz,
         Self::Kilohertz,
     ];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Milliseconds => "ms",
             Self::Seconds => "s",
@@ -1049,6 +1011,59 @@ impl PumpEditorState {
         reduce_editor_message(self, message);
     }
 
+    /// Apply a host-driven A/B selector update before projecting the next
+    /// frame. The parameter model also reconciles the selected side's curve;
+    /// clearing transient selection keeps node indices from crossing sides.
+    pub(crate) fn refresh_host_projection(&mut self) -> bool {
+        if self.params.consume_pending_active_sound().is_some() {
+            self.clear_curve_selection();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn free_rate_unit(&self) -> FreeRateUnit {
+        self.free_rate_unit
+    }
+
+    pub(crate) fn timing_dropdown_open(&self) -> bool {
+        self.timing_dropdown_open
+    }
+
+    pub(crate) fn hotkey_help_open(&self) -> bool {
+        self.hotkey_help_open
+    }
+
+    pub(crate) fn numeric_entry_active(&self) -> bool {
+        self.numeric_entry.is_some()
+    }
+
+    pub(crate) fn default_knob_normalized(target: NumericEntryTarget) -> f32 {
+        match target {
+            NumericEntryTarget::Mix => DEFAULT_MIX,
+            NumericEntryTarget::OutputGain => normalize_output_gain(DEFAULT_OUTPUT_GAIN_DB),
+            NumericEntryTarget::Smooth => DEFAULT_SMOOTH,
+            NumericEntryTarget::Swing => DEFAULT_SWING,
+            NumericEntryTarget::FreeRate => {
+                normalized_from_plain_value(PARAM_FREE_RATE_ID, DEFAULT_FREE_RATE_HZ as f64)
+                    .unwrap_or(0.5) as f32
+            }
+            NumericEntryTarget::Delay => {
+                normalized_from_plain_value(PARAM_DELAY_ID, DEFAULT_DELAY_BEATS as f64)
+                    .unwrap_or(0.0) as f32
+            }
+        }
+    }
+
+    pub(crate) fn normalized_sync_division(value: usize) -> f32 {
+        normalize_sync_division(value)
+    }
+
+    pub(crate) fn format_free_rate(&self, rate_hz: f32) -> String {
+        format_free_rate_for_unit(rate_hz, self.free_rate_unit)
+    }
+
     /// Return the currently rendered curve, including any live offset preview.
     pub(crate) fn rendered_curve(&self) -> EditableCurve {
         self.preview_curve_offset
@@ -1141,7 +1156,6 @@ impl PumpEditorState {
 }
 
 #[allow(clippy::arc_with_non_send_sync)]
-
 fn reduce_knob_message(
     state: &mut PumpEditorState,
     target: NumericEntryTarget,
@@ -1830,7 +1844,7 @@ fn reduce_curve_message(state: &mut PumpEditorState, message: CurvePreviewMessag
             state.clear_curve_segment_hover();
         }
         CurvePreviewMessage::PressCurveOffset {
-            pointer_x,
+            pointer_x: _pointer_x,
             quantized,
         } => {
             if !state
@@ -1842,7 +1856,6 @@ fn reduce_curve_message(state: &mut PumpEditorState, message: CurvePreviewMessag
             state.clear_curve_selection();
             state.active_curve_offset = Some(ActiveCurveOffsetDrag {
                 origin_phase_offset: state.params.phase_offset(),
-                start_pointer_x: pointer_x,
                 raw_delta: 0.0,
                 quantized,
             });
@@ -3184,14 +3197,6 @@ pub(crate) enum CurvePreviewMessage {
     Cancel,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CurveHoverState {
-    node: Option<usize>,
-    preview_node: Option<CurveNode>,
-    segment: Option<usize>,
-    segment_zone: Option<CurveSegmentHitZone>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3346,6 +3351,28 @@ mod tests {
             ]
         );
         assert_eq!(state.undo_history.len(), 1);
+    }
+
+    #[test]
+    fn host_projection_refresh_reconciles_a_b_curve_and_selection() {
+        let sink = Arc::new(RecordingSink::default());
+        let params = Arc::new(PumpParams::new());
+        let mut curve_b = params.editable_curve_snapshot();
+        curve_b.nodes[1].y = 0.73;
+        assert!(params.set_active_sound(SoundSide::B));
+        params.set_editable_curve(&curve_b);
+        assert!(params.set_active_sound(SoundSide::A));
+
+        let mut state =
+            PumpEditorState::new(Arc::clone(&params), Arc::new(GuiStatus::default()), sink);
+        state.selected_curve_nodes = vec![1];
+        params.request_active_sound_from_host(SoundSide::B);
+
+        assert!(state.refresh_host_projection());
+        assert_eq!(params.active_sound(), SoundSide::B);
+        assert_eq!(params.editable_curve_snapshot(), curve_b);
+        assert!(state.selected_curve_nodes.is_empty());
+        assert!(!state.refresh_host_projection());
     }
 }
 

@@ -163,6 +163,22 @@ impl Vst3HostedGui for PumpVst3GuiAdapter {
         self.gpui_gui.last_size()
     }
 
+    fn show(&self) -> bool {
+        self.gpui_gui.show()
+    }
+
+    fn set_callback_keyboard_mode(&mut self, callback_only: bool) {
+        self.gpui_gui.set_callback_keyboard_mode(callback_only);
+    }
+
+    fn host_size_from_logical(&self, width: u32, height: u32) -> (u32, u32) {
+        self.gpui_gui.host_size_from_logical(width, height)
+    }
+
+    fn logical_size_from_host(&self, width: u32, height: u32) -> (u32, u32) {
+        self.gpui_gui.logical_size_from_host(width, height)
+    }
+
     fn request_resize(&self, width: u32, height: u32) {
         self.gpui_gui.request_resize(width, height);
     }

@@ -30,7 +30,7 @@ Windows workflow runs are inspection-only and do not alter or publish a stable
 or RC release.
 
 The required dependency revisions are Toybox
-`413be422bb48c72f87df8ef0580639398739495b` and GPUI core/renderer
+`f6a4a9cc05750d2831752afe05f23a175c85e28f` and GPUI core/renderer
 `77a1325a13bd0d3631f737b98445b70c8c936cb7`. Both GPUI crates must use
 the same repository and revision. The final publisher checkout is
 pinned to PortalSurfer commit

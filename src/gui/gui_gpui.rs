@@ -6,6 +6,7 @@
 //! interaction contract.
 
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -14,8 +15,9 @@ use toybox::gpui::{
     self as gpui, canvas, div, fill, font, point, prelude::*, px, relative, rgba, size, App,
     Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyDownEvent,
-    LayoutId, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Render, ShapedLine, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
+    KeyUpEvent, LayoutId, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Render, ScrollWheelEvent, ShapedLine, Style, TextRun,
+    UTF16Selection, UnderlineStyle, Window,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -24,13 +26,14 @@ use crate::curve::{sample_editable_curve, CurveNode};
 use crate::params::{
     format_plain_value_text, normalized_from_plain_value, sync_division_label, PumpParams,
     SoundSide, GLOBAL_CURVE_SLOT_COUNT, PARAM_DELAY_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID, PARAM_SWING_ID, TIMING_MODE_FREE,
+    PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID, PARAM_SWING_ID, SYNC_DIVISIONS, TIMING_MODE_FREE,
 };
 
 pub(crate) use super::model::HostParamFlushRequester;
 use super::model::{
-    clap_edit_sink, CurvePaintSample, CurvePreviewMessage, EditorMessage, HostParamEditSink,
-    KnobMessage, NumericEntryTarget, Point as ModelPoint, PumpEditorState, Vector2,
+    clap_edit_sink, CurvePaintSample, CurvePreviewMessage, EditorMessage, FreeRateUnit,
+    HostParamEditSink, KnobMessage, NumericEntryMessage, NumericEntryTarget, Point as ModelPoint,
+    PumpEditorState, Vector2,
 };
 use super::visual_system::{
     pump_meter_colors, pump_theme, PumpColor, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS,
@@ -67,6 +70,34 @@ const CURVE_NODE_HIT_RADIUS: f32 = 10.0;
 const CURVE_NODE_SIZE: f32 = 3.0;
 const CURVE_STROKE_WIDTH: f32 = 1.6;
 const MAX_NUMERIC_TEXT_BYTES: usize = 64;
+const CURVE_SLOT_IDS: [&str; GLOBAL_CURVE_SLOT_COUNT] = [
+    "curve-slot-0",
+    "curve-slot-1",
+    "curve-slot-2",
+    "curve-slot-3",
+    "curve-slot-4",
+    "curve-slot-5",
+    "curve-slot-6",
+    "curve-slot-7",
+];
+const TIMING_FREE_RATE_IDS: [&str; 4] = [
+    "timing-unit-ms",
+    "timing-unit-s",
+    "timing-unit-Hz",
+    "timing-unit-kHz",
+];
+const TIMING_SYNC_IDS: [&str; 10] = [
+    "timing-sync-0",
+    "timing-sync-1",
+    "timing-sync-2",
+    "timing-sync-3",
+    "timing-sync-4",
+    "timing-sync-5",
+    "timing-sync-6",
+    "timing-sync-7",
+    "timing-sync-8",
+    "timing-sync-9",
+];
 
 /// Events emitted by the native numeric field. Keeping these separate from
 /// the editor reducer means GPUI text/IME transport never mutates parameters
@@ -82,6 +113,8 @@ struct NumericInputBegan;
 struct NumericInput {
     target: NumericEntryTarget,
     focus_handle: FocusHandle,
+    blur_subscription: Option<gpui::Subscription>,
+    editing: bool,
     content: String,
     selected_range: Range<usize>,
     selection_reversed: bool,
@@ -101,6 +134,8 @@ impl NumericInput {
         Self {
             target,
             focus_handle: cx.focus_handle(),
+            blur_subscription: None,
+            editing: false,
             content,
             selected_range: 0..0,
             selection_reversed: false,
@@ -108,10 +143,6 @@ impl NumericInput {
             last_layout: None,
             last_bounds: None,
         }
-    }
-
-    fn focus_handle(&self) -> FocusHandle {
-        self.focus_handle.clone()
     }
 
     fn content(&self) -> &str {
@@ -127,6 +158,10 @@ impl NumericInput {
         self.last_layout = None;
         self.last_bounds = None;
         cx.notify();
+    }
+
+    fn set_editing(&mut self, editing: bool) {
+        self.editing = editing;
     }
 
     fn cursor_offset(&self) -> usize {
@@ -247,6 +282,19 @@ impl NumericInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Delay has always been directly editable. Other knobs preserve the
+        // editor's Cmd/Ctrl-click contract: a plain click starts the knob
+        // gesture on the parent deck, while an explicit modifier enters the
+        // native text field. Once a field is active, normal caret clicks and
+        // Shift selection remain available.
+        if self.target != NumericEntryTarget::Delay
+            && !self.editing
+            && !event.modifiers.platform
+            && !event.modifiers.control
+        {
+            return;
+        }
+        self.editing = true;
         window.focus(&self.focus_handle, cx);
         let offset = self
             .last_layout
@@ -566,7 +614,9 @@ impl Element for NumericTextElement {
                 .text_system()
                 .shape_line(text.into(), px(PUMP_TYPOGRAPHY.value.0), &[run], None);
         let cursor_position = line.x_for_index(input.cursor_offset());
-        let (selection, cursor) = if input.selected_range.is_empty() {
+        let (selection, cursor) = if !input.editing {
+            (None, None)
+        } else if input.selected_range.is_empty() {
             (
                 None,
                 Some(fill(
@@ -613,11 +663,13 @@ impl Element for NumericTextElement {
         cx: &mut App,
     ) {
         let focus_handle = self.input.read(cx).focus_handle.clone();
-        window.handle_input(
-            &focus_handle,
-            ElementInputHandler::new(bounds, self.input.clone()),
-            cx,
-        );
+        if self.input.read(cx).editing {
+            window.handle_input(
+                &focus_handle,
+                ElementInputHandler::new(bounds, self.input.clone()),
+                cx,
+            );
+        }
         if let Some(selection) = prepaint.selection.take() {
             window.paint_quad(selection);
         }
@@ -643,7 +695,17 @@ impl Element for NumericTextElement {
 }
 
 impl Render for NumericInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        if self.blur_subscription.is_none() {
+            let focus_handle = self.focus_handle.clone();
+            self.blur_subscription = Some(cx.on_blur(&focus_handle, window, |input, _, cx| {
+                if input.editing {
+                    input.editing = false;
+                    cx.emit(NumericInputCanceled);
+                    cx.notify();
+                }
+            }));
+        }
         div()
             .key_context("PumpNumericInput")
             .track_focus(&self.focus_handle)
@@ -831,8 +893,10 @@ struct PumpEditor {
     teardown_pending: Rc<Cell<bool>>,
     teardown_in_progress: Rc<Cell<bool>>,
     curve_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
+    editor_focus_handle: FocusHandle,
+    focus_out_subscription: Option<gpui::Subscription>,
     numeric_inputs: Vec<Entity<NumericInput>>,
-    numeric_subscriptions: Vec<gpui::Subscription>,
+    _numeric_subscriptions: Vec<gpui::Subscription>,
     curve_drag_node: Option<usize>,
     curve_drag_segment: Option<usize>,
     curve_dragging_offset: bool,
@@ -841,6 +905,8 @@ struct PumpEditor {
     curve_dragging_paint: bool,
     active_knob: Option<NumericEntryTarget>,
     last_pointer: Option<Point<Pixels>>,
+    button_focus_handles: HashMap<&'static str, FocusHandle>,
+    button_activation_keys: HashSet<String>,
 }
 
 impl PumpEditor {
@@ -892,10 +958,10 @@ impl PumpEditor {
             numeric_subscriptions.push(cx.subscribe(
                 input,
                 |view, input, _: &NumericInputSubmitted, cx| {
-                    let (target, draft) = {
-                        let input = input.read(cx);
+                    let (target, draft) = input.update(cx, |input, _| {
+                        input.set_editing(false);
                         (input.target, input.content().to_owned())
-                    };
+                    });
                     view.dispatch(
                         EditorMessage::NumericEntry(super::model::NumericEntryMessage::Commit {
                             target,
@@ -909,7 +975,10 @@ impl PumpEditor {
             numeric_subscriptions.push(cx.subscribe(
                 input,
                 |view, input, _: &NumericInputCanceled, cx| {
-                    let target = input.read(cx).target;
+                    let target = input.update(cx, |input, _| {
+                        input.set_editing(false);
+                        input.target
+                    });
                     view.dispatch(
                         EditorMessage::NumericEntry(super::model::NumericEntryMessage::Cancel {
                             target,
@@ -934,13 +1003,30 @@ impl PumpEditor {
                 },
             ));
         }
+        let button_focus_handles = [
+            "timing-mode",
+            "timing-value",
+            "undo",
+            "redo",
+            "sound-a",
+            "sound-switch",
+            "sound-b",
+            "hotkey-help",
+            "waveform-mode",
+            "bypass",
+        ]
+        .into_iter()
+        .map(|id| (id, cx.focus_handle()))
+        .collect();
         Self {
             state,
             teardown_pending,
             teardown_in_progress,
             curve_bounds: Rc::new(RefCell::new(None)),
+            editor_focus_handle: cx.focus_handle(),
+            focus_out_subscription: None,
             numeric_inputs,
-            numeric_subscriptions,
+            _numeric_subscriptions: numeric_subscriptions,
             curve_drag_node: None,
             curve_drag_segment: None,
             curve_dragging_offset: false,
@@ -949,7 +1035,15 @@ impl PumpEditor {
             curve_dragging_paint: false,
             active_knob: None,
             last_pointer: None,
+            button_focus_handles,
+            button_activation_keys: HashSet::new(),
         }
+    }
+
+    fn button_focus_handle(&self, id: &'static str) -> &FocusHandle {
+        self.button_focus_handles
+            .get(id)
+            .expect("all keyboard controls have a focus handle")
     }
 
     fn numeric_input_index(target: NumericEntryTarget) -> usize {
@@ -974,6 +1068,32 @@ impl PumpEditor {
         input.update(cx, |input, cx| input.set_content(text, select_all, cx));
     }
 
+    fn sync_inactive_numeric_inputs(&self, cx: &mut Context<Self>) {
+        let targets = [
+            NumericEntryTarget::Mix,
+            NumericEntryTarget::OutputGain,
+            NumericEntryTarget::Smooth,
+            NumericEntryTarget::Swing,
+            NumericEntryTarget::FreeRate,
+            NumericEntryTarget::Delay,
+        ];
+        let texts = {
+            let state = self.state.borrow();
+            targets
+                .into_iter()
+                .map(|target| (target, knob_value(&state, target).1))
+                .collect::<Vec<_>>()
+        };
+        for (target, text) in texts {
+            let input = self.numeric_inputs[Self::numeric_input_index(target)].clone();
+            input.update(cx, |input, cx| {
+                if !input.editing && input.content != text {
+                    input.set_content(text, false, cx);
+                }
+            });
+        }
+    }
+
     fn begin_numeric_input(&mut self, target: NumericEntryTarget, cx: &mut Context<Self>) {
         self.dispatch(
             EditorMessage::NumericEntry(super::model::NumericEntryMessage::Begin { target }),
@@ -996,11 +1116,21 @@ impl PumpEditor {
             }
             NumericEntryTarget::FreeRate => 0.01,
             NumericEntryTarget::Delay => {
-                let next = (state.params().delay_beats() as i32 + delta).clamp(
+                if state.numeric_entry_active() {
+                    drop(state);
+                    self.dispatch(
+                        EditorMessage::NumericEntry(NumericEntryMessage::Step { target, delta }),
+                        cx,
+                    );
+                    self.sync_numeric_input(target, cx, false);
+                    return;
+                }
+                let current_delay = state.params().delay_beats() as i32;
+                let next_delay = (current_delay + delta).clamp(
                     crate::params::MIN_DELAY_BEATS as i32,
                     crate::params::MAX_DELAY_BEATS as i32,
-                ) as f32;
-                let normalized = normalized_from_plain_value(PARAM_DELAY_ID, next as f64)
+                );
+                let normalized = normalized_from_plain_value(PARAM_DELAY_ID, next_delay as f64)
                     .unwrap_or(current as f64) as f32;
                 drop(state);
                 self.dispatch(
@@ -1010,7 +1140,7 @@ impl PumpEditor {
                     },
                     cx,
                 );
-                self.sync_numeric_input(target, cx, false);
+                self.sync_numeric_input(target, cx, true);
                 return;
             }
             _ => 0.01,
@@ -1081,6 +1211,75 @@ impl PumpEditor {
             },
             outside: false,
         })
+    }
+
+    fn curve_plot_contains(&self, position: Point<Pixels>) -> bool {
+        let Some(bounds) = self.curve_bounds.borrow().as_ref().copied() else {
+            return false;
+        };
+        let left = f32::from(bounds.left()) + CURVE_GUTTER;
+        let top = f32::from(bounds.top());
+        let width =
+            (f32::from(bounds.size.width) - CURVE_GUTTER - CURVE_METER_GAP - CURVE_METER_WIDTH)
+                .max(1.0);
+        let height =
+            (f32::from(bounds.size.height) - CURVE_OFFSET_BAR_HEIGHT - CURVE_OFFSET_INSET).max(1.0);
+        let x = f32::from(position.x);
+        let y = f32::from(position.y);
+        x >= left && x <= left + width && y >= top && y <= top + height
+    }
+
+    fn curve_paint_sample_with_outside(
+        &self,
+        position: Point<Pixels>,
+        outside: bool,
+    ) -> Option<CurvePaintSample> {
+        let display = self.normalized_curve_point(position)?;
+        Some(CurvePaintSample {
+            node: self.raw_curve_node(position)?,
+            display_position: super::curve_paint::RectPoint {
+                x: display.x,
+                y: display.y,
+            },
+            outside,
+        })
+    }
+
+    fn dispatch_curve_hover(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let node = self.node_at(event.position);
+        let segment = if node.is_none() {
+            self.segment_at(event.position)
+        } else {
+            None
+        };
+        let command = event.modifiers.platform || event.modifiers.control;
+        let option = event.modifiers.alt;
+        let preview_node = if !command && !option {
+            segment
+                .and_then(|(_, distance)| {
+                    (distance <= 4.0).then(|| self.raw_curve_node(event.position))
+                })
+                .flatten()
+        } else {
+            None
+        };
+        if let Some((index, distance)) = segment {
+            if distance > 8.0 && !command && !option {
+                self.dispatch(
+                    EditorMessage::Curve(CurvePreviewMessage::HoverProximitySegment { index }),
+                    cx,
+                );
+                return;
+            }
+        }
+        self.dispatch(
+            EditorMessage::Curve(CurvePreviewMessage::Hover {
+                node,
+                preview_node,
+                segment: segment.map(|(index, _)| index),
+            }),
+            cx,
+        );
     }
 
     fn node_at(&self, position: Point<Pixels>) -> Option<usize> {
@@ -1219,6 +1418,7 @@ impl PumpEditor {
         if !matches!(event.button, MouseButton::Left | MouseButton::Right) {
             return;
         }
+        self.dismiss_timing_dropdown(cx);
         self.last_pointer = Some(event.position);
         self.curve_drag_start = Some(event.position);
         self.curve_drag_segment = None;
@@ -1233,6 +1433,29 @@ impl PumpEditor {
         let shift = event.modifiers.shift;
         let option = event.modifiers.alt;
         let command = event.modifiers.platform || event.modifiers.control;
+        if event.button == MouseButton::Left && event.click_count >= 2 {
+            if self.in_curve_offset_bar(event.position) {
+                self.dispatch(
+                    EditorMessage::Curve(CurvePreviewMessage::ResetCurveOffset),
+                    cx,
+                );
+                return;
+            }
+            if let Some(index) = self.node_at(event.position) {
+                let deletable = {
+                    let state = self.state.borrow();
+                    let node_count = state.rendered_curve().nodes.len();
+                    index > 0 && index + 1 < node_count
+                };
+                if deletable {
+                    self.dispatch(
+                        EditorMessage::Curve(CurvePreviewMessage::DeleteNode { index }),
+                        cx,
+                    );
+                    return;
+                }
+            }
+        }
         if self.in_curve_offset_bar(event.position)
             || (event.button == MouseButton::Left && command && shift)
         {
@@ -1357,6 +1580,9 @@ impl PumpEditor {
             event.pressed_button,
             Some(MouseButton::Left | MouseButton::Right)
         ) {
+            if event.pressed_button.is_none() {
+                self.dispatch_curve_hover(event, cx);
+            }
             return;
         }
         let Some(display_point) = self.normalized_curve_point(event.position) else {
@@ -1416,18 +1642,22 @@ impl PumpEditor {
                 cx,
             );
         } else if self.curve_dragging_paint {
+            let outside = !self.curve_plot_contains(event.position);
+            let sample = self
+                .curve_paint_sample_with_outside(event.position, outside)
+                .unwrap_or(CurvePaintSample {
+                    node: point,
+                    display_position: super::curve_paint::RectPoint {
+                        x: display_point.x,
+                        y: display_point.y,
+                    },
+                    outside,
+                });
             self.dispatch(
-                EditorMessage::Curve(CurvePreviewMessage::DragPaint {
-                    sample: self
-                        .curve_paint_sample(event.position)
-                        .unwrap_or(CurvePaintSample {
-                            node: point,
-                            display_position: super::curve_paint::RectPoint {
-                                x: display_point.x,
-                                y: display_point.y,
-                            },
-                            outside: false,
-                        }),
+                EditorMessage::Curve(if outside {
+                    CurvePreviewMessage::DragPaintOutside { sample }
+                } else {
+                    CurvePreviewMessage::DragPaint { sample }
                 }),
                 cx,
             );
@@ -1506,27 +1736,22 @@ impl PumpEditor {
             );
         } else if self.curve_dragging_paint {
             self.curve_dragging_paint = false;
-            let message = if event.button == MouseButton::Right {
-                CurvePreviewMessage::ReleasePaint {
-                    sample: Some(CurvePaintSample {
-                        node: point,
-                        display_position: super::curve_paint::RectPoint {
-                            x: display_point.x,
-                            y: display_point.y,
-                        },
-                        outside: false,
-                    }),
-                }
+            let outside = !self.curve_plot_contains(event.position);
+            let sample = self
+                .curve_paint_sample_with_outside(event.position, outside)
+                .unwrap_or(CurvePaintSample {
+                    node: point,
+                    display_position: super::curve_paint::RectPoint {
+                        x: display_point.x,
+                        y: display_point.y,
+                    },
+                    outside,
+                });
+            let message = if outside {
+                CurvePreviewMessage::ReleasePaintOutside { sample }
             } else {
                 CurvePreviewMessage::ReleasePaint {
-                    sample: Some(CurvePaintSample {
-                        node: point,
-                        display_position: super::curve_paint::RectPoint {
-                            x: display_point.x,
-                            y: display_point.y,
-                        },
-                        outside: false,
-                    }),
+                    sample: Some(sample),
                 }
             };
             self.dispatch(EditorMessage::Curve(message), cx);
@@ -1538,10 +1763,28 @@ impl PumpEditor {
     fn knob_down(
         &mut self,
         target: NumericEntryTarget,
-        _event: &MouseDownEvent,
-        _window: &mut Window,
+        event: &MouseDownEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let input = self.numeric_inputs[Self::numeric_input_index(target)].clone();
+        let focus_handle = input.read(cx).focus_handle.clone();
+        window.focus(&focus_handle, cx);
+        self.dismiss_timing_dropdown(cx);
+        if event.click_count >= 2 {
+            self.dispatch(
+                EditorMessage::Knob {
+                    target,
+                    message: KnobMessage::Reset {
+                        value: PumpEditorState::default_knob_normalized(target),
+                    },
+                },
+                cx,
+            );
+            self.active_knob = None;
+            self.last_pointer = None;
+            return;
+        }
         self.active_knob = Some(target);
         self.dispatch(
             EditorMessage::Knob {
@@ -1591,6 +1834,58 @@ impl PumpEditor {
         );
     }
 
+    fn knob_wheel(
+        &mut self,
+        target: NumericEntryTarget,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.numeric_inputs[Self::numeric_input_index(target)].clone();
+        let focus_handle = input.read(cx).focus_handle.clone();
+        window.focus(&focus_handle, cx);
+        let delta = f32::from(event.delta.pixel_delta(px(16.0)).y);
+        if delta.abs() <= f32::EPSILON {
+            return;
+        }
+        let multiplier = if event.modifiers.shift { 4.0 } else { 1.0 };
+        let direction = delta.signum() * multiplier;
+        let current = self.state.borrow();
+        let (normalized, _) = knob_value(&current, target);
+        drop(current);
+        let step = match target {
+            NumericEntryTarget::OutputGain => {
+                1.0 / (crate::params::MAX_OUTPUT_GAIN_DB - crate::params::MIN_OUTPUT_GAIN_DB)
+            }
+            NumericEntryTarget::FreeRate => 0.01,
+            NumericEntryTarget::Delay => {
+                let current = self.state.borrow().params().delay_beats() as i32;
+                let next = (current + direction as i32).clamp(
+                    crate::params::MIN_DELAY_BEATS as i32,
+                    crate::params::MAX_DELAY_BEATS as i32,
+                ) as f32;
+                normalized_from_plain_value(PARAM_DELAY_ID, next as f64)
+                    .unwrap_or(normalized as f64) as f32
+                    - normalized
+            }
+            _ => 0.01,
+        };
+        self.dispatch(
+            EditorMessage::Knob {
+                target,
+                message: KnobMessage::Discrete {
+                    value: if target == NumericEntryTarget::Delay {
+                        (normalized + step).clamp(0.0, 1.0)
+                    } else {
+                        (normalized + direction * step).clamp(0.0, 1.0)
+                    },
+                },
+            },
+            cx,
+        );
+        self.sync_numeric_input(target, cx, false);
+    }
+
     fn knob_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(target) = self.active_knob.take() {
             self.dispatch(
@@ -1604,34 +1899,62 @@ impl PumpEditor {
         self.last_pointer = None;
     }
 
+    fn dismiss_timing_dropdown(&mut self, cx: &mut Context<Self>) {
+        if self.state.borrow().timing_dropdown_open() {
+            self.dispatch(EditorMessage::ToggleTimingDropdown, cx);
+        }
+        if self.state.borrow().hotkey_help_open() {
+            self.dispatch(EditorMessage::ToggleHotkeyHelp, cx);
+        }
+    }
+
     fn toggle_bypass(
         &mut self,
-        _: &gpui::ClickEvent,
-        _window: &mut Window,
+        event: &gpui::ClickEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A numeric field may still own focus when the pointer leaves it. The
+        // focus transition cancels its draft; claim the button handle here as
+        // well as on mouse-down so the following Space/Enter is routed to the
+        // focused bypass control even when the click lands on a child icon.
+        let focus_handle = self.button_focus_handle("bypass").clone();
+        window.focus(&focus_handle, cx);
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
         self.dispatch(EditorMessage::ToggleBypass, cx);
     }
 
     fn toggle_timing(
         &mut self,
-        _: &gpui::ClickEvent,
+        event: &gpui::ClickEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
         self.dispatch(EditorMessage::ToggleTimingMode, cx);
     }
 
     fn select_sound_a(
         &mut self,
-        _: &gpui::ClickEvent,
+        event: &gpui::ClickEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
+        let active = self.state.borrow().params().active_sound();
         self.dispatch(
             EditorMessage::SelectSound {
                 side: SoundSide::A,
-                copy: false,
+                copy: event.modifiers().alt && active != SoundSide::A,
             },
             cx,
         );
@@ -1639,14 +1962,19 @@ impl PumpEditor {
 
     fn select_sound_b(
         &mut self,
-        _: &gpui::ClickEvent,
+        event: &gpui::ClickEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
+        let active = self.state.borrow().params().active_sound();
         self.dispatch(
             EditorMessage::SelectSound {
                 side: SoundSide::B,
-                copy: false,
+                copy: event.modifiers().alt && active != SoundSide::B,
             },
             cx,
         );
@@ -1658,48 +1986,102 @@ impl PumpEditor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
         let active = self.state.borrow().params().active_sound();
-        self.dispatch(
-            EditorMessage::SelectSound {
-                side: active.other(),
-                copy: event.modifiers().platform || event.modifiers().control,
-            },
-            cx,
-        );
+        if event.modifiers().platform || event.modifiers().control {
+            self.dispatch(EditorMessage::CopyAndSelectSound(active.other()), cx);
+        } else {
+            self.dispatch(
+                EditorMessage::SelectSound {
+                    side: active.other(),
+                    copy: false,
+                },
+                cx,
+            );
+        }
     }
 
-    fn undo(&mut self, _: &gpui::ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn undo(&mut self, event: &gpui::ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
         self.dispatch(EditorMessage::Undo, cx);
     }
 
-    fn redo(&mut self, _: &gpui::ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn redo(&mut self, event: &gpui::ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
         self.dispatch(EditorMessage::Redo, cx);
     }
 
     fn toggle_timing_dropdown(
         &mut self,
+        event: &gpui::ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.is_keyboard() {
+            return;
+        }
+        if self.state.borrow().hotkey_help_open() {
+            self.dispatch(EditorMessage::ToggleHotkeyHelp, cx);
+        }
+        self.dispatch(EditorMessage::ToggleTimingDropdown, cx);
+    }
+
+    fn select_sync_division(
+        &mut self,
+        index: usize,
         _: &gpui::ClickEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dispatch(EditorMessage::ToggleTimingDropdown, cx);
+        self.dispatch(
+            EditorMessage::SyncDivision(PumpEditorState::normalized_sync_division(index)),
+            cx,
+        );
+        cx.stop_propagation();
+    }
+
+    fn select_free_rate_unit(
+        &mut self,
+        unit: FreeRateUnit,
+        _: &gpui::ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dispatch(EditorMessage::FreeRateUnit(unit), cx);
+        cx.stop_propagation();
     }
 
     fn toggle_hotkey_help(
         &mut self,
-        _: &gpui::ClickEvent,
+        event: &gpui::ClickEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.is_keyboard() {
+            return;
+        }
         self.dispatch(EditorMessage::ToggleHotkeyHelp, cx);
     }
 
     fn toggle_waveform(
         &mut self,
-        _: &gpui::ClickEvent,
+        event: &gpui::ClickEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
         self.dispatch(EditorMessage::ToggleWaveformMode, cx);
     }
 
@@ -1707,9 +2089,14 @@ impl PumpEditor {
         &mut self,
         index: usize,
         event: &gpui::ClickEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Slots are transport controls, not text fields. Move focus back to
+        // the editor root before dispatching the load/store so a previously
+        // focused numeric input cannot consume the next keyboard command.
+        window.focus(&self.editor_focus_handle, cx);
+        self.dismiss_timing_dropdown(cx);
         let message = if event.modifiers().platform || event.modifiers().control {
             super::model::CurveSlotMessage::Store { index }
         } else {
@@ -1718,6 +2105,7 @@ impl PumpEditor {
         self.dispatch(EditorMessage::CurveSlot(message), cx);
     }
 
+    #[allow(dead_code)]
     fn step_delay(&mut self, delta: i32, _window: &mut Window, cx: &mut Context<Self>) {
         self.step_numeric_input(NumericEntryTarget::Delay, delta, cx);
     }
@@ -1738,20 +2126,194 @@ impl PumpEditor {
         );
     }
 
-    fn pump_tick(&mut self, window: &mut Window) {
-        self.drain_teardown_pending();
-        let state = self.state.borrow();
-        if state.status().has_host_beats_timeline()
-            || state.status().is_playing()
-            || state.status().gain_reduction_needs_redraw()
-        {
-            window.request_animation_frame();
+    fn focused_button(&self, window: &Window) -> Option<&'static str> {
+        [
+            "timing-mode",
+            "timing-value",
+            "undo",
+            "redo",
+            "sound-a",
+            "sound-switch",
+            "sound-b",
+            "hotkey-help",
+            "waveform-mode",
+            "bypass",
+        ]
+        .into_iter()
+        .find(|id| {
+            self.button_focus_handles
+                .get(id)
+                .is_some_and(|handle| handle.is_focused(window))
+        })
+    }
+
+    fn activate_focused_button(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        match id {
+            "timing-mode" => {
+                self.dismiss_timing_dropdown(cx);
+                self.dispatch(EditorMessage::ToggleTimingMode, cx);
+            }
+            "timing-value" => {
+                if self.state.borrow().hotkey_help_open() {
+                    self.dispatch(EditorMessage::ToggleHotkeyHelp, cx);
+                }
+                self.dispatch(EditorMessage::ToggleTimingDropdown, cx);
+            }
+            "undo" => {
+                self.dismiss_timing_dropdown(cx);
+                self.dispatch(EditorMessage::Undo, cx);
+            }
+            "redo" => {
+                self.dismiss_timing_dropdown(cx);
+                self.dispatch(EditorMessage::Redo, cx);
+            }
+            "sound-a" => {
+                self.dismiss_timing_dropdown(cx);
+                self.dispatch(
+                    EditorMessage::SelectSound {
+                        side: SoundSide::A,
+                        copy: false,
+                    },
+                    cx,
+                );
+            }
+            "sound-switch" => {
+                self.dismiss_timing_dropdown(cx);
+                let side = self.state.borrow().params().active_sound().other();
+                self.dispatch(EditorMessage::SelectSound { side, copy: false }, cx);
+            }
+            "sound-b" => {
+                self.dismiss_timing_dropdown(cx);
+                self.dispatch(
+                    EditorMessage::SelectSound {
+                        side: SoundSide::B,
+                        copy: false,
+                    },
+                    cx,
+                );
+            }
+            "hotkey-help" => self.dispatch(EditorMessage::ToggleHotkeyHelp, cx),
+            "waveform-mode" => {
+                self.dismiss_timing_dropdown(cx);
+                self.dispatch(EditorMessage::ToggleWaveformMode, cx);
+            }
+            "bypass" => {
+                self.dismiss_timing_dropdown(cx);
+                self.dispatch(EditorMessage::ToggleBypass, cx);
+            }
+            _ => {}
         }
+    }
+
+    fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.borrow().numeric_entry_active() {
+            return;
+        }
+        if matches!(event.keystroke.key.as_str(), "space" | "enter")
+            && !event.keystroke.modifiers.modified()
+        {
+            if let Some(button) = self.focused_button(window) {
+                // Native embedded GPUI input currently loses AppKit's
+                // `isARepeat` flag: every repeated key-down arrives with
+                // `is_held == false`. Keep the press state at the editor
+                // boundary and release it on the matching key-up, so both
+                // native and direct GPUI paths activate focused buttons once.
+                let key = event.keystroke.key.to_string();
+                if event.is_held || !self.button_activation_keys.insert(key) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
+                self.activate_focused_button(button, cx);
+                window.prevent_default();
+                cx.stop_propagation();
+                return;
+            }
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                if self.state.borrow().timing_dropdown_open() {
+                    self.dispatch(EditorMessage::ToggleTimingDropdown, cx);
+                    return;
+                }
+                if self.state.borrow().hotkey_help_open() {
+                    self.dispatch(EditorMessage::ToggleHotkeyHelp, cx);
+                    return;
+                }
+                if self.state.borrow().has_active_gesture() {
+                    self.state.borrow_mut().cancel_active_gestures();
+                    self.drain_teardown_pending();
+                    cx.notify();
+                }
+            }
+            "enter" if self.state.borrow().timing_dropdown_open() => {
+                self.dispatch(EditorMessage::ToggleTimingDropdown, cx);
+            }
+            "up" | "down" if self.state.borrow().timing_dropdown_open() => {
+                let direction = if event.keystroke.key == "down" {
+                    1_i32
+                } else {
+                    -1_i32
+                };
+                let state = self.state.borrow();
+                if state.params().timing_mode() == TIMING_MODE_FREE {
+                    let current = FreeRateUnit::ALL
+                        .iter()
+                        .position(|unit| *unit == state.free_rate_unit())
+                        .unwrap_or(0) as i32;
+                    let next =
+                        (current + direction).rem_euclid(FreeRateUnit::ALL.len() as i32) as usize;
+                    drop(state);
+                    self.dispatch(EditorMessage::FreeRateUnit(FreeRateUnit::ALL[next]), cx);
+                } else {
+                    let current = state.params().sync_division() as i32;
+                    let next = (current + direction)
+                        .clamp(0, SYNC_DIVISIONS.len().saturating_sub(1) as i32)
+                        as usize;
+                    drop(state);
+                    self.dispatch(
+                        EditorMessage::SyncDivision(PumpEditorState::normalized_sync_division(
+                            next,
+                        )),
+                        cx,
+                    );
+                }
+            }
+            "delete" | "backspace" => {
+                self.dispatch(
+                    EditorMessage::Curve(CurvePreviewMessage::DeleteSelectedNodes),
+                    cx,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.button_activation_keys
+            .remove(event.keystroke.key.as_str());
+    }
+
+    fn pump_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.drain_teardown_pending();
+        self.state.borrow_mut().refresh_host_projection();
+        self.sync_inactive_numeric_inputs(cx);
+        // Host parameter callbacks do not necessarily invalidate this GPUI
+        // entity. Poll the lock-free projection on every native frame so idle
+        // A/B automation, meters, and waveform state become visible without
+        // touching the audio thread.
+        window.request_animation_frame();
     }
 }
 
 impl Drop for PumpEditor {
     fn drop(&mut self) {
+        self.button_activation_keys.clear();
         // A host can destroy a child view while a pointer gesture is active.
         // End/cancel the semantic gesture before releasing the retained state;
         // this preserves audio parameters while closing the native surface.
@@ -1771,6 +2333,7 @@ impl Drop for PumpEditor {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_waveform_layer(
     left: f32,
     top: f32,
@@ -1931,6 +2494,25 @@ fn draw_curve(bounds: Bounds<Pixels>, state: &PumpEditorState, window: &mut Wind
     if let Ok(area) = area.build() {
         window.paint_path(area, solid(theme.accent_mint.with_alpha(50)));
     }
+    // The authored fill fades into the editor surface toward the lower edge,
+    // matching the legacy visualization without introducing a renderer-owned
+    // gradient abstraction.
+    const FILL_FADE_STRIPES: usize = 12;
+    for index in 0..FILL_FADE_STRIPES {
+        let start = index as f32 / FILL_FADE_STRIPES as f32;
+        let end = (index + 1) as f32 / FILL_FADE_STRIPES as f32;
+        let alpha = (start * start * 100.0).round() as u8;
+        if alpha == 0 {
+            continue;
+        }
+        window.paint_quad(fill(
+            Bounds::from_corners(
+                point(px(left), px(top + height * start)),
+                point(px(left + width), px(top + height * end)),
+            ),
+            solid(theme.clear.with_alpha(alpha)),
+        ));
+    }
     if let Ok(path) = path.build() {
         window.paint_path(path, solid(theme.accent_mint));
     }
@@ -2089,7 +2671,7 @@ fn draw_curve(bounds: Bounds<Pixels>, state: &PumpEditorState, window: &mut Wind
     let offset_y = top + height + CURVE_OFFSET_INSET;
     let gr_value = text_line(
         window,
-        &format!("{reduction:.1}"),
+        format!("{reduction:.1}"),
         PUMP_TYPOGRAPHY.meta.0,
         theme.text_muted,
     );
@@ -2157,13 +2739,23 @@ fn knob_value(state: &PumpEditorState, target: NumericEntryTarget) -> (f32, Stri
             PARAM_DELAY_ID,
         ),
     };
-    let text = format_plain_value_text(id, plain as f64).unwrap_or_else(|| format!("{plain:.2}"));
+    let text = if target == NumericEntryTarget::FreeRate {
+        state.format_free_rate(plain)
+    } else {
+        format_plain_value_text(id, plain as f64).unwrap_or_else(|| format!("{plain:.2}"))
+    };
     (normalized, text)
 }
 
-fn button(id: &'static str, label: String, active: bool, width: f32) -> gpui::Stateful<gpui::Div> {
+fn button(
+    id: &'static str,
+    label: String,
+    active: bool,
+    width: f32,
+    focus_handle: Option<&FocusHandle>,
+) -> gpui::Stateful<gpui::Div> {
     let theme = pump_theme();
-    div()
+    let mut button = div()
         .id(id)
         .w(px(width))
         .h(px(PUMP_VISUAL_METRICS.control_height))
@@ -2184,17 +2776,23 @@ fn button(id: &'static str, label: String, active: bool, width: f32) -> gpui::St
         .text_color(solid(theme.text_primary))
         .font(font("Ioskeley Mono"))
         .text_size(px(PUMP_TYPOGRAPHY.body.0))
-        .line_height(px(PUMP_TYPOGRAPHY.body.1))
-        .child(label)
+        .line_height(px(PUMP_TYPOGRAPHY.body.1));
+    if let Some(focus_handle) = focus_handle {
+        let focus_handle_for_mouse = focus_handle.clone();
+        button = button.track_focus(focus_handle).on_mouse_down(
+            MouseButton::Left,
+            move |_, window, cx| {
+                window.focus(&focus_handle_for_mouse, cx);
+            },
+        );
+    }
+    button.child(label)
 }
 
 #[derive(Clone, Copy)]
 enum IconKind {
     ChevronLeft,
     ChevronRight,
-    Copy,
-    Help,
-    Power,
 }
 
 fn icon_button(
@@ -2202,6 +2800,7 @@ fn icon_button(
     kind: IconKind,
     active: bool,
     width: f32,
+    focus_handle: Option<&FocusHandle>,
 ) -> gpui::Stateful<gpui::Div> {
     let theme = pump_theme();
     let color = solid(if active {
@@ -2232,48 +2831,6 @@ fn icon_button(
                     line(&mut path, cx - 3.2, cy - 4.0, cx + 1.5, cy);
                     line(&mut path, cx + 1.5, cy, cx - 3.2, cy + 4.0);
                 }
-                IconKind::Copy => {
-                    line(&mut path, cx - 1.5, cy - 4.0, cx + 4.0, cy - 4.0);
-                    line(&mut path, cx + 4.0, cy - 4.0, cx + 4.0, cy + 1.5);
-                    line(&mut path, cx + 4.0, cy + 1.5, cx - 1.5, cy + 1.5);
-                    line(&mut path, cx - 1.5, cy + 1.5, cx - 1.5, cy - 4.0);
-                    line(&mut path, cx - 4.0, cy - 1.5, cx + 1.5, cy - 1.5);
-                    line(&mut path, cx + 1.5, cy - 1.5, cx + 1.5, cy + 4.0);
-                    line(&mut path, cx + 1.5, cy + 4.0, cx - 4.0, cy + 4.0);
-                    line(&mut path, cx - 4.0, cy + 4.0, cx - 4.0, cy - 1.5);
-                }
-                IconKind::Help => {
-                    let radius = 4.2;
-                    for index in 0..=16 {
-                        let angle = std::f32::consts::TAU * index as f32 / 16.0;
-                        let x = cx + radius * angle.cos();
-                        let y = cy + radius * angle.sin();
-                        if index == 0 {
-                            path.move_to(point(px(x), px(y)));
-                        } else {
-                            path.line_to(point(px(x), px(y)));
-                        }
-                    }
-                    path.move_to(point(px(cx), px(cy - 1.8)));
-                    path.line_to(point(px(cx), px(cy + 2.0)));
-                    path.move_to(point(px(cx), px(cy + 3.5)));
-                    path.line_to(point(px(cx), px(cy + 3.5)));
-                }
-                IconKind::Power => {
-                    let radius = 4.2;
-                    for index in 0..=12 {
-                        let angle = std::f32::consts::PI * 0.22
-                            + std::f32::consts::TAU * 0.78 * index as f32 / 12.0;
-                        let x = cx + radius * angle.cos();
-                        let y = cy + radius * angle.sin();
-                        if index == 0 {
-                            path.move_to(point(px(x), px(y)));
-                        } else {
-                            path.line_to(point(px(x), px(y)));
-                        }
-                    }
-                    line(&mut path, cx, cy - 5.2, cx, cy + 0.2);
-                }
             }
             if let Ok(path) = path.build() {
                 window.paint_path(path, color);
@@ -2281,7 +2838,7 @@ fn icon_button(
         },
     )
     .size_full();
-    button(id, String::new(), active, width).child(icon)
+    button(id, String::new(), active, width, focus_handle).child(icon)
 }
 
 impl PumpEditor {
@@ -2366,6 +2923,9 @@ impl PumpEditor {
             .justify_center()
             .gap(px(PUMP_VISUAL_METRICS.space_4))
             .on_mouse_down(MouseButton::Left, state_down)
+            .on_scroll_wheel(cx.listener(move |view, event, window, cx| {
+                view.knob_wheel(target, event, window, cx)
+            }))
             .child(
                 div()
                     .text_color(solid(theme.text_muted))
@@ -2430,7 +2990,7 @@ fn curve_slot_element(
         },
     )
     .size_full();
-    button(id, String::new(), loaded || deviated, 1.0)
+    button(id, String::new(), loaded || deviated, 1.0, None)
         .flex_1()
         .h(px(SLOT_HEIGHT))
         .rounded(px(PUMP_VISUAL_METRICS.radius))
@@ -2439,7 +2999,14 @@ fn curve_slot_element(
 
 impl Render for PumpEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        self.pump_tick(window);
+        if self.focus_out_subscription.is_none() {
+            let focus_handle = self.editor_focus_handle.clone();
+            self.focus_out_subscription =
+                Some(cx.on_focus_out(&focus_handle, window, |view, _, _, _| {
+                    view.button_activation_keys.clear()
+                }));
+        }
+        self.pump_tick(window, cx);
         let state = self.state.borrow();
         let theme = pump_theme();
         let params = state.params();
@@ -2482,39 +3049,41 @@ impl Render for PumpEditor {
                 let slot_curve = params.global_curve_slot_curve(index);
                 let loaded = loaded_slot == Some(index);
                 let deviated = loaded && params.current_curve_deviates_from_global_slot(index);
-                let mut slot = curve_slot_element(
-                    Box::leak(format!("curve-slot-{index}").into_boxed_str()),
-                    slot_curve,
-                    loaded,
-                    deviated,
-                );
+                let mut slot =
+                    curve_slot_element(CURVE_SLOT_IDS[index], slot_curve, loaded, deviated);
                 slot = slot.on_click(cx.listener(move |view, event, window, cx| {
                     view.slot_click(index, event, window, cx)
                 }));
                 slot
             }));
+        let divider = |id: &'static str| {
+            div()
+                .id(id)
+                .w(px(PUMP_VISUAL_METRICS.divider))
+                .h(px(DECK_HEIGHT - 13.6))
+                .bg(solid(theme.grid_strong))
+        };
+        let mut deck_children = vec![
+            self.knob_element(NumericEntryTarget::Smooth, cx),
+            divider("deck-divider-smooth"),
+            self.knob_element(NumericEntryTarget::Swing, cx),
+        ];
+        if timing_free {
+            deck_children.push(divider("deck-divider-free-rate"));
+            deck_children.push(self.knob_element(NumericEntryTarget::FreeRate, cx));
+        }
+        deck_children.extend([
+            divider("deck-divider-mix"),
+            self.knob_element(NumericEntryTarget::Mix, cx),
+            self.knob_element(NumericEntryTarget::OutputGain, cx),
+        ]);
         let deck = div()
             .h(px(DECK_HEIGHT))
             .w_full()
             .flex()
             .items_center()
             .justify_between()
-            .children([
-                self.knob_element(NumericEntryTarget::Smooth, cx),
-                div()
-                    .id("deck-divider-smooth")
-                    .w(px(PUMP_VISUAL_METRICS.divider))
-                    .h(px(DECK_HEIGHT - 13.6))
-                    .bg(solid(theme.grid_strong)),
-                self.knob_element(NumericEntryTarget::Swing, cx),
-                div()
-                    .id("deck-divider-swing")
-                    .w(px(PUMP_VISUAL_METRICS.divider))
-                    .h(px(DECK_HEIGHT - 13.6))
-                    .bg(solid(theme.grid_strong)),
-                self.knob_element(NumericEntryTarget::Mix, cx),
-                self.knob_element(NumericEntryTarget::OutputGain, cx),
-            ]);
+            .children(deck_children);
         let mut timing_button = button(
             "timing-mode",
             if timing_free {
@@ -2524,16 +3093,101 @@ impl Render for PumpEditor {
             },
             timing_free,
             54.4,
+            Some(self.button_focus_handle("timing-mode")),
         )
         .h(px(HEADER_CONTROL_HEIGHT));
         timing_button = timing_button.on_click(cx.listener(Self::toggle_timing));
         let timing_label = if timing_free {
-            "Hz".to_string()
+            state.free_rate_unit().label().to_string()
         } else {
             format!("Sync {}", sync_division_label(params.sync_division()))
         };
-        let mut timing_value =
-            button("timing-value", timing_label, false, 95.2).h(px(HEADER_CONTROL_HEIGHT));
+        let timing_chevron = canvas(
+            |_bounds, _, _| {},
+            move |bounds, _, window, _cx| {
+                let center_x = f32::from(bounds.left()) + f32::from(bounds.size.width) * 0.5;
+                let center_y = f32::from(bounds.top()) + f32::from(bounds.size.height) * 0.5;
+                let mut path = gpui::PathBuilder::stroke(px(1.15));
+                path.move_to(point(px(center_x - 2.8), px(center_y - 1.2)));
+                path.line_to(point(px(center_x), px(center_y + 1.6)));
+                path.line_to(point(px(center_x + 2.8), px(center_y - 1.2)));
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, solid(theme.text_muted));
+                }
+            },
+        )
+        .w(px(9.0))
+        .h(px(9.0));
+        let timing_menu = if state.timing_dropdown_open() {
+            let options: Vec<_> = if timing_free {
+                FreeRateUnit::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, unit)| {
+                        let id = TIMING_FREE_RATE_IDS[index];
+                        let mut option = button(
+                            id,
+                            unit.label().to_string(),
+                            unit == state.free_rate_unit(),
+                            95.2,
+                            None,
+                        )
+                        .h(px(24.0));
+                        option = option.on_click(cx.listener(move |view, event, window, cx| {
+                            view.select_free_rate_unit(unit, event, window, cx)
+                        }));
+                        option
+                    })
+                    .collect()
+            } else {
+                SYNC_DIVISIONS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, division)| {
+                        let id = TIMING_SYNC_IDS[index];
+                        let mut option = button(
+                            id,
+                            division.label.to_string(),
+                            index == params.sync_division(),
+                            95.2,
+                            None,
+                        )
+                        .h(px(24.0));
+                        option = option.on_click(cx.listener(move |view, event, window, cx| {
+                            view.select_sync_division(index, event, window, cx)
+                        }));
+                        option
+                    })
+                    .collect()
+            };
+            div()
+                .id("timing-dropdown-menu")
+                .absolute()
+                .top(px(HEADER_CONTROL_HEIGHT + 2.0))
+                .left(px(0.0))
+                .w(px(95.2))
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .p(px(2.0))
+                .bg(solid(theme.clear))
+                .border_1()
+                .border_color(solid(theme.border_emphasis))
+                .children(options)
+        } else {
+            div().id("timing-dropdown-menu").hidden()
+        };
+        let mut timing_value = button(
+            "timing-value",
+            timing_label,
+            false,
+            95.2,
+            Some(self.button_focus_handle("timing-value")),
+        )
+        .relative()
+        .h(px(HEADER_CONTROL_HEIGHT))
+        .child(timing_chevron)
+        .child(timing_menu);
         timing_value = timing_value.on_click(cx.listener(Self::toggle_timing_dropdown));
         let delay_progress_value = state.status().delay_progress();
         let delay_progress = canvas(
@@ -2585,14 +3239,32 @@ impl Render for PumpEditor {
             .child(timing_button)
             .child(timing_value)
             .child(delay_value);
-        let mut undo_button =
-            icon_button("undo", IconKind::ChevronLeft, false, 28.0).h(px(HEADER_CONTROL_HEIGHT));
+        let mut undo_button = icon_button(
+            "undo",
+            IconKind::ChevronLeft,
+            false,
+            28.0,
+            Some(self.button_focus_handle("undo")),
+        )
+        .h(px(HEADER_CONTROL_HEIGHT));
         undo_button = undo_button.on_click(cx.listener(Self::undo));
-        let mut redo_button =
-            icon_button("redo", IconKind::ChevronRight, false, 28.0).h(px(HEADER_CONTROL_HEIGHT));
+        let mut redo_button = icon_button(
+            "redo",
+            IconKind::ChevronRight,
+            false,
+            28.0,
+            Some(self.button_focus_handle("redo")),
+        )
+        .h(px(HEADER_CONTROL_HEIGHT));
         redo_button = redo_button.on_click(cx.listener(Self::redo));
-        let mut sound_a_button =
-            button("sound-a", "A".into(), false, 28.0).h(px(HEADER_CONTROL_HEIGHT));
+        let mut sound_a_button = button(
+            "sound-a",
+            "A".into(),
+            false,
+            28.0,
+            Some(self.button_focus_handle("sound-a")),
+        )
+        .h(px(HEADER_CONTROL_HEIGHT));
         if active_sound == SoundSide::A {
             sound_a_button = sound_a_button
                 .border_color(solid(theme.accent_copper))
@@ -2609,11 +3281,18 @@ impl Render for PumpEditor {
             },
             false,
             28.0,
+            Some(self.button_focus_handle("sound-switch")),
         )
         .h(px(HEADER_CONTROL_HEIGHT));
         sound_switch = sound_switch.on_click(cx.listener(Self::select_sound_switch));
-        let mut sound_b_button =
-            button("sound-b", "B".into(), false, 28.0).h(px(HEADER_CONTROL_HEIGHT));
+        let mut sound_b_button = button(
+            "sound-b",
+            "B".into(),
+            false,
+            28.0,
+            Some(self.button_focus_handle("sound-b")),
+        )
+        .h(px(HEADER_CONTROL_HEIGHT));
         if active_sound == SoundSide::B {
             sound_b_button = sound_b_button
                 .border_color(solid(theme.accent_copper))
@@ -2621,8 +3300,14 @@ impl Render for PumpEditor {
                 .text_color(solid(theme.accent_copper));
         }
         sound_b_button = sound_b_button.on_click(cx.listener(Self::select_sound_b));
-        let mut help_button =
-            button("hotkey-help", "?".into(), false, 28.0).h(px(HEADER_CONTROL_HEIGHT));
+        let mut help_button = button(
+            "hotkey-help",
+            "?".into(),
+            false,
+            28.0,
+            Some(self.button_focus_handle("hotkey-help")),
+        )
+        .h(px(HEADER_CONTROL_HEIGHT));
         help_button = help_button.on_click(cx.listener(Self::toggle_hotkey_help));
         let history = div()
             .flex()
@@ -2644,6 +3329,11 @@ impl Render for PumpEditor {
             .child(timing_controls)
             .child(history)
             .child(ab);
+        let brand_meta = if params.preset_persistence_warning().is_some() {
+            super::PRESET_WARNING_STORAGE.to_owned()
+        } else {
+            crate::gui::build_version_label()
+        };
         let brand = div()
             .flex()
             .flex_col()
@@ -2671,7 +3361,7 @@ impl Render for PumpEditor {
                     .text_color(solid(theme.text_muted))
                     .font(font("Ioskeley Mono"))
                     .text_size(px(PUMP_TYPOGRAPHY.meta.0))
-                    .child(crate::gui::build_version_label()),
+                    .child(brand_meta),
             );
         let header = div()
             .h(px(HEADER_HEIGHT))
@@ -2697,14 +3387,21 @@ impl Render for PumpEditor {
             },
             state.status().waveform_live_mode(),
             61.2,
+            Some(self.button_focus_handle("waveform-mode")),
         )
         .h(px(FOOTER_HEIGHT));
         waveform_button = waveform_button.on_click(cx.listener(Self::toggle_waveform));
-        let mut bypass_button = button("bypass", String::new(), bypassed, 125.8)
-            .h(px(FOOTER_HEIGHT))
-            .flex()
-            .items_center()
-            .gap(px(PUMP_VISUAL_METRICS.space_8));
+        let mut bypass_button = button(
+            "bypass",
+            String::new(),
+            bypassed,
+            125.8,
+            Some(self.button_focus_handle("bypass")),
+        )
+        .h(px(FOOTER_HEIGHT))
+        .flex()
+        .items_center()
+        .gap(px(PUMP_VISUAL_METRICS.space_8));
         bypass_button = bypass_button.child(
             canvas(
                 |_bounds, _, _| {},
@@ -2756,8 +3453,80 @@ impl Render for PumpEditor {
             .justify_between()
             .child(waveform_button)
             .child(bypass_button);
+        let hotkey_help = if state.hotkey_help_open() {
+            const ROWS: [(&str, &str); 10] = [
+                ("u", "Undo"),
+                ("U", "Redo"),
+                ("Shift + drag node", "Lock gain"),
+                ("Shift + Option + drag node", "Lock time"),
+                ("Cmd + drag node", "Snap to beat grid"),
+                ("Shift + drag canvas", "Marquee select nodes"),
+                ("Option + drag segment", "Adjust segment tension"),
+                ("Cmd + drag segment", "Move segment"),
+                ("Cmd + Shift + drag canvas", "Offset the curve"),
+                (
+                    "Cmd + Shift + Option + drag canvas",
+                    "Quantize curve offset",
+                ),
+            ];
+            let rows = ROWS.into_iter().map(|(key, description)| {
+                div()
+                    .w_full()
+                    .h(px(20.4))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(176.8))
+                            .text_color(solid(theme.text_primary))
+                            .font(font("Ioskeley Mono"))
+                            .text_size(px(PUMP_TYPOGRAPHY.control_label.0))
+                            .line_height(px(PUMP_TYPOGRAPHY.control_label.1))
+                            .child(key),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(solid(theme.text_muted))
+                            .font(font("Ioskeley Mono"))
+                            .text_size(px(PUMP_TYPOGRAPHY.control_label.0))
+                            .line_height(px(PUMP_TYPOGRAPHY.control_label.1))
+                            .child(description),
+                    )
+            });
+            div()
+                .id("hotkey-help-overlay")
+                .absolute()
+                .top(px(HEADER_HEIGHT + SURFACE_SPACING))
+                .right(px(SURFACE_PADDING))
+                .w(px(306.0))
+                .h(px(272.0))
+                .p(px(13.6))
+                .flex()
+                .flex_col()
+                .gap(px(0.0))
+                .bg(solid(theme.surface_overlay))
+                .border_1()
+                .border_color(solid(theme.border_emphasis))
+                .rounded(px(6.8))
+                .child(
+                    div()
+                        .h(px(25.5))
+                        .w_full()
+                        .text_color(solid(theme.accent_copper))
+                        .font(font("Ioskeley Mono"))
+                        .text_size(px(PUMP_TYPOGRAPHY.body.0))
+                        .line_height(px(PUMP_TYPOGRAPHY.body.1))
+                        .child("PUMP HOTKEYS"),
+                )
+                .children(rows)
+        } else {
+            div().id("hotkey-help-overlay").hidden()
+        };
         div()
             .id("pump-editor")
+            .track_focus(&self.editor_focus_handle)
+            .relative()
             .w_full()
             .h_full()
             .flex()
@@ -2775,6 +3544,8 @@ impl Render for PumpEditor {
             .on_mouse_move(cx.listener(Self::knob_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::knob_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::knob_up))
+            .on_key_down(cx.listener(Self::handle_key_down))
+            .on_key_up(cx.listener(Self::handle_key_up))
             .on_modifiers_changed(cx.listener(Self::handle_modifiers))
             .child(header)
             .child(div().h(px(PUMP_VISUAL_METRICS.space_4)))
@@ -2782,5 +3553,6 @@ impl Render for PumpEditor {
             .child(slots)
             .child(deck)
             .child(footer)
+            .child(hotkey_help)
     }
 }
