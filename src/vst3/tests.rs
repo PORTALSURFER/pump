@@ -393,7 +393,7 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
     let mut input_buses = vec![input_bus];
     let mut output_buses = vec![output_bus];
     let mut process_data: ProcessData = unsafe { mem::zeroed() };
-    process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample32 as i32;
+    process_data.symbolicSampleSize = VST3_SAMPLE_32;
     process_data.numSamples = i32::try_from(samples).expect("sample count should fit i32");
     process_data.numInputs = 1;
     process_data.numOutputs = 1;
@@ -449,7 +449,7 @@ fn controller_marks_only_appended_bypass_as_stepped_host_bypass() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_delivers_begin_value_end_on_component_handler() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -487,7 +487,7 @@ fn vst3_ui_sink_delivers_begin_value_end_on_component_handler() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_delivers_continuous_begin_value_end_on_component_handler() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -524,7 +524,7 @@ fn vst3_ui_sink_delivers_continuous_begin_value_end_on_component_handler() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_maps_clap_division_to_extended_vst3_id() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -563,7 +563,7 @@ fn vst3_ui_sink_maps_clap_division_to_extended_vst3_id() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_keeps_bypass_state_when_component_handler_is_missing() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -579,7 +579,7 @@ fn vst3_ui_sink_keeps_bypass_state_when_component_handler_is_missing() {
     assert!(!shared.params.bypassed());
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_keeps_bypass_state_when_component_handler_rejects_edit() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -617,7 +617,7 @@ fn vst3_ui_sink_keeps_bypass_state_when_component_handler_rejects_edit() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_short_circuits_when_component_handler_rejects_begin() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -651,7 +651,7 @@ fn vst3_ui_sink_short_circuits_when_component_handler_rejects_begin() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_commits_accepted_value_when_component_handler_rejects_end() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -839,7 +839,7 @@ fn active_lifecycle_invalidates_waveform_without_process_and_republishes_after_r
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[allow(dead_code)]
 fn controller_creates_editor_view_for_host_editor_request() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
@@ -852,15 +852,15 @@ fn controller_creates_editor_view_for_host_editor_request() {
 }
 
 #[test]
-#[cfg(not(target_os = "macos"))]
-fn controller_does_not_advertise_editor_view_off_macos() {
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn controller_does_not_advertise_editor_view_on_unsupported_platforms() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let view = unsafe { controller.createView(ViewType::kEditor) };
-    assert!(view.is_null(), "editor view is macOS-only");
+    assert!(view.is_null(), "editor view requires macOS or Windows");
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn view_enforces_minimum_size() {
     let (preferred_width, preferred_height) = preferred_window_size();
     let view = HostedVst3View::new(
@@ -882,7 +882,7 @@ fn view_enforces_minimum_size() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn view_reports_default_size_and_clamps_supported_maximum() {
     let (preferred_width, preferred_height) = preferred_window_size();
     let view = HostedVst3View::new(
@@ -909,7 +909,7 @@ fn view_reports_default_size_and_clamps_supported_maximum() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn view_normalizes_off_aspect_host_resize_and_preserves_origin() {
     let (preferred_width, preferred_height) = preferred_window_size();
     let view = HostedVst3View::new(
@@ -937,7 +937,7 @@ fn view_normalizes_off_aspect_host_resize_and_preserves_origin() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn vst3_gui_adapter_forwards_normalized_resize_to_host_window() {
     let adapter = PumpVst3GuiAdapter::new(Arc::new(PumpVst3Shared::new()));
     adapter.request_resize(MAX_WINDOW_WIDTH * 2, MIN_WINDOW_HEIGHT);
@@ -1061,7 +1061,7 @@ fn processor_applies_extended_division_in_sample_and_zero_frame_paths() {
         PARAM_SYNC_DIVISION_VST3_V2_NUM,
         vec![(0, to_normalized(PARAM_SYNC_DIVISION_VST3_V2_NUM, 9.0))],
     )]);
-    zero_frame.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    zero_frame.process_data.symbolicSampleSize = VST3_SAMPLE_64;
     zero_frame.process_data.inputParameterChanges = zero_frame_changes.as_ptr();
 
     assert_eq!(
@@ -1225,7 +1225,7 @@ fn zero_sample_parameter_flush_without_buses_applies_all_points_and_preserves_st
     ]);
     let mut process_data: ProcessData = unsafe { mem::zeroed() };
     process_data.numSamples = 0;
-    process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    process_data.symbolicSampleSize = VST3_SAMPLE_64;
     process_data.inputParameterChanges = changes.as_ptr();
 
     assert_eq!(
@@ -1286,7 +1286,7 @@ fn zero_sample_parameter_flush_with_empty_stereo_buffers_preserves_host_state() 
             vec![(0, to_normalized(PARAM_FREE_RATE_NUM, 9.0))],
         ),
     ]);
-    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.symbolicSampleSize = VST3_SAMPLE_64;
     fixture.process_data.inputParameterChanges = changes.as_ptr();
 
     assert_eq!(
@@ -1356,7 +1356,7 @@ fn zero_sample_parameter_flush_with_declared_null_buffers_reconciles_mapping_onc
             vec![(0, to_normalized(PARAM_SWING_NUM, 0.35))],
         ),
     ]);
-    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.symbolicSampleSize = VST3_SAMPLE_64;
     fixture.process_data.inputParameterChanges = changes.as_ptr();
 
     assert_eq!(
@@ -1504,7 +1504,7 @@ fn processor_rejects_unwritable_output_instead_of_claiming_success() {
 fn processor_rejects_unsupported_sample_size_without_touching_output() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let mut fixture = stereo_process_fixture(32, 9.0);
-    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.symbolicSampleSize = VST3_SAMPLE_64;
 
     let result = unsafe { processor.process(&mut fixture.process_data) };
 
@@ -1563,7 +1563,7 @@ fn processor_accepts_a_positive_length_zero_bus_parameter_flush() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
     let mut process_data: ProcessData = unsafe { mem::zeroed() };
     process_data.numSamples = 64;
-    process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    process_data.symbolicSampleSize = VST3_SAMPLE_64;
 
     let result = unsafe { processor.process(&mut process_data) };
 
@@ -1576,7 +1576,7 @@ fn processor_accepts_an_omitted_deactivated_output_bus() {
     let mut fixture = stereo_process_fixture(64, 9.0);
     fixture.process_data.numOutputs = 0;
     fixture.process_data.outputs = ptr::null_mut();
-    fixture.process_data.symbolicSampleSize = SymbolicSampleSizes_::kSample64 as i32;
+    fixture.process_data.symbolicSampleSize = VST3_SAMPLE_64;
 
     let result = unsafe { processor.process(&mut fixture.process_data) };
 
@@ -1674,11 +1674,12 @@ fn setup_and_state_handoffs_remain_nonblocking_during_processing() {
 }
 
 #[test]
+#[allow(clippy::unnecessary_cast)] // SDK enum signedness differs by target.
 fn transport_state_uses_vst3_process_context_when_available() {
     let context = ProcessContext {
         state: (ProcessContext_::StatesAndFlags_::kTempoValid
             | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid
-            | ProcessContext_::StatesAndFlags_::kPlaying),
+            | ProcessContext_::StatesAndFlags_::kPlaying) as u32,
         sampleRate: 48_000.0,
         projectTimeSamples: 0,
         systemTime: 0,
@@ -1711,7 +1712,7 @@ fn transport_state_defaults_without_process_context() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn key_char_prefers_char16_and_falls_back_to_key_code() {
     use toybox::vst3::prelude::Steinberg::VirtualKeyCodes_::{
         KEY_BACK, KEY_END, KEY_ESCAPE, KEY_LEFT, KEY_RETURN,
@@ -1743,7 +1744,7 @@ fn key_char_prefers_char16_and_falls_back_to_key_code() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn shortcut_modifiers_decode_vst3_bits() {
     let modifiers = PumpVst3GuiAdapter::shortcut_modifiers(0b1001);
     assert!(modifiers.shift);

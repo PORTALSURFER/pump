@@ -5,17 +5,40 @@ edition = "2021"
 publish = false
 resolver = "2"
 build = "build.rs"
+autoexamples = false
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "pump_gpui_screenshot"
+path = "examples/pump_gpui_screenshot.rs"
+required-features = ["screenshot-test"]
+test = false
+bench = false
+
+[[bin]]
+name = "pump_gpui_input"
+path = "examples/pump_gpui_input.rs"
+required-features = ["screenshot-test"]
+test = false
+bench = false
 
 [dependencies]
-radiant = { git = "https://github.com/PORTALSURFER/radiant.git", rev = "7001b84b2c7edd4a286d167c183a5b35366156fc", default-features = false }
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "e8fcd2e99b1fb62b3d869b6e5312a12700c82fdf", features = ["radiant-gui"] }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "f6a4a9cc05750d2831752afe05f23a175c85e28f", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+unicode-segmentation = "1.12"
 
 [build-dependencies]
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "e8fcd2e99b1fb62b3d869b6e5312a12700c82fdf", default-features = false }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "f6a4a9cc05750d2831752afe05f23a175c85e28f", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2"
+raw-window-handle = "0.5.2"
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows = { version = "0.62", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
@@ -23,7 +46,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 [features]
 # Default to CLAP-only builds so CI does not require the VST3 SDK. Enable VST3
 # explicitly when producing a VST3 binary.
-default = ["radiant-gui"]
-radiant-gui = ["toybox/radiant-gui"]
-vst3 = ["toybox/radiant-vst3", "radiant-gui"]
-screenshot-test = ["dep:image", "radiant-gui"]
+default = ["gpui-gui"]
+gpui-gui = ["toybox/gpui-gui"]
+vst3 = ["toybox/gpui-vst3", "gpui-gui"]
+screenshot-test = ["dep:image", "gpui-gui"]

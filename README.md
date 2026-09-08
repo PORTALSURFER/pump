@@ -65,7 +65,7 @@ the immutable bundle. The token is never accepted as a command-line argument.
 verifies notarization on both macOS bundles. The macOS Actions job cannot run
 until the production environment has all Apple certificate/notary secrets;
 publish runs also need the PortalSurfer release token and scoped publisher App
-credentials. Public Toybox and Radiant dependencies need no repository token. The
+credentials. Public Toybox and GPUI dependencies need no repository token. The
 Windows job receives no publishing or OIDC credentials and never signs the
 Windows binary. See [docs/WINDOWS_RELEASE.md](docs/WINDOWS_RELEASE.md) for its
 exact bundle and sidecar contract.

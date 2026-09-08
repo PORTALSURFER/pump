@@ -1,4 +1,4 @@
-//! Shared Radiant editor contract and layout helpers for Pump.
+//! Shared Pump editor contract and layout helpers.
 
 use toybox::clack_extensions::gui::GuiSize;
 
@@ -6,34 +6,20 @@ use crate::curve::{CurveNode, EditableCurve};
 
 #[cfg(all(
     any(target_os = "macos", target_os = "windows"),
-    any(feature = "radiant-gui", feature = "vst3", test)
+    any(feature = "gpui-gui", feature = "vst3", test)
 ))]
-mod radiant_editor;
+pub mod gui_gpui;
 
 mod curve_paint;
+mod model;
+mod projection;
+
+#[cfg(all(feature = "vst3", test))]
+pub(crate) use model::try_toggle_bypass;
+#[cfg(feature = "vst3")]
+pub(crate) use model::HostParamEditSink;
 
 pub(crate) mod visual_system;
-
-#[cfg(all(target_os = "macos", feature = "screenshot-test", test))]
-mod screenshot_tests;
-
-#[cfg(all(
-    any(target_os = "macos", target_os = "windows"),
-    feature = "vst3",
-    test
-))]
-pub(crate) use radiant_editor::try_toggle_bypass;
-#[cfg(all(
-    any(target_os = "macos", target_os = "windows"),
-    any(feature = "radiant-gui", feature = "vst3")
-))]
-#[cfg(feature = "vst3")]
-pub(crate) use radiant_editor::HostParamEditSink;
-#[cfg(all(
-    any(target_os = "macos", target_os = "windows"),
-    any(feature = "radiant-gui", feature = "vst3", test)
-))]
-pub(crate) use radiant_editor::{HostParamFlushRequester, RadiantPumpEditor};
 
 /// Minimum supported logical editor size.
 pub const MIN_WINDOW_WIDTH: u32 = 640;
@@ -48,6 +34,7 @@ pub const MAX_WINDOW_HEIGHT: u32 = 800;
 const PRESET_WARNING_STORAGE: &str = "NOT SAVED - CHECK PRESET FOLDER";
 
 /// Return a stable preferred size before a host has opened the child view.
+#[allow(dead_code)]
 pub(crate) fn preferred_window_size() -> (u32, u32) {
     (WINDOW_WIDTH, WINDOW_HEIGHT)
 }

@@ -21,7 +21,7 @@ pump-v{publication_version}-windows-x86_64-unsigned.vst3.zip
 The archive contains only the one VST3 binary at
 `Pump-v{package_version}.vst3/Contents/x86_64-win/Pump-v{package_version}.vst3`.
 `windows-artifact-manifest.json` records the PE32+ amd64/no-Authenticode
-check, archive topology, source SHA, Toybox/Radiant/VST3 SDK revisions, runner,
+check, archive topology, source SHA, Toybox/GPUI core/GPUI renderer/VST3 SDK revisions, runner,
 Rust, and CPython provenance. The macOS assembly validates that sidecar before
 creating the schema-3 nightly manifest.
 
@@ -30,7 +30,8 @@ Windows workflow runs are inspection-only and do not alter or publish a stable
 or RC release.
 
 The required dependency revisions are Toybox
-`f09da33076a436a6c841e71622759f6e2fe705af` and Radiant
-`c1343993c973bdece3e8cd469415b0d08c7f6cf1`. The final publisher checkout is
+`f6a4a9cc05750d2831752afe05f23a175c85e28f` and GPUI core/renderer
+`77a1325a13bd0d3631f737b98445b70c8c936cb7`. Both GPUI crates must use
+the same repository and revision. The final publisher checkout is
 pinned to PortalSurfer commit
 `12d2c089d3d135c6839013a097dbf3baebf5fdb3`, the merged generic publisher.

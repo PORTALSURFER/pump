@@ -37,7 +37,8 @@ VST3_SDK_REPOSITORY = "https://github.com/steinbergmedia/vst3sdk.git"
 VST3_SDK_REVISION = "58f8da7936800732561402d7936584ca4505de07"
 DEPENDENCY_REPOSITORIES = {
     "toybox": "https://github.com/PORTALSURFER/toybox.git",
-    "radiant": "https://github.com/PORTALSURFER/radiant.git",
+    "gpui": "https://github.com/PORTALSURFER/gpui-embedded.git",
+    "gpui_wgpu": "https://github.com/PORTALSURFER/gpui-embedded.git",
     "vst3sdk": VST3_SDK_REPOSITORY,
 }
 REQUIRED_DEPENDENCIES = frozenset(DEPENDENCY_REPOSITORIES)
@@ -327,7 +328,7 @@ def load_dependency_revisions(lockfile: Path) -> dict[str, dict[str, str]]:
         raise ValueError("Cargo.lock does not contain package entries")
 
     dependencies: dict[str, dict[str, str]] = {}
-    for name in ("toybox", "radiant"):
+    for name in ("toybox", "gpui", "gpui_wgpu"):
         candidates = [package for package in packages if isinstance(package, dict) and package.get("name") == name]
         if len(candidates) != 1:
             raise ValueError(f"Cargo.lock must contain exactly one {name} package")
@@ -335,6 +336,8 @@ def load_dependency_revisions(lockfile: Path) -> dict[str, dict[str, str]]:
         if dependency["repository"] != DEPENDENCY_REPOSITORIES[name]:
             raise ValueError(f"Cargo.lock {name} repository is not the expected dependency")
         dependencies[name] = dependency
+    if dependencies["gpui"] != dependencies["gpui_wgpu"]:
+        raise ValueError("GPUI core and renderer must use the same git revision")
     return dependencies
 
 
@@ -384,6 +387,8 @@ def _validate_dependencies(dependencies: Mapping[str, Any]) -> dict[str, dict[st
         if repository != DEPENDENCY_REPOSITORIES[name] or not isinstance(revision, str) or SHA1.fullmatch(revision) is None:
             raise ValueError(f"manifest dependency revision is invalid: {name}")
         normalized[name] = {"repository": repository, "revision": revision}
+    if normalized["gpui"] != normalized["gpui_wgpu"]:
+        raise ValueError("GPUI core and renderer must use the same git revision")
     return normalized
 
 

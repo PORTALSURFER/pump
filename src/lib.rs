@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use toybox::clack_extensions::audio_ports::*;
-#[cfg(all(target_os = "macos", feature = "radiant-gui"))]
-use toybox::clack_extensions::gui::PluginGui;
+#[cfg(all(any(target_os = "macos", target_os = "windows"), feature = "gpui-gui"))]
+use toybox::clack_extensions::gui::{PluginGui, PluginGuiImpl};
 use toybox::clack_extensions::params::*;
 use toybox::clack_extensions::state::{PluginState, PluginStateImpl};
 use toybox::clack_plugin;
@@ -23,14 +23,6 @@ use toybox::dsp::{AtomicF32, TransportState};
 
 use crate::automation_queue::PumpAutomationQueue;
 use crate::dsp::{DspSettings, PumpEngine};
-#[cfg(all(target_os = "macos", feature = "radiant-gui"))]
-use crate::gui::HostParamFlushRequester;
-#[cfg(all(target_os = "macos", feature = "radiant-gui"))]
-use crate::gui::RadiantPumpEditor;
-use crate::gui::{
-    MAX_WINDOW_HEIGHT, MAX_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, WINDOW_HEIGHT,
-    WINDOW_WIDTH,
-};
 use crate::params::{
     apply_clap_param_event, clap_value_from_plain_value, decode_state_payload,
     encode_state_payload, get_param_value, param_count, plain_value_from_clap_value, text_to_value,
@@ -47,6 +39,11 @@ mod curve;
 mod curve_presets;
 mod dsp;
 mod gui;
+#[cfg(all(
+    any(target_os = "macos", target_os = "windows"),
+    feature = "screenshot-test"
+))]
+pub use gui::gui_gpui;
 mod gui_status;
 mod incoming_waveform;
 mod params;
@@ -144,7 +141,7 @@ impl Plugin for PumpPlugin {
             .register::<PluginAudioPorts>()
             .register::<PluginParams>()
             .register::<PluginState>();
-        #[cfg(all(target_os = "macos", feature = "radiant-gui"))]
+        #[cfg(all(any(target_os = "macos", target_os = "windows"), feature = "gpui-gui"))]
         builder.register::<PluginGui>();
     }
 }
@@ -174,24 +171,12 @@ impl DefaultPluginFactory for PumpPlugin {
         let host_shared = host.shared();
         Ok(PumpMainThread {
             shared,
-            #[cfg(all(target_os = "macos", feature = "radiant-gui"))]
-            gui: toybox::radiant_gui::RadiantHostedGui::new(
-                "PumpRadiantClapEditorView",
-                RadiantPumpEditor::new(
-                    Arc::clone(&shared.params),
-                    Arc::clone(&shared.status),
-                    Arc::clone(&shared.automation_queue),
-                    HostParamFlushRequester::new(host_shared),
-                    WINDOW_WIDTH,
-                    WINDOW_HEIGHT,
-                ),
-                WINDOW_WIDTH,
-                WINDOW_HEIGHT,
-            )
-            .with_size_contract(
-                (MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
-                (WINDOW_WIDTH, WINDOW_HEIGHT),
-                (MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT),
+            #[cfg(all(any(target_os = "macos", target_os = "windows"), feature = "gpui-gui"))]
+            gui: crate::gui::gui_gpui::new_gui(
+                Arc::clone(&shared.params),
+                Arc::clone(&shared.status),
+                Arc::clone(&shared.automation_queue),
+                crate::gui::gui_gpui::HostParamFlushRequester::new(host_shared),
             ),
             automation_drain: Vec::new(),
         })
@@ -215,8 +200,8 @@ pub struct PumpMainThread<'a> {
     /// Shared plugin resources.
     shared: &'a PumpShared,
     /// Host-parented editor wrapper.
-    #[cfg(all(target_os = "macos", feature = "radiant-gui"))]
-    gui: toybox::radiant_gui::RadiantHostedGui,
+    #[cfg(all(any(target_os = "macos", target_os = "windows"), feature = "gpui-gui"))]
+    gui: toybox::gpui_gui::GpuiHostedGui,
     /// Scratch vector for draining queued automation events.
     automation_drain: Vec<AutomationEvent>,
 }
@@ -224,5 +209,14 @@ pub struct PumpMainThread<'a> {
 pub use gui_status::{GuiStatus, GuiTransportTelemetry};
 use plugin_processor::PumpAudioProcessor;
 use transport::{gui_phase_from_transport, gui_transport_telemetry};
+
+#[cfg(all(any(target_os = "macos", target_os = "windows"), feature = "gpui-gui"))]
+impl PluginGuiImpl for PumpMainThread<'_> {
+    toybox::gpui_clap_gui_callbacks!(
+        gui = gui,
+        preferred_size = crate::gui::gui_gpui::preferred_window_size,
+        show = |_main_thread| Ok(())
+    );
+}
 
 toybox::clap_plugin_entry!(PumpPlugin);
