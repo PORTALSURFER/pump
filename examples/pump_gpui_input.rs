@@ -295,6 +295,16 @@ mod macos {
         }
     }
 
+    fn capture_frame(gui: &toybox::gpui_gui::GpuiHostedGui, context: &str) {
+        let (width, height, pixels) = gui
+            .capture_rgba()
+            .unwrap_or_else(|error| panic!("{context} should render a GPUI frame: {error}"));
+        assert!(
+            width > 0 && height > 0 && !pixels.is_empty(),
+            "{context} should produce visible GPUI pixels"
+        );
+    }
+
     unsafe fn send_mouse_event(window: id, event_type: usize, x: f64, top_y: f64, modifiers: u64) {
         let window_number: isize = msg_send![window, windowNumber];
         let location = NSPoint::new(x, f64::from(OUTPUT_HEIGHT) - top_y);
@@ -526,6 +536,7 @@ mod macos {
             makeFirstResponder: std::ptr::null_mut::<Object>()
         ];
         pump_appkit(app, &gui, 0.1);
+        capture_frame(&gui, "opened editor");
 
         let initial_sync_division = params.sync_division();
         let initial_bypass = params.bypassed();
@@ -542,7 +553,7 @@ mod macos {
         // sync subdivision must update the shared parameter and close it.
         let selected_sync_division = if initial_sync_division == 6 { 5 } else { 6 };
         send_click(fixture.window, TIMING_VALUE_X, TIMING_VALUE_Y, 0);
-        pump_appkit(app, &gui, 0.03);
+        capture_frame(&gui, "opened timing dropdown");
         send_click(
             fixture.window,
             TIMING_VALUE_X,
@@ -683,7 +694,7 @@ mod macos {
             "native timing mode button should enter free-rate mode"
         );
         send_click(fixture.window, TIMING_VALUE_X, TIMING_VALUE_Y, 0);
-        pump_appkit(app, &gui, 0.03);
+        capture_frame(&gui, "opened free-rate unit dropdown");
         send_click(
             fixture.window,
             TIMING_VALUE_X,
@@ -777,6 +788,7 @@ mod macos {
             makeFirstResponder: std::ptr::null_mut::<Object>()
         ];
         pump_appkit(app, &gui, 0.1);
+        capture_frame(&gui, "reopened editor");
         assert_delay_text_edit(app, fixture, &gui, "6");
         assert_eq!(
             params.delay_beats(),
