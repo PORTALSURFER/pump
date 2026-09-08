@@ -19,7 +19,7 @@ Runs the same checks locally that CI enforces:
 Options:
   --vst3  Run checks with --features vst3 if the plugin defines a vst3 feature.
           Requires VST3_SDK_DIR to be set when the feature exists.
-  --screenshots  Run the Radiant supported-size screenshot contract when the
+  --screenshots  Run the GPUI supported-size screenshot contract when the
                  plugin defines the `screenshot-test` cargo feature.
 EOF
 }
@@ -73,7 +73,7 @@ if [[ "${want_screenshots}" == "1" ]]; then
   rm -rf target/ui-screenshots
   mkdir -p target/ui-screenshots
 
-  cargo test --locked -r --features screenshot-test gui::screenshot_tests -- --nocapture
+  TOYBOX_UI_SCREENSHOT=1 cargo test --locked -r --features screenshot-test --test gpui_screenshot -- --nocapture
 
   required_captures=(
     target/ui-screenshots/pump/pump-min-640x400.png

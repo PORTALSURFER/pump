@@ -70,3 +70,6 @@ use processor::PumpVst3Processor;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_editor_tests;

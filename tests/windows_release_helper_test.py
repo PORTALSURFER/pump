@@ -20,7 +20,7 @@ import windows_release_helper
 
 SOURCE_SHA = "a" * 40
 TOYBOX_REVISION = "b" * 40
-RADIANT_REVISION = "c" * 40
+GPUI_REVISION = "c" * 40
 SDK_REVISION = "d" * 40
 RUNNER_IMAGE_VERSION = "20260901.1.0"
 RUSTC_VERSION = "rustc 1.97.1 (8bab26f4f 2026-07-14)"
@@ -74,13 +74,27 @@ version = "0.1.0"
 source = "git+https://github.com/PORTALSURFER/toybox.git?rev={TOYBOX_REVISION}#{TOYBOX_REVISION}"
 
 [[package]]
-name = "radiant"
+name = "gpui"
+version = "0.2.2"
+source = "git+https://github.com/PORTALSURFER/gpui-embedded.git?rev={GPUI_REVISION}#{GPUI_REVISION}"
+
+[[package]]
+name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/PORTALSURFER/radiant.git?rev={RADIANT_REVISION}#{RADIANT_REVISION}"
+source = "git+https://github.com/PORTALSURFER/gpui-embedded.git?rev={GPUI_REVISION}#{GPUI_REVISION}"
 '''
 
 
 class WindowsReleaseHelperTests(unittest.TestCase):
+    def test_rejects_mismatched_gpui_renderer_revision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lockfile = Path(temporary) / "Cargo.lock"
+            lockfile.write_text(cargo_lock().replace(
+                f"?rev={GPUI_REVISION}#{GPUI_REVISION}",
+                f"?rev={'e' * 40}#{'e' * 40}", 1), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "same git revision"):
+                windows_release_helper.load_dependency_revisions(lockfile)
+
     def package(self, root: Path, *, binary_data: bytes | None = None, output_name: str = "release") -> tuple[dict, Path, Path]:
         binary = root / "dist" / "Pump-v0.1.0.vst3" / "Contents" / "x86_64-win" / "Pump-v0.1.0.vst3"
         binary.parent.mkdir(parents=True, exist_ok=True)
@@ -115,7 +129,8 @@ class WindowsReleaseHelperTests(unittest.TestCase):
             self.assertIsNone(manifest["signing_certificate"])
             self.assertEqual(manifest["source"]["git_sha"], SOURCE_SHA)
             self.assertEqual(manifest["dependencies"]["toybox"]["revision"], TOYBOX_REVISION)
-            self.assertEqual(manifest["dependencies"]["radiant"]["revision"], RADIANT_REVISION)
+            self.assertEqual(manifest["dependencies"]["gpui"]["revision"], GPUI_REVISION)
+            self.assertEqual(manifest["dependencies"]["gpui_wgpu"]["revision"], GPUI_REVISION)
             self.assertEqual(manifest["dependencies"]["vst3sdk"]["revision"], SDK_REVISION)
             self.assertEqual(manifest["build_environment"], build_environment())
             self.assertEqual(
@@ -135,6 +150,13 @@ class WindowsReleaseHelperTests(unittest.TestCase):
                 cargo_lock=lockfile,
                 vst3_sdk_revision=SDK_REVISION,
             )
+
+    def test_manifest_rejects_mismatched_gpui_renderer_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, output, _ = self.package(Path(directory))
+            manifest["dependencies"]["gpui_wgpu"]["revision"] = "e" * 40
+            with self.assertRaisesRegex(ValueError, "same git revision"):
+                windows_release_helper.validate_manifest(manifest, output)
 
     def test_package_and_manifest_are_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

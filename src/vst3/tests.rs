@@ -449,7 +449,7 @@ fn controller_marks_only_appended_bypass_as_stepped_host_bypass() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_delivers_begin_value_end_on_component_handler() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -487,7 +487,7 @@ fn vst3_ui_sink_delivers_begin_value_end_on_component_handler() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_delivers_continuous_begin_value_end_on_component_handler() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -524,7 +524,7 @@ fn vst3_ui_sink_delivers_continuous_begin_value_end_on_component_handler() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_maps_clap_division_to_extended_vst3_id() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -563,7 +563,7 @@ fn vst3_ui_sink_maps_clap_division_to_extended_vst3_id() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_keeps_bypass_state_when_component_handler_is_missing() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -579,7 +579,7 @@ fn vst3_ui_sink_keeps_bypass_state_when_component_handler_is_missing() {
     assert!(!shared.params.bypassed());
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_keeps_bypass_state_when_component_handler_rejects_edit() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -617,7 +617,7 @@ fn vst3_ui_sink_keeps_bypass_state_when_component_handler_rejects_edit() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_short_circuits_when_component_handler_rejects_begin() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -651,7 +651,7 @@ fn vst3_ui_sink_short_circuits_when_component_handler_rejects_begin() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn vst3_ui_sink_commits_accepted_value_when_component_handler_rejects_end() {
     let shared = Arc::new(PumpVst3Shared::new());
@@ -839,7 +839,7 @@ fn active_lifecycle_invalidates_waveform_without_process_and_republishes_after_r
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[allow(dead_code)]
 fn controller_creates_editor_view_for_host_editor_request() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
@@ -852,15 +852,15 @@ fn controller_creates_editor_view_for_host_editor_request() {
 }
 
 #[test]
-#[cfg(not(target_os = "macos"))]
-fn controller_does_not_advertise_editor_view_off_macos() {
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn controller_does_not_advertise_editor_view_on_unsupported_platforms() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let view = unsafe { controller.createView(ViewType::kEditor) };
-    assert!(view.is_null(), "editor view is macOS-only");
+    assert!(view.is_null(), "editor view requires macOS or Windows");
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn view_enforces_minimum_size() {
     let (preferred_width, preferred_height) = preferred_window_size();
     let view = HostedVst3View::new(
@@ -882,7 +882,7 @@ fn view_enforces_minimum_size() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn view_reports_default_size_and_clamps_supported_maximum() {
     let (preferred_width, preferred_height) = preferred_window_size();
     let view = HostedVst3View::new(
@@ -909,7 +909,7 @@ fn view_reports_default_size_and_clamps_supported_maximum() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn view_normalizes_off_aspect_host_resize_and_preserves_origin() {
     let (preferred_width, preferred_height) = preferred_window_size();
     let view = HostedVst3View::new(
@@ -937,7 +937,7 @@ fn view_normalizes_off_aspect_host_resize_and_preserves_origin() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn vst3_gui_adapter_forwards_normalized_resize_to_host_window() {
     let adapter = PumpVst3GuiAdapter::new(Arc::new(PumpVst3Shared::new()));
     adapter.request_resize(MAX_WINDOW_WIDTH * 2, MIN_WINDOW_HEIGHT);
@@ -1711,7 +1711,7 @@ fn transport_state_defaults_without_process_context() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn key_char_prefers_char16_and_falls_back_to_key_code() {
     use toybox::vst3::prelude::Steinberg::VirtualKeyCodes_::{
         KEY_BACK, KEY_END, KEY_ESCAPE, KEY_LEFT, KEY_RETURN,
@@ -1743,7 +1743,7 @@ fn key_char_prefers_char16_and_falls_back_to_key_code() {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn shortcut_modifiers_decode_vst3_bits() {
     let modifiers = PumpVst3GuiAdapter::shortcut_modifiers(0b1001);
     assert!(modifiers.shift);

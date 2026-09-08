@@ -1,15 +1,14 @@
 # Pump visual system
 
-Pump uses a fixed dark-coral visual system over the reusable Radiant `ThemeTokens`
-surface. `src/gui/visual_system.rs` is the Pump-local contract; it intentionally
-does not add Pump-specific fields to Radiant.
+Pump uses a fixed dark-coral visual system rendered with GPUI through Toybox.
+`src/gui/visual_system.rs` is the Pump-local contract; the GUI framework migration
+preserves its palette, typography, spacing and control states.
 
 ## Palette
 
-All values are RGBA and are the canonical Radiant dark palette values used by
-`pump_theme()` at every supported viewport tier.
+All values are RGBA. These colors remain fixed at every supported viewport tier.
 
-| Semantic token | Radiant field | Value |
+| Semantic token | Original token mapping | Value |
 | --- | --- | --- |
 | canvas | `clear_color` / `bg_primary` | `#1B1E1EFF` |
 | header | `surface_raised` | `#1B1E1EFF` |
@@ -36,11 +35,10 @@ Meter aliases are `track = grid_soft`, `nominal = coral secondary`,
 Roles are brand 22/28, body 14/18, value 12/16, control label 10/16, and meta
 9/14 (font size / line height in logical pixels). Text uses the license-safe
 Ioskeley Mono face first, Sometype Mono for glyph-aware fallback, then the
-native/system fallback. The current offscreen capture path cannot prove native
-font selection; host/runtime glyph diagnostics remain the authoritative evidence
-for that final fallback.
+native/system fallback. Native GPUI captures and host/runtime glyph diagnostics verify rendering and
+font fallback.
 
-Shared controls use the retained Lucide v0.468 ISC catalog in Radiant: `History`,
+Controls preserve the Lucide v0.468 ISC icon identities: `History`,
 `CompareAb`, `Settings`, `Favorite`, `ChevronLeft`, `ChevronRight`,
 `ChevronUp`, `ChevronDown`, `Trigger`, `Pattern`, and `Power`. Icon identity is
 retained SVG identity, never a single-character text approximation.
@@ -77,7 +75,7 @@ border/ring and patterned or animated cues, selection also uses a knob tick or
 outline, pressed uses a stronger fill, and disabled uses reduced contrast and
 suppressed automation motion. These cues do not depend on color alone.
 
-Reusable control primitives belong in Toybox/Radiant when they serve more than
+Reusable control primitives belong in Toybox/GPUI when they serve more than
 Pump. Pump owns this palette aliasing, the editor composition, and Pump-specific
 meter/curve treatment. Header/deck composition and new controls remain outside
 this bounded visual-system slice.

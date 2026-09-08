@@ -369,16 +369,6 @@ fn smooth_gain_reduction_db(current: f32, target: f32, elapsed_seconds: f32) -> 
     (current + (target - current) * alpha).clamp(0.0, GAIN_REDUCTION_METER_MAX_DB)
 }
 
-#[allow(clippy::question_mark)]
-#[cfg(all(target_os = "macos", feature = "radiant-gui"))]
-impl<'a> toybox::clack_extensions::gui::PluginGuiImpl for PumpMainThread<'a> {
-    toybox::radiant_clap_gui_callbacks!(
-        gui = gui,
-        preferred_size = crate::gui::preferred_window_size,
-        show = |_plugin: &mut Self| Ok(())
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use crate::dsp::db_to_linear;
