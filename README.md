@@ -47,11 +47,10 @@ Apple Developer ID/notarization credentials configured, run:
 bash scripts/release.sh --package-only --channel stable
 ```
 
-Nightly releases use the package version already on `main` and derive a
-publication version such as `0.2.6-nightly.123` from the workflow sequence. The
-workflow does not edit `main`, create a version-bump commit, or rebuild from a
-different source SHA: prepare, Windows, and macOS all use one immutable source
-and build identity.
+Nightly releases prepare a protected version-bump PR before building. Each new
+nightly advances the package patch once; retries reuse an unpublished version.
+Use the nightly scheduler rather than dispatching an unprepared production
+nightly directly. See [docs/NIGHTLY_RELEASES.md](docs/NIGHTLY_RELEASES.md).
 
 Stable/RC creates `dist/releases/<build-id>/` containing the two macOS
 host-installable ZIP bundles, `pump-default-640x400.png`, `CHANGELOG.md`, and

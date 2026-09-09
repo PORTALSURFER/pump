@@ -103,6 +103,17 @@ def successful_api(*, newer_conclusion: str = "success") -> FakeApi:
                     ("page", "1"),
                 ),
             ): {"total_count": 2, "workflow_runs": [older, newer]},
+            (
+                f"/actions/workflows/{WORKFLOW_ID}/runs",
+                (
+                    ("branch", "main"),
+                    ("event", "workflow_dispatch"),
+                    ("head_sha", SOURCE_SHA),
+                    ("status", "completed"),
+                    ("per_page", "100"),
+                    ("page", "1"),
+                ),
+            ): {"total_count": 0, "workflow_runs": []},
             (f"/actions/runs/{newer['id']}/attempts/1", ()): newer,
             (
                 f"/actions/runs/{newer['id']}/attempts/1/jobs",
@@ -125,6 +136,32 @@ class ReleasePreflightGateTests(unittest.TestCase):
         self.assertIn(("head_sha", SOURCE_SHA), run_query)
         self.assertIn(("branch", "main"), run_query)
         self.assertIn(("event", "push"), run_query)
+
+    def test_dispatched_main_preflight_requires_the_same_identity_and_approval(self) -> None:
+        api = successful_api()
+        run_keys = [key for key in api.responses if key[0].endswith("/runs")]
+        push_key = next(key for key in run_keys if ("event", "push") in key[1])
+        dispatch_key = next(key for key in run_keys if ("event", "workflow_dispatch") in key[1])
+        dispatched = run(101, 11)
+        dispatched["event"] = "workflow_dispatch"
+        api.responses[push_key] = {"total_count": 0, "workflow_runs": []}
+        api.responses[dispatch_key] = {"total_count": 1, "workflow_runs": [dispatched]}
+        api.responses[("/actions/runs/101/attempts/1", ())] = dispatched
+        self.assertEqual(release_preflight_gate.verify_publisher_preflight(api, SOURCE_SHA)["run_id"], 101)
+        api.responses[("/actions/runs/101/approvals", ())] = []
+        with self.assertRaises(release_preflight_gate.GateError):
+            release_preflight_gate.verify_publisher_preflight(api, SOURCE_SHA)
+
+    def test_dispatched_preflight_cannot_substitute_another_branch_or_sha(self) -> None:
+        for field, value in [("head_branch", "codex/nightly-version"), ("head_sha", "b" * 40), ("event", "pull_request")]:
+            with self.subTest(field=field):
+                candidate = run(101, 11)
+                candidate["event"] = "workflow_dispatch"
+                candidate[field] = value
+                with self.assertRaises(release_preflight_gate.GateError):
+                    release_preflight_gate.select_latest_run(
+                        {"total_count": 1, "workflow_runs": [candidate]}, SOURCE_SHA, WORKFLOW_ID
+                    )
 
     def test_newer_failed_or_cancelled_run_blocks_even_with_older_success(self) -> None:
         for conclusion in ("failure", "cancelled"):

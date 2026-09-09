@@ -206,6 +206,135 @@ class ReleaseHelperTests(unittest.TestCase):
             )
         )
 
+    def test_nightly_version_planner_skips_unchanged_source_unless_forced(self) -> None:
+        source = "a" * 40
+        document = {
+            "releases": [
+                {
+                    "channel": "nightly",
+                    "version": "0.2.6-nightly.73",
+                    "released_at": "2026-09-09T08:55:04Z",
+                    "source": {"repository": "PORTALSURFER/pump", "git_sha": source},
+                }
+            ]
+        }
+        self.assertIsNone(
+            release_helper.plan_nightly_version(
+                package_version="0.2.6", source_sha=source, document=document
+            )
+        )
+        self.assertEqual(
+            release_helper.plan_nightly_version(
+                package_version="0.2.6", source_sha=source, document=document, force=True
+            ),
+            "0.2.7",
+        )
+
+    def test_nightly_version_planner_increments_equal_or_lower_public_version(self) -> None:
+        source = "a" * 40
+        document = {
+            "releases": [
+                {
+                    "channel": "nightly",
+                    "version": "0.2.6-nightly.73",
+                    "released_at": "2026-09-09T08:55:04Z",
+                    "source": {"repository": "PORTALSURFER/pump", "git_sha": source},
+                }
+            ]
+        }
+        self.assertEqual(
+            release_helper.plan_nightly_version(
+                package_version="0.2.6", source_sha="b" * 40, document=document
+            ),
+            "0.2.7",
+        )
+        self.assertEqual(
+            release_helper.plan_nightly_version(
+                package_version="0.2.5", source_sha="b" * 40, document=document
+            ),
+            "0.2.7",
+        )
+
+    def test_nightly_version_planner_reuses_ahead_package_and_handles_empty_history(self) -> None:
+        source = "a" * 40
+        document = {
+            "releases": [
+                {
+                    "channel": "nightly",
+                    "version": "0.2.6-nightly.73",
+                    "released_at": "2026-09-09T08:55:04Z",
+                    "source": {"repository": "PORTALSURFER/pump", "git_sha": source},
+                }
+            ]
+        }
+        self.assertEqual(
+            release_helper.plan_nightly_version(
+                package_version="0.2.7", source_sha="b" * 40, document=document
+            ),
+            "0.2.7",
+        )
+        self.assertEqual(
+            release_helper.plan_nightly_version(
+                package_version="0.2.6", source_sha="b" * 40, document={"releases": []}
+            ),
+            "0.2.7",
+        )
+
+    def test_nightly_release_decision_only_noops_for_exact_publication_identity(self) -> None:
+        source = "a" * 40
+        publication = "0.2.7-nightly.74"
+        build_id = f"pump-v{publication}-{source[:12]}"
+        document = {
+            "releases": [
+                {
+                    "channel": "nightly",
+                    "version": publication,
+                    "build_id": build_id,
+                    "released_at": "2026-09-09T08:55:04Z",
+                    "source": {"repository": "PORTALSURFER/pump", "git_sha": source},
+                }
+            ]
+        }
+        self.assertFalse(
+            release_helper.nightly_release_decision(
+                package_version="0.2.7",
+                publication_version=publication,
+                build_id=build_id,
+                source_sha=source,
+                document=document,
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "must advance"):
+            release_helper.nightly_release_decision(
+                package_version="0.2.7",
+                publication_version="0.2.7-nightly.75",
+                build_id=f"pump-v0.2.7-nightly.75-{source[:12]}",
+                source_sha=source,
+                document=document,
+            )
+
+    def test_nightly_version_planner_validates_identity_and_history(self) -> None:
+        with self.assertRaisesRegex(ValueError, "source SHA"):
+            release_helper.plan_nightly_version(
+                package_version="0.2.6", source_sha="invalid", document={"releases": []}
+            )
+        with self.assertRaisesRegex(ValueError, "numeric semver"):
+            release_helper.plan_nightly_version(
+                package_version="0.2", source_sha="a" * 40, document={"releases": []}
+            )
+        with self.assertRaisesRegex(ValueError, "release history"):
+            release_helper.plan_nightly_version(
+                package_version="0.2.6", source_sha="a" * 40, document={}
+            )
+        with self.assertRaisesRegex(ValueError, "nightly build identity"):
+            release_helper.nightly_release_decision(
+                package_version="0.2.7",
+                publication_version="0.2.7-nightly.74",
+                build_id="wrong",
+                source_sha="a" * 40,
+                document={"releases": []},
+            )
+
     def test_stable_and_rc_retain_schema2_macos_only_contract(self) -> None:
         for channel in ("stable", "rc"):
             with self.subTest(channel=channel), tempfile.TemporaryDirectory() as directory:
@@ -394,12 +523,15 @@ class ReleaseHelperTests(unittest.TestCase):
         self.assertIn("python3 tests/windows_release_helper_test.py", preflight)
         self.assertIn('PYTHONDONTWRITEBYTECODE: "1"', preflight)
 
-    def test_nightly_scheduler_does_not_receive_release_credentials_or_mutate_source(self) -> None:
+    def test_nightly_scheduler_is_main_only_and_has_no_release_credentials(self) -> None:
         workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "nightly.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("actions/workflows/release.yml/dispatches", workflow)
-        self.assertIn('\\"channel\\":\\"nightly\\"', workflow)
+        self.assertIn("python3 scripts/nightly_coordinator.py", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("github.repository == 'PORTALSURFER/pump'", workflow)
+        self.assertIn("permissions: {}", workflow)
+        self.assertNotIn("secrets.", workflow)
         self.assertNotIn("PORTALSURFER_RELEASE_TOKEN", workflow)
         self.assertNotIn("APPLE_", workflow)
         self.assertNotIn("git push", workflow)

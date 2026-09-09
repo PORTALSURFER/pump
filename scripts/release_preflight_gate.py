@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 WORKFLOW_FILE = ".github/workflows/release-preflight.yml"
 WORKFLOW_NAME = "Pump release preflight"
 BRANCH = "main"
-EVENT = "push"
+EVENTS = ("push", "workflow_dispatch")
 JOB_NAME = "publisher_integration"
 ENVIRONMENT_NAME = "publisher-integration"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
@@ -96,7 +96,7 @@ def _validate_run(document: Any, expected_sha: str, workflow_id: int) -> dict[st
         or run.get("path") != WORKFLOW_FILE
         or run.get("head_sha") != expected_sha
         or run.get("head_branch") != BRANCH
-        or run.get("event") != EVENT
+        or run.get("event") not in EVENTS
         or run.get("status") != "completed"
         or not isinstance(run.get("conclusion"), str)
         or not run["conclusion"]
@@ -288,19 +288,26 @@ def verify_publisher_preflight(api: GitHubApi, expected_sha: str) -> dict[str, i
     expected_sha = _sha(expected_sha, "expected source SHA")
     workflow = api.get(f"/actions/workflows/{quote('release-preflight.yml', safe='')}")
     workflow_id = validate_workflow(workflow)
-    runs = _paged(
-        api,
-        f"/actions/workflows/{workflow_id}/runs",
-        "workflow_runs",
-        "workflow runs",
-        [
-            ("branch", BRANCH),
-            ("event", EVENT),
-            ("head_sha", expected_sha),
-            ("status", "completed"),
-            ("per_page", "100"),
-        ],
-    )
+    # GITHUB_TOKEN merges do not trigger push workflows. The coordinator
+    # explicitly dispatches the same protected preflight on main instead.
+    # Query both trusted entry points; keep all identity and approval checks.
+    candidates = []
+    for event in EVENTS:
+        page = _paged(
+            api,
+            f"/actions/workflows/{workflow_id}/runs",
+            "workflow_runs",
+            "workflow runs",
+            [
+                ("branch", BRANCH),
+                ("event", event),
+                ("head_sha", expected_sha),
+                ("status", "completed"),
+                ("per_page", "100"),
+            ],
+        )
+        candidates.extend(page["workflow_runs"])
+    runs = {"total_count": len(candidates), "workflow_runs": candidates}
     run = select_latest_run(runs, expected_sha, workflow_id)
     attempt = api.get(f"/actions/runs/{run['id']}/attempts/{run['run_attempt']}")
     validate_attempt(attempt, run, expected_sha)
