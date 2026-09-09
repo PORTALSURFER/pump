@@ -16,6 +16,8 @@ The coordinator creates or reuses a version-only PR, explicitly dispatches CI an
 
 Explicit dispatch is necessary because changes made with `GITHUB_TOKEN` do not trigger the usual push workflows. The repository allows Actions to create PRs, while its default workflow token remains read-only. Only the nightly coordinator receives repository contents, pull-request, and Actions write permissions. Branch protection is retained.
 
+GitHub may hold workflows created for the bot's version PR for maintainer approval. Explicit branch dispatches provide exact-head validation but do not approve those PR workflows or satisfy the protected merge gate by themselves. Approve the bot-created PR workflows in Actions when requested; the coordinator waits for that gate and never approves it automatically.
+
 Existing protected environment approvals still apply. Approve the publisher-integration and production environments when requested by GitHub. Neither the coordinator nor its token approves those environments automatically.
 
 ## Retries and direct releases

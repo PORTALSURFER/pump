@@ -4,13 +4,17 @@
 from __future__ import annotations
 
 import copy
+import contextlib
+import io
 import shutil
 import sys
 import subprocess
 import tempfile
 import unittest
+from urllib.error import HTTPError
 from pathlib import Path
 from typing import Any, Optional
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import nightly_coordinator as coordinator
@@ -147,10 +151,16 @@ class FakeApi:
         self.git = git
         git.api = self
         self.branch = branch
-        self.open_prs = open_prs or []
+        self.open_prs = []
         self.pull_requests: dict[int, dict[str, Any]] = {}
-        for pr in self.open_prs:
-            self.pull_requests[int(pr["number"])] = copy.deepcopy(pr)
+        for pr in open_prs or []:
+            normalized = copy.deepcopy(pr)
+            normalized.setdefault("state", "open")
+            normalized.setdefault("draft", False)
+            normalized.setdefault("mergeable", True)
+            normalized.setdefault("mergeable_state", "clean")
+            self.open_prs.append(normalized)
+            self.pull_requests[int(normalized["number"])] = copy.deepcopy(normalized)
         self.runs = copy.deepcopy(workflow_runs or {})
         self.on_dispatch = on_dispatch
         self.dispatches: list[tuple[str, str, dict[str, str]]] = []
@@ -175,6 +185,10 @@ class FakeApi:
             "number": self.next_pr_number,
             "title": title,
             "body": body,
+            "state": "open",
+            "draft": False,
+            "mergeable": True,
+            "mergeable_state": "clean",
             "head": {"ref": head, "sha": self.branch, "repo": {"full_name": REPOSITORY}},
             "base": {"ref": base},
         }
@@ -244,6 +258,35 @@ class Clock:
 
     def sleep(self, seconds: float) -> None:
         self.value += seconds
+
+
+class MergeGateApi(FakeApi):
+    """Return the protected merge response once, then become mergeable."""
+
+    def __init__(self, git: FakeGit, **kwargs: Any) -> None:
+        super().__init__(git, **kwargs)
+        self.merge_attempts = 0
+
+    def merge_pull_request(
+        self, *, number: int, head_sha: str, title: str, commit_message: str = ""
+    ) -> str:
+        self.merge_attempts += 1
+        if self.merge_attempts == 1:
+            self.pull_requests[number]["mergeable_state"] = "clean"
+            raise coordinator.GitHubApiError(405)
+        return super().merge_pull_request(
+            number=number,
+            head_sha=head_sha,
+            title=title,
+            commit_message=commit_message,
+        )
+
+
+class FailingMergeApi(FakeApi):
+    def merge_pull_request(
+        self, *, number: int, head_sha: str, title: str, commit_message: str = ""
+    ) -> str:
+        raise coordinator.GitHubApiError(403)
 
 
 def run_coordinator(
@@ -763,6 +806,98 @@ class CoordinatorTests(unittest.TestCase):
             calls[-1]["payload"],
             {"ref": coordinator.BASE_BRANCH, "inputs": {"channel": "nightly", "publish": "true", "only_if_changed": "false"}},
         )
+
+    def test_github_adapter_preserves_http_status(self) -> None:
+        api = coordinator.GitHubApi(
+            api_url="https://api.github.com", repository=REPOSITORY, token="x"
+        )
+        failure = HTTPError("https://api.github.com", 405, "Method Not Allowed", {}, None)
+        with patch.object(coordinator, "urlopen", side_effect=failure):
+            with self.assertRaises(coordinator.GitHubApiError) as raised:
+                api.request("PUT", "/pulls/42/merge")
+        self.assertEqual(raised.exception.status, 405)
+
+    def _version_pr(self) -> dict[str, Any]:
+        return {
+            "number": 42,
+            "title": "prepare",
+            "state": "open",
+            "draft": False,
+            "mergeable": True,
+            "mergeable_state": "blocked",
+            "head": {
+                "ref": coordinator.VERSION_BRANCH,
+                "sha": BRANCH_SHA,
+                "repo": {"full_name": REPOSITORY},
+            },
+            "base": {"ref": coordinator.BASE_BRANCH},
+        }
+
+    def test_merge_waits_for_blocked_405_then_merges(self) -> None:
+        git = FakeGit()
+        api = MergeGateApi(git, branch=BRANCH_SHA, open_prs=[self._version_pr()])
+        clock = Clock()
+        instance = coordinator.NightlyCoordinator(
+            git=git,
+            api=api,
+            release_document=release_history(),
+            sleep=clock.sleep,
+            monotonic=clock.monotonic,
+            poll_seconds=1,
+            timeout_seconds=5,
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            merged = instance._merge_version_pr(
+                pr={"number": 42, "head_sha": BRANCH_SHA},
+                expected_main_sha=MAIN_SHA,
+                target_version="0.2.7",
+            )
+        self.assertEqual(merged, MERGED_SHA)
+        self.assertEqual(api.merge_attempts, 2)
+        self.assertEqual(clock.value, 1)
+        self.assertEqual(stderr.getvalue().count("approve PR workflows"), 1)
+
+    def test_merge_rechecks_main_after_blocked_405(self) -> None:
+        git = FakeGit(drift_on_fetch=2)
+        api = MergeGateApi(git, branch=BRANCH_SHA, open_prs=[self._version_pr()])
+        clock = Clock()
+        instance = coordinator.NightlyCoordinator(
+            git=git,
+            api=api,
+            release_document=release_history(),
+            sleep=clock.sleep,
+            monotonic=clock.monotonic,
+            poll_seconds=1,
+            timeout_seconds=5,
+        )
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "main moved"):
+            instance._merge_version_pr(
+                pr={"number": 42, "head_sha": BRANCH_SHA},
+                expected_main_sha=MAIN_SHA,
+                target_version="0.2.7",
+            )
+        self.assertEqual(api.merge_attempts, 1)
+
+    def test_merge_fails_closed_on_nonapproval_http_error(self) -> None:
+        git = FakeGit()
+        api = FailingMergeApi(git, branch=BRANCH_SHA, open_prs=[self._version_pr()])
+        instance = coordinator.NightlyCoordinator(
+            git=git,
+            api=api,
+            release_document=release_history(),
+            sleep=lambda _: self.fail("unexpected merge retry"),
+            monotonic=lambda: 0.0,
+            poll_seconds=1,
+            timeout_seconds=5,
+        )
+        with self.assertRaisesRegex(coordinator.GitHubApiError, "HTTP 403") as raised:
+            instance._merge_version_pr(
+                pr={"number": 42, "head_sha": BRANCH_SHA},
+                expected_main_sha=MAIN_SHA,
+                target_version="0.2.7",
+            )
+        self.assertEqual(raised.exception.status, 403)
 
 
 class LocalVersionBranchTests(unittest.TestCase):

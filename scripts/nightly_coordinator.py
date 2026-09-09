@@ -95,6 +95,22 @@ class CoordinatorError(RuntimeError):
     """A fail-closed coordinator error that should be visible in Actions."""
 
 
+class GitHubApiError(CoordinatorError):
+    """An HTTP failure returned by the GitHub API.
+
+    Keeping the status code separate from the human-readable error lets the
+    merge state machine distinguish a temporary protected-PR gate (HTTP 405)
+    from authentication, transport, or repository errors.
+    """
+
+    def __init__(self, status: int, *, method: str = "", path: str = "") -> None:
+        if isinstance(status, bool) or not isinstance(status, int) or status <= 0:
+            raise ValueError("GitHub API status must be a positive integer")
+        self.status = status
+        location = f": {method} {path}" if method and path else ""
+        super().__init__(f"GitHub API returned HTTP {status}{location}")
+
+
 @dataclasses.dataclass(frozen=True)
 class NightlyPlan:
     """Pure decision returned by :func:`plan_nightly`."""
@@ -283,11 +299,11 @@ class GitHubApi:
                 status = response.getcode()
                 response_body = response.read()
         except HTTPError as error:
-            raise CoordinatorError(f"GitHub API returned HTTP {error.code}: {method} {path}") from error
+            raise GitHubApiError(error.code, method=method, path=path) from error
         except (OSError, URLError, TimeoutError) as error:
             raise CoordinatorError(f"GitHub API request failed: {method} {path}") from error
         if status not in expected:
-            raise CoordinatorError(f"GitHub API returned HTTP {status}: {method} {path}")
+            raise GitHubApiError(status, method=method, path=path)
         if not response_body:
             return None
         try:
@@ -944,26 +960,72 @@ class NightlyCoordinator:
     def _merge_version_pr(
         self, *, pr: Mapping[str, Any], expected_main_sha: str, target_version: str
     ) -> str:
-        self._assert_main(expected_main_sha)
-        current = self.api.get_pull_request(int(pr["number"]))
-        head = current.get("head") if isinstance(current, Mapping) else None
-        if not isinstance(head, Mapping):
-            raise CoordinatorError("version pull request head metadata is invalid")
-        head_sha = _sha(head.get("sha"), "version pull request head SHA")
-        if head_sha != pr["head_sha"]:
-            raise CoordinatorError("version pull request changed while checks were running")
-        merged_sha = self.api.merge_pull_request(
-            number=int(pr["number"]),
-            head_sha=head_sha,
-            title=str(current.get("title") or "Prepare Pump nightly version"),
-            commit_message=(
-                f"{VERSION_PR_MARKER}\n{VERSION_METADATA_PREFIX}{target_version}\n"
-                f"base-sha={expected_main_sha}"
-            ),
-        )
-        self._assert_main(merged_sha)
-        self._cleanup_owned_branch(head_sha)
-        return merged_sha
+        number = _positive_int(pr.get("number"), "version pull request number")
+        expected_head_sha = _sha(pr.get("head_sha"), "version pull request head SHA")
+        approval_notice_logged = False
+        merge_wait_states = {"blocked", "unknown", "unstable"}
+        while True:
+            self._check_timeout()
+            # Required checks and workflow approvals can change while this
+            # coordinator is waiting. Revalidate the protected base and the
+            # exact PR head before every merge attempt.
+            self._assert_main(expected_main_sha)
+            current = self.api.get_pull_request(number)
+            if not isinstance(current, Mapping):
+                raise CoordinatorError("version pull request response is invalid")
+            if current.get("state") != "open":
+                raise CoordinatorError("version pull request is no longer open")
+            if current.get("draft") is not False:
+                raise CoordinatorError("version pull request must not be a draft")
+            head = current.get("head")
+            if not isinstance(head, Mapping):
+                raise CoordinatorError("version pull request head metadata is invalid")
+            head_sha = _sha(head.get("sha"), "version pull request head SHA")
+            if head_sha != expected_head_sha:
+                raise CoordinatorError("version pull request changed while checks were running")
+
+            mergeable = current.get("mergeable")
+            if mergeable is not None and not isinstance(mergeable, bool):
+                raise CoordinatorError("version pull request mergeability is invalid")
+            if mergeable is False:
+                raise CoordinatorError("version pull request is not mergeable")
+            mergeable_state = current.get("mergeable_state")
+            if mergeable_state is None:
+                # GitHub may briefly omit the state while recomputing it.
+                mergeable_state = "unknown"
+            if not isinstance(mergeable_state, str) or not mergeable_state:
+                raise CoordinatorError("version pull request merge state is invalid")
+
+            try:
+                merged_sha = self.api.merge_pull_request(
+                    number=number,
+                    head_sha=head_sha,
+                    title=str(current.get("title") or "Prepare Pump nightly version"),
+                    commit_message=(
+                        f"{VERSION_PR_MARKER}\n{VERSION_METADATA_PREFIX}{target_version}\n"
+                        f"base-sha={expected_main_sha}"
+                    ),
+                )
+            except GitHubApiError as error:
+                if error.status != 405 or mergeable_state not in merge_wait_states:
+                    raise
+                if not approval_notice_logged:
+                    print(
+                        "::notice::Version PR merge is waiting for protected checks; "
+                        "approve PR workflows to continue.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    approval_notice_logged = True
+                remaining = self.timeout_seconds - (self.monotonic() - self.started)
+                if remaining <= 0:
+                    raise CoordinatorError("nightly coordinator timed out")
+                self.sleep(min(self.poll_seconds, remaining))
+                continue
+
+            self._assert_main(merged_sha)
+            self._cleanup_owned_branch(head_sha)
+            return merged_sha
 
     def run(self, *, force: bool = False) -> Optional[str]:
         self.git.ensure_clean()
