@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 17;
+pub(crate) const STATE_VERSION: u32 = 18;
 
 /// The two independently editable Pump sound sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -575,6 +575,7 @@ pub(crate) fn curve_near_eq(left: &EditableCurve, right: &EditableCurve) -> bool
             .all(|(lhs, rhs)| float_near_eq(lhs.tension, rhs.tension))
         && phase_source_equal
         && float_near_eq(left.phase_offset, right.phase_offset)
+        && left.origin_is_clip == right.origin_is_clip
 }
 
 /// Shared atomic parameter/state storage across threads.

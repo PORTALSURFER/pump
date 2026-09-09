@@ -13,8 +13,8 @@ use toybox::clap::automation::AutomationConfig;
 
 use crate::automation_queue::PumpAutomationQueue;
 use crate::curve::{
-    CurveNode, CurveSegment, EditableCurve, MAX_EDITABLE_NODES, MAX_SEGMENT_TENSION,
-    MIN_SEGMENT_TENSION,
+    sample_editable_curve, set_origin_clip_closure_tension, CurveNode, CurveSegment, EditableCurve,
+    MAX_EDITABLE_NODES, MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
     clamp_delay_beats, format_plain_value_text, normalized_from_plain_value,
@@ -28,7 +28,6 @@ use crate::params::{
 };
 use crate::GuiStatus;
 
-#[cfg(test)]
 use super::curve_paint::PaintRun;
 use super::curve_paint::{
     reconstruct_paint, PaintCommitOutcome, RectBounds, RectPoint, StrokeRecorder,
@@ -254,6 +253,126 @@ fn canonical_seam_owner(curve: &EditableCurve, phase_offset: f32) -> Option<Cano
         .map(|(index, _)| CanonicalSeamOwner::Interior(index))
 }
 
+/// Return a normalized curve with one canonical owner for the current
+/// viewport seam. A seam that is already represented reuses its existing
+/// node; an interior seam with no owner consumes the one available editable
+/// node slot and inherits the surrounding segment tension. When insertion is
+/// unavailable, the nearest interior node is taken over at the exact seam so
+/// the seam remains manipulatable at the bounded node capacity too.
+fn materialize_canonical_seam_owner(
+    curve: &EditableCurve,
+    phase_offset: f32,
+) -> Option<(EditableCurve, CanonicalSeamOwner)> {
+    let mut curve = curve.clone().normalized();
+    if curve.nodes.len() < 2 {
+        return None;
+    }
+    if let Some(owner) = canonical_seam_owner(&curve, phase_offset) {
+        return Some((curve, owner));
+    }
+
+    let seam = seam_raw(phase_offset);
+    if !seam.is_finite() {
+        return None;
+    }
+
+    let insert_at = curve
+        .nodes
+        .partition_point(|node| node.x < seam)
+        .clamp(1, curve.nodes.len().saturating_sub(1));
+    let left_limit = curve.nodes[insert_at - 1].x + CURVE_NODE_MIN_SPACING_X;
+    let right_limit = curve.nodes[insert_at].x - CURVE_NODE_MIN_SPACING_X;
+    if curve.nodes.len() < MAX_EDITABLE_NODES
+        && left_limit < right_limit
+        && (left_limit..=right_limit).contains(&seam)
+    {
+        let inherited = curve
+            .segments
+            .get(insert_at.saturating_sub(1))
+            .copied()
+            .unwrap_or(CurveSegment { tension: 0.0 });
+        let y = sample_editable_curve(&curve, seam);
+        curve.nodes.insert(insert_at, CurveNode { x: seam, y });
+        curve
+            .segments
+            .insert(insert_at.saturating_sub(1), inherited);
+        curve.normalize_in_place();
+
+        return canonical_seam_owner(&curve, phase_offset).map(|owner| (curve, owner));
+    }
+
+    // A nearby node can be moved onto the seam when the minimum spacing
+    // interval is too narrow. At full capacity this is also the bounded
+    // fallback: preserving the node count keeps the reserved seam slot
+    // available without making the visible seam inert.
+    let owner_index = curve
+        .nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(curve.nodes.len().saturating_sub(2))
+        .min_by(|(left_index, left), (right_index, right)| {
+            (left.x - seam)
+                .abs()
+                .total_cmp(&(right.x - seam).abs())
+                .then_with(|| left_index.cmp(right_index))
+        })
+        .map(|(index, _)| index)?;
+
+    let owner_left_tension = curve
+        .segments
+        .get(owner_index.saturating_sub(1))
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let owner_right_tension = curve
+        .segments
+        .get(owner_index)
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let y = sample_editable_curve(&curve, seam);
+    let mut owner_index = owner_index;
+
+    // Remove only nodes that would violate the normal interactive spacing
+    // after takeover. Preserve the two tensions incident to the owner while
+    // merging each removed neighbour into its surrounding segment.
+    let mut remove_left = owner_index.saturating_sub(1);
+    while remove_left > 0 && seam - curve.nodes[remove_left].x < CURVE_NODE_MIN_SPACING_X {
+        remove_interior_curve_node_with_merge_tension(
+            &mut curve,
+            remove_left,
+            Some(owner_left_tension),
+        );
+        owner_index = owner_index.saturating_sub(1);
+        remove_left = owner_index.saturating_sub(1);
+    }
+    let remove_right = owner_index + 1;
+    while remove_right + 1 < curve.nodes.len()
+        && curve.nodes[remove_right].x - seam < CURVE_NODE_MIN_SPACING_X
+    {
+        remove_interior_curve_node_with_merge_tension(
+            &mut curve,
+            remove_right,
+            Some(owner_right_tension),
+        );
+    }
+
+    if let Some(node) = curve.nodes.get_mut(owner_index) {
+        node.x = seam;
+        node.y = y;
+    }
+    if let Some(left) = curve.segments.get_mut(owner_index.saturating_sub(1)) {
+        left.tension = owner_left_tension;
+    }
+    if let Some(right) = curve.segments.get_mut(owner_index) {
+        right.tension = owner_right_tension;
+    }
+    curve.normalize_in_place();
+
+    canonical_seam_owner(&curve, phase_offset).map(|owner| (curve, owner))
+}
+
 fn seam_owner_indices(curve: &EditableCurve, owner: CanonicalSeamOwner) -> Vec<usize> {
     match owner {
         CanonicalSeamOwner::Endpoints => {
@@ -346,6 +465,9 @@ fn interactive_curve_node_survivors(
 
     (0..curve.nodes.len())
         .filter(|index| {
+            if curve.origin_is_clip && (*index == 0 || *index + 1 == curve.nodes.len()) {
+                return false;
+            }
             let x = display_x[*index];
             let in_left_band = x <= CURVE_NODE_MIN_SPACING_X;
             let in_right_band = x >= 1.0 - CURVE_NODE_MIN_SPACING_X;
@@ -449,6 +571,11 @@ fn resolve_curve_offset(
 struct ActiveCurveNodeDrag {
     origin_index: usize,
     origin_curve: EditableCurve,
+    /// An authored cycle-zero endpoint is represented as an ordinary interior
+    /// node for the duration of a nonzero-offset gesture. The curve is rebuilt
+    /// from `origin_curve` on every update so returning to the origin cannot
+    /// accumulate generated nodes.
+    promote_endpoint: bool,
     /// Marquee selection retained for a grouped node drag. An empty list is
     /// the ordinary single-node gesture.
     selected_indices: Vec<usize>,
@@ -592,7 +719,6 @@ impl ActiveCurvePaint {
         self.recorder.observe_outside(sample.raw_position());
     }
 
-    #[cfg(test)]
     fn preview_runs(&self) -> Vec<PaintRun> {
         self.recorder.runs().to_vec()
     }
@@ -1080,6 +1206,82 @@ impl PumpEditorState {
         self.active_curve_node
     }
 
+    /// Return the node indices that represent the current viewport seam.
+    ///
+    /// The two rendered edge instances can refer to one interior authored
+    /// node, or to the coupled structural endpoints.  An empty result means
+    /// that the current phase has not been materialized as a seam owner yet.
+    pub(crate) fn seam_node_indices(&self) -> Vec<usize> {
+        let curve = self.rendered_curve();
+        canonical_seam_owner(&curve, self.params.phase_offset())
+            .map(|owner| seam_owner_indices(&curve, owner))
+            .unwrap_or_default()
+    }
+
+    /// Return the retained node hover used by the renderer.
+    pub(crate) fn hover_node(&self) -> Option<usize> {
+        self.hover_curve_node
+    }
+
+    /// Return the insertion preview point used by the renderer.
+    pub(crate) fn preview_node(&self) -> Option<CurveNode> {
+        self.preview_curve_node
+    }
+
+    /// Return the retained segment hover used by the renderer.
+    pub(crate) fn hover_segment(&self) -> Option<usize> {
+        self.hover_curve_segment
+    }
+
+    /// Return whether the retained segment hover is in the outer proximity
+    /// zone. The renderer uses this to keep direct proximity feedback blue.
+    pub(crate) fn hover_segment_is_proximity(&self) -> bool {
+        self.hover_curve_segment_zone == Some(CurveSegmentHitZone::OuterProximity)
+    }
+
+    /// Return whether the active segment gesture moves a node pair.
+    pub(crate) fn active_segment_is_move(&self) -> bool {
+        self.active_curve_segment
+            .as_ref()
+            .is_some_and(|drag| drag.mode == CurveSegmentDragMode::MovePair)
+    }
+
+    /// Return the active segment index, if a segment gesture is in progress.
+    pub(crate) fn active_segment(&self) -> Option<usize> {
+        self.active_curve_segment.as_ref().map(|drag| drag.index)
+    }
+
+    /// Return whether the curve offset is being auditioned.
+    pub(crate) fn active_curve_offset(&self) -> bool {
+        self.active_curve_offset.is_some()
+    }
+
+    /// Return whether a freehand paint gesture is being previewed.
+    /// Return the bounded freehand runs captured so far for live preview.
+    pub(crate) fn curve_paint_runs(&self) -> Option<Vec<PaintRun>> {
+        self.active_curve_paint
+            .as_ref()
+            .map(ActiveCurvePaint::preview_runs)
+    }
+
+    /// Return the retained marquee geometry in authored coordinates.
+    pub(crate) fn active_curve_marquee(&self) -> Option<(CurveNode, CurveNode)> {
+        self.active_curve_marquee
+            .map(|marquee| (marquee.start, marquee.current))
+    }
+
+    pub(crate) fn option_hover_held(&self) -> bool {
+        self.option_hover_held
+    }
+
+    pub(crate) fn command_hover_held(&self) -> bool {
+        self.command_hover_held
+    }
+
+    pub(crate) fn shift_hover_held(&self) -> bool {
+        self.shift_hover_held
+    }
+
     /// Return the loaded quick slot, if one is active.
     pub(crate) fn loaded_slot(&self) -> Option<usize> {
         self.loaded_global_curve_slot
@@ -1476,6 +1678,7 @@ fn reduce_numeric_entry_message(state: &mut PumpEditorState, message: NumericEnt
                 .is_some_and(|entry| entry.target == target);
             if entry_active {
                 let Some(value) = parse_plain_value_text(target.param_id(), draft.trim()) else {
+                    state.numeric_entry = None;
                     return;
                 };
                 let current = target.current_plain_value(state.params.as_ref());
@@ -1714,6 +1917,66 @@ fn reduce_curve_message(state: &mut PumpEditorState, message: CurvePreviewMessag
             state.active_curve_marquee = None;
             state.preview_curve_offset = None;
             state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.clear_curve_segment_hover();
+        }
+        CurvePreviewMessage::PressSeam { right_edge } => {
+            let origin_snapshot = state.snapshot();
+            let origin_curve = origin_snapshot.curve.clone();
+            let phase_offset = state.params.phase_offset();
+            let Some((mut curve, owner)) =
+                materialize_canonical_seam_owner(&origin_curve, phase_offset)
+            else {
+                return;
+            };
+
+            let owner_y = match owner {
+                CanonicalSeamOwner::Endpoints => curve.nodes.first().map(|node| node.y),
+                CanonicalSeamOwner::Interior(index) => curve.nodes.get(index).map(|node| node.y),
+            };
+            let Some(owner_y) = owner_y else {
+                return;
+            };
+            set_canonical_seam_y(&mut curve, owner, owner_y);
+            curve.normalize_in_place();
+
+            let active_index = match owner {
+                CanonicalSeamOwner::Endpoints => {
+                    if right_edge {
+                        curve.nodes.len().saturating_sub(1)
+                    } else {
+                        0
+                    }
+                }
+                CanonicalSeamOwner::Interior(index) => index,
+            };
+            let Some(pointer) = curve.nodes.get(active_index).copied() else {
+                return;
+            };
+            let Some(drag) =
+                start_curve_node_drag(&curve, active_index, pointer, false, false, phase_offset)
+            else {
+                return;
+            };
+
+            if curve != origin_curve {
+                state.params.set_editable_curve(&curve);
+            }
+            // PressSeam is admitted only after the GUI's drag threshold, so
+            // this topology materialization is one undoable gesture. Failed
+            // capacity/spacing admission above leaves history untouched.
+            state.push_history_snapshot(origin_snapshot);
+            state.clear_curve_selection();
+            state.active_curve_node = Some(active_index);
+            state.active_curve_node_drag = Some(drag);
+            state.active_curve_paint = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.preview_curve_offset = None;
+            state.option_hover_held = false;
+            state.command_hover_held = false;
+            state.shift_hover_held = false;
+            state.hover_curve_node = Some(active_index);
             state.preview_curve_node = None;
             state.clear_curve_segment_hover();
         }
@@ -2320,17 +2583,29 @@ fn start_curve_node_drag(
 ) -> Option<ActiveCurveNodeDrag> {
     let normalized = curve.clone().normalized();
     let origin = *normalized.nodes.get(index)?;
+    let endpoint = index == 0 || index + 1 == normalized.nodes.len();
     let vertical_active = shift_held && option_held;
     let horizontal_active = shift_held && !vertical_active;
     Some(ActiveCurveNodeDrag {
         origin_index: index,
         origin_curve: normalized,
+        promote_endpoint: endpoint && !seam_uses_wrapped_endpoints(phase_offset),
         selected_indices: Vec::new(),
         seam_drag: canonical_seam_owner(curve, phase_offset).and_then(|owner| {
-            seam_owner_contains_index(curve, owner, index).then(|| CanonicalSeamDrag {
-                kind: CanonicalSeamDragKind::ExistingOwner,
-                owner,
-                template_curve: curve.clone().normalized(),
+            seam_owner_contains_index(curve, owner, index).then(|| {
+                let mut template_curve = curve.clone().normalized();
+                if owner == CanonicalSeamOwner::Endpoints
+                    && seam_uses_wrapped_endpoints(phase_offset)
+                {
+                    // Editing the real viewport seam turns the clip anchors
+                    // back into the authored cycle-zero point.
+                    template_curve.origin_is_clip = false;
+                }
+                CanonicalSeamDrag {
+                    kind: CanonicalSeamDragKind::ExistingOwner,
+                    owner,
+                    template_curve,
+                }
             })
         }),
         horizontal_gain_anchor: horizontal_active.then_some(origin.y),
@@ -2377,6 +2652,34 @@ fn curve_with_dragged_node(
         }
     }
 
+    if drag.promote_endpoint {
+        let at_viewport_boundary = display_x_is_at_viewport_boundary(pointer.x, phase_offset);
+        let (mut curve, moved_index) = promote_endpoint_for_drag(
+            &drag.origin_curve,
+            target,
+            push_through_threshold_x,
+            phase_offset,
+        );
+        if at_viewport_boundary && moved_index > 0 && moved_index + 1 < curve.nodes.len() {
+            let (curve_at_seam, owner) = take_over_viewport_seam(
+                &curve,
+                moved_index,
+                target.y,
+                phase_offset,
+                push_through_threshold_x,
+            );
+            curve = curve_at_seam;
+            let active_index = preferred_seam_active_index(&curve, owner, pointer, phase_offset);
+            drag.seam_drag = Some(CanonicalSeamDrag {
+                kind: CanonicalSeamDragKind::Takeover,
+                owner,
+                template_curve: curve.clone(),
+            });
+            return (curve, active_index, true);
+        }
+        return (curve, moved_index, false);
+    }
+
     let mut curve = drag.origin_curve.clone();
     if drag.origin_index > 0
         && drag.origin_index + 1 < curve.nodes.len()
@@ -2414,6 +2717,7 @@ fn curve_with_dragged_node(
         drag.origin_index,
         target,
         push_through_threshold_x,
+        phase_offset,
     );
     curve.normalize_in_place();
     (curve, moved_index, false)
@@ -2596,7 +2900,7 @@ fn curve_with_dragged_selected_nodes(
     } else {
         (target.x - anchor.x).clamp(min_delta, max_delta)
     };
-    let delta_x = group_delta_preserving_canonical_seam(
+    let mut delta_x = group_delta_preserving_canonical_seam(
         &drag.origin_curve,
         &selected,
         phase_offset,
@@ -2605,6 +2909,62 @@ fn curve_with_dragged_selected_nodes(
         max_delta,
     );
     let delta_y = target.y - anchor.y;
+    let moves_authored_endpoint = !drag.origin_curve.origin_is_clip
+        && !seam_uses_wrapped_endpoints(phase_offset)
+        && (selected.contains(&0)
+            || selected.contains(&(drag.origin_curve.nodes.len().saturating_sub(1))));
+    if moves_authored_endpoint {
+        // The legacy endpoint is a real authored point when the viewport seam
+        // is elsewhere. Keep it on one raw side of every other authored node
+        // for this group gesture, then promote it below; this preserves the
+        // group's ordering without treating a non-seam endpoint as pinned.
+        let first = drag.origin_curve.nodes[1].x;
+        let last = drag.origin_curve.nodes[drag.origin_curve.nodes.len() - 2].x;
+        delta_x = delta_x.clamp(
+            last + CURVE_NODE_MIN_SPACING_X - 1.0,
+            first - CURVE_NODE_MIN_SPACING_X,
+        );
+        if delta_x.abs() > CURVE_SEAM_OWNER_RAW_EPSILON {
+            let endpoint_target = CurveNode {
+                x: if delta_x > 0.0 {
+                    delta_x
+                } else {
+                    1.0 + delta_x
+                },
+                y: (drag.origin_curve.nodes[0].y + delta_y).clamp(0.0, 1.0),
+            };
+            let (mut promoted, promoted_index) =
+                promote_endpoint_for_drag(&drag.origin_curve, endpoint_target, 0.0, phase_offset);
+            let inserted_first = endpoint_target.x < drag.origin_curve.nodes[1].x;
+            for selected_index in selected
+                .iter()
+                .copied()
+                .filter(|index| *index > 0 && *index + 1 < drag.origin_curve.nodes.len())
+            {
+                let promoted_index = if inserted_first {
+                    selected_index + 1
+                } else {
+                    selected_index
+                };
+                if let Some(node) = promoted.nodes.get_mut(promoted_index) {
+                    let origin = drag.origin_curve.nodes[selected_index];
+                    node.x = (origin.x + delta_x).clamp(0.0, 1.0);
+                    node.y = (origin.y + delta_y).clamp(0.0, 1.0);
+                }
+            }
+            promoted.normalize_in_place();
+            let active = if drag.origin_index == 0
+                || drag.origin_index + 1 == drag.origin_curve.nodes.len()
+            {
+                promoted_index
+            } else if inserted_first {
+                drag.origin_index + 1
+            } else {
+                drag.origin_index
+            };
+            return (promoted, active);
+        }
+    }
     for index in selected.iter().copied() {
         let Some(origin) = drag.origin_curve.nodes.get(index).copied() else {
             continue;
@@ -2695,14 +3055,163 @@ fn group_delta_preserving_canonical_seam(
         .unwrap_or(requested_delta)
 }
 
+/// Promote an authored cycle-zero endpoint into one ordinary interior point.
+///
+/// The endpoint is a cyclic point, so movement chooses the shorter authored
+/// direction around the cycle rather than depending on whether the GUI hit
+/// the `0` or `1` structural instance. Nodes crossed by that logical point are
+/// removed with the same merge policy as an ordinary push-through drag. The
+/// source curve remains untouched and is cloned on every frame.
+fn promote_endpoint_for_drag(
+    origin: &EditableCurve,
+    target: CurveNode,
+    push_through_threshold_x: f32,
+    phase_offset: f32,
+) -> (EditableCurve, usize) {
+    let mut curve = origin.clone().normalized();
+    let target_x = if target.x.is_finite() {
+        target.x.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let target_y = target.y.clamp(0.0, 1.0);
+
+    if let Some(edge) = curve_edge_for_x(target_x) {
+        curve.origin_is_clip = false;
+        set_wrapped_curve_endpoint_y(&mut curve, target_y);
+        curve.normalize_in_place();
+        return (curve.clone(), edge.index(curve.nodes.len()));
+    }
+
+    let threshold = push_through_threshold_x.max(0.0);
+    // A cycle-zero source at either structural endpoint has one logical
+    // direction for a given target. Compare display coordinates so endpoint 0
+    // and endpoint 1 promotion remain identical at every phase offset.
+    let origin_display_x = CurveGeometry::display_phase(0.0, phase_offset);
+    let target_display_x = CurveGeometry::display_phase(target_x, phase_offset);
+    let moving_right = target_display_x >= origin_display_x;
+    if moving_right {
+        let removals = curve
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                (index > 0 && index + 1 < curve.nodes.len() && node.x < target_x - threshold)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in removals.into_iter().rev() {
+            remove_interior_curve_node(&mut curve, index);
+        }
+    } else {
+        let removals = curve
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                (index > 0 && index + 1 < curve.nodes.len() && node.x > target_x + threshold)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in removals.into_iter().rev() {
+            remove_interior_curve_node(&mut curve, index);
+        }
+    }
+
+    if curve.nodes.len() >= MAX_EDITABLE_NODES {
+        // MAX_EDITABLE_NODES reserves one slot for a promoted source. Reuse
+        // the nearest ordinary interior point with the normal merge policy so
+        // an explicit endpoint drag is still free at the bound.
+        if let Some(remove_index) = curve
+            .nodes
+            .iter()
+            .enumerate()
+            .skip(1)
+            .take(curve.nodes.len().saturating_sub(2))
+            .min_by(|(_, left), (_, right)| {
+                (left.x - target_x)
+                    .abs()
+                    .total_cmp(&(right.x - target_x).abs())
+            })
+            .map(|(index, _)| index)
+        {
+            remove_interior_curve_node(&mut curve, remove_index);
+        }
+    }
+
+    let insert_at = curve
+        .nodes
+        .partition_point(|node| node.x < target_x)
+        .clamp(1, curve.nodes.len().saturating_sub(1));
+    let left_limit = curve.nodes[insert_at - 1].x + CURVE_NODE_MIN_SPACING_X;
+    let right_limit = curve.nodes[insert_at].x - CURVE_NODE_MIN_SPACING_X;
+    let inserted_x = target_x.clamp(left_limit.min(right_limit), right_limit.max(left_limit));
+    let inherited = curve
+        .segments
+        .get(insert_at.saturating_sub(1))
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 });
+    curve.nodes.insert(
+        insert_at,
+        CurveNode {
+            x: inserted_x,
+            y: target_y,
+        },
+    );
+    curve
+        .segments
+        .insert(insert_at.saturating_sub(1), inherited);
+    curve.origin_is_clip = true;
+    let closure_tension = if moving_right {
+        origin
+            .segments
+            .last()
+            .copied()
+            .unwrap_or(CurveSegment { tension: 0.0 })
+            .tension
+    } else {
+        origin
+            .segments
+            .first()
+            .copied()
+            .unwrap_or(CurveSegment { tension: 0.0 })
+            .tension
+    };
+    set_origin_clip_closure_tension(&mut curve, closure_tension);
+    curve.normalize_in_place();
+    let moved_index = curve
+        .nodes
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            (left.x - inserted_x)
+                .abs()
+                .total_cmp(&(right.x - inserted_x).abs())
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(insert_at);
+    (curve, moved_index)
+}
+
 fn move_curve_node_with_push_through(
     curve: &mut EditableCurve,
     index: usize,
     target: CurveNode,
     push_through_threshold_x: f32,
+    phase_offset: f32,
 ) -> usize {
     if index >= curve.nodes.len() {
         return index;
+    }
+
+    if curve.origin_is_clip && index > 0 && index + 1 < curve.nodes.len() {
+        return move_clip_curve_node_with_push_through(
+            curve,
+            index,
+            target,
+            push_through_threshold_x,
+            phase_offset,
+        );
     }
 
     let y = target.y.clamp(0.0, 1.0);
@@ -2730,6 +3239,7 @@ fn move_curve_node_with_push_through(
 
     if let Some(edge) = curve_edge_for_x(target.x) {
         remove_interior_curve_node_at_edge(curve, moved_index, edge);
+        curve.origin_is_clip = false;
         set_wrapped_curve_endpoint_y(curve, y);
         return edge.index(curve.nodes.len());
     }
@@ -2745,6 +3255,191 @@ fn move_curve_node_with_push_through(
     };
     enforce_wrapped_curve_endpoints(curve);
     moved_index
+}
+
+/// Move one logical authored point on a clipped curve in display order.
+/// Structural `0`/`1` anchors are omitted from the ordering, so crossing raw
+/// zero only crosses the actual authored neighbours and can promote the point
+/// to a real endpoint when the target is exactly `0` or `1`.
+fn move_clip_curve_node_with_push_through(
+    curve: &mut EditableCurve,
+    index: usize,
+    target: CurveNode,
+    push_through_threshold_x: f32,
+    phase_offset: f32,
+) -> usize {
+    let last_index = curve.nodes.len().saturating_sub(1);
+    if index == 0 || index >= last_index {
+        return index;
+    }
+
+    let target_x = if target.x.is_finite() {
+        target.x.clamp(0.0, 1.0)
+    } else {
+        curve.nodes[index].x
+    };
+    let target_y = target.y.clamp(0.0, 1.0);
+    let exact_endpoint = target_x == 0.0 || target_x == 1.0;
+    if exact_endpoint {
+        // A clipped interior point carries an incoming and outgoing segment.
+        // A real endpoint represents the cycle's logical first point at both
+        // raw zero and one, so its outgoing tension always owns segment zero.
+        // Do not average the incident tensions as an ordinary deletion would.
+        let original_segments = curve.segments.clone();
+        let source_was_last = index + 1 == last_index;
+        let preserved_tension = original_segments
+            .get(index)
+            .copied()
+            .map(|segment| segment.tension);
+        remove_interior_curve_node_with_merge_tension(curve, index, preserved_tension);
+        if source_was_last && !curve.segments.is_empty() {
+            // Moving the raw-last point to the endpoint wraps its outgoing
+            // span ahead of every remaining authored node. Restore that
+            // cyclic source order rather than leaving the old closure at the
+            // start of the legacy endpoint representation.
+            curve.segments[0] = original_segments
+                .get(index)
+                .copied()
+                .unwrap_or(CurveSegment { tension: 0.0 });
+            for segment_index in 1..curve.segments.len() {
+                if let Some(segment) = original_segments.get(segment_index).copied() {
+                    curve.segments[segment_index] = segment;
+                }
+            }
+        }
+        curve.origin_is_clip = false;
+        set_wrapped_curve_endpoint_y(curve, target_y);
+        curve.normalize_in_place();
+        return if target_x == 0.0 {
+            0
+        } else {
+            curve.nodes.len().saturating_sub(1)
+        };
+    }
+
+    // Keep the source node's outgoing shape when it crosses the raw cycle
+    // cut. Once the nodes are sorted again that segment becomes the wrapped
+    // last-interior -> first-interior span, while the old final segment would
+    // otherwise remain canonical and silently change the curve.
+    let source_x = curve.nodes[index].x;
+    let source_was_last = index + 1 == last_index;
+    let source_outgoing_tension = curve
+        .segments
+        .get(index)
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let threshold = push_through_threshold_x.max(0.0);
+    let origin_display_x = CurveGeometry::display_phase(source_x, phase_offset);
+    let target_display_x = CurveGeometry::display_phase(target_x, phase_offset);
+    let moving_right = target_display_x >= origin_display_x;
+    let mut moved_index = index;
+    let mut removals = curve
+        .nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(last_index.saturating_sub(1))
+        .filter_map(|(other_index, node)| {
+            if other_index == index {
+                return None;
+            }
+            let other_display_x = CurveGeometry::display_phase(node.x, phase_offset);
+            let crossed = if moving_right {
+                other_display_x > origin_display_x + threshold
+                    && other_display_x < target_display_x - threshold
+            } else {
+                other_display_x < origin_display_x - threshold
+                    && other_display_x > target_display_x + threshold
+            };
+            crossed.then_some(other_index)
+        })
+        .collect::<Vec<_>>();
+    removals.sort_unstable_by(|left, right| right.cmp(left));
+    for remove_index in removals {
+        remove_interior_curve_node(curve, remove_index);
+        if remove_index < moved_index {
+            moved_index = moved_index.saturating_sub(1);
+        }
+    }
+
+    let target_becomes_last = curve
+        .nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(curve.nodes.len().saturating_sub(2))
+        .filter(|(other_index, _)| *other_index != moved_index)
+        .all(|(_, node)| node.x < target_x);
+    // The structural anchors do not constrain a logical interior point. Clamp
+    // only against the nearest remaining authored neighbours in display space.
+    let mut other_display_x = curve
+        .nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(curve.nodes.len().saturating_sub(2))
+        .filter_map(|(other_index, node)| {
+            (other_index != moved_index)
+                .then_some(CurveGeometry::display_phase(node.x, phase_offset))
+        })
+        .collect::<Vec<_>>();
+    other_display_x.sort_by(f32::total_cmp);
+    let (previous, next) =
+        other_display_x
+            .iter()
+            .copied()
+            .fold((None, None), |(previous, next), display_x| {
+                if display_x < target_display_x {
+                    (
+                        Some(previous.map_or(display_x, |value: f32| value.max(display_x))),
+                        next,
+                    )
+                } else {
+                    (
+                        previous,
+                        Some(next.map_or(display_x, |value: f32| value.min(display_x))),
+                    )
+                }
+            });
+    let min_display_x = previous
+        .map(|value| value + CURVE_NODE_MIN_SPACING_X)
+        .unwrap_or(CURVE_NODE_MIN_SPACING_X);
+    let max_display_x = next
+        .map(|value| value - CURVE_NODE_MIN_SPACING_X)
+        .unwrap_or(1.0 - CURVE_NODE_MIN_SPACING_X);
+    let display_x = target_display_x.clamp(
+        min_display_x.min(max_display_x),
+        max_display_x.max(min_display_x),
+    );
+    let raw_x = (display_x + phase_offset).rem_euclid(1.0);
+    curve.nodes[moved_index] = CurveNode {
+        x: raw_x,
+        y: target_y,
+    };
+    // Normalization associates each segment with its left/source node after
+    // sorting. Only a point that becomes the raw-last interior node changes
+    // its outgoing segment into the wrapped closure. Becoming raw-first
+    // leaves its outgoing segment ordinary, so the old closure must remain.
+    let closure_tension = if !source_was_last && target_becomes_last {
+        source_outgoing_tension
+    } else {
+        curve
+            .segments
+            .last()
+            .copied()
+            .unwrap_or(CurveSegment { tension: 0.0 })
+            .tension
+    };
+    set_origin_clip_closure_tension(curve, closure_tension);
+    curve.normalize_in_place();
+    curve
+        .nodes
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| (left.x - raw_x).abs().total_cmp(&(right.x - raw_x).abs()))
+        .map(|(moved_index, _)| moved_index)
+        .unwrap_or(index)
 }
 
 fn remove_interior_curve_node_at_edge(
@@ -2931,19 +3626,82 @@ fn curve_with_dragged_segment(
                 (current_pointer.x - drag.start_pointer.x) / (curve_width - 1.0),
                 (drag.start_pointer.y - current_pointer.y) / (curve_height - 1.0),
             );
-            let left = drag.origin_curve.nodes[drag.index];
-            let right = drag.origin_curve.nodes[drag.index + 1];
-            super::move_segment_translated(
-                &mut curve,
-                drag.index,
-                (left.x, left.y),
-                (right.x, right.y),
-                delta,
-            );
+            if curve.origin_is_clip
+                && (drag.index == 0 || drag.index + 1 == drag.origin_curve.nodes.len())
+            {
+                move_origin_clip_closure_pair(&mut curve, &drag.origin_curve, delta);
+            } else {
+                let left = drag.origin_curve.nodes[drag.index];
+                let right = drag.origin_curve.nodes[drag.index + 1];
+                super::move_segment_translated(
+                    &mut curve,
+                    drag.index,
+                    (left.x, left.y),
+                    (right.x, right.y),
+                    delta,
+                );
+            }
         }
+    }
+    if curve.origin_is_clip && (drag.index == 0 || drag.index + 1 == drag.origin_curve.nodes.len())
+    {
+        let closure_tension = curve
+            .segments
+            .get(drag.index)
+            .copied()
+            .or_else(|| curve.segments.last().copied())
+            .unwrap_or(CurveSegment { tension: 0.0 })
+            .tension;
+        set_origin_clip_closure_tension(&mut curve, closure_tension);
     }
     curve.normalize_in_place();
     curve
+}
+
+/// Translate the logical wrapped edge pair of a clipped curve. The visible
+/// segment is split at the structural anchors, but both halves represent the
+/// same last-interior→first-interior span and therefore move together.
+fn move_origin_clip_closure_pair(
+    curve: &mut EditableCurve,
+    origin: &EditableCurve,
+    delta: (f32, f32),
+) {
+    if origin.nodes.len() < 3 {
+        return;
+    }
+    let first_index = 1;
+    let last_index = origin.nodes.len() - 2;
+    let first = origin.nodes[first_index];
+    let last = origin.nodes[last_index];
+    let mut dx = delta.0;
+    let authored_count = origin.nodes.len().saturating_sub(2);
+    let (min_dx, max_dx) = if authored_count <= 2 {
+        // Structural clip anchors are not neighbours. Let a one- or two-point
+        // closure pair follow the display gesture through raw zero; the
+        // subsequent normalization sorts the wrapped authored points.
+        (f32::NEG_INFINITY, f32::INFINITY)
+    } else {
+        let previous_x = origin.nodes[last_index - 1].x;
+        let next_x = origin.nodes[first_index + 1].x + 1.0;
+        (
+            previous_x + CURVE_NODE_MIN_SPACING_X - last.x,
+            next_x - CURVE_NODE_MIN_SPACING_X - (first.x + 1.0),
+        )
+    };
+    if min_dx <= max_dx {
+        dx = dx.clamp(min_dx, max_dx);
+    }
+    let dy = delta
+        .1
+        .clamp(-first.y.min(last.y), 1.0 - first.y.max(last.y));
+    if let Some(node) = curve.nodes.get_mut(first_index) {
+        node.x = (first.x + dx).rem_euclid(1.0);
+        node.y = (first.y + dy).clamp(0.0, 1.0);
+    }
+    if let Some(node) = curve.nodes.get_mut(last_index) {
+        node.x = (last.x + dx).rem_euclid(1.0);
+        node.y = (last.y + dy).clamp(0.0, 1.0);
+    }
 }
 
 fn segment_tension_delta_from_drag(
@@ -3114,6 +3872,9 @@ pub(crate) enum CurvePreviewMessage {
         shift_held: bool,
         option_held: bool,
         command_held: bool,
+    },
+    PressSeam {
+        right_edge: bool,
     },
     PressPaint {
         sample: CurvePaintSample,
@@ -3351,6 +4112,32 @@ mod tests {
             ]
         );
         assert_eq!(state.undo_history.len(), 1);
+    }
+
+    #[test]
+    fn invalid_numeric_commit_clears_the_active_entry() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(sink);
+        state.params().set_delay_beats(4.0);
+        let target = NumericEntryTarget::Delay;
+
+        state.dispatch(EditorMessage::NumericEntry(NumericEntryMessage::Begin {
+            target,
+        }));
+        state.dispatch(EditorMessage::NumericEntry(
+            NumericEntryMessage::DraftChanged {
+                target,
+                draft: String::new(),
+                dirty: true,
+            },
+        ));
+        state.dispatch(EditorMessage::NumericEntry(NumericEntryMessage::Commit {
+            target,
+            draft: String::new(),
+        }));
+
+        assert!(!state.numeric_entry_active());
+        assert_eq!(state.params().delay_beats(), 4);
     }
 
     #[test]

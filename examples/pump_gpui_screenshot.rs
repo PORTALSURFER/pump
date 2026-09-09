@@ -18,6 +18,8 @@ mod macos {
 
     const CAPTURE_WIDTH: u32 = WINDOW_WIDTH;
     const CAPTURE_HEIGHT: u32 = WINDOW_HEIGHT;
+    const COMMAND: u64 = 1_u64 << 20;
+    const SHIFT: u64 = 1_u64 << 17;
 
     struct Fixture {
         window: id,
@@ -132,6 +134,21 @@ mod macos {
         unsafe { pump_appkit(app, gui, 0.10) };
         let (width, height, pixels) = gui.capture_rgba().expect("live GPUI capture");
         eprintln!("{name}: captured {width}x{height}");
+        if name.contains("curve-segment-proximity") || name.contains("curve-segment-command-hover")
+        {
+            let blue = pixels
+                .chunks_exact(4)
+                .filter(|rgba| {
+                    rgba[2] > 180
+                        && rgba[2].saturating_sub(rgba[0]) > 70
+                        && rgba[1].saturating_sub(rgba[0]) > 30
+                })
+                .count();
+            assert!(
+                blue > 50,
+                "{name}: expected blue segment feedback, got {blue} pixels"
+            );
+        }
         write_capture(
             root,
             name,
@@ -193,6 +210,7 @@ mod macos {
         event_type: usize,
         x: f64,
         top_y: f64,
+        modifiers: u64,
     ) {
         let window_number: isize = msg_send![window, windowNumber];
         let location = NSPoint::new(x, f64::from(height) - top_y);
@@ -200,7 +218,7 @@ mod macos {
             class!(NSEvent),
             mouseEventWithType: event_type
             location: location
-            modifierFlags: 0_u64
+            modifierFlags: modifiers
             timestamp: 0.0_f64
             windowNumber: window_number
             context: std::ptr::null_mut::<Object>()
@@ -208,24 +226,104 @@ mod macos {
             clickCount: 1_isize
             pressure: 1.0_f64
         ];
-        let _: () = msg_send![window, sendEvent: event];
+        if event_type == 5 {
+            // WindowServer tracking-area events target their registered owner.
+            // A raw NSWindow sendEvent(mouseMoved) instead targets the first
+            // responder, so explicitly emulate the documented tracking route.
+            let content: id = msg_send![window, contentView];
+            let children: id = msg_send![content, subviews];
+            let child: id = msg_send![children, lastObject];
+            let areas: id = msg_send![child, trackingAreas];
+            let area: id = msg_send![areas, firstObject];
+            assert!(
+                !area.is_null(),
+                "native GPUI child must install a tracking area"
+            );
+            let owner: id = msg_send![area, owner];
+            assert_eq!(owner, child, "tracking-area owner must be the GPUI child");
+            if x < 0.0
+                || x >= f64::from(WINDOW_WIDTH)
+                || top_y < 0.0
+                || top_y >= f64::from(WINDOW_HEIGHT)
+            {
+                let _: () = msg_send![owner, mouseExited: event];
+            } else {
+                let _: () = msg_send![owner, mouseMoved: event];
+            }
+        } else {
+            let _: () = msg_send![window, sendEvent: event];
+        }
     }
 
-    unsafe fn send_mouse_move(window: id, width: u32, height: u32, x: f64, top_y: f64) {
-        send_mouse_event(window, width, height, 5, x, top_y);
+    unsafe fn send_mouse_move(
+        window: id,
+        width: u32,
+        height: u32,
+        x: f64,
+        top_y: f64,
+        modifiers: u64,
+    ) {
+        send_mouse_event(window, width, height, 5, x, top_y, modifiers);
     }
 
-    unsafe fn send_mouse_down(window: id, width: u32, height: u32, x: f64, top_y: f64) {
-        send_mouse_event(window, width, height, 1, x, top_y);
+    unsafe fn send_mouse_down(
+        window: id,
+        width: u32,
+        height: u32,
+        x: f64,
+        top_y: f64,
+        modifiers: u64,
+    ) {
+        send_mouse_event(window, width, height, 1, x, top_y, modifiers);
     }
 
-    unsafe fn send_mouse_up(window: id, width: u32, height: u32, x: f64, top_y: f64) {
-        send_mouse_event(window, width, height, 2, x, top_y);
+    unsafe fn send_mouse_up(
+        window: id,
+        width: u32,
+        height: u32,
+        x: f64,
+        top_y: f64,
+        modifiers: u64,
+    ) {
+        send_mouse_event(window, width, height, 2, x, top_y, modifiers);
+    }
+
+    unsafe fn send_secondary_mouse_down(
+        window: id,
+        width: u32,
+        height: u32,
+        x: f64,
+        top_y: f64,
+        modifiers: u64,
+    ) {
+        send_mouse_event(window, width, height, 3, x, top_y, modifiers);
+    }
+
+    unsafe fn send_secondary_mouse_dragged(
+        window: id,
+        width: u32,
+        height: u32,
+        x: f64,
+        top_y: f64,
+        modifiers: u64,
+    ) {
+        send_mouse_event(window, width, height, 7, x, top_y, modifiers);
+    }
+
+    unsafe fn send_secondary_mouse_up(
+        window: id,
+        width: u32,
+        height: u32,
+        x: f64,
+        top_y: f64,
+        modifiers: u64,
+    ) {
+        send_mouse_event(window, width, height, 4, x, top_y, modifiers);
     }
 
     unsafe fn send_click(window: id, width: u32, height: u32, x: f64, top_y: f64) {
-        send_mouse_down(window, width, height, x, top_y);
-        send_mouse_up(window, width, height, x, top_y);
+        send_mouse_down(window, width, height, x, top_y, 0);
+        send_mouse_up(window, width, height, x, top_y, 0);
     }
 
     pub fn main() {
@@ -247,6 +345,206 @@ mod macos {
 
             let default_capture =
                 capture(app, &fixture, &gui, &root, "pump-default-640x400", 640, 400);
+
+            let curve_before_seam = params.editable_curve_snapshot();
+            let phase_before_seam = params.phase_offset();
+            params.set_phase_offset(0.25);
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-seam-offset-640x400",
+                640,
+                400,
+            );
+            assert_eq!(
+                params.editable_curve_snapshot(),
+                curve_before_seam,
+                "offset must only project seam handles, not change authored nodes"
+            );
+            params.set_phase_offset(phase_before_seam);
+
+            // Curve feedback captures are driven through native AppKit
+            // pointer/modifier events so they exercise the same admission and
+            // retained-state paths as a hosted plug-in editor.
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                95.0,
+                217.0,
+                0,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-node-hover-640x400",
+                640,
+                400,
+            );
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                170.0,
+                185.0,
+                0,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-segment-proximity-640x400",
+                640,
+                400,
+            );
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                170.0,
+                196.0,
+                COMMAND,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-segment-command-hover-640x400",
+                640,
+                400,
+            );
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                170.0,
+                196.0,
+                0,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-insertion-preview-640x400",
+                640,
+                400,
+            );
+            send_mouse_down(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                58.0,
+                245.0,
+                COMMAND | SHIFT,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-offset-active-640x400",
+                640,
+                400,
+            );
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                100.0,
+                245.0,
+                COMMAND | SHIFT,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-offset-sliding-640x400",
+                640,
+                400,
+            );
+            send_mouse_up(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                100.0,
+                245.0,
+                COMMAND | SHIFT,
+            );
+            send_mouse_down(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                300.0,
+                100.0,
+                SHIFT,
+            );
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                400.0,
+                210.0,
+                SHIFT,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-marquee-active-640x400",
+                640,
+                400,
+            );
+            send_mouse_up(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                400.0,
+                210.0,
+                SHIFT,
+            );
+            send_secondary_mouse_down(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                300.0,
+                90.0,
+                0,
+            );
+            send_secondary_mouse_dragged(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                340.0,
+                200.0,
+                0,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-paint-preview-640x400",
+                640,
+                400,
+            );
+            send_secondary_mouse_up(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                340.0,
+                200.0,
+                0,
+            );
+
             capture(
                 app,
                 &fixture,
@@ -260,7 +558,14 @@ mod macos {
             // Header captures are driven by native AppKit mouse events, so the
             // hover and pressed states are produced by the same GPUI hit testing
             // path used by a host window.
-            send_mouse_move(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 255.0, 32.0);
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                255.0,
+                32.0,
+                0,
+            );
             capture(
                 app,
                 &fixture,
@@ -270,7 +575,14 @@ mod macos {
                 640,
                 400,
             );
-            send_mouse_move(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 351.0, 32.0);
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                351.0,
+                32.0,
+                0,
+            );
             capture(
                 app,
                 &fixture,
@@ -280,7 +592,14 @@ mod macos {
                 640,
                 400,
             );
-            send_mouse_move(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 319.0, 32.0);
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                319.0,
+                32.0,
+                0,
+            );
             capture(
                 app,
                 &fixture,
@@ -290,7 +609,14 @@ mod macos {
                 640,
                 400,
             );
-            send_mouse_move(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 383.0, 32.0);
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                383.0,
+                32.0,
+                0,
+            );
             capture(
                 app,
                 &fixture,
@@ -300,7 +626,14 @@ mod macos {
                 640,
                 400,
             );
-            send_mouse_down(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 255.0, 32.0);
+            send_mouse_down(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                255.0,
+                32.0,
+                0,
+            );
             capture(
                 app,
                 &fixture,
@@ -310,8 +643,15 @@ mod macos {
                 640,
                 400,
             );
-            send_mouse_up(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 255.0, 32.0);
-            send_mouse_move(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 20.0, 20.0);
+            send_mouse_up(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                255.0,
+                32.0,
+                0,
+            );
+            send_mouse_move(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 20.0, 20.0, 0);
             capture(
                 app,
                 &fixture,
@@ -409,8 +749,22 @@ mod macos {
                 640,
                 400,
             );
-            send_mouse_down(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 398.0, 333.0);
-            send_mouse_move(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 410.0, 320.0);
+            send_mouse_down(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                398.0,
+                333.0,
+                0,
+            );
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                410.0,
+                320.0,
+                0,
+            );
             capture(
                 app,
                 &fixture,
@@ -420,7 +774,14 @@ mod macos {
                 640,
                 400,
             );
-            send_mouse_up(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 410.0, 320.0);
+            send_mouse_up(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                410.0,
+                320.0,
+                0,
+            );
 
             params.set_mix(0.62);
             params.set_smooth(0.35);

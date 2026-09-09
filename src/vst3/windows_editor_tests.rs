@@ -3,6 +3,7 @@ use super::*;
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi::UpdateWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetCapture;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 struct AcceptEdits;
@@ -132,6 +133,69 @@ fn native_editor_types_delay_toggles_bypass_and_preserves_audio_on_hide() {
         division,
         "Delay arrows must not change division"
     );
+
+    // An admitted drag owns movement across controls and outside the child.
+    let pointer = |message: u32, buttons: usize, x: f32, y: f32| {
+        let point = LPARAM(
+            ((x * scale).round() as isize & 0xffff)
+                | (((y * scale).round() as isize & 0xffff) << 16),
+        );
+        unsafe { SendMessageW(child, message, Some(WPARAM(buttons)), Some(point)) };
+    };
+    shared.params.set_smooth(0.2);
+    frame(child);
+    pointer(WM_LBUTTONDOWN, 1, 87.0, 332.0);
+    assert_eq!(unsafe { GetCapture() }, child);
+    pointer(WM_MOUSEMOVE, 1, 240.0, 312.0);
+    frame(child);
+    let inside = shared.params.smooth();
+    assert!(inside > 0.2, "drag crosses another control");
+    pointer(WM_MOUSEMOVE, 1, 700.0, 292.0);
+    frame(child);
+    let outside = shared.params.smooth();
+    assert!(outside > inside, "captured drag continues outside the HWND");
+    pointer(WM_RBUTTONUP, 1, 700.0, 292.0);
+    assert_eq!(
+        unsafe { GetCapture() },
+        child,
+        "unrelated release keeps capture"
+    );
+    pointer(WM_MOUSEMOVE, 1, 700.0, 272.0);
+    frame(child);
+    assert!(shared.params.smooth() > outside);
+    pointer(WM_LBUTTONUP, 0, 700.0, 272.0);
+    assert_ne!(unsafe { GetCapture() }, child);
+    let released = shared.params.smooth();
+    pointer(WM_MOUSEMOVE, 0, 87.0, 100.0);
+    frame(child);
+    assert_eq!(
+        shared.params.smooth(),
+        released,
+        "released drag cannot resume"
+    );
+
+    // A stale no-button move cancels before reaching the parameter editor.
+    pointer(WM_LBUTTONDOWN, 1, 87.0, 332.0);
+    pointer(WM_MOUSEMOVE, 1, 87.0, 322.0);
+    frame(child);
+    let before_cancel = shared.params.smooth();
+    pointer(WM_MOUSEMOVE, 0, 87.0, 100.0);
+    frame(child);
+    assert_eq!(shared.params.smooth(), before_cancel);
+    assert_ne!(unsafe { GetCapture() }, child);
+
+    // Cancellation discards a secondary-button paint preview rather than
+    // synthesizing a release that would commit it.
+    let curve_before_cancel = shared.params.editable_curve_snapshot();
+    pointer(WM_RBUTTONDOWN, 2, 350.0, 190.0);
+    assert_eq!(unsafe { GetCapture() }, child);
+    pointer(WM_MOUSEMOVE, 2, 450.0, 130.0);
+    frame(child);
+    unsafe { SendMessageW(child, WM_CANCELMODE, Some(WPARAM(0)), Some(LPARAM(0))) };
+    frame(child);
+    assert_ne!(unsafe { GetCapture() }, child);
+    pointer(WM_RBUTTONUP, 0, 450.0, 130.0);
+    assert_eq!(shared.params.editable_curve_snapshot(), curve_before_cancel);
 
     click(570.0, 383.0);
     assert!(shared.params.bypassed());

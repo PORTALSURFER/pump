@@ -975,6 +975,222 @@ fn seam_drag_has_one_undo_entry_and_roundtrips_through_redo() {
 }
 
 #[test]
+fn press_seam_materializes_once_at_nonzero_phase_and_exposes_active_owner() {
+    let params = Arc::new(PumpParams::new());
+    params.set_phase_offset(0.25);
+    let origin = params.editable_curve_snapshot();
+    let seam = seam_raw(0.25);
+    let expected_y = sample_editable_curve(&origin, seam);
+    let mut state = editor_state(Arc::clone(&params));
+
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: false }),
+    );
+
+    let materialized = params.editable_curve_snapshot();
+    let seam_index = materialized
+        .nodes
+        .iter()
+        .position(|node| (node.x - seam).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+        .expect("pressing the seam should materialize an interior owner");
+    assert_eq!(materialized.nodes.len(), origin.nodes.len() + 1);
+    assert!((materialized.nodes[seam_index].y - expected_y).abs() <= 1.0e-6);
+    assert_eq!(state.active_node(), Some(seam_index));
+    assert_eq!(state.seam_node_indices(), vec![seam_index]);
+    assert!(state.active_curve_node_drag.as_ref().is_some_and(|drag| {
+        drag.seam_drag
+            .as_ref()
+            .is_some_and(|seam_drag| seam_drag.kind == CanonicalSeamDragKind::ExistingOwner)
+    }));
+    assert_eq!(state.undo_history.len(), 1);
+
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: true }),
+    );
+    let reused = params.editable_curve_snapshot();
+    assert_eq!(reused.nodes.len(), materialized.nodes.len());
+    assert_eq!(state.seam_node_indices(), vec![seam_index]);
+}
+
+#[test]
+fn press_seam_reuses_existing_owner_and_preserves_tensions() {
+    let origin = interior_seam_curve();
+    for right_edge in [false, true] {
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&origin);
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge }),
+        );
+
+        let reused = params.editable_curve_snapshot();
+        assert_eq!(reused, origin);
+        assert_eq!(state.active_node(), Some(2));
+        assert_eq!(state.seam_node_indices(), vec![2]);
+        assert_eq!(state.undo_history.len(), 1);
+    }
+}
+
+#[test]
+fn press_seam_moves_nearby_owner_to_exact_seam_without_changing_tensions() {
+    let phase_offset = 0.25;
+    for raw_x in [0.2495, 0.2505] {
+        let origin = interior_seam_curve_with_raw_x(raw_x);
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&origin);
+        params.set_phase_offset(phase_offset);
+        let expected_y = sample_editable_curve(&origin, seam_raw(phase_offset));
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: false }),
+        );
+
+        let taken_over = params.editable_curve_snapshot();
+        assert_eq!(taken_over.nodes.len(), origin.nodes.len());
+        assert_eq!(taken_over.segments, origin.segments);
+        assert_eq!(taken_over.nodes[2].x, seam_raw(phase_offset));
+        assert!((taken_over.nodes[2].y - expected_y).abs() <= 1.0e-6);
+        assert_eq!(state.active_node(), Some(2));
+        assert_eq!(state.seam_node_indices(), vec![2]);
+    }
+}
+
+#[test]
+fn press_seam_reuses_nearest_node_at_full_capacity() {
+    let phase_offset = 0.253;
+    let origin = max_capacity_curve();
+    assert_eq!(origin.nodes.len(), MAX_EDITABLE_NODES);
+    assert_eq!(canonical_seam_owner(&origin, phase_offset), None);
+    let params = Arc::new(PumpParams::new());
+    params.set_editable_curve(&origin);
+    params.set_phase_offset(phase_offset);
+    let expected_y = sample_editable_curve(&origin, seam_raw(phase_offset));
+    let mut state = editor_state(Arc::clone(&params));
+
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: true }),
+    );
+
+    let taken_over = params.editable_curve_snapshot();
+    let seam_index = taken_over
+        .nodes
+        .iter()
+        .position(|node| (node.x - seam_raw(phase_offset)).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+        .expect("full capacity should still materialize the seam");
+    assert_eq!(taken_over.nodes.len(), MAX_EDITABLE_NODES);
+    assert!((taken_over.nodes[seam_index].y - expected_y).abs() <= 1.0e-6);
+    assert_eq!(state.active_node(), Some(seam_index));
+    assert_eq!(state.seam_node_indices(), vec![seam_index]);
+    assert_eq!(state.undo_history.len(), 1);
+}
+
+#[test]
+fn press_seam_left_and_right_edges_apply_equivalent_vertical_moves() {
+    let phase_offset = 0.25;
+    let mut moved_curves = Vec::new();
+    for right_edge in [false, true] {
+        let params = Arc::new(PumpParams::new());
+        params.set_phase_offset(phase_offset);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_editor_message(
+            &mut state,
+            EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge }),
+        );
+        let active = state.active_node().expect("seam drag should be active");
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: active,
+                node: CurveNode { x: 0.9, y: 0.65 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+        moved_curves.push(params.editable_curve_snapshot());
+    }
+
+    assert_eq!(moved_curves[0], moved_curves[1]);
+    let seam_index = moved_curves[0]
+        .nodes
+        .iter()
+        .position(|node| (node.x - seam_raw(phase_offset)).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+        .expect("moved seam should retain its owner");
+    assert!((moved_curves[0].nodes[seam_index].y - 0.65).abs() <= 1.0e-6);
+}
+
+#[test]
+fn press_seam_undo_restores_materialization_and_drag_origin() {
+    let params = Arc::new(PumpParams::new());
+    params.set_phase_offset(0.25);
+    let origin = params.editable_curve_snapshot();
+    let mut state = editor_state(Arc::clone(&params));
+
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: false }),
+    );
+    let active = state.active_node().expect("seam drag should be active");
+    reduce_curve_message(
+        &mut state,
+        CurvePreviewMessage::DragNode {
+            index: active,
+            node: CurveNode { x: 0.1, y: 0.2 },
+            push_through_threshold_x: test_curve_push_through_threshold_x(),
+        },
+    );
+    reduce_curve_message(
+        &mut state,
+        CurvePreviewMessage::ReleaseNode {
+            index: active,
+            node: CurveNode { x: 0.1, y: 0.2 },
+            push_through_threshold_x: test_curve_push_through_threshold_x(),
+            shift_held: false,
+            option_held: false,
+            command_held: false,
+        },
+    );
+    assert_eq!(state.undo_history.len(), 1);
+    assert_ne!(params.editable_curve_snapshot(), origin);
+
+    reduce_editor_message(&mut state, EditorMessage::Undo);
+    assert_eq!(params.editable_curve_snapshot(), origin);
+}
+
+#[test]
+fn press_seam_couples_wrapped_endpoints_from_both_edges() {
+    let mut moved_curves = Vec::new();
+    for right_edge in [false, true] {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_editor_message(
+            &mut state,
+            EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge }),
+        );
+        let active = state.active_node().expect("seam drag should be active");
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: active,
+                node: CurveNode { x: 0.8, y: 0.25 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+        moved_curves.push(params.editable_curve_snapshot());
+    }
+
+    assert_eq!(moved_curves[0], moved_curves[1]);
+    assert_eq!(moved_curves[0].nodes[0].y, 0.25);
+    assert_eq!(moved_curves[0].nodes.last().map(|node| node.y), Some(0.25));
+}
+
+#[test]
 fn legacy_edge_hidden_selection_is_not_deleted() {
     let params = Arc::new(PumpParams::new());
     let curve = legacy_edge_curve();
@@ -1075,6 +1291,463 @@ fn legacy_edge_group_drag_keeps_zero_delta_feasible_for_vertical_movement() {
     assert!((dragged.nodes[2].y - 0.35).abs() < 1.0e-6);
     assert!((dragged.nodes[0].y - 0.35).abs() < 1.0e-6);
     assert!((dragged.nodes[2].y - 0.35).abs() < 1.0e-6);
+}
+
+#[test]
+fn nonzero_phase_group_drag_promotes_selected_authored_cycle_zero() {
+    let origin = EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 0.8 },
+            CurveNode { x: 0.4, y: 0.25 },
+            CurveNode { x: 0.75, y: 0.6 },
+            CurveNode { x: 1.0, y: 0.8 },
+        ],
+        segments: vec![CurveSegment { tension: 0.0 }; 3],
+        ..EditableCurve::default()
+    }
+    .normalized();
+    let params = Arc::new(PumpParams::new());
+    params.set_editable_curve(&origin);
+    params.set_phase_offset(0.25);
+    let mut state = editor_state(Arc::clone(&params));
+    state.selected_curve_nodes = vec![0, 1];
+
+    reduce_curve_message(
+        &mut state,
+        CurvePreviewMessage::PressNode {
+            index: 0,
+            pointer: origin.nodes[0],
+            shift_held: false,
+            option_held: false,
+            command_held: false,
+        },
+    );
+    reduce_curve_message(
+        &mut state,
+        CurvePreviewMessage::DragNode {
+            index: 0,
+            node: CurveNode { x: 0.1, y: 0.7 },
+            push_through_threshold_x: test_curve_push_through_threshold_x(),
+        },
+    );
+
+    let moved = params.editable_curve_snapshot();
+    assert!(moved.origin_is_clip);
+    assert!(moved.nodes.iter().any(|node| (node.x - 0.1).abs() < 1.0e-6));
+    assert!(moved.nodes.iter().any(|node| (node.x - 0.5).abs() < 1.0e-6));
+}
+
+#[test]
+fn offset_cycle_zero_endpoint_promotes_to_one_logical_interior_source() {
+    let origin = EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 0.8 },
+            CurveNode { x: 0.25, y: 0.2 },
+            CurveNode { x: 0.7, y: 0.65 },
+            CurveNode { x: 1.0, y: 0.8 },
+        ],
+        segments: vec![
+            CurveSegment { tension: -0.25 },
+            CurveSegment { tension: 0.35 },
+            CurveSegment { tension: 0.6 },
+        ],
+        ..EditableCurve::default()
+    }
+    .normalized();
+    let phase_offset = 0.25;
+
+    for (index, target_x) in [(0, 0.925), (origin.nodes.len() - 1, 0.038)] {
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&origin);
+        params.set_phase_offset(phase_offset);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::PressNode {
+                index,
+                pointer: origin.nodes[index],
+                shift_held: false,
+                option_held: false,
+                command_held: false,
+            },
+        );
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index,
+                node: CurveNode {
+                    x: target_x,
+                    y: 0.42,
+                },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+
+        let moved = params.editable_curve_snapshot();
+        assert!(moved.origin_is_clip);
+        assert_eq!(params.phase_offset(), phase_offset);
+        let promoted = moved
+            .nodes
+            .iter()
+            .filter(|node| (node.x - target_x).abs() < 1.0e-5)
+            .collect::<Vec<_>>();
+        assert_eq!(promoted.len(), 1, "moved curve: {moved:?}");
+        let expected_closure_tension = if target_x > 0.5 {
+            origin.segments[0].tension
+        } else {
+            origin.segments[origin.segments.len() - 1].tension
+        };
+        assert_eq!(moved.segments[0].tension, expected_closure_tension);
+        assert_eq!(
+            moved.segments[moved.segments.len() - 1].tension,
+            expected_closure_tension
+        );
+        assert!(
+            (CurveGeometry::display_phase(promoted[0].x, phase_offset) - 0.75).abs() > 0.01,
+            "promoted source should leave the cycle-zero display position"
+        );
+        assert!(
+            (sample_editable_curve(&moved, 0.0) - sample_editable_curve(&moved, 1.0)).abs()
+                < 1.0e-6
+        );
+        assert!((moved.nodes[0].y - moved.nodes.last().unwrap().y).abs() < 1.0e-6);
+    }
+}
+
+#[test]
+fn offset_cycle_zero_endpoint_promotion_rebuilds_and_undoes_without_accumulation() {
+    let origin = EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 0.9 },
+            CurveNode { x: 0.2, y: 0.25 },
+            CurveNode { x: 0.8, y: 0.55 },
+            CurveNode { x: 1.0, y: 0.9 },
+        ],
+        segments: vec![CurveSegment { tension: 0.1 }; 3],
+        ..EditableCurve::default()
+    }
+    .normalized();
+    let params = Arc::new(PumpParams::new());
+    params.set_editable_curve(&origin);
+    params.set_phase_offset(0.25);
+    let mut state = editor_state(Arc::clone(&params));
+
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressNode {
+            index: 0,
+            pointer: origin.nodes[0],
+            shift_held: false,
+            option_held: false,
+            command_held: false,
+        }),
+    );
+    for target_x in [0.08, 0.16, 0.31] {
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: 0,
+                node: CurveNode {
+                    x: target_x,
+                    y: 0.4,
+                },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+        let frame = params.editable_curve_snapshot();
+        assert_eq!(
+            frame
+                .nodes
+                .iter()
+                .filter(|node| (node.y - 0.4).abs() < 1.0e-6)
+                .count(),
+            1,
+            "each frame should contain one promoted source: {frame:?}"
+        );
+    }
+    reduce_curve_message(
+        &mut state,
+        CurvePreviewMessage::ReleaseNode {
+            index: 0,
+            node: CurveNode { x: 0.31, y: 0.4 },
+            push_through_threshold_x: test_curve_push_through_threshold_x(),
+            shift_held: false,
+            option_held: false,
+            command_held: false,
+        },
+    );
+    assert!(params.editable_curve_snapshot().origin_is_clip);
+    assert_eq!(state.undo_history.len(), 1);
+    reduce_editor_message(&mut state, EditorMessage::Undo);
+    assert_eq!(params.editable_curve_snapshot(), origin);
+}
+
+#[test]
+fn editing_phase_zero_dynamic_seam_reclaims_clip_origin() {
+    let mut origin = EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 0.5 },
+            CurveNode { x: 0.3, y: 0.2 },
+            CurveNode { x: 0.8, y: 0.7 },
+            CurveNode { x: 1.0, y: 0.5 },
+        ],
+        segments: vec![CurveSegment { tension: 0.2 }; 3],
+        ..EditableCurve::default()
+    };
+    origin.origin_is_clip = true;
+    let origin = origin.normalized();
+    let params = Arc::new(PumpParams::new());
+    params.set_editable_curve(&origin);
+    let mut state = editor_state(Arc::clone(&params));
+
+    reduce_curve_message(
+        &mut state,
+        CurvePreviewMessage::PressSeam { right_edge: false },
+    );
+    let active = state
+        .active_node()
+        .expect("phase-zero seam should be active");
+    reduce_curve_message(
+        &mut state,
+        CurvePreviewMessage::DragNode {
+            index: active,
+            node: CurveNode { x: 0.0, y: 0.35 },
+            push_through_threshold_x: test_curve_push_through_threshold_x(),
+        },
+    );
+    assert!(!params.editable_curve_snapshot().origin_is_clip);
+}
+
+#[test]
+fn clipped_curve_keeps_near_zero_authored_point_until_exact_endpoint() {
+    let origin = EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 0.8 },
+            CurveNode { x: 0.2, y: 0.2 },
+            CurveNode { x: 0.8, y: 0.6 },
+            CurveNode { x: 1.0, y: 0.8 },
+        ],
+        segments: vec![CurveSegment { tension: 0.15 }; 3],
+        origin_is_clip: true,
+        ..EditableCurve::default()
+    }
+    .normalized();
+    let mut moved = origin.clone();
+    let moved_index = move_curve_node_with_push_through(
+        &mut moved,
+        1,
+        CurveNode {
+            x: 0.00005,
+            y: 0.35,
+        },
+        0.0,
+        0.25,
+    );
+
+    assert!(moved.origin_is_clip);
+    assert!(
+        moved.nodes[moved_index].x > 0.0 && moved.nodes[moved_index].x < 0.001,
+        "near-zero authored point must survive normalization: {moved:?}"
+    );
+    assert_eq!(
+        moved.nodes.iter().filter(|node| node.x == 0.0).count(),
+        1,
+        "near-zero authored point must not replace the clip anchor"
+    );
+
+    let endpoint_index = move_curve_node_with_push_through(
+        &mut moved,
+        moved_index,
+        CurveNode { x: 0.0, y: 0.42 },
+        0.0,
+        0.25,
+    );
+    assert!(!moved.origin_is_clip);
+    assert_eq!(endpoint_index, 0);
+    assert!((moved.nodes[0].y - 0.42).abs() < 1.0e-6);
+    assert!((moved.nodes.last().unwrap().y - 0.42).abs() < 1.0e-6);
+}
+
+#[test]
+fn clipped_curve_preserves_outgoing_tensions_when_raw_order_changes() {
+    let mut origin = EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 0.8 },
+            CurveNode { x: 0.2, y: 0.2 },
+            CurveNode { x: 0.5, y: 0.55 },
+            CurveNode { x: 0.8, y: 0.6 },
+            CurveNode { x: 1.0, y: 0.8 },
+        ],
+        segments: vec![CurveSegment { tension: 0.0 }; 4],
+        origin_is_clip: true,
+        ..EditableCurve::default()
+    }
+    .normalized();
+    origin.segments = vec![
+        CurveSegment { tension: 0.1 },
+        CurveSegment { tension: -0.2 },
+        CurveSegment { tension: 0.43 },
+        CurveSegment { tension: 0.72 },
+    ];
+
+    let mut moving_first = origin.clone();
+    move_curve_node_with_push_through(
+        &mut moving_first,
+        2,
+        CurveNode { x: 0.05, y: 0.4 },
+        0.0,
+        0.0,
+    );
+    // C moved before B and pushed B away. C's outgoing C->D segment stays
+    // .43, while D's outgoing wrapped closure remains .72.
+    assert!((moving_first.segments[0].tension - 0.72).abs() < 1.0e-6);
+    assert!((moving_first.segments[1].tension - 0.43).abs() < 1.0e-6);
+    assert!((moving_first.segments.last().unwrap().tension - 0.72).abs() < 1.0e-6);
+
+    let mut moving_last = origin;
+    move_curve_node_with_push_through(&mut moving_last, 2, CurveNode { x: 0.95, y: 0.4 }, 0.0, 0.0);
+    // C moved after D and pushed D away. B's outgoing B->C remains -.2 and
+    // C's outgoing span becomes the wrapped closure.
+    assert!((moving_last.segments[0].tension - 0.43).abs() < 1.0e-6);
+    assert!((moving_last.segments[1].tension + 0.2).abs() < 1.0e-6);
+    assert!((moving_last.segments.last().unwrap().tension - 0.43).abs() < 1.0e-6);
+}
+
+#[test]
+fn clipped_curve_exact_endpoints_preserve_incident_segment_tensions() {
+    let origin = EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 0.8 },
+            CurveNode { x: 0.2, y: 0.2 },
+            CurveNode { x: 0.8, y: 0.6 },
+            CurveNode { x: 1.0, y: 0.8 },
+        ],
+        segments: vec![CurveSegment { tension: 0.0 }; 3],
+        origin_is_clip: true,
+        ..EditableCurve::default()
+    }
+    .normalized();
+    let mut origin = origin;
+    origin.segments = vec![
+        CurveSegment { tension: 0.72 },
+        CurveSegment { tension: 0.43 },
+        CurveSegment { tension: 0.72 },
+    ];
+
+    for (index, target_x, expected_outgoing, expected_closure) in [
+        (1, 0.0, 0.43, 0.72),
+        (1, 1.0, 0.43, 0.72),
+        (2, 0.0, 0.72, 0.43),
+        (2, 1.0, 0.72, 0.43),
+    ] {
+        let mut endpoint = origin.clone();
+        move_curve_node_with_push_through(
+            &mut endpoint,
+            index,
+            CurveNode {
+                x: target_x,
+                y: 0.42,
+            },
+            0.0,
+            0.0,
+        );
+        assert!(!endpoint.origin_is_clip);
+        assert_eq!(endpoint.nodes.len(), 3);
+        assert!(
+            (endpoint.segments[0].tension - expected_outgoing).abs() < 1.0e-6,
+            "index {index}, target {target_x}: {endpoint:?}"
+        );
+        assert!(
+            (endpoint.segments[1].tension - expected_closure).abs() < 1.0e-6,
+            "index {index}, target {target_x}: {endpoint:?}"
+        );
+        assert!(
+            (sample_editable_curve(&endpoint, 0.1)
+                - sample_curve_segment(
+                    endpoint.nodes[0],
+                    endpoint.nodes[1],
+                    expected_outgoing,
+                    0.1,
+                ))
+            .abs()
+                < 1.0e-6
+        );
+    }
+}
+
+#[test]
+fn clipped_curve_move_pair_translates_two_authored_points_both_directions() {
+    let origin = EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 0.8 },
+            CurveNode { x: 0.2, y: 0.25 },
+            CurveNode { x: 0.8, y: 0.65 },
+            CurveNode { x: 1.0, y: 0.8 },
+        ],
+        segments: vec![CurveSegment { tension: 0.0 }; 3],
+        origin_is_clip: true,
+        ..EditableCurve::default()
+    }
+    .normalized();
+    let mut origin = origin;
+    origin.segments = vec![
+        CurveSegment { tension: 0.7 },
+        CurveSegment { tension: 0.3 },
+        CurveSegment { tension: 0.7 },
+    ];
+
+    let mut moved_right = origin.clone();
+    move_origin_clip_closure_pair(&mut moved_right, &origin, (0.3, 0.0));
+    moved_right.normalize_in_place();
+    assert!((moved_right.nodes[1].x - 0.1).abs() < 1.0e-6);
+    assert!((moved_right.nodes[2].x - 0.5).abs() < 1.0e-6);
+    assert!((moved_right.segments[0].tension - 0.3).abs() < 1.0e-6);
+    assert!((moved_right.segments[1].tension - 0.7).abs() < 1.0e-6);
+    assert!((moved_right.segments[2].tension - 0.3).abs() < 1.0e-6);
+
+    let mut moved_left = origin.clone();
+    move_origin_clip_closure_pair(&mut moved_left, &origin, (-0.3, 0.0));
+    moved_left.normalize_in_place();
+    assert!((moved_left.nodes[1].x - 0.5).abs() < 1.0e-6);
+    assert!((moved_left.nodes[2].x - 0.9).abs() < 1.0e-6);
+    assert!((moved_left.segments[0].tension - 0.3).abs() < 1.0e-6);
+    assert!((moved_left.segments[1].tension - 0.7).abs() < 1.0e-6);
+    assert!((moved_left.segments[2].tension - 0.3).abs() < 1.0e-6);
+}
+
+#[test]
+fn clipped_curve_marquee_excludes_structural_clip_anchors() {
+    let mut origin = EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 0.2 },
+            CurveNode { x: 0.2, y: 0.8 },
+            CurveNode { x: 0.5, y: 0.5 },
+            CurveNode { x: 0.8, y: 0.2 },
+            CurveNode { x: 1.0, y: 0.2 },
+        ],
+        segments: vec![CurveSegment { tension: 0.0 }; 4],
+        origin_is_clip: true,
+        ..EditableCurve::default()
+    };
+    origin = origin.normalized();
+    let params = Arc::new(PumpParams::new());
+    params.set_editable_curve(&origin);
+    params.set_phase_offset(0.25);
+    let mut state = editor_state(Arc::clone(&params));
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressMarquee {
+            start: CurveNode { x: 0.25, y: 1.0 },
+        }),
+    );
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::ReleaseMarquee {
+            current: CurveNode { x: 0.24, y: 0.0 },
+        }),
+    );
+    assert_eq!(state.selected_curve_nodes, vec![1, 2, 3]);
 }
 
 #[test]
@@ -4981,10 +5654,7 @@ fn radiant_numeric_entry_rejects_invalid_commit_without_corrupting_param() {
     );
 
     assert!((params.output_gain_db() + 3.0).abs() < f32::EPSILON);
-    assert_eq!(
-        state.numeric_entry.as_ref().map(|entry| entry.target),
-        Some(NumericEntryTarget::OutputGain)
-    );
+    assert!(state.numeric_entry.is_none());
 }
 
 #[test]
@@ -5151,10 +5821,7 @@ fn radiant_delay_numeric_entry_accepts_integer_beats_and_formats_units() {
         }),
     );
     assert_eq!(params.delay_beats(), MAX_DELAY_BEATS);
-    assert_eq!(
-        state.numeric_entry.as_ref().map(|entry| entry.target),
-        Some(NumericEntryTarget::Delay)
-    );
+    assert!(state.numeric_entry.is_none());
     assert_eq!(
         state.undo_history.len(),
         history_before_invalid_commit,

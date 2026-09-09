@@ -57,3 +57,35 @@ active UI gestures while retaining applied audio settings.
 CI and release preflight results are attached to the migration pull request.
 Fresh ad-hoc review bundles are audited separately; DAW and audible acceptance
 remain manual. This migration does not publish a release.
+
+## Curve and numeric input parity
+
+Curve hover uses the rendered segment geometry, with highlighted nodes, an
+insertion preview, blue move-range segments and a widened amber curve while
+sliding. Paint previews and marquee selection remain visible during editing.
+Right-button drags paint; plain left drags in empty space do not. Option-click
+removes interior points while protecting endpoints and distinguishing a drag.
+
+Admitted knob and curve gestures own native movement until matching release,
+including outside-window movement. Capture loss cancels paint previews and
+ends accepted knob edits. The timing menu occludes the curve beneath it.
+Delay drafts contain digits only, allow temporary empty text, support Backspace,
+and consume arrows without changing Sync. An empty submission restores the
+prior value and exits editing.
+
+Native tests cover these mouse and keyboard paths, and screenshot assertions
+check the blue segment overlay rather than merely writing image files. Synthetic
+hover events target the installed tracking-area owner, matching AppKit's tracking
+route without changing the host window's mouse-move or first-responder settings.
+
+The full delay control (progress strip and padding included) focuses the numeric
+field and closes the timing menu. Arrow keys then step only delay. A plain drag
+from empty plot space creates one node; a click alone does not. Hover insertion
+uses a circular preview sampled on the curve, matching the click position.
+Command–Shift and offset-strip drags follow the pointer visually; their stored
+phase delta is inverted to retain existing DSP and preset semantics.
+
+Paired diamond handles mark the viewport seam at both clipping boundaries.
+They are sampled projections during offset changes. Dragging either copy
+materializes or reuses one authored seam point and locks it vertically; ordinary
+nodes reaching the boundary use the existing seam takeover/merge behavior.
