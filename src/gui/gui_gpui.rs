@@ -1306,10 +1306,24 @@ impl PumpEditor {
     fn raw_curve_node(&self, position: Point<Pixels>) -> Option<CurveNode> {
         let display = self.normalized_curve_point(position)?;
         let phase = self.state.borrow().params().phase_offset();
-        Some(CurveNode {
-            x: crate::dsp::authored_curve_phase(display.x, phase),
-            y: display.y,
-        })
+        // Keep which viewport edge was touched across the cyclic mapping.
+        // The reducer recognizes these tiny offsets as exact edge contacts.
+        let x = if display.x <= 0.0 {
+            if phase.rem_euclid(1.0) <= f32::EPSILON {
+                0.0
+            } else {
+                (phase + 1.0e-5).rem_euclid(1.0)
+            }
+        } else if display.x >= 1.0 {
+            if phase.rem_euclid(1.0) <= f32::EPSILON {
+                1.0
+            } else {
+                (phase - 1.0e-5).rem_euclid(1.0)
+            }
+        } else {
+            crate::dsp::authored_curve_phase(display.x, phase)
+        };
+        Some(CurveNode { x, y: display.y })
     }
 
     fn insertion_node_on_curve(&self, position: Point<Pixels>) -> Option<CurveNode> {
@@ -1520,7 +1534,9 @@ impl PumpEditor {
             (f32::from(bounds.size.height) - CURVE_OFFSET_BAR_HEIGHT - CURVE_OFFSET_INSET).max(1.0);
         let seam_indices = state.seam_node_indices();
         for (index, node) in curve.nodes.iter().copied().enumerate() {
-            if seam_indices.contains(&index) {
+            if seam_indices.contains(&index)
+                || (curve.origin_is_clip && (index == 0 || index + 1 == curve.nodes.len()))
+            {
                 continue;
             }
             let x = (node.x - phase).rem_euclid(1.0);
@@ -1631,13 +1647,14 @@ impl PumpEditor {
     fn curve_mouse_down(
         &mut self,
         event: &MouseDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !matches!(event.button, MouseButton::Left | MouseButton::Right) {
             return;
         }
         self.dismiss_timing_dropdown(cx);
+        window.focus(&self.editor_focus_handle, cx);
         self.last_pointer = Some(event.position);
         self.curve_drag_start = Some(event.position);
         self.curve_drag_segment = None;
@@ -1840,7 +1857,11 @@ impl PumpEditor {
         } else {
             if !option && self.curve_plot_contains(event.position) {
                 self.curve_active_button = Some(MouseButton::Left);
-                self.pending_empty_node = Some((event.position, point));
+                if display_point.x <= 0.0 || display_point.x >= 1.0 {
+                    self.pending_seam = Some((event.position, display_point.x >= 1.0));
+                } else {
+                    self.pending_empty_node = Some((event.position, point));
+                }
             }
         }
     }
@@ -2701,11 +2722,19 @@ impl PumpEditor {
                     );
                 }
             }
-            "delete" | "backspace" => {
-                self.dispatch(
-                    EditorMessage::Curve(CurvePreviewMessage::DeleteSelectedNodes),
-                    cx,
-                );
+            "delete" | "backspace" | "back" => {
+                let selected = {
+                    let state = self.state.borrow();
+                    (0..state.rendered_curve().nodes.len()).any(|index| state.selected_node(index))
+                };
+                if selected {
+                    self.dispatch(
+                        EditorMessage::Curve(CurvePreviewMessage::DeleteSelectedNodes),
+                        cx,
+                    );
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
             }
             _ => {}
         }
@@ -3129,7 +3158,9 @@ fn draw_curve(
         }
     }
     for (index, node) in curve.nodes.iter().copied().enumerate() {
-        if seam_indices.contains(&index) {
+        if seam_indices.contains(&index)
+            || (curve.origin_is_clip && (index == 0 || index + 1 == curve.nodes.len()))
+        {
             continue;
         }
         let center = curve_point_pixels(left, top, width, height, phase, node);

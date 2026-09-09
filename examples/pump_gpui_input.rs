@@ -872,6 +872,95 @@ mod macos {
                 "seam takeover must move/merge the source rather than add another node"
             );
         }
+        // The authored cycle-zero point is an ordinary movable point when
+        // offset places it inside the viewport. Closure anchors are hidden.
+        for delta in [-40.0, 20.0] {
+            params.set_editable_curve(&flat_curve);
+            params.set_phase_offset(0.25);
+            pump_appkit(app, &gui, 0.04);
+            send_mouse_down(fixture.window, 451.0, 147.0, 0);
+            send_mouse_dragged(fixture.window, 451.0 + delta, 120.0, 0);
+            send_mouse_up(fixture.window, 451.0 + delta, 120.0, 0);
+            pump_appkit(app, &gui, 0.04);
+            let moved = params.editable_curve_snapshot();
+            let expected_x = (delta as f32 / 530.0).rem_euclid(1.0);
+            assert!(
+                moved.origin_is_clip,
+                "moving cycle zero must replace it with hidden closure anchors"
+            );
+            assert!(
+                moved
+                    .nodes
+                    .iter()
+                    .skip(1)
+                    .take(moved.nodes.len() - 2)
+                    .any(|node| (node.x - expected_x).abs() < 0.004 && node.y > 0.6),
+                "cycle-zero point must follow the horizontal drag: {moved:?}"
+            );
+            assert_eq!(
+                params.phase_offset(),
+                0.25,
+                "point dragging must not change offset"
+            );
+            // A second gesture must cross authored zero without deleting the
+            // point or swallowing unrelated nodes on the other side of it.
+            send_mouse_down(fixture.window, 451.0 + delta, 120.0, 0);
+            send_mouse_dragged(fixture.window, 451.0 - delta, 110.0, 0);
+            send_mouse_up(fixture.window, 451.0 - delta, 110.0, 0);
+            pump_appkit(app, &gui, 0.04);
+            let crossed = params.editable_curve_snapshot();
+            let crossed_x = (-delta as f32 / 530.0).rem_euclid(1.0);
+            assert_eq!(crossed.nodes.len(), moved.nodes.len());
+            assert!(
+                crossed
+                    .nodes
+                    .iter()
+                    .any(|node| { (node.x - crossed_x).abs() < 0.004 && node.y > 0.65 }),
+                "second drag must cross authored zero freely: {crossed:?}"
+            );
+        }
+
+        // Hosts may send Backspace as a virtual key or a character-only
+        // callback. All forms must edit the focused draft and be consumed.
+        for (character, code) in [(0, 1), (127, 0), (8, 0)] {
+            send_click(fixture.window, DELAY_X, DELAY_Y, 0);
+            send_key(app, fixture.window, &gui, "a", 0, COMMAND);
+            send_text(app, fixture.window, &gui, "12");
+            assert!(
+                gui.on_key_down(character, code, 0),
+                "focused Backspace must be consumed"
+            );
+            gui.on_key_up(character, code, 0);
+            pump_appkit(app, &gui, 0.04);
+            send_key(app, fixture.window, &gui, "\r", 36, 0);
+            assert_eq!(
+                params.delay_beats(),
+                1,
+                "Backspace form ({character}, {code}) must remove the last digit"
+            );
+        }
+
+        // Marquee selection takes keyboard ownership from an earlier numeric
+        // field, and Backspace deletes the selection rather than its text.
+        assert_delay_text_edit(app, fixture, &gui, "4");
+        params.set_editable_curve(&curve_before_feedback);
+        params.set_phase_offset(0.0);
+        pump_appkit(app, &gui, 0.04);
+        send_mouse_down(fixture.window, 80.0, 130.0, SHIFT);
+        send_mouse_dragged(fixture.window, 240.0, 225.0, SHIFT);
+        send_mouse_up(fixture.window, 240.0, 225.0, SHIFT);
+        pump_appkit(app, &gui, 0.04);
+        send_key(app, fixture.window, &gui, "\u{7f}", 51, 0);
+        assert_eq!(
+            params.editable_curve_snapshot().nodes.len(),
+            2,
+            "Backspace must delete marquee-selected interior nodes"
+        );
+        assert_eq!(
+            params.delay_beats(),
+            4,
+            "curve deletion must not edit delay"
+        );
         params.set_editable_curve(&saved_curve);
         params.set_phase_offset(saved_phase);
         pump_appkit(app, &gui, 0.04);
@@ -1193,7 +1282,7 @@ mod macos {
         );
         gui.close();
         eprintln!(
-            "PASS native Pump GPUI timing dropdown, delay typing/arrows, clipboard selection/cut/paste, Escape, Smooth drag/edit/wheel/arrows, idle host projection, bypass Space/Enter, unfocused transport, and reopen input"
+            "PASS native Pump GPUI delay typing/arrows/Backspace, marquee deletion, cyclic node drags, seam handles, insertion, offset direction, timing dropdown, clipboard, Smooth controls, host projection, transport, and reopen input"
         );
     }
 

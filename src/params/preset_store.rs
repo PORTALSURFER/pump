@@ -7,12 +7,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 11;
+const PRESET_STORE_VERSION: u32 = 12;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
 const MIN_ENCODED_CURVE_BYTES: usize = 4 + MIN_CURVE_BYTES;
 const PHASE_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"PHAS");
+const PHASE_SOURCE_ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"SORG");
+const ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"ORIG");
 
 #[cfg(test)]
 thread_local! {
@@ -301,20 +303,25 @@ fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
 }
 
 fn encode_phase_metadata(payload: &mut Vec<u8>, curve: &EditableCurve) {
-    let Some(source) = curve.phase_source.as_deref() else {
-        return;
-    };
-    payload.extend_from_slice(&PHASE_METADATA_MAGIC.to_le_bytes());
-    payload.extend_from_slice(&curve.phase_offset.to_le_bytes());
-    let source = source.clone().normalized();
-    let node_count = source.nodes.len().min(MAX_EDITABLE_NODES);
-    payload.extend_from_slice(&(node_count as u32).to_le_bytes());
-    for node in source.nodes.iter().take(node_count) {
-        payload.extend_from_slice(&node.x.to_le_bytes());
-        payload.extend_from_slice(&node.y.to_le_bytes());
+    if let Some(source) = curve.phase_source.as_deref() {
+        payload.extend_from_slice(&PHASE_METADATA_MAGIC.to_le_bytes());
+        payload.extend_from_slice(&curve.phase_offset.to_le_bytes());
+        let source = source.clone().normalized();
+        let node_count = source.nodes.len().min(MAX_EDITABLE_NODES);
+        payload.extend_from_slice(&(node_count as u32).to_le_bytes());
+        for node in source.nodes.iter().take(node_count) {
+            payload.extend_from_slice(&node.x.to_le_bytes());
+            payload.extend_from_slice(&node.y.to_le_bytes());
+        }
+        for segment in source.segments.iter().take(node_count.saturating_sub(1)) {
+            payload.extend_from_slice(&segment.tension.to_le_bytes());
+        }
+        if source.origin_is_clip {
+            payload.extend_from_slice(&PHASE_SOURCE_ORIGIN_METADATA_MAGIC.to_le_bytes());
+        }
     }
-    for segment in source.segments.iter().take(node_count.saturating_sub(1)) {
-        payload.extend_from_slice(&segment.tension.to_le_bytes());
+    if curve.origin_is_clip {
+        payload.extend_from_slice(&ORIGIN_METADATA_MAGIC.to_le_bytes());
     }
 }
 
@@ -377,9 +384,9 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         let node_count = read_u32(&mut cursor)
             .map(|value| value as usize)
             .ok_or_else(|| "invalid preset node count".to_string())?;
-        let editable_curve = decode_curve(&mut cursor, node_count, version >= 3)?;
+        let editable_curve = decode_curve(&mut cursor, node_count, version >= 3, version >= 12)?;
         let quick_slots = if version >= 2 {
-            decode_quick_slots(&mut cursor, version >= 3)?
+            decode_quick_slots(&mut cursor, version >= 3, version >= 12)?
         } else {
             seeded_quick_shape_slots()
         };
@@ -469,6 +476,7 @@ fn decode_curve(
     cursor: &mut Cursor<&[u8]>,
     node_count: usize,
     with_phase_metadata: bool,
+    with_origin_metadata: bool,
 ) -> Result<EditableCurve, String> {
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds".to_string());
@@ -494,17 +502,40 @@ fn decode_curve(
         ..EditableCurve::default()
     };
     if with_phase_metadata {
-        let marker_position = cursor.position();
-        let marker = read_u32(cursor).unwrap_or_default();
-        if marker == PHASE_METADATA_MAGIC {
-            curve.phase_offset =
-                read_f32(cursor).ok_or_else(|| "invalid phase offset".to_string())?;
-            let source_count = read_u32(cursor)
-                .map(|value| value as usize)
-                .ok_or_else(|| "invalid phase source node count".to_string())?;
-            curve.phase_source = Some(Box::new(decode_curve(cursor, source_count, false)?));
-        } else {
-            cursor.set_position(marker_position);
+        loop {
+            if remaining_bytes(cursor) < 4 {
+                break;
+            }
+            let marker_position = cursor.position();
+            let Some(marker) = read_u32(cursor) else {
+                break;
+            };
+            match marker {
+                PHASE_METADATA_MAGIC => {
+                    curve.phase_offset =
+                        read_f32(cursor).ok_or_else(|| "invalid phase offset".to_string())?;
+                    let source_count = read_u32(cursor)
+                        .map(|value| value as usize)
+                        .ok_or_else(|| "invalid phase source node count".to_string())?;
+                    let mut source = decode_curve(cursor, source_count, false, false)?;
+                    if with_origin_metadata && remaining_bytes(cursor) >= 4 {
+                        let marker_position = cursor.position();
+                        if read_u32(cursor) == Some(PHASE_SOURCE_ORIGIN_METADATA_MAGIC) {
+                            source.origin_is_clip = true;
+                        } else {
+                            cursor.set_position(marker_position);
+                        }
+                    }
+                    curve.phase_source = Some(Box::new(source));
+                }
+                ORIGIN_METADATA_MAGIC if with_origin_metadata => {
+                    curve.origin_is_clip = true;
+                }
+                _ => {
+                    cursor.set_position(marker_position);
+                    break;
+                }
+            }
         }
     }
     Ok(curve.normalized())
@@ -513,6 +544,7 @@ fn decode_curve(
 fn decode_quick_slots(
     cursor: &mut Cursor<&[u8]>,
     with_phase_metadata: bool,
+    with_origin_metadata: bool,
 ) -> Result<Vec<QuickShapeSlot>, String> {
     let count = read_u32(cursor)
         .map(|value| value as usize)
@@ -528,7 +560,12 @@ fn decode_quick_slots(
         let node_count = read_u32(cursor)
             .map(|value| value as usize)
             .ok_or_else(|| "invalid preset quick slot node count".to_string())?;
-        let curve = decode_curve(cursor, node_count, with_phase_metadata)?;
+        let curve = decode_curve(
+            cursor,
+            node_count,
+            with_phase_metadata,
+            with_origin_metadata,
+        )?;
         slots.push(QuickShapeSlot { curve });
     }
     Ok(slots)
@@ -562,6 +599,7 @@ fn remaining_bytes(cursor: &Cursor<&[u8]>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::curve::{cyclically_offset_editable_curve, sample_editable_curve};
 
     const FIRST_PRESET_OFFSET: usize = 16;
 
@@ -655,7 +693,7 @@ mod tests {
     #[test]
     fn preset_store_roundtrip_preserves_bank() {
         let path = temp_path("roundtrip");
-        let bank = PumpPresetBank {
+        let mut bank = PumpPresetBank {
             selected: 1,
             presets: vec![
                 PumpPreset {
@@ -715,6 +753,12 @@ mod tests {
                 },
             ],
         };
+        let mut editable_curve = bank.presets[1].editable_curve.clone();
+        editable_curve.origin_is_clip = true;
+        bank.presets[1].editable_curve = editable_curve.normalized();
+        let mut quick_slot_curve = bank.presets[1].quick_slots[2].curve.clone();
+        quick_slot_curve.origin_is_clip = true;
+        bank.presets[1].quick_slots[2].curve = quick_slot_curve.normalized();
 
         save_preset_bank_to_path(&path, &bank).expect("preset store save should succeed");
         let payload = fs::read(&path).expect("preset store file should exist");
@@ -722,6 +766,54 @@ mod tests {
         assert_eq!(loaded, bank);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn preset_store_roundtrip_preserves_clip_phase_source_sampling() {
+        let mut bank = PumpPresetBank::default_init();
+        let mut origin = bank.presets[0].editable_curve.clone();
+        origin.origin_is_clip = true;
+        let origin = origin.normalized();
+        let shifted = cyclically_offset_editable_curve(&origin, 0.237);
+        assert!(shifted.origin_is_clip);
+        assert!(shifted
+            .phase_source
+            .as_deref()
+            .is_some_and(|source| source.origin_is_clip));
+        bank.presets[0].editable_curve = shifted.clone();
+
+        let payload = encode_preset_bank_payload(&bank);
+        let decoded = decode_preset_bank_payload(&payload).expect("preset store should decode");
+        let restored = &decoded.presets[0].editable_curve;
+        assert!(restored.origin_is_clip);
+        assert!(restored
+            .phase_source
+            .as_deref()
+            .is_some_and(|source| source.origin_is_clip));
+        for index in 0..=400 {
+            let phase = index as f32 / 400.0;
+            assert!(
+                (sample_editable_curve(restored, phase) - sample_editable_curve(&shifted, phase))
+                    .abs()
+                    < 1.0e-6,
+                "phase {phase}"
+            );
+        }
+    }
+
+    #[test]
+    fn preset_store_v11_defaults_origin_clip_metadata_to_false() {
+        let mut payload = encoded_single_preset_bank();
+        write_payload_u32(&mut payload, 4, 11);
+
+        let bank = decode_preset_bank_payload(&payload).expect("v11 preset store should decode");
+        for preset in bank.presets {
+            assert!(!preset.editable_curve.origin_is_clip);
+            assert!(preset
+                .quick_slots
+                .iter()
+                .all(|slot| !slot.curve.origin_is_clip));
+        }
     }
 
     #[test]

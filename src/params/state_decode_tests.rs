@@ -1,4 +1,7 @@
-use super::{decode_state_payload, encode_state_payload, PumpParams};
+use super::{
+    decode_state_payload, encode_state_payload, seeded_quick_shape_slots, PumpParams, SoundSide,
+};
+use crate::curve::{cyclically_offset_editable_curve, sample_editable_curve};
 
 const OFFSET_VERSION: usize = 4;
 const OFFSET_NODE_COUNT: usize = 32;
@@ -354,7 +357,7 @@ pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Ve
             let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
             payload.truncate(quick_slot_offset);
         }
-        5..=17 => {}
+        5..=18 => {}
         _ => panic!("unsupported test state version"),
     }
     payload
@@ -368,6 +371,102 @@ fn sample_params() -> PumpParams {
     params.set_output_gain_db(-3.5);
     params.set_sync_division(6.0);
     params
+}
+
+#[test]
+fn state_roundtrip_preserves_origin_clip_metadata() {
+    let params = PumpParams::new();
+    let mut editable = params.editable_curve_snapshot();
+    editable.origin_is_clip = true;
+    params.set_editable_curve(&editable);
+
+    let mut quick_slots = seeded_quick_shape_slots();
+    quick_slots[0].curve.origin_is_clip = true;
+    params
+        .set_active_sound_quick_slots(quick_slots)
+        .expect("active quick slots should be replaceable");
+    assert!(params.copy_active_to_inactive());
+
+    let mut bank = params.preset_bank_snapshot();
+    bank.presets[0].editable_curve.origin_is_clip = true;
+    bank.presets[0].quick_slots[1].curve.origin_is_clip = true;
+    params.set_preset_bank_without_persistence(bank);
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("state should decode");
+
+    assert!(restored.editable_curve_snapshot().origin_is_clip);
+    for side in [SoundSide::A, SoundSide::B] {
+        let state = restored.sound_state_snapshot(side);
+        assert!(state.editable_curve.origin_is_clip);
+        assert!(state.quick_slots[0].curve.origin_is_clip);
+    }
+    let preset = &restored.preset_bank_snapshot().presets[0];
+    assert!(preset.editable_curve.origin_is_clip);
+    assert!(preset.quick_slots[1].curve.origin_is_clip);
+}
+
+#[test]
+fn state_roundtrip_preserves_clip_phase_source_sampling() {
+    let params = PumpParams::new();
+    let mut origin = params.editable_curve_snapshot();
+    origin.origin_is_clip = true;
+    let origin = origin.normalized();
+    let shifted = cyclically_offset_editable_curve(&origin, 0.237);
+    assert!(shifted.origin_is_clip);
+    assert!(shifted
+        .phase_source
+        .as_deref()
+        .is_some_and(|source| source.origin_is_clip));
+    params.set_editable_curve_preserving_phase(&shifted);
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("state should decode");
+
+    let restored_curve = restored.editable_curve_snapshot();
+    assert!(restored_curve.origin_is_clip);
+    assert!(restored_curve
+        .phase_source
+        .as_deref()
+        .is_some_and(|source| source.origin_is_clip));
+    for index in 0..=400 {
+        let phase = index as f32 / 400.0;
+        assert!(
+            (sample_editable_curve(&restored_curve, phase)
+                - sample_editable_curve(&shifted, phase))
+            .abs()
+                < 1.0e-6,
+            "phase {phase}"
+        );
+    }
+}
+
+#[test]
+fn legacy_state_defaults_origin_clip_metadata_to_false() {
+    let payload = payload_for_state_version(&PumpParams::new(), 17);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("legacy state should decode");
+
+    assert!(!restored.editable_curve_snapshot().origin_is_clip);
+    for side in [SoundSide::A, SoundSide::B] {
+        let state = restored.sound_state_snapshot(side);
+        assert!(!state.editable_curve.origin_is_clip);
+        assert!(state
+            .quick_slots
+            .iter()
+            .all(|slot| !slot.curve.origin_is_clip));
+    }
+    let bank = restored.preset_bank_snapshot();
+    assert!(bank
+        .presets
+        .iter()
+        .all(|preset| !preset.editable_curve.origin_is_clip
+            && preset
+                .quick_slots
+                .iter()
+                .all(|slot| !slot.curve.origin_is_clip)));
 }
 
 #[test]

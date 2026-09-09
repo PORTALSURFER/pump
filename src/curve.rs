@@ -51,6 +51,13 @@ pub struct EditableCurve {
     /// Phase offset applied to `phase_source`, in normalized cycles.
     #[doc(hidden)]
     pub phase_offset: f32,
+    /// Whether the cycle-zero endpoints are structural clipping anchors.
+    ///
+    /// A promoted authored endpoint is kept as an ordinary interior node while
+    /// the coupled `0`/`1` nodes provide the wrapped interpolation boundary.
+    /// Legacy curves leave this disabled so their endpoint semantics remain
+    /// unchanged.
+    pub origin_is_clip: bool,
 }
 
 impl Default for EditableCurve {
@@ -60,6 +67,7 @@ impl Default for EditableCurve {
             segments: Vec::new(),
             phase_source: None,
             phase_offset: 0.0,
+            origin_is_clip: false,
         }
     }
 }
@@ -73,7 +81,7 @@ impl EditableCurve {
 
     /// Clamp and repair this curve in-place so it is valid for sampling.
     pub fn normalize_in_place(&mut self) {
-        let (nodes, segment_sources) = normalize_nodes(&self.nodes);
+        let (nodes, segment_sources) = normalize_nodes(&self.nodes, self.origin_is_clip);
         self.nodes = nodes;
         self.segments = normalize_segments(
             &self.segments,
@@ -83,11 +91,35 @@ impl EditableCurve {
         if let Some(source) = self.phase_source.as_mut() {
             source.normalize_in_place();
         }
+        if self.origin_is_clip && self.nodes.len() < 3 {
+            // A clip curve without an interior authored point has no distinct
+            // source to preserve. Falling back to the legacy endpoint model
+            // also prevents the GUI from hiding its only editable nodes.
+            self.origin_is_clip = false;
+        }
+        if self.origin_is_clip {
+            refresh_origin_clip_endpoints(self);
+        }
         self.phase_offset = if self.phase_source.is_some() {
             self.phase_offset.rem_euclid(1.0)
         } else {
             0.0
         };
+    }
+}
+
+/// Set the one editable tension shared by both split halves of a clipped
+/// wrapped segment.
+pub(crate) fn set_origin_clip_closure_tension(curve: &mut EditableCurve, tension: f32) {
+    if !curve.origin_is_clip || curve.segments.is_empty() {
+        return;
+    }
+    let tension = tension.clamp(MIN_SEGMENT_TENSION, MAX_SEGMENT_TENSION);
+    if let Some(first) = curve.segments.first_mut() {
+        first.tension = tension;
+    }
+    if let Some(last) = curve.segments.last_mut() {
+        last.tension = tension;
     }
 }
 
@@ -147,6 +179,7 @@ pub fn cyclically_offset_editable_curve(curve: &EditableCurve, delta: f32) -> Ed
         segments: Vec::new(),
         phase_source: Some(Box::new(exact_phase_source(&origin))),
         phase_offset: exact_phase_offset(&origin, delta),
+        origin_is_clip: origin.origin_is_clip,
     };
     for window in offset.nodes.windows(2) {
         let left = window[0].x;
@@ -248,6 +281,7 @@ fn exact_phase_source(curve: &EditableCurve) -> EditableCurve {
         .unwrap_or_else(|| EditableCurve {
             nodes: curve.nodes.clone(),
             segments: curve.segments.clone(),
+            origin_is_clip: curve.origin_is_clip,
             ..EditableCurve::default()
         })
 }
@@ -307,6 +341,28 @@ pub fn sample_editable_curve(curve: &EditableCurve, phase: f32) -> f32 {
     }
 
     let wrapped = phase.rem_euclid(1.0);
+    if curve.origin_is_clip && curve.nodes.len() >= 3 {
+        let first_interior = curve.nodes[1];
+        let last_interior = curve.nodes[curve.nodes.len() - 2];
+        let closure_tension = curve
+            .segments
+            .last()
+            .copied()
+            .unwrap_or(CurveSegment { tension: 0.0 })
+            .tension;
+        let closure_right = CurveNode {
+            x: first_interior.x + 1.0,
+            y: first_interior.y,
+        };
+        if wrapped <= first_interior.x || wrapped >= last_interior.x {
+            let closure_x = if wrapped <= first_interior.x {
+                wrapped + 1.0
+            } else {
+                wrapped
+            };
+            return sample_curve_segment(last_interior, closure_right, closure_tension, closure_x);
+        }
+    }
     if wrapped <= curve.nodes[0].x {
         return curve.nodes[0].y.clamp(0.0, 1.0);
     }
@@ -320,6 +376,35 @@ pub fn sample_editable_curve(curve: &EditableCurve, phase: f32) -> f32 {
     }
 
     sample_segment(curve, segment_index, wrapped)
+}
+
+/// Refresh the coupled structural endpoint values for a promoted cycle-zero
+/// source. The wrapped edge is one segment from the last interior point to the
+/// first interior point one cycle later; the structural endpoints expose the
+/// value at the cycle cut while the sampler evaluates that segment directly.
+fn refresh_origin_clip_endpoints(curve: &mut EditableCurve) {
+    if !curve.origin_is_clip || curve.nodes.len() < 3 {
+        return;
+    }
+    let first_interior = curve.nodes[1];
+    let last_index = curve.nodes.len() - 1;
+    let last_interior = curve.nodes[last_index - 1];
+    let closure_tension = curve
+        .segments
+        .last()
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let closure_right = CurveNode {
+        x: first_interior.x + 1.0,
+        y: first_interior.y,
+    };
+    let y = sample_curve_segment(last_interior, closure_right, closure_tension, 1.0);
+    curve.nodes[0].y = y;
+    curve.nodes[last_index].y = y;
+    // Keep the two split edge segments canonical. Any interior tensions remain
+    // untouched when the promoted point is rebuilt during a drag.
+    set_origin_clip_closure_tension(curve, closure_tension);
 }
 
 /// Convert an editable node/segment curve into a fixed-size table.
@@ -386,7 +471,10 @@ fn shape_with_tension(value: f32, tension: f32) -> f32 {
     }
 }
 
-fn normalize_nodes(nodes: &[CurveNode]) -> (Vec<CurveNode>, Vec<usize>) {
+fn normalize_nodes(
+    nodes: &[CurveNode],
+    preserve_clip_edge_interior: bool,
+) -> (Vec<CurveNode>, Vec<usize>) {
     let mut normalized: Vec<(CurveNode, usize)> = nodes
         .iter()
         .copied()
@@ -394,10 +482,19 @@ fn normalize_nodes(nodes: &[CurveNode]) -> (Vec<CurveNode>, Vec<usize>) {
         .filter_map(|(source_index, node)| {
             (node.x.is_finite() && node.y.is_finite()).then_some((
                 CurveNode {
-                    x: match node.x.clamp(0.0, 1.0) {
-                        x if x <= NODE_EDGE_EPSILON => 0.0,
-                        x if x >= 1.0 - NODE_EDGE_EPSILON => 1.0,
-                        x => x,
+                    // A clipped curve may have a real authored point in the
+                    // structural edge band. Preserve that raw position until
+                    // the ordering pass; the first/last entries are forced to
+                    // exact anchors below. Legacy curves retain the historic
+                    // edge snap so ordinary endpoint editing is unchanged.
+                    x: if preserve_clip_edge_interior {
+                        node.x.clamp(0.0, 1.0)
+                    } else {
+                        match node.x.clamp(0.0, 1.0) {
+                            x if x <= NODE_EDGE_EPSILON => 0.0,
+                            x if x >= 1.0 - NODE_EDGE_EPSILON => 1.0,
+                            x => x,
+                        }
                     },
                     y: node.y.clamp(0.0, 1.0),
                 },
@@ -418,7 +515,14 @@ fn normalize_nodes(nodes: &[CurveNode]) -> (Vec<CurveNode>, Vec<usize>) {
     let mut deduped: Vec<(CurveNode, usize)> = Vec::with_capacity(normalized.len());
     for (node, source_index) in normalized {
         if let Some(last) = deduped.last_mut() {
-            if (node.x - last.0.x).abs() < NODE_X_EPSILON {
+            // The clip anchors at raw zero and one are structural. An
+            // authored point may sit arbitrarily close to either anchor while
+            // it is being dragged; merging it into the anchor would erase the
+            // point (and its outgoing segment) before the gesture reaches an
+            // intentional exact endpoint.
+            let is_clip_edge_pair = preserve_clip_edge_interior
+                && ((last.0.x == 0.0 && node.x > 0.0) || (last.0.x < 1.0 && node.x == 1.0));
+            if (node.x - last.0.x).abs() < NODE_X_EPSILON && !is_clip_edge_pair {
                 last.0 = node;
                 last.1 = source_index;
                 continue;

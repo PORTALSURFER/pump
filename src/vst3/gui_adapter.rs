@@ -5,11 +5,7 @@ pub(super) struct Vst3HostParamEditSink {
 }
 
 fn vst3_param_id_for_gui(param_id: toybox::clack_plugin::utils::ClapId) -> ParamID {
-    if param_id == PARAM_SYNC_DIVISION_ID {
-        PARAM_SYNC_DIVISION_VST3_V2_NUM
-    } else {
-        param_id.get()
-    }
+    crate::params::vst3_id_from_clap_param_id(param_id).unwrap_or(param_id.get())
 }
 
 impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {

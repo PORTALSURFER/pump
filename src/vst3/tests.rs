@@ -565,6 +565,41 @@ fn vst3_ui_sink_maps_clap_division_to_extended_vst3_id() {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
+fn vst3_ui_sink_maps_clap_delay_away_from_extended_division_id() {
+    let shared = Arc::new(PumpVst3Shared::new());
+    let controller = PumpVst3Controller::new(Arc::clone(&shared));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    let handler = ComWrapper::new(RecordingComponentHandler {
+        calls: Arc::clone(&calls),
+        begin_result: kResultOk,
+        perform_result: kResultOk,
+        end_result: kResultOk,
+    })
+    .to_com_ptr::<IComponentHandler>()
+    .expect("component handler interface");
+    assert_eq!(
+        unsafe { controller.setComponentHandler(handler.as_ptr()) },
+        kResultOk
+    );
+
+    let sink = gui_adapter::Vst3HostParamEditSink {
+        shared: Arc::clone(&shared),
+    };
+    let config = toybox::clap::automation::AutomationConfig::default();
+    assert!(sink.edit(&config, crate::params::PARAM_DELAY_ID, 4.0));
+
+    assert_eq!(
+        *calls.lock().expect("recorded calls lock"),
+        vec![
+            RecordedEditCall::Begin(16),
+            RecordedEditCall::Perform(16, 4.0 / 32.0),
+            RecordedEditCall::End(16),
+        ]
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
 fn vst3_ui_sink_keeps_bypass_state_when_component_handler_is_missing() {
     let shared = Arc::new(PumpVst3Shared::new());
     let sink = gui_adapter::Vst3HostParamEditSink {

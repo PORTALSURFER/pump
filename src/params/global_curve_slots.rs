@@ -8,8 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const CURVE_SLOT_STORE_MAGIC: &[u8; 4] = b"PCSL";
-const CURVE_SLOT_STORE_VERSION: u32 = 2;
+const CURVE_SLOT_STORE_VERSION: u32 = 3;
 const PHASE_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"PHAS");
+const PHASE_SOURCE_ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"SORG");
+const ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"ORIG");
 const CURVE_SLOT_STORE_PATH_ENV: &str = "PUMP_GLOBAL_CURVE_SLOTS_PATH";
 const CURVE_SLOT_STORE_FILE_NAME: &str = "curve-slots.bin";
 
@@ -230,20 +232,25 @@ fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
 }
 
 fn encode_phase_metadata(payload: &mut Vec<u8>, curve: &EditableCurve) {
-    let Some(source) = curve.phase_source.as_deref() else {
-        return;
-    };
-    payload.extend_from_slice(&PHASE_METADATA_MAGIC.to_le_bytes());
-    payload.extend_from_slice(&curve.phase_offset.to_le_bytes());
-    let source = source.clone().normalized();
-    let node_count = source.nodes.len().min(MAX_EDITABLE_NODES);
-    payload.extend_from_slice(&(node_count as u32).to_le_bytes());
-    for node in source.nodes.iter().take(node_count) {
-        payload.extend_from_slice(&node.x.to_le_bytes());
-        payload.extend_from_slice(&node.y.to_le_bytes());
+    if let Some(source) = curve.phase_source.as_deref() {
+        payload.extend_from_slice(&PHASE_METADATA_MAGIC.to_le_bytes());
+        payload.extend_from_slice(&curve.phase_offset.to_le_bytes());
+        let source = source.clone().normalized();
+        let node_count = source.nodes.len().min(MAX_EDITABLE_NODES);
+        payload.extend_from_slice(&(node_count as u32).to_le_bytes());
+        for node in source.nodes.iter().take(node_count) {
+            payload.extend_from_slice(&node.x.to_le_bytes());
+            payload.extend_from_slice(&node.y.to_le_bytes());
+        }
+        for segment in source.segments.iter().take(node_count.saturating_sub(1)) {
+            payload.extend_from_slice(&segment.tension.to_le_bytes());
+        }
+        if source.origin_is_clip {
+            payload.extend_from_slice(&PHASE_SOURCE_ORIGIN_METADATA_MAGIC.to_le_bytes());
+        }
     }
-    for segment in source.segments.iter().take(node_count.saturating_sub(1)) {
-        payload.extend_from_slice(&segment.tension.to_le_bytes());
+    if curve.origin_is_clip {
+        payload.extend_from_slice(&ORIGIN_METADATA_MAGIC.to_le_bytes());
     }
 }
 
@@ -277,7 +284,12 @@ fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlo
                 let node_count = read_u32(&mut cursor)
                     .map(|value| value as usize)
                     .ok_or_else(|| "invalid curve slot node count".to_string())?;
-                Some(decode_curve(&mut cursor, node_count, version >= 2)?)
+                Some(decode_curve(
+                    &mut cursor,
+                    node_count,
+                    version >= 2,
+                    version >= 3,
+                )?)
             }
             _ => return Err("invalid curve slot occupancy flag".to_string()),
         };
@@ -293,6 +305,7 @@ fn decode_curve(
     cursor: &mut Cursor<&[u8]>,
     node_count: usize,
     with_phase_metadata: bool,
+    with_origin_metadata: bool,
 ) -> Result<EditableCurve, String> {
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds".to_string());
@@ -318,17 +331,40 @@ fn decode_curve(
         ..EditableCurve::default()
     };
     if with_phase_metadata {
-        let marker_position = cursor.position();
-        let marker = read_u32(cursor).unwrap_or_default();
-        if marker == PHASE_METADATA_MAGIC {
-            curve.phase_offset =
-                read_f32(cursor).ok_or_else(|| "invalid phase offset".to_string())?;
-            let source_count = read_u32(cursor)
-                .map(|value| value as usize)
-                .ok_or_else(|| "invalid phase source node count".to_string())?;
-            curve.phase_source = Some(Box::new(decode_curve(cursor, source_count, false)?));
-        } else {
-            cursor.set_position(marker_position);
+        loop {
+            if remaining_bytes(cursor) < 4 {
+                break;
+            }
+            let marker_position = cursor.position();
+            let Some(marker) = read_u32(cursor) else {
+                break;
+            };
+            match marker {
+                PHASE_METADATA_MAGIC => {
+                    curve.phase_offset =
+                        read_f32(cursor).ok_or_else(|| "invalid phase offset".to_string())?;
+                    let source_count = read_u32(cursor)
+                        .map(|value| value as usize)
+                        .ok_or_else(|| "invalid phase source node count".to_string())?;
+                    let mut source = decode_curve(cursor, source_count, false, false)?;
+                    if with_origin_metadata && remaining_bytes(cursor) >= 4 {
+                        let marker_position = cursor.position();
+                        if read_u32(cursor) == Some(PHASE_SOURCE_ORIGIN_METADATA_MAGIC) {
+                            source.origin_is_clip = true;
+                        } else {
+                            cursor.set_position(marker_position);
+                        }
+                    }
+                    curve.phase_source = Some(Box::new(source));
+                }
+                ORIGIN_METADATA_MAGIC if with_origin_metadata => {
+                    curve.origin_is_clip = true;
+                }
+                _ => {
+                    cursor.set_position(marker_position);
+                    break;
+                }
+            }
         }
     }
     Ok(curve.normalized())
@@ -362,6 +398,7 @@ fn remaining_bytes(cursor: &Cursor<&[u8]>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::curve::{cyclically_offset_editable_curve, sample_editable_curve};
 
     fn temp_path(label: &str) -> PathBuf {
         let stamp = SystemTime::now()
@@ -385,6 +422,47 @@ mod tests {
         let loaded =
             decode_global_curve_slot_payload(&payload).expect("curve slot decode should pass");
         assert_eq!(loaded, slots);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn curve_slot_store_roundtrip_preserves_clip_phase_source_sampling() {
+        let path = temp_path("clip-phase-source");
+        let mut origin = default_editable_curve();
+        origin.origin_is_clip = true;
+        let origin = origin.normalized();
+        let shifted = cyclically_offset_editable_curve(&origin, 0.237);
+        assert!(shifted.origin_is_clip);
+        assert!(shifted
+            .phase_source
+            .as_deref()
+            .is_some_and(|source| source.origin_is_clip));
+
+        let mut slots = empty_global_curve_slots();
+        slots[2].curve = Some(shifted.clone());
+        save_global_curve_slots_to_path(&path, &slots).expect("curve slot save should succeed");
+        let payload = fs::read(&path).expect("curve slot store file should exist");
+        let loaded = decode_global_curve_slot_payload(&payload)
+            .expect("curve slot decode with clip source should pass");
+        let restored = loaded[2]
+            .curve
+            .as_ref()
+            .expect("occupied curve slot should remain occupied");
+        assert!(restored.origin_is_clip);
+        assert!(restored
+            .phase_source
+            .as_deref()
+            .is_some_and(|source| source.origin_is_clip));
+        for index in 0..=400 {
+            let phase = index as f32 / 400.0;
+            assert!(
+                (sample_editable_curve(restored, phase) - sample_editable_curve(&shifted, phase))
+                    .abs()
+                    < 1.0e-6,
+                "phase {phase}"
+            );
+        }
 
         let _ = fs::remove_file(path);
     }
@@ -454,5 +532,22 @@ mod tests {
             .expect("version one curve slot store should decode");
         assert_eq!(loaded[0].curve, Some(default_editable_curve()));
         assert!(loaded[1..].iter().all(|slot| slot.curve.is_none()));
+    }
+
+    #[test]
+    fn curve_slot_decode_preserves_version_two_compatibility() {
+        let mut payload = encode_global_curve_slot_payload(&[GlobalCurveSlot {
+            curve: Some(default_editable_curve()),
+        }]);
+        payload[4..8].copy_from_slice(&2_u32.to_le_bytes());
+
+        let loaded = decode_global_curve_slot_payload(&payload)
+            .expect("version two curve slot store should decode");
+        let curve = loaded[0].curve.as_ref().expect("curve should be present");
+        assert!(!curve.origin_is_clip);
+        assert!(curve
+            .phase_source
+            .as_deref()
+            .is_none_or(|source| !source.origin_is_clip));
     }
 }
