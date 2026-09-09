@@ -782,15 +782,24 @@ class LocalVersionBranchTests(unittest.TestCase):
         self.bare = root / "origin.git"
         self.seed = root / "seed"
         self.clone = root / "scheduler"
-        self.git(root, "init", "--bare", str(self.bare))
+        self.git(root, "init", "--bare", "-b", "main", str(self.bare))
         self.seed.mkdir()
         self.git(self.seed, "init", "-b", "main")
         self.git(self.seed, "config", "user.name", "test")
         self.git(self.seed, "config", "user.email", "test@example.com")
         source = Path(__file__).parents[1]
         (self.seed / "scripts").mkdir()
-        shutil.copy2(source / "Cargo.toml", self.seed / "Cargo.toml")
-        shutil.copy2(source / "Cargo.lock", self.seed / "Cargo.lock")
+        # Keep this fixture independent of the repository's current package
+        # version.  The coordinator must continue to exercise a 0.2.6 -> 0.2.7
+        # bump after the product itself advances.
+        (self.seed / "Cargo.toml").write_text(
+            '[package]\nname = "pump"\nversion = "0.2.6"\nedition = "2021"\n',
+            encoding="utf-8",
+        )
+        (self.seed / "Cargo.lock").write_text(
+            'version = 4\n\n[[package]]\nname = "pump"\nversion = "0.2.6"\n',
+            encoding="utf-8",
+        )
         shutil.copy2(source / "scripts" / "bump_version.py", self.seed / "scripts" / "bump_version.py")
         self.git(self.seed, "add", "Cargo.toml", "Cargo.lock", "scripts/bump_version.py")
         self.git(self.seed, "commit", "-m", "base")
@@ -836,7 +845,11 @@ class LocalVersionBranchTests(unittest.TestCase):
         self.git(tamper, "switch", "--detach", branch_sha)
         lock = tamper / "Cargo.lock"
         lock.write_text(
-            lock.read_text(encoding="utf-8").replace('name = "cocoa"', 'name = "cocoa-tampered"', 1),
+            lock.read_text(encoding="utf-8").replace(
+                'version = "0.2.7"\n',
+                'version = "0.2.7"\ndependencies = ["tampered"]\n',
+                1,
+            ),
             encoding="utf-8",
         )
         self.git(
@@ -886,7 +899,11 @@ class LocalVersionBranchTests(unittest.TestCase):
         self.git(tamper, "switch", "--detach", branch_sha)
         lock = tamper / "Cargo.lock"
         lock.write_text(
-            lock.read_text(encoding="utf-8").replace('name = "cocoa"', 'name = "cocoa-tampered"', 1),
+            lock.read_text(encoding="utf-8").replace(
+                'version = "0.2.7"\n',
+                'version = "0.2.7"\ndependencies = ["tampered"]\n',
+                1,
+            ),
             encoding="utf-8",
         )
         self.git(tamper, "add", "Cargo.lock")
