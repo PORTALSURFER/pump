@@ -956,6 +956,8 @@ struct PumpEditor {
     curve_dragging_marquee: bool,
     curve_dragging_paint: bool,
     pending_option_gesture: Option<PendingOptionGesture>,
+    pending_empty_node: Option<(Point<Pixels>, CurveNode)>,
+    pending_seam: Option<(Point<Pixels>, bool)>,
     active_knob: Option<NumericEntryTarget>,
     last_pointer: Option<Point<Pixels>>,
     button_focus_handles: HashMap<&'static str, FocusHandle>,
@@ -1102,6 +1104,8 @@ impl PumpEditor {
             curve_dragging_marquee: false,
             curve_dragging_paint: false,
             pending_option_gesture: None,
+            pending_empty_node: None,
+            pending_seam: None,
             active_knob: None,
             last_pointer: None,
             button_focus_handles,
@@ -1169,6 +1173,7 @@ impl PumpEditor {
     }
 
     fn begin_numeric_input(&mut self, target: NumericEntryTarget, cx: &mut Context<Self>) {
+        self.dismiss_timing_dropdown(cx);
         self.dispatch(
             EditorMessage::NumericEntry(super::model::NumericEntryMessage::Begin { target }),
             cx,
@@ -1260,6 +1265,8 @@ impl PumpEditor {
         self.curve_dragging_marquee = false;
         self.curve_dragging_paint = false;
         self.pending_option_gesture = None;
+        self.pending_empty_node = None;
+        self.pending_seam = None;
         self.active_knob = None;
         self.last_pointer = None;
     }
@@ -1303,6 +1310,12 @@ impl PumpEditor {
             x: crate::dsp::authored_curve_phase(display.x, phase),
             y: display.y,
         })
+    }
+
+    fn insertion_node_on_curve(&self, position: Point<Pixels>) -> Option<CurveNode> {
+        let mut node = self.raw_curve_node(position)?;
+        node.y = sample_editable_curve(&self.state.borrow().rendered_curve(), node.x);
+        Some(node)
     }
 
     fn curve_paint_sample(&self, position: Point<Pixels>) -> Option<CurvePaintSample> {
@@ -1368,6 +1381,10 @@ impl PumpEditor {
                 cx,
             );
         }
+        if self.seam_at(event.position).is_some() {
+            self.clear_curve_hover(cx);
+            return;
+        }
         let node = self.node_at(event.position);
         let segment = if node.is_none() {
             self.segment_at(event.position)
@@ -1379,7 +1396,7 @@ impl PumpEditor {
         let preview_node = if !command && !option {
             segment
                 .and_then(|(_, distance)| {
-                    (distance <= 4.0).then(|| self.raw_curve_node(event.position))
+                    (distance <= 4.0).then(|| self.insertion_node_on_curve(event.position))
                 })
                 .flatten()
         } else {
@@ -1463,6 +1480,29 @@ impl PumpEditor {
         }
     }
 
+    fn seam_at(&self, position: Point<Pixels>) -> Option<bool> {
+        let bounds = self.curve_bounds.borrow().as_ref().copied()?;
+        let dimensions = self.curve_dimensions()?;
+        let state = self.state.borrow();
+        let y = super::projection::sample_display_curve(
+            &state.rendered_curve(),
+            0.0,
+            state.params().phase_offset(),
+        );
+        let top = f32::from(bounds.top());
+        let left = f32::from(bounds.left()) + CURVE_GUTTER;
+        let py = top + (1.0 - y) * (dimensions.y - 1.0).max(1.0);
+        [false, true].into_iter().find(|right| {
+            let px = left
+                + if *right {
+                    (dimensions.x - 1.0).max(1.0)
+                } else {
+                    0.0
+                };
+            (f32::from(position.x) - px).hypot(f32::from(position.y) - py) <= CURVE_NODE_HIT_RADIUS
+        })
+    }
+
     fn node_at(&self, position: Point<Pixels>) -> Option<usize> {
         let normalized = self.normalized_curve_point(position)?;
         let state = self.state.borrow();
@@ -1478,7 +1518,11 @@ impl PumpEditor {
                 .max(1.0);
         let height =
             (f32::from(bounds.size.height) - CURVE_OFFSET_BAR_HEIGHT - CURVE_OFFSET_INSET).max(1.0);
+        let seam_indices = state.seam_node_indices();
         for (index, node) in curve.nodes.iter().copied().enumerate() {
+            if seam_indices.contains(&index) {
+                continue;
+            }
             let x = (node.x - phase).rem_euclid(1.0);
             let nx = left + x * (width - 1.0).max(1.0);
             let ny = top + (1.0 - node.y) * (height - 1.0).max(1.0);
@@ -1603,6 +1647,8 @@ impl PumpEditor {
         self.curve_dragging_marquee = false;
         self.curve_dragging_paint = false;
         self.pending_option_gesture = None;
+        self.pending_empty_node = None;
+        self.pending_seam = None;
         let display_point = self
             .normalized_curve_point(event.position)
             .unwrap_or_default();
@@ -1637,6 +1683,14 @@ impl PumpEditor {
                 );
             }
             return;
+        }
+
+        if !(command && shift) {
+            if let Some(right_edge) = self.seam_at(event.position) {
+                self.curve_active_button = Some(MouseButton::Left);
+                self.pending_seam = Some((event.position, right_edge));
+                return;
+            }
         }
 
         if event.button == MouseButton::Left && event.click_count >= 2 {
@@ -1771,10 +1825,9 @@ impl PumpEditor {
             } else if distance <= 4.0 {
                 self.curve_drag_segment = None;
                 CurvePreviewMessage::InsertNode {
-                    node: CurveNode {
-                        x: point.x,
-                        y: point.y,
-                    },
+                    node: self
+                        .insertion_node_on_curve(event.position)
+                        .unwrap_or(point),
                     command_held: false,
                 }
             } else {
@@ -1785,8 +1838,10 @@ impl PumpEditor {
                 self.curve_drag_node = self.state.borrow().active_node();
             }
         } else {
-            // Plain primary clicks on empty plot space are intentionally
-            // inert. Freehand paint is admitted only by the secondary button.
+            if !option && self.curve_plot_contains(event.position) {
+                self.curve_active_button = Some(MouseButton::Left);
+                self.pending_empty_node = Some((event.position, point));
+            }
         }
     }
 
@@ -1812,6 +1867,34 @@ impl PumpEditor {
             .raw_curve_node(event.position)
             .unwrap_or(CurveNode { x: 0.0, y: 0.0 });
         self.last_pointer = Some(event.position);
+        if let Some((origin, right_edge)) = self.pending_seam {
+            if f32::from(event.position.y - origin.y).abs() < 3.0 {
+                return;
+            }
+            self.pending_seam = None;
+            self.dispatch(
+                EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge }),
+                cx,
+            );
+            self.curve_drag_node = self.state.borrow().active_node();
+        }
+        if let Some((origin, node)) = self.pending_empty_node {
+            if (f32::from(event.position.x - origin.x))
+                .hypot(f32::from(event.position.y - origin.y))
+                < 3.0
+            {
+                return;
+            }
+            self.pending_empty_node = None;
+            self.dispatch(
+                EditorMessage::Curve(CurvePreviewMessage::InsertNode {
+                    node,
+                    command_held: false,
+                }),
+                cx,
+            );
+            self.curve_drag_node = self.state.borrow().active_node();
+        }
         if let Some(pending) = self.pending_option_gesture {
             if !event.modifiers.alt
                 || event.modifiers.platform
@@ -1845,7 +1928,7 @@ impl PumpEditor {
             let dimensions = self
                 .curve_dimensions()
                 .unwrap_or(Vector2::new(WINDOW_WIDTH as f32, CURVE_HEIGHT));
-            let delta = (f32::from(event.position.x) - f32::from(start.x)) / dimensions.x.max(1.0);
+            let delta = (f32::from(start.x) - f32::from(event.position.x)) / dimensions.x.max(1.0);
             self.dispatch(
                 EditorMessage::Curve(CurvePreviewMessage::DragCurveOffset { delta }),
                 cx,
@@ -1918,6 +2001,8 @@ impl PumpEditor {
         let point = self
             .raw_curve_node(event.position)
             .unwrap_or(CurveNode { x: 0.0, y: 0.0 });
+        self.pending_empty_node = None;
+        self.pending_seam = None;
         if let Some(pending) = self.pending_option_gesture.take() {
             if let PendingOptionTarget::Node(index) = pending.target {
                 let deletable = {
@@ -1956,7 +2041,7 @@ impl PumpEditor {
             let dimensions = self
                 .curve_dimensions()
                 .unwrap_or(Vector2::new(WINDOW_WIDTH as f32, CURVE_HEIGHT));
-            let delta = (f32::from(event.position.x) - f32::from(start.x)) / dimensions.x.max(1.0);
+            let delta = (f32::from(start.x) - f32::from(event.position.x)) / dimensions.x.max(1.0);
             self.dispatch(
                 EditorMessage::Curve(CurvePreviewMessage::ReleaseCurveOffset {
                     delta,
@@ -2975,19 +3060,21 @@ fn draw_curve(
     }
     if let Some(preview) = state.preview_node() {
         let center = curve_point_pixels(left, top, width, height, phase, preview);
-        let radius = px(CURVE_NODE_SIZE * 0.5);
-        let preview_bounds = Bounds::from_corners(
-            point(center.x - radius, center.y - radius),
-            point(center.x + radius, center.y + radius),
-        );
-        window.paint_quad(fill(preview_bounds, solid(theme.accent_warning)));
-        let mut preview_stroke = gpui::PathBuilder::stroke(px(1.0));
-        preview_stroke.move_to(point(preview_bounds.left(), preview_bounds.top()));
-        preview_stroke.line_to(point(preview_bounds.right(), preview_bounds.top()));
-        preview_stroke.line_to(point(preview_bounds.right(), preview_bounds.bottom()));
-        preview_stroke.line_to(point(preview_bounds.left(), preview_bounds.bottom()));
-        preview_stroke.close();
-        if let Ok(path) = preview_stroke.build() {
+        let mut ring = gpui::PathBuilder::stroke(px(1.5));
+        for step in 0..=32 {
+            let angle = std::f32::consts::TAU * step as f32 / 32.0;
+            let point = point(
+                center.x + px(5.0 * angle.cos()),
+                center.y + px(5.0 * angle.sin()),
+            );
+            if step == 0 {
+                ring.move_to(point);
+            } else {
+                ring.line_to(point);
+            }
+        }
+        ring.close();
+        if let Ok(path) = ring.build() {
             window.paint_path(path, solid(theme.accent_mint));
         }
     }
@@ -3014,7 +3101,37 @@ fn draw_curve(
             window.paint_path(path, solid(theme.accent_copper));
         }
     }
+    // A seam is one logical point represented at both clipping boundaries.
+    // Sample it every frame; offset changes never materialize authored nodes.
+    let seam_indices = state.seam_node_indices();
+    let seam_y = top
+        + (1.0 - super::projection::sample_display_curve(&curve, 0.0, phase))
+            * (height - 1.0).max(1.0);
+    let seam_active = state
+        .active_node()
+        .is_some_and(|index| seam_indices.contains(&index));
+    for x in [left, left + (width - 1.0).max(1.0)] {
+        let mut diamond = gpui::PathBuilder::stroke(px(if seam_active { 2.0 } else { 1.5 }));
+        diamond.move_to(point(px(x), px(seam_y - 6.0)));
+        diamond.line_to(point(px(x + 4.5), px(seam_y)));
+        diamond.line_to(point(px(x), px(seam_y + 6.0)));
+        diamond.line_to(point(px(x - 4.5), px(seam_y)));
+        diamond.close();
+        if let Ok(path) = diamond.build() {
+            window.paint_path(
+                path,
+                solid(if seam_active {
+                    theme.accent_warning
+                } else {
+                    theme.accent_mint
+                }),
+            );
+        }
+    }
     for (index, node) in curve.nodes.iter().copied().enumerate() {
+        if seam_indices.contains(&index) {
+            continue;
+        }
         let center = curve_point_pixels(left, top, width, height, phase, node);
         let active = state.active_node() == Some(index);
         let selected = state.selected_node(index);
@@ -3250,7 +3367,7 @@ fn draw_curve(
         solid(theme.grid_soft),
     ));
     let handle_width = PUMP_VISUAL_METRICS.space_16.min(width);
-    let offset_x = left + phase.clamp(0.0, 1.0) * (width - handle_width).max(0.0);
+    let offset_x = left + (-phase).rem_euclid(1.0) * (width - handle_width).max(0.0);
     let handle_bounds = Bounds::from_corners(
         point(px(offset_x), px(offset_y)),
         point(
@@ -3812,6 +3929,20 @@ impl Render for PumpEditor {
             self.numeric_inputs[Self::numeric_input_index(NumericEntryTarget::Delay)].clone();
         let delay_value = div()
             .id("delay-value")
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    let input = view.numeric_inputs
+                        [Self::numeric_input_index(NumericEntryTarget::Delay)]
+                    .clone();
+                    input.update(cx, |input, cx| {
+                        input.set_editing(true);
+                        window.focus(&input.focus_handle, cx);
+                    });
+                    view.begin_numeric_input(NumericEntryTarget::Delay, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .w(px(66.3))
             .h(px(HEADER_CONTROL_HEIGHT))
             .flex()

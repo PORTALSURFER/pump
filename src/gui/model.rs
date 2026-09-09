@@ -13,8 +13,8 @@ use toybox::clap::automation::AutomationConfig;
 
 use crate::automation_queue::PumpAutomationQueue;
 use crate::curve::{
-    CurveNode, CurveSegment, EditableCurve, MAX_EDITABLE_NODES, MAX_SEGMENT_TENSION,
-    MIN_SEGMENT_TENSION,
+    sample_editable_curve, CurveNode, CurveSegment, EditableCurve, MAX_EDITABLE_NODES,
+    MAX_SEGMENT_TENSION, MIN_SEGMENT_TENSION,
 };
 use crate::params::{
     clamp_delay_beats, format_plain_value_text, normalized_from_plain_value,
@@ -251,6 +251,126 @@ fn canonical_seam_owner(curve: &EditableCurve, phase_offset: f32) -> Option<Cano
                 .then_with(|| left_index.cmp(right_index))
         })
         .map(|(index, _)| CanonicalSeamOwner::Interior(index))
+}
+
+/// Return a normalized curve with one canonical owner for the current
+/// viewport seam. A seam that is already represented reuses its existing
+/// node; an interior seam with no owner consumes the one available editable
+/// node slot and inherits the surrounding segment tension. When insertion is
+/// unavailable, the nearest interior node is taken over at the exact seam so
+/// the seam remains manipulatable at the bounded node capacity too.
+fn materialize_canonical_seam_owner(
+    curve: &EditableCurve,
+    phase_offset: f32,
+) -> Option<(EditableCurve, CanonicalSeamOwner)> {
+    let mut curve = curve.clone().normalized();
+    if curve.nodes.len() < 2 {
+        return None;
+    }
+    if let Some(owner) = canonical_seam_owner(&curve, phase_offset) {
+        return Some((curve, owner));
+    }
+
+    let seam = seam_raw(phase_offset);
+    if !seam.is_finite() {
+        return None;
+    }
+
+    let insert_at = curve
+        .nodes
+        .partition_point(|node| node.x < seam)
+        .clamp(1, curve.nodes.len().saturating_sub(1));
+    let left_limit = curve.nodes[insert_at - 1].x + CURVE_NODE_MIN_SPACING_X;
+    let right_limit = curve.nodes[insert_at].x - CURVE_NODE_MIN_SPACING_X;
+    if curve.nodes.len() < MAX_EDITABLE_NODES
+        && left_limit < right_limit
+        && (left_limit..=right_limit).contains(&seam)
+    {
+        let inherited = curve
+            .segments
+            .get(insert_at.saturating_sub(1))
+            .copied()
+            .unwrap_or(CurveSegment { tension: 0.0 });
+        let y = sample_editable_curve(&curve, seam);
+        curve.nodes.insert(insert_at, CurveNode { x: seam, y });
+        curve
+            .segments
+            .insert(insert_at.saturating_sub(1), inherited);
+        curve.normalize_in_place();
+
+        return canonical_seam_owner(&curve, phase_offset).map(|owner| (curve, owner));
+    }
+
+    // A nearby node can be moved onto the seam when the minimum spacing
+    // interval is too narrow. At full capacity this is also the bounded
+    // fallback: preserving the node count keeps the reserved seam slot
+    // available without making the visible seam inert.
+    let owner_index = curve
+        .nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(curve.nodes.len().saturating_sub(2))
+        .min_by(|(left_index, left), (right_index, right)| {
+            (left.x - seam)
+                .abs()
+                .total_cmp(&(right.x - seam).abs())
+                .then_with(|| left_index.cmp(right_index))
+        })
+        .map(|(index, _)| index)?;
+
+    let owner_left_tension = curve
+        .segments
+        .get(owner_index.saturating_sub(1))
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let owner_right_tension = curve
+        .segments
+        .get(owner_index)
+        .copied()
+        .unwrap_or(CurveSegment { tension: 0.0 })
+        .tension;
+    let y = sample_editable_curve(&curve, seam);
+    let mut owner_index = owner_index;
+
+    // Remove only nodes that would violate the normal interactive spacing
+    // after takeover. Preserve the two tensions incident to the owner while
+    // merging each removed neighbour into its surrounding segment.
+    let mut remove_left = owner_index.saturating_sub(1);
+    while remove_left > 0 && seam - curve.nodes[remove_left].x < CURVE_NODE_MIN_SPACING_X {
+        remove_interior_curve_node_with_merge_tension(
+            &mut curve,
+            remove_left,
+            Some(owner_left_tension),
+        );
+        owner_index = owner_index.saturating_sub(1);
+        remove_left = owner_index.saturating_sub(1);
+    }
+    let remove_right = owner_index + 1;
+    while remove_right + 1 < curve.nodes.len()
+        && curve.nodes[remove_right].x - seam < CURVE_NODE_MIN_SPACING_X
+    {
+        remove_interior_curve_node_with_merge_tension(
+            &mut curve,
+            remove_right,
+            Some(owner_right_tension),
+        );
+    }
+
+    if let Some(node) = curve.nodes.get_mut(owner_index) {
+        node.x = seam;
+        node.y = y;
+    }
+    if let Some(left) = curve.segments.get_mut(owner_index.saturating_sub(1)) {
+        left.tension = owner_left_tension;
+    }
+    if let Some(right) = curve.segments.get_mut(owner_index) {
+        right.tension = owner_right_tension;
+    }
+    curve.normalize_in_place();
+
+    canonical_seam_owner(&curve, phase_offset).map(|owner| (curve, owner))
 }
 
 fn seam_owner_indices(curve: &EditableCurve, owner: CanonicalSeamOwner) -> Vec<usize> {
@@ -1078,6 +1198,18 @@ impl PumpEditorState {
         self.active_curve_node
     }
 
+    /// Return the node indices that represent the current viewport seam.
+    ///
+    /// The two rendered edge instances can refer to one interior authored
+    /// node, or to the coupled structural endpoints.  An empty result means
+    /// that the current phase has not been materialized as a seam owner yet.
+    pub(crate) fn seam_node_indices(&self) -> Vec<usize> {
+        let curve = self.rendered_curve();
+        canonical_seam_owner(&curve, self.params.phase_offset())
+            .map(|owner| seam_owner_indices(&curve, owner))
+            .unwrap_or_default()
+    }
+
     /// Return the retained node hover used by the renderer.
     pub(crate) fn hover_node(&self) -> Option<usize> {
         self.hover_curve_node
@@ -1777,6 +1909,66 @@ fn reduce_curve_message(state: &mut PumpEditorState, message: CurvePreviewMessag
             state.active_curve_marquee = None;
             state.preview_curve_offset = None;
             state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.clear_curve_segment_hover();
+        }
+        CurvePreviewMessage::PressSeam { right_edge } => {
+            let origin_snapshot = state.snapshot();
+            let origin_curve = origin_snapshot.curve.clone();
+            let phase_offset = state.params.phase_offset();
+            let Some((mut curve, owner)) =
+                materialize_canonical_seam_owner(&origin_curve, phase_offset)
+            else {
+                return;
+            };
+
+            let owner_y = match owner {
+                CanonicalSeamOwner::Endpoints => curve.nodes.first().map(|node| node.y),
+                CanonicalSeamOwner::Interior(index) => curve.nodes.get(index).map(|node| node.y),
+            };
+            let Some(owner_y) = owner_y else {
+                return;
+            };
+            set_canonical_seam_y(&mut curve, owner, owner_y);
+            curve.normalize_in_place();
+
+            let active_index = match owner {
+                CanonicalSeamOwner::Endpoints => {
+                    if right_edge {
+                        curve.nodes.len().saturating_sub(1)
+                    } else {
+                        0
+                    }
+                }
+                CanonicalSeamOwner::Interior(index) => index,
+            };
+            let Some(pointer) = curve.nodes.get(active_index).copied() else {
+                return;
+            };
+            let Some(drag) =
+                start_curve_node_drag(&curve, active_index, pointer, false, false, phase_offset)
+            else {
+                return;
+            };
+
+            if curve != origin_curve {
+                state.params.set_editable_curve(&curve);
+            }
+            // PressSeam is admitted only after the GUI's drag threshold, so
+            // this topology materialization is one undoable gesture. Failed
+            // capacity/spacing admission above leaves history untouched.
+            state.push_history_snapshot(origin_snapshot);
+            state.clear_curve_selection();
+            state.active_curve_node = Some(active_index);
+            state.active_curve_node_drag = Some(drag);
+            state.active_curve_paint = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.preview_curve_offset = None;
+            state.option_hover_held = false;
+            state.command_hover_held = false;
+            state.shift_hover_held = false;
+            state.hover_curve_node = Some(active_index);
             state.preview_curve_node = None;
             state.clear_curve_segment_hover();
         }
@@ -3177,6 +3369,9 @@ pub(crate) enum CurvePreviewMessage {
         shift_held: bool,
         option_held: bool,
         command_held: bool,
+    },
+    PressSeam {
+        right_edge: bool,
     },
     PressPaint {
         sample: CurvePaintSample,

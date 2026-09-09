@@ -346,6 +346,25 @@ mod macos {
             let default_capture =
                 capture(app, &fixture, &gui, &root, "pump-default-640x400", 640, 400);
 
+            let curve_before_seam = params.editable_curve_snapshot();
+            let phase_before_seam = params.phase_offset();
+            params.set_phase_offset(0.25);
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-seam-offset-640x400",
+                640,
+                400,
+            );
+            assert_eq!(
+                params.editable_curve_snapshot(),
+                curve_before_seam,
+                "offset must only project seam handles, not change authored nodes"
+            );
+            params.set_phase_offset(phase_before_seam);
+
             // Curve feedback captures are driven through native AppKit
             // pointer/modifier events so they exercise the same admission and
             // retained-state paths as a hosted plug-in editor.
@@ -397,6 +416,23 @@ mod macos {
                 &gui,
                 &root,
                 "pump-curve-segment-command-hover-640x400",
+                640,
+                400,
+            );
+            send_mouse_move(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                170.0,
+                196.0,
+                0,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-curve-insertion-preview-640x400",
                 640,
                 400,
             );

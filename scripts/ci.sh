@@ -78,6 +78,8 @@ if [[ "${want_screenshots}" == "1" ]]; then
   required_captures=(
     target/ui-screenshots/pump/pump-min-640x400.png
     target/ui-screenshots/pump/pump-default-640x400.png
+    target/ui-screenshots/pump/pump-curve-seam-offset-640x400.png
+    target/ui-screenshots/pump/pump-curve-insertion-preview-640x400.png
     target/ui-screenshots/pump/pump-curve-node-hover-640x400.png
     target/ui-screenshots/pump/pump-curve-segment-proximity-640x400.png
     target/ui-screenshots/pump/pump-curve-segment-command-hover-640x400.png

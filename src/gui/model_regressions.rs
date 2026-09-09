@@ -975,6 +975,222 @@ fn seam_drag_has_one_undo_entry_and_roundtrips_through_redo() {
 }
 
 #[test]
+fn press_seam_materializes_once_at_nonzero_phase_and_exposes_active_owner() {
+    let params = Arc::new(PumpParams::new());
+    params.set_phase_offset(0.25);
+    let origin = params.editable_curve_snapshot();
+    let seam = seam_raw(0.25);
+    let expected_y = sample_editable_curve(&origin, seam);
+    let mut state = editor_state(Arc::clone(&params));
+
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: false }),
+    );
+
+    let materialized = params.editable_curve_snapshot();
+    let seam_index = materialized
+        .nodes
+        .iter()
+        .position(|node| (node.x - seam).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+        .expect("pressing the seam should materialize an interior owner");
+    assert_eq!(materialized.nodes.len(), origin.nodes.len() + 1);
+    assert!((materialized.nodes[seam_index].y - expected_y).abs() <= 1.0e-6);
+    assert_eq!(state.active_node(), Some(seam_index));
+    assert_eq!(state.seam_node_indices(), vec![seam_index]);
+    assert!(state.active_curve_node_drag.as_ref().is_some_and(|drag| {
+        drag.seam_drag
+            .as_ref()
+            .is_some_and(|seam_drag| seam_drag.kind == CanonicalSeamDragKind::ExistingOwner)
+    }));
+    assert_eq!(state.undo_history.len(), 1);
+
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: true }),
+    );
+    let reused = params.editable_curve_snapshot();
+    assert_eq!(reused.nodes.len(), materialized.nodes.len());
+    assert_eq!(state.seam_node_indices(), vec![seam_index]);
+}
+
+#[test]
+fn press_seam_reuses_existing_owner_and_preserves_tensions() {
+    let origin = interior_seam_curve();
+    for right_edge in [false, true] {
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&origin);
+        params.set_phase_offset(0.25);
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge }),
+        );
+
+        let reused = params.editable_curve_snapshot();
+        assert_eq!(reused, origin);
+        assert_eq!(state.active_node(), Some(2));
+        assert_eq!(state.seam_node_indices(), vec![2]);
+        assert_eq!(state.undo_history.len(), 1);
+    }
+}
+
+#[test]
+fn press_seam_moves_nearby_owner_to_exact_seam_without_changing_tensions() {
+    let phase_offset = 0.25;
+    for raw_x in [0.2495, 0.2505] {
+        let origin = interior_seam_curve_with_raw_x(raw_x);
+        let params = Arc::new(PumpParams::new());
+        params.set_editable_curve(&origin);
+        params.set_phase_offset(phase_offset);
+        let expected_y = sample_editable_curve(&origin, seam_raw(phase_offset));
+        let mut state = editor_state(Arc::clone(&params));
+
+        reduce_editor_message(
+            &mut state,
+            EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: false }),
+        );
+
+        let taken_over = params.editable_curve_snapshot();
+        assert_eq!(taken_over.nodes.len(), origin.nodes.len());
+        assert_eq!(taken_over.segments, origin.segments);
+        assert_eq!(taken_over.nodes[2].x, seam_raw(phase_offset));
+        assert!((taken_over.nodes[2].y - expected_y).abs() <= 1.0e-6);
+        assert_eq!(state.active_node(), Some(2));
+        assert_eq!(state.seam_node_indices(), vec![2]);
+    }
+}
+
+#[test]
+fn press_seam_reuses_nearest_node_at_full_capacity() {
+    let phase_offset = 0.253;
+    let origin = max_capacity_curve();
+    assert_eq!(origin.nodes.len(), MAX_EDITABLE_NODES);
+    assert_eq!(canonical_seam_owner(&origin, phase_offset), None);
+    let params = Arc::new(PumpParams::new());
+    params.set_editable_curve(&origin);
+    params.set_phase_offset(phase_offset);
+    let expected_y = sample_editable_curve(&origin, seam_raw(phase_offset));
+    let mut state = editor_state(Arc::clone(&params));
+
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: true }),
+    );
+
+    let taken_over = params.editable_curve_snapshot();
+    let seam_index = taken_over
+        .nodes
+        .iter()
+        .position(|node| (node.x - seam_raw(phase_offset)).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+        .expect("full capacity should still materialize the seam");
+    assert_eq!(taken_over.nodes.len(), MAX_EDITABLE_NODES);
+    assert!((taken_over.nodes[seam_index].y - expected_y).abs() <= 1.0e-6);
+    assert_eq!(state.active_node(), Some(seam_index));
+    assert_eq!(state.seam_node_indices(), vec![seam_index]);
+    assert_eq!(state.undo_history.len(), 1);
+}
+
+#[test]
+fn press_seam_left_and_right_edges_apply_equivalent_vertical_moves() {
+    let phase_offset = 0.25;
+    let mut moved_curves = Vec::new();
+    for right_edge in [false, true] {
+        let params = Arc::new(PumpParams::new());
+        params.set_phase_offset(phase_offset);
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_editor_message(
+            &mut state,
+            EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge }),
+        );
+        let active = state.active_node().expect("seam drag should be active");
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: active,
+                node: CurveNode { x: 0.9, y: 0.65 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+        moved_curves.push(params.editable_curve_snapshot());
+    }
+
+    assert_eq!(moved_curves[0], moved_curves[1]);
+    let seam_index = moved_curves[0]
+        .nodes
+        .iter()
+        .position(|node| (node.x - seam_raw(phase_offset)).abs() <= CURVE_SEAM_OWNER_RAW_EPSILON)
+        .expect("moved seam should retain its owner");
+    assert!((moved_curves[0].nodes[seam_index].y - 0.65).abs() <= 1.0e-6);
+}
+
+#[test]
+fn press_seam_undo_restores_materialization_and_drag_origin() {
+    let params = Arc::new(PumpParams::new());
+    params.set_phase_offset(0.25);
+    let origin = params.editable_curve_snapshot();
+    let mut state = editor_state(Arc::clone(&params));
+
+    reduce_editor_message(
+        &mut state,
+        EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge: false }),
+    );
+    let active = state.active_node().expect("seam drag should be active");
+    reduce_curve_message(
+        &mut state,
+        CurvePreviewMessage::DragNode {
+            index: active,
+            node: CurveNode { x: 0.1, y: 0.2 },
+            push_through_threshold_x: test_curve_push_through_threshold_x(),
+        },
+    );
+    reduce_curve_message(
+        &mut state,
+        CurvePreviewMessage::ReleaseNode {
+            index: active,
+            node: CurveNode { x: 0.1, y: 0.2 },
+            push_through_threshold_x: test_curve_push_through_threshold_x(),
+            shift_held: false,
+            option_held: false,
+            command_held: false,
+        },
+    );
+    assert_eq!(state.undo_history.len(), 1);
+    assert_ne!(params.editable_curve_snapshot(), origin);
+
+    reduce_editor_message(&mut state, EditorMessage::Undo);
+    assert_eq!(params.editable_curve_snapshot(), origin);
+}
+
+#[test]
+fn press_seam_couples_wrapped_endpoints_from_both_edges() {
+    let mut moved_curves = Vec::new();
+    for right_edge in [false, true] {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_editor_message(
+            &mut state,
+            EditorMessage::Curve(CurvePreviewMessage::PressSeam { right_edge }),
+        );
+        let active = state.active_node().expect("seam drag should be active");
+        reduce_curve_message(
+            &mut state,
+            CurvePreviewMessage::DragNode {
+                index: active,
+                node: CurveNode { x: 0.8, y: 0.25 },
+                push_through_threshold_x: test_curve_push_through_threshold_x(),
+            },
+        );
+        moved_curves.push(params.editable_curve_snapshot());
+    }
+
+    assert_eq!(moved_curves[0], moved_curves[1]);
+    assert_eq!(moved_curves[0].nodes[0].y, 0.25);
+    assert_eq!(moved_curves[0].nodes.last().map(|node| node.y), Some(0.25));
+}
+
+#[test]
 fn legacy_edge_hidden_selection_is_not_deleted() {
     let params = Arc::new(PumpParams::new());
     let curve = legacy_edge_curve();

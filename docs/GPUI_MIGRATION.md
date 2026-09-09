@@ -77,3 +77,15 @@ Native tests cover these mouse and keyboard paths, and screenshot assertions
 check the blue segment overlay rather than merely writing image files. Synthetic
 hover events target the installed tracking-area owner, matching AppKit's tracking
 route without changing the host window's mouse-move or first-responder settings.
+
+The full delay control (progress strip and padding included) focuses the numeric
+field and closes the timing menu. Arrow keys then step only delay. A plain drag
+from empty plot space creates one node; a click alone does not. Hover insertion
+uses a circular preview sampled on the curve, matching the click position.
+Command–Shift and offset-strip drags follow the pointer visually; their stored
+phase delta is inverted to retain existing DSP and preset semantics.
+
+Paired diamond handles mark the viewport seam at both clipping boundaries.
+They are sampled projections during offset changes. Dragging either copy
+materializes or reuses one authored seam point and locks it vertically; ordinary
+nodes reaching the boundary use the existing seam takeover/merge behavior.

@@ -621,6 +621,30 @@ mod macos {
             "unfocused transport Space must not toggle bypass"
         );
 
+        // The entire delay control, including its progress strip and padding,
+        // owns numeric focus after the Sync menu has been used.
+        for y in [22.0, 31.0, DELAY_Y] {
+            send_click(fixture.window, TIMING_VALUE_X, TIMING_VALUE_Y, 0);
+            pump_appkit(app, &gui, 0.04);
+            let sync = params.sync_division();
+            let delay = params.delay_beats();
+            send_click(fixture.window, DELAY_X, y, 0);
+            pump_appkit(app, &gui, 0.04);
+            send_key(app, fixture.window, &gui, "\u{f700}", 126, 0);
+            assert_eq!(
+                params.sync_division(),
+                sync,
+                "delay field at y={y} must own Up instead of Sync"
+            );
+            assert_eq!(
+                params.delay_beats(),
+                delay + 1,
+                "delay field at y={y} must step delay"
+            );
+            send_key(app, fixture.window, &gui, "\u{f701}", 125, 0);
+            send_key(app, fixture.window, &gui, "\r", 36, 0);
+        }
+
         // The timing value opens the native GPUI menu. Selecting another
         // sync subdivision must update the shared parameter and close it.
         let selected_sync_division = if initial_sync_division == 6 { 5 } else { 6 };
@@ -664,10 +688,7 @@ mod macos {
                     && rgba[1].saturating_sub(rgba[0]) > 30
             })
             .count();
-        assert!(
-            blue_pixels > 50,
-            "segment move-range hover must paint a blue overlay, got {blue_pixels} pixels"
-        );
+        assert!(blue_pixels > 50, "segment hover must contain blue feedback");
         assert!(
             node_hover_capture.2 != segment_hover_capture.2,
             "native segment proximity hover should repaint the curve"
@@ -713,16 +734,24 @@ mod macos {
         );
 
         let curve_before_left_blank = params.editable_curve_snapshot();
+        send_click(fixture.window, CURVE_PLOT_X, CURVE_PLOT_Y, 0);
+        pump_appkit(app, &gui, 0.04);
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            curve_before_left_blank,
+            "a blank click without dragging must not insert a node"
+        );
         send_mouse_down(fixture.window, CURVE_PLOT_X, CURVE_PLOT_Y, 0);
         send_mouse_dragged(fixture.window, CURVE_PLOT_X + 40.0, 200.0, 0);
         send_mouse_up(fixture.window, CURVE_PLOT_X + 40.0, 200.0, 0);
         pump_appkit(app, &gui, 0.04);
         assert_eq!(
-            params.editable_curve_snapshot(),
-            curve_before_left_blank,
-            "left drag on empty curve space must not freehand paint"
+            params.editable_curve_snapshot().nodes.len(),
+            curve_before_left_blank.nodes.len() + 1,
+            "left drag on empty curve space must add exactly one node"
         );
         pump_appkit(app, &gui, 0.04);
+        let curve_before_right_paint = params.editable_curve_snapshot();
         let paint_idle_capture = capture_pixels(&gui, "idle right paint");
         send_secondary_mouse_down(fixture.window, CURVE_NODE_X, CURVE_NODE_Y, 0);
         send_secondary_mouse_dragged(fixture.window, CURVE_PLOT_X, CURVE_PLOT_Y, 0);
@@ -736,7 +765,7 @@ mod macos {
         pump_appkit(app, &gui, 0.04);
         assert_ne!(
             params.editable_curve_snapshot(),
-            curve_before_left_blank,
+            curve_before_right_paint,
             "right drag should commit freehand painting"
         );
 
@@ -753,10 +782,10 @@ mod macos {
         );
         send_mouse_up(fixture.window, 105.0, 245.0, COMMAND | SHIFT);
         pump_appkit(app, &gui, 0.04);
-        assert_ne!(
-            params.phase_offset(),
-            phase_before_offset,
-            "Cmd+Shift drag should commit curve offset"
+        let visible_shift = (phase_before_offset - params.phase_offset()).rem_euclid(1.0);
+        assert!(
+            visible_shift > 0.05 && visible_shift < 0.15,
+            "rightward Cmd+Shift drag must shift the curve right, got {visible_shift}"
         );
 
         send_mouse_down(fixture.window, 300.0, 100.0, SHIFT);
@@ -775,6 +804,77 @@ mod macos {
             marquee_capture.2 != curve_leave_capture.2,
             "native curve leave/release should clear transient feedback"
         );
+
+        // Offset changes only project the seam. Both edge handles edit one
+        // authored point, and horizontal pointer motion cannot move that point.
+        let saved_curve = params.editable_curve_snapshot();
+        let saved_phase = params.phase_offset();
+        let mut flat_curve = curve_before_feedback.clone();
+        for node in &mut flat_curve.nodes {
+            node.y = 0.5;
+        }
+        for segment in &mut flat_curve.segments {
+            segment.tension = 0.0;
+        }
+        for edge_x in [53.0, 583.0] {
+            params.set_editable_curve(&flat_curve);
+            params.set_phase_offset(0.25);
+            pump_appkit(app, &gui, 0.05);
+            send_click(fixture.window, edge_x, 147.0, 0);
+            pump_appkit(app, &gui, 0.04);
+            assert_eq!(
+                params.editable_curve_snapshot(),
+                flat_curve,
+                "clicking a virtual seam without dragging must not insert a node"
+            );
+            send_mouse_down(fixture.window, edge_x, 147.0, 0);
+            send_mouse_dragged(fixture.window, edge_x, 120.0, 0);
+            send_mouse_dragged(fixture.window, edge_x + 30.0, 110.0, 0);
+            send_mouse_up(fixture.window, edge_x + 30.0, 110.0, 0);
+            pump_appkit(app, &gui, 0.04);
+            let edited = params.editable_curve_snapshot();
+            assert_eq!(
+                edited.nodes.len(),
+                flat_curve.nodes.len() + 1,
+                "either seam copy must materialize exactly one node"
+            );
+            let seam = edited
+                .nodes
+                .iter()
+                .find(|node| (node.x - 0.25).abs() < 0.00001)
+                .expect("dragged seam must stay at the viewport boundary's authored phase");
+            assert!(
+                seam.y > 0.65 && seam.y < 0.8,
+                "seam must follow vertical drag: {seam:?}"
+            );
+        }
+        for (source_x, edge_x) in [(90.0, 52.0), (493.0, 584.0)] {
+            params.set_editable_curve(&flat_curve);
+            params.set_phase_offset(0.25);
+            pump_appkit(app, &gui, 0.04);
+            send_mouse_down(fixture.window, source_x, 147.0, 0);
+            send_mouse_dragged(fixture.window, edge_x, 120.0, 0);
+            send_mouse_up(fixture.window, edge_x, 120.0, 0);
+            pump_appkit(app, &gui, 0.04);
+            let merged = params.editable_curve_snapshot();
+            assert_eq!(
+                merged
+                    .nodes
+                    .iter()
+                    .filter(|node| (node.x - 0.25).abs() < 0.00001)
+                    .count(),
+                1,
+                "source {source_x} to edge {edge_x} must become seam: {merged:?}"
+            );
+            assert_eq!(
+                merged.nodes.len(),
+                flat_curve.nodes.len(),
+                "seam takeover must move/merge the source rather than add another node"
+            );
+        }
+        params.set_editable_curve(&saved_curve);
+        params.set_phase_offset(saved_phase);
+        pump_appkit(app, &gui, 0.04);
 
         // The delay field is reached by a native click, and its text is
         // inserted through AppKit's interpretKeyEvents path.
