@@ -9,10 +9,13 @@ on:
       - src/**
       - scripts/release.sh
       - scripts/release_helper.py
+      - scripts/nightly_coordinator.py
+      - scripts/bump_version.py
       - scripts/release_preflight_gate.py
       - scripts/windows_release_helper.py
       - tests/release_pipeline_integration.py
       - tests/release_helper_test.py
+      - tests/nightly_coordinator_test.py
       - tests/release_preflight_gate_test.py
       - tests/windows_release_helper_test.py
       - .github/workflows/release-preflight.yml
@@ -120,6 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 tests/release_helper_test.py
+          python3 tests/nightly_coordinator_test.py
           python3 tests/release_preflight_gate_test.py
           python3 tests/windows_release_helper_test.py
       - name: Install Rust
@@ -223,7 +227,7 @@ jobs:
             --scratch-parent "${RUNNER_TEMP}"
 
   publisher_integration:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: [prepare, preflight, windows_integration, artifact_contract]
     runs-on: ubuntu-latest
     environment: publisher-integration

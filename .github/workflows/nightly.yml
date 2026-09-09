@@ -7,43 +7,38 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Dispatch a nightly even when main already matches the latest nightly (testing only)
+        description: Prepare a new patch nightly even when the source is unchanged
         required: false
         default: false
         type: boolean
 
-# The scheduler only dispatches the existing release workflow. That workflow
-# owns all source, publication-version/build identity, signing, notarization,
-# and PortalSurfer secrets. The release workflow derives the nightly suffix
-# from its own run sequence and never mutates main to do so.
-permissions:
-  actions: write
+permissions: {}
 
 concurrency:
   group: pump-nightly-scheduler
   cancel-in-progress: false
 
 jobs:
-  dispatch:
+  coordinate:
+    if: github.repository == 'PORTALSURFER/pump' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      COORDINATOR_POLL_SECONDS: "30"
+      COORDINATOR_TIMEOUT_SECONDS: "10500"
     steps:
-      - name: Dispatch credentialed Pump release workflow
+      - name: Checkout trusted main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Prepare, validate, and publish the next nightly patch
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
           FORCE: ${{ inputs.force || false }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          only_if_changed=true
-          if [[ "${EVENT_NAME}" == "workflow_dispatch" && "${FORCE}" == "true" ]]; then
-            only_if_changed=false
-          fi
-          payload="{\"ref\":\"main\",\"inputs\":{\"channel\":\"nightly\",\"publish\":\"true\",\"only_if_changed\":\"${only_if_changed}\"}}"
-          curl --fail --silent --show-error --location \
-            --request POST \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer ${GH_TOKEN}" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" \
-            --data "${payload}"
+        run: python3 scripts/nightly_coordinator.py

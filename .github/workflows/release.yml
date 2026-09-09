@@ -94,57 +94,50 @@ jobs:
             echo "released_at=${released_at}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Check release source freshness
+      - name: Check release history and require a prepared nightly patch
         id: gate
         env:
-          ONLY_IF_CHANGED: ${{ inputs.only_if_changed }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.package_version }}
+          PUBLICATION_VERSION: ${{ steps.metadata.outputs.publication_version }}
+          BUILD_ID: ${{ steps.metadata.outputs.build_id }}
           RELEASE_CHANNEL: ${{ inputs.channel }}
+          PUBLISH: ${{ inputs.publish }}
+          ONLY_IF_CHANGED: ${{ inputs.only_if_changed }}
           RELEASES_URL: https://portalsurfer.org/plugins/api/v1/products/pump/releases
-          SOURCE_SHA: ${{ steps.metadata.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${ONLY_IF_CHANGED}" != true ]]; then
+          if [[ "${ONLY_IF_CHANGED}" != true && ( "${RELEASE_CHANNEL}" != nightly || "${PUBLISH}" != true ) ]]; then
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           releases_json="${RUNNER_TEMP}/pump-releases.json"
           curl --fail --silent --show-error --location --max-time 30 "${RELEASES_URL}" > "${releases_json}"
-          python3 - "${SOURCE_SHA}" "${releases_json}" "${GITHUB_OUTPUT}" "${RELEASE_CHANNEL}" <<'PY'
-          import datetime as dt
+          python3 - "${releases_json}" <<'PYCODE'
           import json
-          import re
+          import os
           import sys
           from pathlib import Path
+          sys.path.insert(0, str(Path("scripts").resolve()))
+          from release_helper import nightly_release_decision, should_release
 
-          source_sha, releases_path, output_path, channel = sys.argv[1:]
-          document = json.loads(Path(releases_path).read_text(encoding="utf-8"))
-          releases = document.get("releases") if isinstance(document, dict) else None
-          if not isinstance(releases, list):
-              raise SystemExit("release history must contain a releases array")
-          latest = None
-          for release in releases:
-              if not isinstance(release, dict) or release.get("channel") != channel:
-                  continue
-              source = release.get("source")
-              timestamp = release.get("released_at")
-              candidate = source.get("git_sha") if isinstance(source, dict) else None
-              if (
-                  not isinstance(source, dict)
-                  or source.get("repository") != "PORTALSURFER/pump"
-                  or not isinstance(timestamp, str)
-                  or not isinstance(candidate, str)
-                  or not re.fullmatch(r"[0-9a-f]{40}", candidate)
-              ):
-                  raise SystemExit("matching release source metadata is invalid")
-              parsed = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-              if parsed.tzinfo is None or parsed.utcoffset() is None:
-                  raise SystemExit("matching release timestamp must include a timezone")
-              if latest is None or parsed > latest[0]:
-                  latest = (parsed, candidate)
-          with Path(output_path).open("a", encoding="utf-8") as output:
-              output.write(f"should_release={str(latest is None or latest[1] != source_sha).lower()}\n")
-          PY
+          history = json.loads(Path(sys.argv[1]).read_text())
+          allowed = should_release(
+              source_sha=os.environ["SOURCE_SHA"], document=history,
+              channel=os.environ["RELEASE_CHANNEL"],
+              only_if_changed=os.environ["ONLY_IF_CHANGED"] == "true",
+          )
+          if allowed and os.environ["RELEASE_CHANNEL"] == "nightly" and os.environ["PUBLISH"] == "true":
+              allowed = nightly_release_decision(
+                  package_version=os.environ["PACKAGE_VERSION"],
+                  publication_version=os.environ["PUBLICATION_VERSION"],
+                  build_id=os.environ["BUILD_ID"], source_sha=os.environ["SOURCE_SHA"],
+                  document=history,
+              )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"should_release={str(allowed).lower()}\n")
+          PYCODE
 
       - name: Stop when the selected channel is unchanged
         if: steps.gate.outputs.should_release != 'true'

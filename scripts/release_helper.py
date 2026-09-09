@@ -205,7 +205,11 @@ def latest_release_version(document: Any) -> Optional[str]:
 
 
 def next_release_version(package_version: str, document: Any) -> str:
-    """Retained compatibility helper for callers that inspect release history."""
+    """Select the next globally increasing package patch version.
+
+    A package version ahead of the public history is treated as a pending bump
+    from an interrupted release.  Reusing it makes retries idempotent.
+    """
     current = _parse_core_version(package_version, field="package version")
     latest_text = latest_release_version(document)
     latest = _parse_core_version(latest_text, field="latest release version") if latest_text else None
@@ -213,6 +217,79 @@ def next_release_version(package_version: str, document: Any) -> str:
         return _format_core_version(current)
     base = latest if latest is not None and latest > current else current
     return _format_core_version((base[0], base[1], base[2] + 1))
+
+
+def plan_nightly_version(
+    *, package_version: str, source_sha: str, document: Any, force: bool = False
+) -> Optional[str]:
+    """Plan the package version for one scheduled nightly.
+
+    ``None`` means the exact source already has a public nightly and the
+    scheduler should stop.  A package version ahead of public history is
+    reused as a pending bump, so retries cannot consume another patch number.
+    Otherwise the next patch after the highest public core version is chosen.
+    ``force`` requests a new patch even when the source is unchanged.
+    """
+    _parse_core_version(package_version, field="package version")
+    if not isinstance(source_sha, str) or not GIT_SHA.fullmatch(source_sha):
+        raise ValueError("source SHA is invalid")
+    latest_source = latest_release_source_sha(document, channel="nightly")
+    latest_text = latest_release_version(document)
+    current = _parse_core_version(package_version, field="package version")
+    latest = _parse_core_version(latest_text, field="latest release version") if latest_text else None
+    if not force and latest_source == source_sha and (latest is None or current <= latest):
+        return None
+    if latest is not None and current > latest:
+        return package_version
+    base = latest if latest is not None and latest > current else current
+    return _format_core_version((base[0], base[1], base[2] + 1))
+
+
+def nightly_release_decision(
+    *,
+    package_version: str,
+    publication_version: str,
+    build_id: str,
+    source_sha: str,
+    document: Any,
+) -> bool:
+    """Return whether a nightly may publish, or fail closed on a stale bump.
+
+    The one allowed no-op is an exact retry of a previously published
+    publication version and build identity.  Reusing a package patch with a
+    different nightly suffix is a new publication and therefore requires a
+    newer package patch.
+    """
+    package_core = _parse_core_version(package_version, field="package version")
+    if not isinstance(source_sha, str) or not GIT_SHA.fullmatch(source_sha):
+        raise ValueError("source SHA is invalid")
+    expected_build_id = f"pump-v{publication_version}-{source_sha[:12]}"
+    if build_id != expected_build_id:
+        raise ValueError("nightly build identity does not match package, publication, and source")
+    validate_publication_version(package_version, publication_version, "nightly")
+    if not isinstance(document, dict) or not isinstance(document.get("releases"), list):
+        raise ValueError("release history must contain a releases array")
+    for release in document["releases"]:
+        if not isinstance(release, dict) or release.get("channel") != "nightly":
+            continue
+        source = release.get("source")
+        if (
+            isinstance(source, dict)
+            and source.get("repository") == REPOSITORY
+            and source.get("git_sha") == source_sha
+            and release.get("version") == publication_version
+            and release.get("build_id") == build_id
+        ):
+            return False
+    latest_text = latest_release_version(document)
+    if latest_text is not None and package_core <= _parse_core_version(
+        latest_text, field="latest release version"
+    ):
+        raise ValueError(
+            f"nightly package version {package_version} must advance beyond public release {latest_text}; "
+            "run nightly.yml to prepare the next patch"
+        )
+    return True
 
 
 def validate_release_fields(
