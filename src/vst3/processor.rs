@@ -416,9 +416,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             if process_data.numOutputs == 0 {
                 return process_ok();
             }
-            if process_data.numSamples > 0
-                && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
-            {
+            if process_data.numSamples > 0 && process_data.symbolicSampleSize != VST3_SAMPLE_32 {
                 return kInvalidArgument;
             }
             let Some(buffers) = (unsafe { raw_stereo_f32_buffers(process_data) }) else {
@@ -453,9 +451,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
             return process_ok();
         }
 
-        if process_data.numSamples > 0
-            && process_data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
-        {
+        if process_data.numSamples > 0 && process_data.symbolicSampleSize != VST3_SAMPLE_32 {
             self.shared.status.mark_gain_reduction_inactive();
             self.shared
                 .status
@@ -680,10 +676,7 @@ unsafe fn silence_valid_stereo_output(data: &ProcessData) -> tresult {
     if data.numSamples == 0 {
         return process_ok();
     }
-    if data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
-        || data.numOutputs != 1
-        || data.outputs.is_null()
-    {
+    if data.symbolicSampleSize != VST3_SAMPLE_32 || data.numOutputs != 1 || data.outputs.is_null() {
         return kInvalidArgument;
     }
 
@@ -705,10 +698,12 @@ unsafe fn silence_valid_stereo_output(data: &ProcessData) -> tresult {
 }
 
 impl IProcessContextRequirementsTrait for PumpVst3Processor {
+    // Bindgen represents these SDK enum flags as i32 on some targets.
+    #[allow(clippy::unnecessary_cast)]
     unsafe fn getProcessContextRequirements(&self) -> u32 {
-        IProcessContextRequirements_::Flags_::kNeedTempo
-            | IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic
-            | IProcessContextRequirements_::Flags_::kNeedTransportState
+        (IProcessContextRequirements_::Flags_::kNeedTempo as u32)
+            | (IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic as u32)
+            | (IProcessContextRequirements_::Flags_::kNeedTransportState as u32)
     }
 }
 

@@ -22,7 +22,6 @@ use crate::params::{
     encode_state_payload, format_vst3_plain_value_text, get_param_value,
     normalized_from_vst3_plain_value, parse_vst3_plain_value_text,
     plain_from_vst3_normalized_value, vst3_param_count, vst3_param_info_for_index, PumpParams,
-    PARAM_SYNC_DIVISION_ID, PARAM_SYNC_DIVISION_VST3_V2_NUM,
 };
 use crate::plugin_metadata::PLUGIN_NAME;
 use crate::sample_automation::{
@@ -34,6 +33,13 @@ use toybox::dsp::TransportState;
 
 const PROCESSOR_CID: TUID = uid(0xE5A9A79F, 0xC4A94392, 0x97A8A8AA, 0xA9A90B3C);
 const CONTROLLER_CID: TUID = uid(0xB2EE267A, 0xE4314D5D, 0x96085F7A, 0x51681074);
+
+// Bindgen uses different signedness for SDK enums across supported targets.
+#[allow(clippy::unnecessary_cast)]
+const VST3_SAMPLE_32: i32 = SymbolicSampleSizes_::kSample32 as i32;
+#[cfg(test)]
+#[allow(clippy::unnecessary_cast)]
+const VST3_SAMPLE_64: i32 = SymbolicSampleSizes_::kSample64 as i32;
 
 const STATE_MAGIC: u32 = u32::from_le_bytes(*b"PUMP");
 const STATE_VERSION: u32 = 1;
@@ -60,13 +66,16 @@ use shared_state::{shared_registry, SharedRegistryEntry};
 
 mod controller;
 mod factory;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod gui_adapter;
 
 use controller::PumpVst3Controller;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use gui_adapter::PumpVst3GuiAdapter;
 use processor::PumpVst3Processor;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_editor_tests;

@@ -496,6 +496,20 @@ pub fn clap_id_from_vst3_param_id(param_id: u32) -> Option<ClapId> {
     }
 }
 
+/// Resolve a shared CLAP parameter id to the VST3 id used by the GUI.
+///
+/// The VST3 GUI intentionally targets the extended Sync Division id so it
+/// can represent the full current division range. All other parameters use
+/// their declared VST3 id from [`PARAM_DEFS`].
+#[cfg(feature = "vst3")]
+pub fn vst3_id_from_clap_param_id(param_id: ClapId) -> Option<u32> {
+    if param_id == PARAM_SYNC_DIVISION_ID {
+        Some(PARAM_SYNC_DIVISION_VST3_V2_NUM)
+    } else {
+        param_def_for_id(param_id).map(|def| def.vst3_id)
+    }
+}
+
 #[cfg(feature = "vst3")]
 fn vst3_sync_division_max(param_id: u32) -> Option<f64> {
     match param_id {

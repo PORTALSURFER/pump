@@ -19,7 +19,7 @@ Runs the same checks locally that CI enforces:
 Options:
   --vst3  Run checks with --features vst3 if the plugin defines a vst3 feature.
           Requires VST3_SDK_DIR to be set when the feature exists.
-  --screenshots  Run the Radiant supported-size screenshot contract when the
+  --screenshots  Run the GPUI supported-size screenshot contract when the
                  plugin defines the `screenshot-test` cargo feature.
 EOF
 }
@@ -73,15 +73,25 @@ if [[ "${want_screenshots}" == "1" ]]; then
   rm -rf target/ui-screenshots
   mkdir -p target/ui-screenshots
 
-  cargo test --locked -r --features screenshot-test gui::screenshot_tests -- --nocapture
+  TOYBOX_UI_SCREENSHOT=1 cargo test --locked -r --features screenshot-test --test gpui_screenshot --test gpui_input -- --nocapture
 
   required_captures=(
     target/ui-screenshots/pump/pump-min-640x400.png
     target/ui-screenshots/pump/pump-default-640x400.png
+    target/ui-screenshots/pump/pump-curve-seam-offset-640x400.png
+    target/ui-screenshots/pump/pump-curve-insertion-preview-640x400.png
+    target/ui-screenshots/pump/pump-curve-node-hover-640x400.png
+    target/ui-screenshots/pump/pump-curve-segment-proximity-640x400.png
+    target/ui-screenshots/pump/pump-curve-segment-command-hover-640x400.png
+    target/ui-screenshots/pump/pump-curve-offset-active-640x400.png
+    target/ui-screenshots/pump/pump-curve-offset-sliding-640x400.png
+    target/ui-screenshots/pump/pump-curve-marquee-active-640x400.png
+    target/ui-screenshots/pump/pump-curve-paint-preview-640x400.png
     target/ui-screenshots/pump/pump-max-1280x800.png
-    target/ui-screenshots/pump/pump-default-640x400-dpi-1_25.png
-    target/ui-screenshots/pump/pump-components-states-720x360-1x.png
-    target/ui-screenshots/pump/pump-components-states-720x360-2x.png
+    target/ui-screenshots/pump/pump-responsive-800x500.png
+    target/ui-screenshots/pump/pump-numeric-focused-640x400.png
+    target/ui-screenshots/pump/pump-knob-drag-640x400.png
+    target/ui-screenshots/pump/pump-free-rate-640x400.png
     target/ui-screenshots/pump/pump-bypass-active-640x400.png
     target/ui-screenshots/pump/pump-bypass-bypassed-640x400.png
     target/ui-screenshots/pump/pump-filter-enabled-640x400.png

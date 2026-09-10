@@ -164,13 +164,13 @@ impl IEditControllerTrait for PumpVst3Controller {
     }
 
     unsafe fn createView(&self, name: FIDString) -> *mut IPlugView {
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             let _ = name;
             return ptr::null_mut();
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             if name.is_null() {
                 return ptr::null_mut();

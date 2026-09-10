@@ -1524,6 +1524,26 @@ fn vst3_division_ids_apply_to_the_same_shared_state() {
 
 #[cfg(feature = "vst3")]
 #[test]
+fn vst3_gui_parameter_ids_follow_the_declared_vst3_parameter_table() {
+    for index in 0..super::vst3_param_count() as i32 {
+        let info = super::vst3_param_info_for_index(index).expect("VST3 parameter metadata");
+        let clap_id = super::clap_id_from_vst3_param_id(info.id)
+            .expect("VST3 parameter must have a shared CLAP id");
+        let expected = if clap_id == PARAM_SYNC_DIVISION_ID {
+            PARAM_SYNC_DIVISION_VST3_V2_NUM
+        } else {
+            info.id
+        };
+        assert_eq!(
+            super::vst3_id_from_clap_param_id(clap_id),
+            Some(expected),
+            "VST3 parameter at index {index} must use its declared GUI id",
+        );
+    }
+}
+
+#[cfg(feature = "vst3")]
+#[test]
 fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
     assert_eq!(vst3_param_count(), 19);
     let ids = (0..vst3_param_count() as i32)

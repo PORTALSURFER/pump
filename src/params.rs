@@ -45,11 +45,12 @@ pub use host_api::{
 pub use host_api::{
     apply_vst3_normalized_param_value, clap_id_from_vst3_param_id, format_vst3_plain_value_text,
     normalized_from_vst3_plain_value, parse_vst3_plain_value_text,
-    plain_from_vst3_normalized_value, vst3_param_count, vst3_param_info_for_index,
+    plain_from_vst3_normalized_value, vst3_id_from_clap_param_id, vst3_param_count,
+    vst3_param_info_for_index,
 };
-#[cfg(any(feature = "radiant-gui", feature = "vst3", test))]
+#[cfg(any(feature = "gpui-gui", feature = "vst3", test))]
 pub(crate) use host_api::{format_plain_value_text, parse_plain_value_text};
-#[cfg(any(feature = "radiant-gui", feature = "vst3", test))]
+#[cfg(any(feature = "gpui-gui", feature = "vst3", test))]
 pub use host_api::{normalized_from_plain_value, plain_from_normalized_value};
 #[cfg(test)]
 #[allow(unused_imports)]

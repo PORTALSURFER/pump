@@ -39,29 +39,35 @@ Restart the DAW or fully unload the previous plugin before testing a replacement
 ## Production releases
 
 The same producer is used locally and by the manual `Pump release` Actions
-workflow. On a clean macOS arm64 checkout, with `VST3_SDK_DIR` set to the pinned
-Steinberg SDK and the Apple Developer ID/notarization credentials configured,
-run:
+workflow. Stable and RC releases remain macOS-only schema 2. On a clean macOS
+arm64 checkout, with `VST3_SDK_DIR` set to the pinned Steinberg SDK and the
+Apple Developer ID/notarization credentials configured, run:
 
 ```bash
 bash scripts/release.sh --package-only --channel stable
 ```
 
-Every production Actions release selects the next unused global patch version
-across stable, RC, and nightly releases, commits that version to `main`, and
-builds from the resulting exact commit. Nightlies use the same serialized
-release path, so a published nightly also advances the patch version.
+Nightly releases prepare a protected version-bump PR before building. Each new
+nightly advances the package patch once; retries reuse an unpublished version.
+Use the nightly scheduler rather than dispatching an unprepared production
+nightly directly. See [docs/NIGHTLY_RELEASES.md](docs/NIGHTLY_RELEASES.md).
 
-This creates `dist/releases/pump-v<version>-<12-char HEAD>/` containing only the
-two host-installable ZIP bundles, `pump-default-640x400.png`, `CHANGELOG.md`, and
-`release-manifest.json` schema 2. Add `--publish` and set
+Stable/RC creates `dist/releases/<build-id>/` containing the two macOS
+host-installable ZIP bundles, `pump-default-640x400.png`, `CHANGELOG.md`, and
+`release-manifest.json` schema 2. A nightly adds the validated unsigned Windows
+x86_64 VST3 ZIP and emits schema 3 with all three platform artifacts. Add
+`--publish` and set
 `PORTALSURFER_RELEASE_TOKEN` in the environment to capability-check and publish
 the immutable bundle. The token is never accepted as a command-line argument.
 
 `--package-only` is still a production release: it signs, notarizes, staples, and
-verifies notarization on both bundles. The Actions workflow cannot run until the production
-environment has all Apple certificate/notary secrets, `RADIANT_REPO_TOKEN`, and
-the PortalSurfer release token for publish runs.
+verifies notarization on both macOS bundles. The macOS Actions job cannot run
+until the production environment has all Apple certificate/notary secrets;
+publish runs also need the PortalSurfer release token and scoped publisher App
+credentials. Public Toybox and GPUI dependencies need no repository token. The
+Windows job receives no publishing or OIDC credentials and never signs the
+Windows binary. See [docs/WINDOWS_RELEASE.md](docs/WINDOWS_RELEASE.md) for its
+exact bundle and sidecar contract.
 
 Publishing is fail-closed to the exact `https://portalsurfer.org` origin. Immediately
 before a publish, the producer re-audits the final ZIP bytes, bundle signatures and

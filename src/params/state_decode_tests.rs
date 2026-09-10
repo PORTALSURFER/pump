@@ -1,4 +1,7 @@
-use super::{decode_state_payload, encode_state_payload, PumpParams};
+use super::{
+    decode_state_payload, encode_state_payload, seeded_quick_shape_slots, PumpParams, SoundSide,
+};
+use crate::curve::{cyclically_offset_editable_curve, sample_editable_curve};
 
 const OFFSET_VERSION: usize = 4;
 const OFFSET_NODE_COUNT: usize = 32;
@@ -167,7 +170,7 @@ fn v17_extension_start(payload: &[u8]) -> usize {
     offset + 20
 }
 
-fn v18_extension_start(payload: &[u8]) -> usize {
+fn v19_extension_start(payload: &[u8]) -> usize {
     let mut offset = first_preset_start(payload);
     let preset_count = read_u32(payload, offset - 4) as usize;
     for _ in 0..preset_count {
@@ -248,12 +251,12 @@ fn remove_v17_delay_fields(payload: &mut Vec<u8>) {
     }
 }
 
-fn remove_v18_filter_fields(payload: &mut Vec<u8>) {
+fn remove_v19_filter_fields(payload: &mut Vec<u8>) {
     // Filter metadata is the final field in every preset/sound record and in
     // the top-level timing extension. Remove it before applying older
     // version migrations so their existing offsets remain meaningful.
     let mut filter_offsets = preset_filter_offsets(payload);
-    let extension_start = v18_extension_start(payload);
+    let extension_start = v19_extension_start(payload);
     let (_, _, a_end) = sound_state_offsets(payload, extension_start + 4);
     let b_start = a_end + 29;
     let (_, _, b_end) = sound_state_offsets(payload, b_start);
@@ -322,10 +325,10 @@ fn sound_state_offsets(payload: &[u8], start: usize) -> (usize, usize, usize) {
 
 pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
-    if version < 18 {
-        // Filter controls were appended in v18. Remove them before applying
+    if version < 19 {
+        // Filter controls were appended in v19. Remove them before applying
         // the older migrations below so all existing offsets remain valid.
-        remove_v18_filter_fields(&mut payload);
+        remove_v19_filter_fields(&mut payload);
     }
     if version < 17 {
         // Delay was appended to every current preset/sound record and to the
@@ -422,7 +425,7 @@ pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Ve
             let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
             payload.truncate(quick_slot_offset);
         }
-        5..=18 => {}
+        5..=19 => {}
         _ => panic!("unsupported test state version"),
     }
     payload
@@ -436,6 +439,158 @@ fn sample_params() -> PumpParams {
     params.set_output_gain_db(-3.5);
     params.set_sync_division(6.0);
     params
+}
+
+#[test]
+fn state_roundtrip_preserves_origin_clip_metadata() {
+    let params = PumpParams::new();
+    let mut editable = params.editable_curve_snapshot();
+    editable.origin_is_clip = true;
+    params.set_editable_curve(&editable);
+
+    let mut quick_slots = seeded_quick_shape_slots();
+    quick_slots[0].curve.origin_is_clip = true;
+    params
+        .set_active_sound_quick_slots(quick_slots)
+        .expect("active quick slots should be replaceable");
+    assert!(params.copy_active_to_inactive());
+
+    let mut bank = params.preset_bank_snapshot();
+    bank.presets[0].editable_curve.origin_is_clip = true;
+    bank.presets[0].quick_slots[1].curve.origin_is_clip = true;
+    params.set_preset_bank_without_persistence(bank);
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("state should decode");
+
+    assert!(restored.editable_curve_snapshot().origin_is_clip);
+    for side in [SoundSide::A, SoundSide::B] {
+        let state = restored.sound_state_snapshot(side);
+        assert!(state.editable_curve.origin_is_clip);
+        assert!(state.quick_slots[0].curve.origin_is_clip);
+    }
+    let preset = &restored.preset_bank_snapshot().presets[0];
+    assert!(preset.editable_curve.origin_is_clip);
+    assert!(preset.quick_slots[1].curve.origin_is_clip);
+}
+
+#[test]
+fn state_roundtrip_preserves_clip_phase_source_sampling() {
+    let params = PumpParams::new();
+    let mut origin = params.editable_curve_snapshot();
+    origin.origin_is_clip = true;
+    let origin = origin.normalized();
+    let shifted = cyclically_offset_editable_curve(&origin, 0.237);
+    assert!(shifted.origin_is_clip);
+    assert!(shifted
+        .phase_source
+        .as_deref()
+        .is_some_and(|source| source.origin_is_clip));
+    params.set_editable_curve_preserving_phase(&shifted);
+
+    let payload = encode_state_payload(&params);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("state should decode");
+
+    let restored_curve = restored.editable_curve_snapshot();
+    assert!(restored_curve.origin_is_clip);
+    assert!(restored_curve
+        .phase_source
+        .as_deref()
+        .is_some_and(|source| source.origin_is_clip));
+    for index in 0..=400 {
+        let phase = index as f32 / 400.0;
+        assert!(
+            (sample_editable_curve(&restored_curve, phase)
+                - sample_editable_curve(&shifted, phase))
+            .abs()
+                < 1.0e-6,
+            "phase {phase}"
+        );
+    }
+}
+
+#[test]
+fn legacy_state_defaults_origin_clip_metadata_to_false() {
+    let payload = payload_for_state_version(&PumpParams::new(), 17);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("legacy state should decode");
+
+    assert!(!restored.editable_curve_snapshot().origin_is_clip);
+    for side in [SoundSide::A, SoundSide::B] {
+        let state = restored.sound_state_snapshot(side);
+        assert!(!state.editable_curve.origin_is_clip);
+        assert!(state
+            .quick_slots
+            .iter()
+            .all(|slot| !slot.curve.origin_is_clip));
+    }
+    let bank = restored.preset_bank_snapshot();
+    assert!(bank
+        .presets
+        .iter()
+        .all(|preset| !preset.editable_curve.origin_is_clip
+            && preset
+                .quick_slots
+                .iter()
+                .all(|slot| !slot.curve.origin_is_clip)));
+}
+
+#[test]
+fn v18_state_defaults_filter_controls_while_preserving_curve_origin_metadata() {
+    let source = sample_params();
+    source.set_filter_enabled(1.0);
+    source.set_filter_hp_freq_hz(1_200.0);
+    source.set_filter_hp_q(2.5);
+    source.set_filter_lp_freq_hz(8_500.0);
+    source.set_filter_lp_q(3.25);
+    let payload = payload_for_state_version(&source, 18);
+
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).expect("v18 state should decode");
+    assert!(!restored.filter_enabled());
+    assert_eq!(
+        restored.filter_hp_freq_hz(),
+        super::DEFAULT_FILTER_HP_FREQ_HZ
+    );
+    assert_eq!(restored.filter_hp_q(), super::DEFAULT_FILTER_HP_Q);
+    assert_eq!(
+        restored.filter_lp_freq_hz(),
+        super::DEFAULT_FILTER_LP_FREQ_HZ
+    );
+    assert_eq!(restored.filter_lp_q(), super::DEFAULT_FILTER_LP_Q);
+    for side in [SoundSide::A, SoundSide::B] {
+        let state = restored.sound_state_snapshot(side);
+        assert!(!state.filter_enabled);
+        assert_eq!(state.filter_hp_freq_hz, super::DEFAULT_FILTER_HP_FREQ_HZ);
+        assert_eq!(state.filter_hp_q, super::DEFAULT_FILTER_HP_Q);
+        assert_eq!(state.filter_lp_freq_hz, super::DEFAULT_FILTER_LP_FREQ_HZ);
+        assert_eq!(state.filter_lp_q, super::DEFAULT_FILTER_LP_Q);
+
+        let stored = restored.stored_sound_state_snapshot(side);
+        assert!(!stored.filter_enabled);
+        assert_eq!(stored.filter_hp_freq_hz, super::DEFAULT_FILTER_HP_FREQ_HZ);
+        assert_eq!(stored.filter_hp_q, super::DEFAULT_FILTER_HP_Q);
+        assert_eq!(stored.filter_lp_freq_hz, super::DEFAULT_FILTER_LP_FREQ_HZ);
+        assert_eq!(stored.filter_lp_q, super::DEFAULT_FILTER_LP_Q);
+    }
+    assert!(restored
+        .preset_bank_snapshot()
+        .presets
+        .iter()
+        .all(|preset| {
+            !preset.filter_enabled
+                && preset.filter_hp_freq_hz == super::DEFAULT_FILTER_HP_FREQ_HZ
+                && preset.filter_hp_q == super::DEFAULT_FILTER_HP_Q
+                && preset.filter_lp_freq_hz == super::DEFAULT_FILTER_LP_FREQ_HZ
+                && preset.filter_lp_q == super::DEFAULT_FILTER_LP_Q
+        }));
+    // v18 already carries the curve origin metadata introduced upstream.
+    assert_eq!(
+        restored.editable_curve_snapshot().origin_is_clip,
+        source.editable_curve_snapshot().origin_is_clip
+    );
 }
 
 #[test]
@@ -457,7 +612,7 @@ fn decode_v7_state_defaults_trigger_mode_to_host() {
 fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
     let source = sample_params();
     let mut payload = encode_state_payload(&source);
-    let extension_start = v18_extension_start(&payload);
+    let extension_start = v19_extension_start(&payload);
     write_f32(
         &mut payload,
         extension_start - 20,
@@ -762,7 +917,7 @@ fn decode_rejects_trailing_bytes_without_mutating_state() {
 fn decode_rejects_nonfinite_v14_ab_scalar_without_mutating_state() {
     let params = sample_params();
     let mut payload = encode_state_payload(&params);
-    let offset = v18_extension_start(&payload) + 4;
+    let offset = v19_extension_start(&payload) + 4;
     write_f32(&mut payload, offset, f32::NAN);
     assert_decode_error_preserves_state(&params, &payload, "invalid A/B scalar field");
 }

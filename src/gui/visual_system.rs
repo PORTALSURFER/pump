@@ -1,35 +1,87 @@
-//! Pump's local visual-system contract.
+//! Pump's backend-neutral visual-system contract.
 //!
-//! The reusable Radiant token fields remain the source of truth for colors;
-//! these aliases and dimensions make Pump's composition explicit without
-//! adding application-specific fields to Radiant.
+//! The editor is rendered by GPUI, but the palette, spacing, typography, and
+//! meter aliases remain a Pump-local contract so the native and screenshot
+//! renderers use one set of values.
 
-use radiant::{gui::types::Rgba8, theme::ThemeTokens};
+/// One RGBA color in the fixed Pump palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PumpColor {
+    /// Red channel.
+    pub(crate) r: u8,
+    /// Green channel.
+    pub(crate) g: u8,
+    /// Blue channel.
+    pub(crate) b: u8,
+    /// Alpha channel.
+    pub(crate) a: u8,
+}
+
+impl PumpColor {
+    /// Construct an opaque RGB color.
+    pub(crate) const fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b, a: 255 }
+    }
+
+    /// Return this color with a new alpha channel.
+    pub(crate) const fn with_alpha(self, a: u8) -> Self {
+        Self { a, ..self }
+    }
+
+    /// Pack this color as `0xRRGGBBAA` for GPUI's RGBA helper.
+    pub(crate) const fn packed(self) -> u32 {
+        ((self.r as u32) << 24) | ((self.g as u32) << 16) | ((self.b as u32) << 8) | self.a as u32
+    }
+}
+
+/// Pump's fixed dark-coral palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PumpTheme {
+    /// Canvas and primary surface.
+    pub(crate) clear: PumpColor,
+    /// Raised/overlay surface.
+    pub(crate) surface_overlay: PumpColor,
+    /// Standard border.
+    pub(crate) border: PumpColor,
+    /// Emphasized border.
+    pub(crate) border_emphasis: PumpColor,
+    /// Strong grid line.
+    pub(crate) grid_strong: PumpColor,
+    /// Soft grid line and meter track.
+    pub(crate) grid_soft: PumpColor,
+    /// Primary coral accent.
+    pub(crate) accent_mint: PumpColor,
+    /// Secondary coral accent.
+    pub(crate) accent_copper: PumpColor,
+    /// Warning color.
+    pub(crate) accent_warning: PumpColor,
+    /// Danger color.
+    pub(crate) accent_danger: PumpColor,
+    /// Primary text.
+    pub(crate) text_primary: PumpColor,
+    /// Muted text.
+    pub(crate) text_muted: PumpColor,
+    /// Disabled control fill.
+    pub(crate) control_disabled_fill: PumpColor,
+}
 
 /// Return Pump's fixed dark-coral theme for every supported viewport tier.
-pub(crate) fn pump_theme() -> ThemeTokens {
-    let mut theme = ThemeTokens::dark();
-    // Keep the canonical Radiant dark palette values fixed across Pump's
-    // viewport sizes. Semantic names are documented in docs/visual-system.md.
-    theme.clear_color = Rgba8::new(27, 30, 30, 255);
-    theme.bg_primary = Rgba8::new(27, 30, 30, 255);
-    theme.bg_secondary = Rgba8::new(27, 30, 30, 255);
-    theme.bg_tertiary = Rgba8::new(27, 30, 30, 255);
-    theme.surface_base = Rgba8::new(27, 30, 30, 255);
-    theme.surface_raised = Rgba8::new(27, 30, 30, 255);
-    theme.surface_overlay = Rgba8::new(42, 45, 45, 255);
-    theme.border = Rgba8::new(58, 61, 61, 255);
-    theme.border_emphasis = Rgba8::new(64, 67, 66, 255);
-    theme.grid_strong = Rgba8::new(54, 57, 57, 255);
-    theme.grid_soft = Rgba8::new(40, 43, 43, 255);
-    theme.accent_mint = Rgba8::new(233, 88, 67, 255);
-    theme.accent_copper = Rgba8::new(241, 108, 86, 255);
-    theme.accent_danger = Rgba8::new(239, 76, 61, 255);
-    theme.accent_warning = Rgba8::new(217, 151, 95, 255);
-    theme.text_primary = Rgba8::new(216, 215, 211, 255);
-    theme.text_muted = Rgba8::new(153, 155, 154, 255);
-    theme.control_disabled_fill = Rgba8::new(36, 40, 41, 255);
-    theme
+pub(crate) const fn pump_theme() -> PumpTheme {
+    PumpTheme {
+        clear: PumpColor::rgb(27, 30, 30),
+        surface_overlay: PumpColor::rgb(42, 45, 45),
+        border: PumpColor::rgb(58, 61, 61),
+        border_emphasis: PumpColor::rgb(64, 67, 66),
+        grid_strong: PumpColor::rgb(54, 57, 57),
+        grid_soft: PumpColor::rgb(40, 43, 43),
+        accent_mint: PumpColor::rgb(233, 88, 67),
+        accent_copper: PumpColor::rgb(241, 108, 86),
+        accent_warning: PumpColor::rgb(217, 151, 95),
+        accent_danger: PumpColor::rgb(239, 76, 61),
+        text_primary: PumpColor::rgb(216, 215, 211),
+        text_muted: PumpColor::rgb(153, 155, 154),
+        control_disabled_fill: PumpColor::rgb(36, 40, 41),
+    }
 }
 
 /// Named geometry used by Pump's shared controls and editor composition.
@@ -131,23 +183,23 @@ pub(crate) const PUMP_TYPOGRAPHY: PumpTypography = PumpTypography {
     meta: (8.0, 11.9),
 };
 
-/// Meter-specific semantic colors derived from Pump's theme tokens.
+/// Meter-specific semantic colors derived from Pump's theme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PumpMeterColors {
     /// Recessed meter track.
-    pub(crate) track: Rgba8,
+    pub(crate) track: PumpColor,
     /// Nominal active segment.
-    pub(crate) nominal: Rgba8,
+    pub(crate) nominal: PumpColor,
     /// Hot active segment.
-    pub(crate) hot: Rgba8,
+    pub(crate) hot: PumpColor,
     /// Meter boundary and segment divider.
-    pub(crate) border: Rgba8,
+    pub(crate) border: PumpColor,
     /// Meter labels and values.
-    pub(crate) text: Rgba8,
+    pub(crate) text: PumpColor,
 }
 
 /// Resolve the Pump meter palette from the canonical theme.
-pub(crate) fn pump_meter_colors() -> PumpMeterColors {
+pub(crate) const fn pump_meter_colors() -> PumpMeterColors {
     let theme = pump_theme();
     PumpMeterColors {
         track: theme.grid_soft,
@@ -166,10 +218,10 @@ mod tests {
     fn pump_theme_is_fixed_and_uses_canonical_dark_coral_values() {
         let theme = pump_theme();
         assert_eq!(theme, pump_theme());
-        assert_eq!(theme.clear_color, Rgba8::new(27, 30, 30, 255));
-        assert_eq!(theme.accent_mint, Rgba8::new(233, 88, 67, 255));
-        assert_eq!(theme.accent_copper, Rgba8::new(241, 108, 86, 255));
-        assert_eq!(theme.text_primary, Rgba8::new(216, 215, 211, 255));
+        assert_eq!(theme.clear, PumpColor::rgb(27, 30, 30));
+        assert_eq!(theme.accent_mint, PumpColor::rgb(233, 88, 67));
+        assert_eq!(theme.accent_copper, PumpColor::rgb(241, 108, 86));
+        assert_eq!(theme.text_primary, PumpColor::rgb(216, 215, 211));
     }
 
     #[test]

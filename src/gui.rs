@@ -1,28 +1,25 @@
-//! Shared Radiant editor contract and layout helpers for Pump.
+//! Shared Pump editor contract and layout helpers.
 
 use toybox::clack_extensions::gui::GuiSize;
 
 use crate::curve::{CurveNode, EditableCurve};
 
 #[cfg(all(
-    target_os = "macos",
-    any(feature = "radiant-gui", feature = "vst3", test)
+    any(target_os = "macos", target_os = "windows"),
+    any(feature = "gpui-gui", feature = "vst3", test)
 ))]
-mod radiant_editor;
+pub mod gui_gpui;
 
 mod curve_paint;
+mod model;
+mod projection;
+
+#[cfg(all(feature = "vst3", test))]
+pub(crate) use model::try_toggle_bypass;
+#[cfg(feature = "vst3")]
+pub(crate) use model::HostParamEditSink;
 
 pub(crate) mod visual_system;
-
-#[cfg(all(target_os = "macos", feature = "screenshot-test", test))]
-mod screenshot_tests;
-
-#[cfg(all(target_os = "macos", feature = "vst3", test))]
-pub(crate) use radiant_editor::try_toggle_bypass;
-#[cfg(all(target_os = "macos", any(feature = "radiant-gui", feature = "vst3")))]
-#[cfg(feature = "vst3")]
-pub(crate) use radiant_editor::HostParamEditSink;
-pub(crate) use radiant_editor::{HostParamFlushRequester, RadiantPumpEditor};
 
 /// Minimum supported logical editor size.
 pub const MIN_WINDOW_WIDTH: u32 = 640;
@@ -37,6 +34,7 @@ pub const MAX_WINDOW_HEIGHT: u32 = 800;
 const PRESET_WARNING_STORAGE: &str = "NOT SAVED - CHECK PRESET FOLDER";
 
 /// Return a stable preferred size before a host has opened the child view.
+#[allow(dead_code)]
 pub(crate) fn preferred_window_size() -> (u32, u32) {
     (WINDOW_WIDTH, WINDOW_HEIGHT)
 }
@@ -264,6 +262,30 @@ pub(crate) fn build_version_label() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_version_label_includes_current_git_sha() {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--short=7", "HEAD"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("git should be available in repository tests");
+        if !output.status.success() {
+            return;
+        }
+
+        let expected_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert!(!expected_sha.is_empty());
+        assert_eq!(
+            option_env!("PUMP_BUILD_GIT_SHA_SHORT"),
+            Some(expected_sha.as_str()),
+            "build.rs must export the current short Git SHA"
+        );
+        assert_eq!(
+            build_version_label(),
+            format!("{}+{expected_sha}", env!("CARGO_PKG_VERSION"))
+        );
+    }
 
     #[test]
     fn normalized_host_size_preserves_contract() {

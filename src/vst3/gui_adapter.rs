@@ -5,11 +5,7 @@ pub(super) struct Vst3HostParamEditSink {
 }
 
 fn vst3_param_id_for_gui(param_id: toybox::clack_plugin::utils::ClapId) -> ParamID {
-    if param_id == PARAM_SYNC_DIVISION_ID {
-        PARAM_SYNC_DIVISION_VST3_V2_NUM
-    } else {
-        param_id.get()
-    }
+    crate::params::vst3_id_from_clap_param_id(param_id).unwrap_or(param_id.get())
 }
 
 impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
@@ -102,7 +98,7 @@ impl crate::gui::HostParamEditSink for Vst3HostParamEditSink {
 }
 
 pub(super) struct PumpVst3GuiAdapter {
-    radiant_gui: toybox::radiant_gui::RadiantHostedGui,
+    gpui_gui: toybox::gpui_gui::GpuiHostedGui,
 }
 
 #[cfg(test)]
@@ -115,27 +111,14 @@ pub(super) struct ShortcutModifiers {
 
 impl PumpVst3GuiAdapter {
     pub(super) fn new(shared: Arc<PumpVst3Shared>) -> Self {
-        let editor = crate::gui::RadiantPumpEditor::new_with_edit_sink(
+        let gpui_gui = crate::gui::gui_gpui::new_gui_with_edit_sink(
             Arc::clone(&shared.params),
             Arc::clone(&shared.status),
             Arc::new(Vst3HostParamEditSink {
                 shared: Arc::clone(&shared),
             }),
-            crate::gui::WINDOW_WIDTH,
-            crate::gui::WINDOW_HEIGHT,
         );
-        let radiant_gui = toybox::radiant_gui::RadiantHostedGui::new(
-            "PumpRadiantVst3EditorView",
-            editor,
-            crate::gui::WINDOW_WIDTH,
-            crate::gui::WINDOW_HEIGHT,
-        )
-        .with_size_contract(
-            (crate::gui::MIN_WINDOW_WIDTH, crate::gui::MIN_WINDOW_HEIGHT),
-            (crate::gui::WINDOW_WIDTH, crate::gui::WINDOW_HEIGHT),
-            (crate::gui::MAX_WINDOW_WIDTH, crate::gui::MAX_WINDOW_HEIGHT),
-        );
-        Self { radiant_gui }
+        Self { gpui_gui }
     }
 
     /// Decode VST3 modifier bit flags into Pump shortcut modifiers.
@@ -161,30 +144,50 @@ impl PumpVst3GuiAdapter {
 
 impl Vst3HostedGui for PumpVst3GuiAdapter {
     fn set_parent_raw(&mut self, parent: toybox::raw_window_handle::RawWindowHandle) {
-        self.radiant_gui.set_parent(parent);
+        self.gpui_gui.set_parent_raw(parent);
     }
 
     fn open(&mut self) -> bool {
-        self.radiant_gui.open()
+        self.gpui_gui.open()
     }
 
     fn close(&mut self) {
-        self.radiant_gui.close();
+        self.gpui_gui.close();
     }
 
     fn last_size(&self) -> Option<(u32, u32)> {
-        self.radiant_gui.last_size()
+        self.gpui_gui.last_size()
+    }
+
+    fn show(&self) -> bool {
+        self.gpui_gui.show()
+    }
+
+    fn set_callback_keyboard_mode(&mut self, callback_only: bool) {
+        self.gpui_gui.set_callback_keyboard_mode(callback_only);
+    }
+
+    fn host_size_from_logical(&self, width: u32, height: u32) -> (u32, u32) {
+        self.gpui_gui.host_size_from_logical(width, height)
+    }
+
+    fn logical_size_from_host(&self, width: u32, height: u32) -> (u32, u32) {
+        self.gpui_gui.logical_size_from_host(width, height)
     }
 
     fn request_resize(&self, width: u32, height: u32) {
-        self.radiant_gui.request_resize(width, height);
+        self.gpui_gui.request_resize(width, height);
     }
 
     fn on_key_down(&self, key: char16, key_code: int16, modifiers: int16) -> bool {
-        self.radiant_gui.on_key_down(key, key_code, modifiers)
+        self.gpui_gui.on_key_down(key, key_code, modifiers)
     }
 
     fn on_key_up(&self, key: char16, key_code: int16, modifiers: int16) -> bool {
-        self.radiant_gui.on_key_up(key, key_code, modifiers)
+        self.gpui_gui.on_key_up(key, key_code, modifiers)
+    }
+
+    fn on_focus(&self, focused: bool) -> bool {
+        self.gpui_gui.on_focus(focused)
     }
 }

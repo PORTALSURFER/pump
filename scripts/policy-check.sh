@@ -71,7 +71,7 @@ coverage_supported_for() {
 }
 
 has_screenshot_symbol_in_src() {
-  src_files="$(rg --files src -g '*.rs' 2>/dev/null || true)"
+  src_files="$(rg --files src tests -g '*.rs' 2>/dev/null || true)"
   [ -n "${src_files}" ] || return 1
   # shellcheck disable=SC2086
   echo "${src_files}" | xargs grep -E -n 'screenshot_renders_initial_ui|pump_editor_screenshots_cover_supported_sizes_and_fractional_scale' >/dev/null 2>&1
@@ -84,7 +84,7 @@ has_screenshot_symbol_in_src() {
 #
 # This check is skipped when the coverage file is not available (for example:
 # when running inside the standalone plugin repo outside the meta workspace).
-if git ls-files --error-unmatch src/gui.rs >/dev/null 2>&1; then
+if [ -f src/gui.rs ] || [ -f src/gui_gpui.rs ]; then
   has_screenshot_feature=0
   if grep -qE '^[[:space:]]*screenshot-test[[:space:]]*=' Cargo.toml; then
     has_screenshot_feature=1
