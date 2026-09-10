@@ -25,15 +25,17 @@ use crate::automation_queue::PumpAutomationQueue;
 use crate::curve::{sample_editable_curve, CurveNode};
 use crate::params::{
     format_plain_value_text, normalized_from_plain_value, sync_division_label, PumpParams,
-    SoundSide, GLOBAL_CURVE_SLOT_COUNT, PARAM_DELAY_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
+    SoundSide, GLOBAL_CURVE_SLOT_COUNT, MAX_FILTER_FREQ_HZ, MAX_FILTER_Q, MIN_FILTER_FREQ_HZ,
+    MIN_FILTER_Q, PARAM_DELAY_ID, PARAM_FILTER_HP_FREQ_ID, PARAM_FILTER_HP_Q_ID,
+    PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
     PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID, PARAM_SWING_ID, SYNC_DIVISIONS, TIMING_MODE_FREE,
 };
 
 pub(crate) use super::model::HostParamFlushRequester;
 use super::model::{
-    clap_edit_sink, CurvePaintSample, CurvePreviewMessage, EditorMessage, FreeRateUnit,
-    HostParamEditSink, KnobMessage, NumericEntryMessage, NumericEntryTarget, Point as ModelPoint,
-    PumpEditorState, Vector2,
+    clap_edit_sink, CurvePaintSample, CurvePreviewMessage, EditorMessage, FilterHandle,
+    FreeRateUnit, HostParamEditSink, KnobMessage, NumericEntryMessage, NumericEntryTarget,
+    Point as ModelPoint, PumpEditorState, Vector2,
 };
 use super::visual_system::{
     pump_meter_colors, pump_theme, PumpColor, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS,
@@ -72,6 +74,13 @@ const CURVE_STROKE_WIDTH: f32 = 1.6;
 const CURVE_SEGMENT_MOVE_COLOR: PumpColor = PumpColor::rgb(96, 176, 255);
 const CURVE_OFFSET_MOVE_COLOR: PumpColor = PumpColor::rgb(255, 168, 88);
 const CURVE_OFFSET_HOVER_COLOR: PumpColor = CURVE_OFFSET_MOVE_COLOR.with_alpha(224);
+const FILTER_OVERLAY_COLOR: PumpColor = PumpColor::rgb(255, 184, 84);
+const FILTER_OVERLAY_MUTED_COLOR: PumpColor = FILTER_OVERLAY_COLOR.with_alpha(112);
+const FILTER_HANDLE_HIT_RADIUS: f32 = 12.0;
+const FILTER_HANDLE_RADIUS: f32 = 5.1;
+const FILTER_RESPONSE_DB_MIN: f32 = -48.0;
+const FILTER_RESPONSE_DB_MAX: f32 = 6.0;
+const FILTER_HANDLE_MARGIN: f32 = 11.0;
 const CURVE_PAINT_PREVIEW_WIDTH: f32 = 2.25;
 const OPTION_GESTURE_DRAG_START_DISTANCE: f32 = 7.0;
 const OPTION_GESTURE_DRAG_START_DISTANCE_SQUARED: f32 =
@@ -104,6 +113,16 @@ const TIMING_SYNC_IDS: [&str; 10] = [
     "timing-sync-7",
     "timing-sync-8",
     "timing-sync-9",
+];
+const FILTER_HP_SLOPE_IDS: [&str; 3] = [
+    "filter-hp-slope-12",
+    "filter-hp-slope-24",
+    "filter-hp-slope-48",
+];
+const FILTER_LP_SLOPE_IDS: [&str; 3] = [
+    "filter-lp-slope-12",
+    "filter-lp-slope-24",
+    "filter-lp-slope-48",
 ];
 
 /// Events emitted by the native numeric field. Keeping these separate from
@@ -955,6 +974,7 @@ struct PumpEditor {
     curve_drag_start: Option<Point<Pixels>>,
     curve_dragging_marquee: bool,
     curve_dragging_paint: bool,
+    filter_drag_handle: Option<FilterHandle>,
     pending_option_gesture: Option<PendingOptionGesture>,
     pending_empty_node: Option<(Point<Pixels>, CurveNode)>,
     pending_seam: Option<(Point<Pixels>, bool)>,
@@ -991,6 +1011,10 @@ impl PumpEditor {
             NumericEntryTarget::Swing,
             NumericEntryTarget::FreeRate,
             NumericEntryTarget::Delay,
+            NumericEntryTarget::FilterHpFrequency,
+            NumericEntryTarget::FilterHpQ,
+            NumericEntryTarget::FilterLpFrequency,
+            NumericEntryTarget::FilterLpQ,
         ];
         let numeric_inputs: Vec<_> = {
             let state_ref = state.borrow();
@@ -1081,6 +1105,7 @@ impl PumpEditor {
             "sound-b",
             "hotkey-help",
             "waveform-mode",
+            "filter",
             "bypass",
         ]
         .into_iter()
@@ -1103,6 +1128,7 @@ impl PumpEditor {
             curve_drag_start: None,
             curve_dragging_marquee: false,
             curve_dragging_paint: false,
+            filter_drag_handle: None,
             pending_option_gesture: None,
             pending_empty_node: None,
             pending_seam: None,
@@ -1127,6 +1153,10 @@ impl PumpEditor {
             NumericEntryTarget::Swing => 3,
             NumericEntryTarget::FreeRate => 4,
             NumericEntryTarget::Delay => 5,
+            NumericEntryTarget::FilterHpFrequency => 6,
+            NumericEntryTarget::FilterHpQ => 7,
+            NumericEntryTarget::FilterLpFrequency => 8,
+            NumericEntryTarget::FilterLpQ => 9,
         }
     }
 
@@ -1154,6 +1184,10 @@ impl PumpEditor {
             NumericEntryTarget::Swing,
             NumericEntryTarget::FreeRate,
             NumericEntryTarget::Delay,
+            NumericEntryTarget::FilterHpFrequency,
+            NumericEntryTarget::FilterHpQ,
+            NumericEntryTarget::FilterLpFrequency,
+            NumericEntryTarget::FilterLpQ,
         ];
         let texts = {
             let state = self.state.borrow();
@@ -1264,6 +1298,7 @@ impl PumpEditor {
         self.curve_drag_start = None;
         self.curve_dragging_marquee = false;
         self.curve_dragging_paint = false;
+        self.filter_drag_handle = None;
         self.pending_option_gesture = None;
         self.pending_empty_node = None;
         self.pending_seam = None;
@@ -1300,6 +1335,116 @@ impl PumpEditor {
         Some(ModelPoint::new(
             ((f32::from(position.x) - left) / (width - 1.0).max(1.0)).clamp(0.0, 1.0),
             (1.0 - (f32::from(position.y) - top) / (height - 1.0).max(1.0)).clamp(0.0, 1.0),
+        ))
+    }
+
+    fn filter_plot_geometry(&self) -> Option<(f32, f32, f32, f32)> {
+        let bounds = self.curve_bounds.borrow().as_ref().copied()?;
+        let left = f32::from(bounds.left()) + CURVE_GUTTER;
+        let top = f32::from(bounds.top());
+        let width =
+            (f32::from(bounds.size.width) - CURVE_GUTTER - CURVE_METER_GAP - CURVE_METER_WIDTH)
+                .max(1.0);
+        let height =
+            (f32::from(bounds.size.height) - CURVE_OFFSET_BAR_HEIGHT - CURVE_OFFSET_INSET).max(1.0);
+        Some((left, top, width, height))
+    }
+
+    fn filter_frequency_x(&self, frequency_hz: f32) -> Option<f32> {
+        let (left, _, width, _) = self.filter_plot_geometry()?;
+        let minimum = MIN_FILTER_FREQ_HZ.ln();
+        let maximum = MAX_FILTER_FREQ_HZ.ln();
+        let phase = ((frequency_hz
+            .clamp(MIN_FILTER_FREQ_HZ, MAX_FILTER_FREQ_HZ)
+            .ln()
+            - minimum)
+            / (maximum - minimum))
+            .clamp(0.0, 1.0);
+        Some(left + phase * (width - 1.0).max(1.0))
+    }
+
+    fn filter_frequency_from_x(&self, x: f32) -> Option<f32> {
+        let (left, _, width, _) = self.filter_plot_geometry()?;
+        let phase = ((x - left) / (width - 1.0).max(1.0)).clamp(0.0, 1.0);
+        Some(
+            (MIN_FILTER_FREQ_HZ.ln() + phase * (MAX_FILTER_FREQ_HZ.ln() - MIN_FILTER_FREQ_HZ.ln()))
+                .exp(),
+        )
+    }
+
+    fn filter_q_y(&self, q: f32) -> Option<f32> {
+        let (_, base_top, _, height) = self.filter_plot_geometry()?;
+        let minimum = MIN_FILTER_Q.ln();
+        let maximum = MAX_FILTER_Q.ln();
+        let phase = ((q.clamp(MIN_FILTER_Q, MAX_FILTER_Q).ln() - minimum) / (maximum - minimum))
+            .clamp(0.0, 1.0);
+        let guide_top = base_top + FILTER_HANDLE_MARGIN;
+        let guide_bottom = base_top + height - FILTER_HANDLE_MARGIN;
+        Some(guide_bottom - phase * (guide_bottom - guide_top).max(1.0))
+    }
+
+    fn filter_q_from_y(&self, y: f32) -> Option<f32> {
+        let (_, base_top, _, height) = self.filter_plot_geometry()?;
+        let guide_top = base_top + FILTER_HANDLE_MARGIN;
+        let guide_bottom = base_top + height - FILTER_HANDLE_MARGIN;
+        let phase = ((guide_bottom - y) / (guide_bottom - guide_top).max(1.0)).clamp(0.0, 1.0);
+        Some((MIN_FILTER_Q.ln() + phase * (MAX_FILTER_Q.ln() - MIN_FILTER_Q.ln())).exp())
+    }
+
+    fn filter_handle_points(&self) -> Option<[(FilterHandle, Point<Pixels>); 3]> {
+        let params = self.state.borrow().params().clone();
+        let center_frequency_hz = (params.filter_hp_freq_hz() * params.filter_lp_freq_hz())
+            .max(MIN_FILTER_FREQ_HZ * MIN_FILTER_FREQ_HZ)
+            .sqrt();
+        let center_q = (params.filter_hp_q() * params.filter_lp_q())
+            .max(MIN_FILTER_Q * MIN_FILTER_Q)
+            .sqrt();
+        Some([
+            (
+                FilterHandle::HighPass,
+                point(
+                    px(self.filter_frequency_x(params.filter_hp_freq_hz())?),
+                    px(self.filter_q_y(params.filter_hp_q())?),
+                ),
+            ),
+            (
+                FilterHandle::LowPass,
+                point(
+                    px(self.filter_frequency_x(params.filter_lp_freq_hz())?),
+                    px(self.filter_q_y(params.filter_lp_q())?),
+                ),
+            ),
+            (
+                FilterHandle::Both,
+                point(
+                    px(self.filter_frequency_x(center_frequency_hz)?),
+                    px(self.filter_q_y(center_q)?),
+                ),
+            ),
+        ])
+    }
+
+    fn hit_filter_handle(&self, position: Point<Pixels>) -> Option<FilterHandle> {
+        if !self.state.borrow().filter_enabled() || !self.curve_plot_contains(position) {
+            return None;
+        }
+        let radius_squared = FILTER_HANDLE_HIT_RADIUS * FILTER_HANDLE_HIT_RADIUS;
+        self.filter_handle_points()?
+            .into_iter()
+            .filter_map(|(handle, center)| {
+                let dx = f32::from(center.x) - f32::from(position.x);
+                let dy = f32::from(center.y) - f32::from(position.y);
+                let distance_squared = dx * dx + dy * dy;
+                (distance_squared <= radius_squared).then_some((handle, distance_squared))
+            })
+            .min_by(|(_, left), (_, right)| left.total_cmp(right))
+            .map(|(handle, _)| handle)
+    }
+
+    fn filter_values_at_pointer(&self, position: Point<Pixels>) -> Option<(f32, f32)> {
+        Some((
+            self.filter_frequency_from_x(f32::from(position.x))?,
+            self.filter_q_from_y(f32::from(position.y))?,
         ))
     }
 
@@ -1395,6 +1540,18 @@ impl PumpEditor {
                 cx,
             );
         }
+        let filter_handle = self.hit_filter_handle(event.position);
+        if filter_handle != self.state.borrow().hover_filter_handle() {
+            self.dispatch(
+                EditorMessage::Curve(CurvePreviewMessage::HoverFilterHandle {
+                    handle: filter_handle,
+                }),
+                cx,
+            );
+        }
+        if filter_handle.is_some() {
+            return;
+        }
         if self.seam_at(event.position).is_some() {
             self.clear_curve_hover(cx);
             return;
@@ -1441,6 +1598,7 @@ impl PumpEditor {
             state.hover_node().is_some()
                 || state.preview_node().is_some()
                 || state.hover_segment().is_some()
+                || state.hover_filter_handle().is_some()
         };
         if should_clear {
             self.dispatch(
@@ -1449,6 +1607,10 @@ impl PumpEditor {
                     preview_node: None,
                     segment: None,
                 }),
+                cx,
+            );
+            self.dispatch(
+                EditorMessage::Curve(CurvePreviewMessage::HoverFilterHandle { handle: None }),
                 cx,
             );
         }
@@ -1676,6 +1838,28 @@ impl PumpEditor {
         let option = event.modifiers.alt;
         let command = event.modifiers.platform || event.modifiers.control;
 
+        // Filter handles sit above the envelope. Admit them before seam,
+        // node, and segment hit tests so an overlay drag cannot edit the
+        // underlying curve accidentally.
+        if event.button == MouseButton::Left {
+            if let Some(handle) = self.hit_filter_handle(event.position) {
+                let (frequency_hz, q) = self
+                    .filter_values_at_pointer(event.position)
+                    .unwrap_or((MIN_FILTER_FREQ_HZ, MIN_FILTER_Q));
+                self.curve_active_button = Some(MouseButton::Left);
+                self.filter_drag_handle = Some(handle);
+                self.dispatch(
+                    EditorMessage::Curve(CurvePreviewMessage::PressFilterHandle {
+                        handle,
+                        frequency_hz,
+                        q,
+                    }),
+                    cx,
+                );
+                return;
+            }
+        }
+
         // Secondary-button input is always freehand paint inside the plot.
         // Keep it ahead of node/segment admission so a right drag over an
         // existing element cannot enter a primary gesture branch.
@@ -1888,6 +2072,19 @@ impl PumpEditor {
             .raw_curve_node(event.position)
             .unwrap_or(CurveNode { x: 0.0, y: 0.0 });
         self.last_pointer = Some(event.position);
+        if let Some(handle) = self.filter_drag_handle {
+            if let Some((frequency_hz, q)) = self.filter_values_at_pointer(event.position) {
+                self.dispatch(
+                    EditorMessage::Curve(CurvePreviewMessage::DragFilter {
+                        handle,
+                        frequency_hz,
+                        q,
+                    }),
+                    cx,
+                );
+            }
+            return;
+        }
         if let Some((origin, right_edge)) = self.pending_seam {
             if f32::from(event.position.y - origin.y).abs() < 3.0 {
                 return;
@@ -2024,7 +2221,19 @@ impl PumpEditor {
             .unwrap_or(CurveNode { x: 0.0, y: 0.0 });
         self.pending_empty_node = None;
         self.pending_seam = None;
-        if let Some(pending) = self.pending_option_gesture.take() {
+        if let Some(handle) = self.filter_drag_handle.take() {
+            let (frequency_hz, q) = self
+                .filter_values_at_pointer(event.position)
+                .unwrap_or((MIN_FILTER_FREQ_HZ, MIN_FILTER_Q));
+            self.dispatch(
+                EditorMessage::Curve(CurvePreviewMessage::ReleaseFilter {
+                    handle,
+                    frequency_hz,
+                    q,
+                }),
+                cx,
+            );
+        } else if let Some(pending) = self.pending_option_gesture.take() {
             if let PendingOptionTarget::Node(index) = pending.target {
                 let deletable = {
                     let state = self.state.borrow();
@@ -2250,6 +2459,24 @@ impl PumpEditor {
             }
             NumericEntryTarget::Delay => {
                 normalized_from_plain_value(PARAM_DELAY_ID, current.delay_beats() as f64)
+                    .unwrap_or(0.0) as f32
+            }
+            NumericEntryTarget::FilterHpFrequency => normalized_from_plain_value(
+                PARAM_FILTER_HP_FREQ_ID,
+                current.filter_hp_freq_hz() as f64,
+            )
+            .unwrap_or(0.0) as f32,
+            NumericEntryTarget::FilterHpQ => {
+                normalized_from_plain_value(PARAM_FILTER_HP_Q_ID, current.filter_hp_q() as f64)
+                    .unwrap_or(0.0) as f32
+            }
+            NumericEntryTarget::FilterLpFrequency => normalized_from_plain_value(
+                PARAM_FILTER_LP_FREQ_ID,
+                current.filter_lp_freq_hz() as f64,
+            )
+            .unwrap_or(1.0) as f32,
+            NumericEntryTarget::FilterLpQ => {
+                normalized_from_plain_value(PARAM_FILTER_LP_Q_ID, current.filter_lp_q() as f64)
                     .unwrap_or(0.0) as f32
             }
         };
@@ -2490,6 +2717,22 @@ impl PumpEditor {
         cx.stop_propagation();
     }
 
+    fn select_filter_slope(
+        &mut self,
+        handle: FilterHandle,
+        index: usize,
+        event: &gpui::ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
+        self.dispatch(EditorMessage::SetFilterSlope { handle, index }, cx);
+        cx.stop_propagation();
+    }
+
     fn toggle_hotkey_help(
         &mut self,
         event: &gpui::ClickEvent,
@@ -2513,6 +2756,21 @@ impl PumpEditor {
         }
         self.dismiss_timing_dropdown(cx);
         self.dispatch(EditorMessage::ToggleWaveformMode, cx);
+    }
+
+    fn toggle_filter(
+        &mut self,
+        event: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus_handle = self.button_focus_handle("filter").clone();
+        window.focus(&focus_handle, cx);
+        if event.is_keyboard() {
+            return;
+        }
+        self.dismiss_timing_dropdown(cx);
+        self.dispatch(EditorMessage::ToggleFilter, cx);
     }
 
     fn slot_click(
@@ -2571,6 +2829,7 @@ impl PumpEditor {
             "sound-b",
             "hotkey-help",
             "waveform-mode",
+            "filter",
             "bypass",
         ]
         .into_iter()
@@ -2630,6 +2889,10 @@ impl PumpEditor {
             "waveform-mode" => {
                 self.dismiss_timing_dropdown(cx);
                 self.dispatch(EditorMessage::ToggleWaveformMode, cx);
+            }
+            "filter" => {
+                self.dismiss_timing_dropdown(cx);
+                self.dispatch(EditorMessage::ToggleFilter, cx);
             }
             "bypass" => {
                 self.dismiss_timing_dropdown(cx);
@@ -3240,6 +3503,7 @@ fn draw_curve(
             window.paint_path(path, solid(stroke_color));
         }
     }
+    draw_filter_overlay(bounds, state, window, cx);
     if let Some((start, current)) = state.active_curve_marquee() {
         let start = curve_point_pixels(left, top, width, height, phase, start);
         let current = curve_point_pixels(left, top, width, height, phase, current);
@@ -3421,6 +3685,252 @@ fn draw_curve(
     let _ = cx;
 }
 
+fn draw_filter_overlay(
+    bounds: Bounds<Pixels>,
+    state: &PumpEditorState,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if !state.filter_enabled() {
+        return;
+    }
+    let left = f32::from(bounds.left()) + CURVE_GUTTER;
+    let top = f32::from(bounds.top());
+    let width = (f32::from(bounds.size.width) - CURVE_GUTTER - CURVE_METER_GAP - CURVE_METER_WIDTH)
+        .max(1.0);
+    let height =
+        (f32::from(bounds.size.height) - CURVE_OFFSET_BAR_HEIGHT - CURVE_OFFSET_INSET).max(1.0);
+    let plot_width = (width - 1.0).max(1.0);
+    let plot_height = (height - 1.0).max(1.0);
+    let params = state.params();
+    let hp_freq = params.filter_hp_freq_hz();
+    let hp_q = params.filter_hp_q();
+    let lp_freq = params.filter_lp_freq_hz();
+    let lp_q = params.filter_lp_q();
+    let hp_slope = params.filter_hp_slope();
+    let lp_slope = params.filter_lp_slope();
+
+    let frequency_x = |frequency_hz: f32| {
+        let phase = ((frequency_hz
+            .clamp(MIN_FILTER_FREQ_HZ, MAX_FILTER_FREQ_HZ)
+            .ln()
+            - MIN_FILTER_FREQ_HZ.ln())
+            / (MAX_FILTER_FREQ_HZ.ln() - MIN_FILTER_FREQ_HZ.ln()))
+        .clamp(0.0, 1.0);
+        left + phase * plot_width
+    };
+    let q_y = |q: f32| {
+        let phase = ((q.clamp(MIN_FILTER_Q, MAX_FILTER_Q).ln() - MIN_FILTER_Q.ln())
+            / (MAX_FILTER_Q.ln() - MIN_FILTER_Q.ln()))
+        .clamp(0.0, 1.0);
+        let guide_top = top + FILTER_HANDLE_MARGIN;
+        let guide_bottom = top + height - FILTER_HANDLE_MARGIN;
+        guide_bottom - phase * (guide_bottom - guide_top).max(1.0)
+    };
+    let hp_x = frequency_x(hp_freq);
+    let lp_x = frequency_x(lp_freq);
+    let center_frequency = (hp_freq * lp_freq)
+        .max(MIN_FILTER_FREQ_HZ * MIN_FILTER_FREQ_HZ)
+        .sqrt();
+    let center_q = (hp_q * lp_q).max(MIN_FILTER_Q * MIN_FILTER_Q).sqrt();
+    let hp_center = point(px(hp_x), px(q_y(hp_q)));
+    let lp_center = point(px(lp_x), px(q_y(lp_q)));
+    let both_center = point(px(frequency_x(center_frequency)), px(q_y(center_q)));
+
+    for x in [hp_x, lp_x] {
+        let mut guide = gpui::PathBuilder::stroke(px(1.0));
+        guide.move_to(point(px(x), px(top + FILTER_HANDLE_MARGIN)));
+        guide.line_to(point(px(x), px(top + height - FILTER_HANDLE_MARGIN)));
+        if let Ok(path) = guide.build() {
+            window.paint_path(path, solid(FILTER_OVERLAY_MUTED_COLOR));
+        }
+    }
+
+    let mut response = gpui::PathBuilder::stroke(px(2.15));
+    for step in 0..=96usize {
+        let phase = step as f32 / 96.0;
+        let frequency_hz = (MIN_FILTER_FREQ_HZ.ln()
+            + phase * (MAX_FILTER_FREQ_HZ.ln() - MIN_FILTER_FREQ_HZ.ln()))
+        .exp();
+        let response_db = crate::dsp::filter_response_db(
+            frequency_hz,
+            48_000.0,
+            hp_freq,
+            hp_q,
+            lp_freq,
+            lp_q,
+            hp_slope,
+            lp_slope,
+        );
+        let response_phase = ((response_db - FILTER_RESPONSE_DB_MIN)
+            / (FILTER_RESPONSE_DB_MAX - FILTER_RESPONSE_DB_MIN))
+            .clamp(0.0, 1.0);
+        let sample = point(
+            px(left + phase * plot_width),
+            px(top + (1.0 - response_phase) * plot_height),
+        );
+        if step == 0 {
+            response.move_to(sample);
+        } else {
+            response.line_to(sample);
+        }
+    }
+    if let Ok(path) = response.build() {
+        window.paint_path(path, solid(FILTER_OVERLAY_COLOR));
+    }
+
+    let active = state.active_filter_handle();
+    let selected_handle = state.selected_filter_handle();
+    let hovered = state.hover_filter_handle();
+    let draw_circle = |center: Point<Pixels>, handle: FilterHandle, window: &mut Window| {
+        let selected = selected_handle == Some(handle);
+        let active = active == Some(handle);
+        let is_hovered = hovered == Some(handle);
+        let radius = FILTER_HANDLE_RADIUS + f32::from(selected || active || is_hovered) * 1.7;
+        let fill_color = if active {
+            pump_theme().accent_mint
+        } else if selected {
+            pump_theme().accent_copper
+        } else if is_hovered {
+            pump_theme().accent_warning
+        } else {
+            pump_theme().surface_overlay
+        };
+        let mut fill_path = gpui::PathBuilder::fill();
+        let mut stroke_path =
+            gpui::PathBuilder::stroke(px(if selected || is_hovered { 1.7 } else { 1.15 }));
+        for step in 0..=24 {
+            let angle = std::f32::consts::TAU * step as f32 / 24.0;
+            let sample = point(
+                center.x + px(radius * angle.cos()),
+                center.y + px(radius * angle.sin()),
+            );
+            if step == 0 {
+                fill_path.move_to(sample);
+                stroke_path.move_to(sample);
+            } else {
+                fill_path.line_to(sample);
+                stroke_path.line_to(sample);
+            }
+        }
+        fill_path.close();
+        stroke_path.close();
+        if let Ok(path) = fill_path.build() {
+            window.paint_path(path, solid(fill_color));
+        }
+        if let Ok(path) = stroke_path.build() {
+            window.paint_path(
+                path,
+                solid(if selected || active || is_hovered {
+                    FILTER_OVERLAY_COLOR
+                } else {
+                    FILTER_OVERLAY_MUTED_COLOR
+                }),
+            );
+        }
+    };
+    draw_circle(hp_center, FilterHandle::HighPass, window);
+    draw_circle(lp_center, FilterHandle::LowPass, window);
+
+    let both_selected = selected_handle == Some(FilterHandle::Both);
+    let both_active = active == Some(FilterHandle::Both);
+    let both_hovered = hovered == Some(FilterHandle::Both);
+    let both_radius =
+        FILTER_HANDLE_RADIUS + f32::from(both_selected || both_active || both_hovered) * 1.7;
+    let both_fill = if both_active {
+        pump_theme().accent_mint
+    } else if both_selected {
+        pump_theme().accent_copper
+    } else if both_hovered {
+        pump_theme().accent_warning
+    } else {
+        pump_theme().surface_overlay
+    };
+    let mut diamond = gpui::PathBuilder::fill();
+    diamond.move_to(point(both_center.x, both_center.y - px(both_radius)));
+    diamond.line_to(point(both_center.x + px(both_radius), both_center.y));
+    diamond.line_to(point(both_center.x, both_center.y + px(both_radius)));
+    diamond.line_to(point(both_center.x - px(both_radius), both_center.y));
+    diamond.close();
+    if let Ok(path) = diamond.build() {
+        window.paint_path(path, solid(both_fill));
+    }
+    let mut diamond_stroke = gpui::PathBuilder::stroke(px(1.15));
+    diamond_stroke.move_to(point(both_center.x, both_center.y - px(both_radius)));
+    diamond_stroke.line_to(point(both_center.x + px(both_radius), both_center.y));
+    diamond_stroke.line_to(point(both_center.x, both_center.y + px(both_radius)));
+    diamond_stroke.line_to(point(both_center.x - px(both_radius), both_center.y));
+    diamond_stroke.close();
+    if let Ok(path) = diamond_stroke.build() {
+        window.paint_path(
+            path,
+            solid(if both_selected || both_active || both_hovered {
+                FILTER_OVERLAY_COLOR
+            } else {
+                FILTER_OVERLAY_MUTED_COLOR
+            }),
+        );
+    }
+
+    let hp_label = text_line(
+        window,
+        format!("HP {} Q {:.2}", filter_frequency_text(hp_freq), hp_q),
+        PUMP_TYPOGRAPHY.meta.0,
+        FILTER_OVERLAY_COLOR,
+    );
+    let _ = hp_label.paint(
+        point(px((hp_x + 7.0).min(left + width - 120.0)), px(top + 2.0)),
+        px(PUMP_TYPOGRAPHY.meta.1),
+        gpui::TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+    let lp_label = text_line(
+        window,
+        format!("LP {} Q {:.2}", filter_frequency_text(lp_freq), lp_q),
+        PUMP_TYPOGRAPHY.meta.0,
+        FILTER_OVERLAY_COLOR,
+    );
+    let _ = lp_label.paint(
+        point(px((lp_x - 116.0).max(left)), px(top + 2.0)),
+        px(PUMP_TYPOGRAPHY.meta.1),
+        gpui::TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+    let both_label = text_line(
+        window,
+        format!(
+            "BOTH {} Q {:.2}",
+            filter_frequency_text(center_frequency),
+            center_q
+        ),
+        PUMP_TYPOGRAPHY.meta.0,
+        FILTER_OVERLAY_COLOR,
+    );
+    let _ = both_label.paint(
+        point(
+            px((f32::from(both_center.x) - 48.0).clamp(left, left + width - 96.0)),
+            px(top + height - 14.0),
+        ),
+        px(PUMP_TYPOGRAPHY.meta.1),
+        gpui::TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+}
+
+fn filter_frequency_text(frequency_hz: f32) -> String {
+    if frequency_hz >= 1_000.0 {
+        format!("{:.1} kHz", frequency_hz / 1_000.0)
+    } else {
+        format!("{:.0} Hz", frequency_hz)
+    }
+}
+
 fn knob_value(state: &PumpEditorState, target: NumericEntryTarget) -> (f32, String) {
     let params = state.params();
     let (normalized, plain, id) = match target {
@@ -3444,6 +3954,30 @@ fn knob_value(state: &PumpEditorState, target: NumericEntryTarget) -> (f32, Stri
                 as f32,
             params.delay_beats() as f32,
             PARAM_DELAY_ID,
+        ),
+        NumericEntryTarget::FilterHpFrequency => (
+            normalized_from_plain_value(PARAM_FILTER_HP_FREQ_ID, params.filter_hp_freq_hz() as f64)
+                .unwrap_or(0.0) as f32,
+            params.filter_hp_freq_hz(),
+            PARAM_FILTER_HP_FREQ_ID,
+        ),
+        NumericEntryTarget::FilterHpQ => (
+            normalized_from_plain_value(PARAM_FILTER_HP_Q_ID, params.filter_hp_q() as f64)
+                .unwrap_or(0.0) as f32,
+            params.filter_hp_q(),
+            PARAM_FILTER_HP_Q_ID,
+        ),
+        NumericEntryTarget::FilterLpFrequency => (
+            normalized_from_plain_value(PARAM_FILTER_LP_FREQ_ID, params.filter_lp_freq_hz() as f64)
+                .unwrap_or(1.0) as f32,
+            params.filter_lp_freq_hz(),
+            PARAM_FILTER_LP_FREQ_ID,
+        ),
+        NumericEntryTarget::FilterLpQ => (
+            normalized_from_plain_value(PARAM_FILTER_LP_Q_ID, params.filter_lp_q() as f64)
+                .unwrap_or(0.0) as f32,
+            params.filter_lp_q(),
+            PARAM_FILTER_LP_Q_ID,
         ),
     };
     let text = if target == NumericEntryTarget::FreeRate {
@@ -3561,6 +4095,10 @@ impl PumpEditor {
             NumericEntryTarget::Swing => "SWING",
             NumericEntryTarget::FreeRate => "RATE",
             NumericEntryTarget::Delay => "DELAY",
+            NumericEntryTarget::FilterHpFrequency => "HP FREQ",
+            NumericEntryTarget::FilterHpQ => "HP Q",
+            NumericEntryTarget::FilterLpFrequency => "LP FREQ",
+            NumericEntryTarget::FilterLpQ => "LP Q",
         };
         let id = target.widget_key();
         let theme = pump_theme();
@@ -3651,6 +4189,66 @@ impl PumpEditor {
                     .child(input),
             )
     }
+
+    fn filter_slope_element(
+        &self,
+        handle: FilterHandle,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (label, current, ids) = match handle {
+            FilterHandle::HighPass => (
+                "FILTER HP",
+                self.state.borrow().params().filter_hp_slope(),
+                FILTER_HP_SLOPE_IDS,
+            ),
+            FilterHandle::LowPass => (
+                "FILTER LP",
+                self.state.borrow().params().filter_lp_slope(),
+                FILTER_LP_SLOPE_IDS,
+            ),
+            FilterHandle::Both => unreachable!("side slope controls cannot target both handles"),
+        };
+        let options = [12usize, 24, 48]
+            .into_iter()
+            .enumerate()
+            .map(|(index, slope)| {
+                let mut option =
+                    button(ids[index], slope.to_string(), index == current, 30.0, None).h(px(24.0));
+                option = option.on_click(cx.listener(move |view, event, window, cx| {
+                    view.select_filter_slope(handle, index, event, window, cx)
+                }));
+                option
+            });
+        let theme = pump_theme();
+        div()
+            .id(match handle {
+                FilterHandle::HighPass => "filter-hp-slope",
+                FilterHandle::LowPass => "filter-lp-slope",
+                FilterHandle::Both => "filter-both-slope",
+            })
+            .flex_1()
+            .h(px(DECK_HEIGHT))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(PUMP_VISUAL_METRICS.space_4))
+            .child(
+                div()
+                    .text_color(solid(theme.text_muted))
+                    .font(font("Ioskeley Mono"))
+                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
+                    .child(label),
+            )
+            .child(div().flex().gap(px(1.7)).children(options))
+            .child(
+                div()
+                    .text_color(solid(theme.text_muted))
+                    .font(font("Ioskeley Mono"))
+                    .text_size(px(PUMP_TYPOGRAPHY.meta.0))
+                    .child("dB/oct"),
+            )
+    }
 }
 
 fn curve_slot_element(
@@ -3719,6 +4317,7 @@ impl Render for PumpEditor {
         let params = state.params();
         let active_sound = params.active_sound();
         let bypassed = params.bypassed();
+        let filter_enabled = params.filter_enabled();
         let timing_free = params.timing_mode() == TIMING_MODE_FREE;
         let curve_bounds = Rc::clone(&self.curve_bounds);
         let draw_state = Rc::clone(&self.state);
@@ -3822,6 +4421,27 @@ impl Render for PumpEditor {
             self.knob_element(NumericEntryTarget::Mix, cx),
             self.knob_element(NumericEntryTarget::OutputGain, cx),
         ]);
+        if filter_enabled {
+            match state.selected_filter_handle() {
+                Some(FilterHandle::HighPass) => {
+                    deck_children.extend([
+                        divider("deck-divider-filter-hp"),
+                        self.knob_element(NumericEntryTarget::FilterHpFrequency, cx),
+                        self.knob_element(NumericEntryTarget::FilterHpQ, cx),
+                        self.filter_slope_element(FilterHandle::HighPass, cx),
+                    ]);
+                }
+                Some(FilterHandle::LowPass) => {
+                    deck_children.extend([
+                        divider("deck-divider-filter-lp"),
+                        self.knob_element(NumericEntryTarget::FilterLpFrequency, cx),
+                        self.knob_element(NumericEntryTarget::FilterLpQ, cx),
+                        self.filter_slope_element(FilterHandle::LowPass, cx),
+                    ]);
+                }
+                Some(FilterHandle::Both) | None => {}
+            }
+        }
         let deck = div()
             .h(px(DECK_HEIGHT))
             .w_full()
@@ -4150,6 +4770,15 @@ impl Render for PumpEditor {
         )
         .h(px(FOOTER_HEIGHT));
         waveform_button = waveform_button.on_click(cx.listener(Self::toggle_waveform));
+        let mut filter_button = button(
+            "filter",
+            "FILTER".into(),
+            filter_enabled,
+            66.0,
+            Some(self.button_focus_handle("filter")),
+        )
+        .h(px(FOOTER_HEIGHT));
+        filter_button = filter_button.on_click(cx.listener(Self::toggle_filter));
         let mut bypass_button = button(
             "bypass",
             String::new(),
@@ -4210,7 +4839,14 @@ impl Render for PumpEditor {
             .flex()
             .items_center()
             .justify_between()
-            .child(waveform_button)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(PUMP_VISUAL_METRICS.space_4))
+                    .child(waveform_button)
+                    .child(filter_button),
+            )
             .child(bypass_button);
         let hotkey_help = if state.hotkey_help_open() {
             const ROWS: [(&str, &str); 10] = [

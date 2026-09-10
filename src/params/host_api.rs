@@ -83,7 +83,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 13] = [
+const PARAM_DEFS: [ParamDef; 20] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -279,6 +279,111 @@ const PARAM_DEFS: [ParamDef; 13] = [
         default_value: DEFAULT_DELAY_BEATS as f64,
         flags: AUTO_STEPPED,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FILTER_ENABLED_NUM,
+        id: PARAM_FILTER_ENABLED_ID,
+        name: "Filter",
+        #[cfg(feature = "vst3")]
+        short_name: "Filter",
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Pump",
+        min_value: 0.0,
+        max_value: 1.0,
+        default_value: if DEFAULT_FILTER_ENABLED { 1.0 } else { 0.0 },
+        flags: AUTO_STEPPED,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FILTER_HP_FREQ_NUM,
+        id: PARAM_FILTER_HP_FREQ_ID,
+        name: "Filter HP Frequency",
+        #[cfg(feature = "vst3")]
+        short_name: "HP Freq",
+        #[cfg(feature = "vst3")]
+        units: "Hz",
+        module: "Pump",
+        min_value: MIN_FILTER_FREQ_HZ as f64,
+        max_value: MAX_FILTER_FREQ_HZ as f64,
+        default_value: DEFAULT_FILTER_HP_FREQ_HZ as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FILTER_HP_Q_NUM,
+        id: PARAM_FILTER_HP_Q_ID,
+        name: "Filter HP Q",
+        #[cfg(feature = "vst3")]
+        short_name: "HP Q",
+        #[cfg(feature = "vst3")]
+        units: "Q",
+        module: "Pump",
+        min_value: MIN_FILTER_Q as f64,
+        max_value: MAX_FILTER_Q as f64,
+        default_value: DEFAULT_FILTER_HP_Q as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FILTER_LP_FREQ_NUM,
+        id: PARAM_FILTER_LP_FREQ_ID,
+        name: "Filter LP Frequency",
+        #[cfg(feature = "vst3")]
+        short_name: "LP Freq",
+        #[cfg(feature = "vst3")]
+        units: "Hz",
+        module: "Pump",
+        min_value: MIN_FILTER_FREQ_HZ as f64,
+        max_value: MAX_FILTER_FREQ_HZ as f64,
+        default_value: DEFAULT_FILTER_LP_FREQ_HZ as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FILTER_LP_Q_NUM,
+        id: PARAM_FILTER_LP_Q_ID,
+        name: "Filter LP Q",
+        #[cfg(feature = "vst3")]
+        short_name: "LP Q",
+        #[cfg(feature = "vst3")]
+        units: "Q",
+        module: "Pump",
+        min_value: MIN_FILTER_Q as f64,
+        max_value: MAX_FILTER_Q as f64,
+        default_value: DEFAULT_FILTER_LP_Q as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FILTER_HP_SLOPE_NUM,
+        id: PARAM_FILTER_HP_SLOPE_ID,
+        name: "Filter HP Slope",
+        #[cfg(feature = "vst3")]
+        short_name: "HP Slope",
+        #[cfg(feature = "vst3")]
+        units: "dB/oct",
+        module: "Pump",
+        min_value: 0.0,
+        max_value: MAX_FILTER_SLOPE as f64,
+        default_value: DEFAULT_FILTER_SLOPE as f64,
+        flags: AUTO_STEPPED,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FILTER_LP_SLOPE_NUM,
+        id: PARAM_FILTER_LP_SLOPE_ID,
+        name: "Filter LP Slope",
+        #[cfg(feature = "vst3")]
+        short_name: "LP Slope",
+        #[cfg(feature = "vst3")]
+        units: "dB/oct",
+        module: "Pump",
+        min_value: 0.0,
+        max_value: MAX_FILTER_SLOPE as f64,
+        default_value: DEFAULT_FILTER_SLOPE as f64,
+        flags: AUTO_STEPPED,
+    },
 ];
 
 fn param_def_for_id(param_id: ClapId) -> Option<ParamDef> {
@@ -404,6 +509,9 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
             | PARAM_SOUND_ID
             | PARAM_TIMING_MODE_ID
             | PARAM_DELAY_ID
+            | PARAM_FILTER_ENABLED_ID
+            | PARAM_FILTER_HP_SLOPE_ID
+            | PARAM_FILTER_LP_SLOPE_ID
     ) {
         return Some(plain.round());
     }
@@ -514,6 +622,13 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_TIMING_MODE_ID => Some(params.timing_mode() as f64),
         PARAM_FREE_RATE_ID => Some(params.free_rate_hz() as f64),
         PARAM_DELAY_ID => Some(params.delay_beats() as f64),
+        PARAM_FILTER_ENABLED_ID => Some(if params.filter_enabled() { 1.0 } else { 0.0 }),
+        PARAM_FILTER_HP_FREQ_ID => Some(params.filter_hp_freq_hz() as f64),
+        PARAM_FILTER_HP_Q_ID => Some(params.filter_hp_q() as f64),
+        PARAM_FILTER_LP_FREQ_ID => Some(params.filter_lp_freq_hz() as f64),
+        PARAM_FILTER_LP_Q_ID => Some(params.filter_lp_q() as f64),
+        PARAM_FILTER_HP_SLOPE_ID => Some(params.filter_hp_slope() as f64),
+        PARAM_FILTER_LP_SLOPE_ID => Some(params.filter_lp_slope() as f64),
         _ => None,
     }
 }
@@ -546,6 +661,13 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         PARAM_TIMING_MODE_ID => params.set_timing_mode(value as f32),
         PARAM_FREE_RATE_ID => params.set_free_rate_hz(value as f32),
         PARAM_DELAY_ID => params.set_delay_beats(value as f32),
+        PARAM_FILTER_ENABLED_ID => params.set_filter_enabled(value as f32),
+        PARAM_FILTER_HP_FREQ_ID => params.set_filter_hp_freq_hz(value as f32),
+        PARAM_FILTER_HP_Q_ID => params.set_filter_hp_q(value as f32),
+        PARAM_FILTER_LP_FREQ_ID => params.set_filter_lp_freq_hz(value as f32),
+        PARAM_FILTER_LP_Q_ID => params.set_filter_lp_q(value as f32),
+        PARAM_FILTER_HP_SLOPE_ID => params.set_filter_hp_slope(value as f32),
+        PARAM_FILTER_LP_SLOPE_ID => params.set_filter_lp_slope(value as f32),
         _ => return false,
     }
     true
@@ -684,6 +806,15 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
             .map(|label| (*label).to_string()),
         PARAM_FREE_RATE_ID => Some(format_free_rate(value as f32)),
         PARAM_DELAY_ID => Some(format_delay_beats(value)),
+        PARAM_FILTER_ENABLED_ID => {
+            Some(if value.round() >= 1.0 { "ON" } else { "OFF" }.to_string())
+        }
+        PARAM_FILTER_HP_FREQ_ID | PARAM_FILTER_LP_FREQ_ID => Some(format_frequency(value as f32)),
+        PARAM_FILTER_HP_Q_ID | PARAM_FILTER_LP_Q_ID => Some(format!("{:.2} Q", value)),
+        PARAM_FILTER_HP_SLOPE_ID | PARAM_FILTER_LP_SLOPE_ID => Some(format!(
+            "{} dB/oct",
+            12usize << (value.round() as usize).min(MAX_FILTER_SLOPE)
+        )),
         _ => None,
     }
 }
@@ -764,6 +895,39 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
             }),
         PARAM_FREE_RATE_ID => parse_free_rate(raw).map(|value| value as f64),
         PARAM_DELAY_ID => parse_delay_beats(raw),
+        PARAM_FILTER_ENABLED_ID => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "on" | "enabled" | "1" => Some(1.0),
+                "off" | "disabled" | "0" => Some(0.0),
+                _ => raw
+                    .parse::<f64>()
+                    .ok()
+                    .map(|value| value.round().clamp(0.0, 1.0)),
+            }
+        }
+        PARAM_FILTER_HP_FREQ_ID | PARAM_FILTER_LP_FREQ_ID => {
+            parse_frequency(raw).map(|value| value as f64)
+        }
+        PARAM_FILTER_HP_Q_ID | PARAM_FILTER_LP_Q_ID => {
+            let stripped = raw.trim_end_matches('Q').trim();
+            stripped
+                .parse::<f64>()
+                .ok()
+                .map(|value| value.clamp(MIN_FILTER_Q as f64, MAX_FILTER_Q as f64))
+        }
+        PARAM_FILTER_HP_SLOPE_ID | PARAM_FILTER_LP_SLOPE_ID => {
+            let value = raw.trim().trim_end_matches("dB/oct").trim();
+            match value {
+                "12" => Some(0.0),
+                "24" => Some(1.0),
+                "48" => Some(2.0),
+                _ => value
+                    .parse::<f64>()
+                    .ok()
+                    .map(|value| value.round().clamp(0.0, MAX_FILTER_SLOPE as f64)),
+            }
+        }
         _ => None,
     }
 }
@@ -807,6 +971,36 @@ fn parse_free_rate(raw: &str) -> Option<f32> {
         number * multiplier
     };
     Some(clamp_free_rate_hz(value))
+}
+
+fn format_frequency(value: f32) -> String {
+    let frequency_hz = if value.is_finite() {
+        value.clamp(MIN_FILTER_FREQ_HZ, MAX_FILTER_FREQ_HZ)
+    } else {
+        DEFAULT_FILTER_HP_FREQ_HZ
+    };
+    if frequency_hz >= 1_000.0 {
+        format!("{:.2} kHz", frequency_hz / 1_000.0)
+    } else {
+        format!("{frequency_hz:.0} Hz")
+    }
+}
+
+fn parse_frequency(raw: &str) -> Option<f32> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    let (number, multiplier) = if let Some(value) = normalized.strip_suffix("khz") {
+        (value.trim(), 1_000.0)
+    } else if let Some(value) = normalized.strip_suffix("hz") {
+        (value.trim(), 1.0)
+    } else {
+        (normalized.as_str(), 1.0)
+    };
+    let value = number.parse::<f32>().ok()? * multiplier;
+    Some(if value.is_finite() {
+        value.clamp(MIN_FILTER_FREQ_HZ, MAX_FILTER_FREQ_HZ)
+    } else {
+        DEFAULT_FILTER_HP_FREQ_HZ
+    })
 }
 
 fn format_delay_beats(value: f64) -> String {

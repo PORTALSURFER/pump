@@ -1,5 +1,41 @@
 use super::*;
 
+fn clamp_filter_frequency(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(MIN_FILTER_FREQ_HZ, MAX_FILTER_FREQ_HZ)
+    } else {
+        DEFAULT_FILTER_HP_FREQ_HZ
+    }
+}
+
+fn clamp_filter_q(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(MIN_FILTER_Q, MAX_FILTER_Q)
+    } else {
+        DEFAULT_FILTER_HP_Q
+    }
+}
+
+fn clamp_filter_slope(value: f32) -> usize {
+    if value.is_finite() {
+        (value.round() as usize).min(MAX_FILTER_SLOPE)
+    } else {
+        DEFAULT_FILTER_SLOPE
+    }
+}
+
+fn normalize_filter_cutoffs(hp: f32, lp: f32) -> (f32, f32) {
+    let hp = clamp_filter_frequency(hp);
+    let lp = clamp_filter_frequency(lp);
+    let lp = lp
+        .max(hp + FILTER_MIN_SEPARATION_HZ)
+        .min(MAX_FILTER_FREQ_HZ);
+    let hp = hp
+        .min(lp - FILTER_MIN_SEPARATION_HZ)
+        .max(MIN_FILTER_FREQ_HZ);
+    (hp, lp)
+}
+
 fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
     float_near_eq(left.mix, right.mix)
         && float_near_eq(left.depth_db, right.depth_db)
@@ -14,6 +50,13 @@ fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
         && left.timing_mode == right.timing_mode
         && float_near_eq(left.free_rate_hz, right.free_rate_hz)
         && left.delay_beats == right.delay_beats
+        && left.filter_enabled == right.filter_enabled
+        && float_near_eq(left.filter_hp_freq_hz, right.filter_hp_freq_hz)
+        && float_near_eq(left.filter_hp_q, right.filter_hp_q)
+        && float_near_eq(left.filter_lp_freq_hz, right.filter_lp_freq_hz)
+        && float_near_eq(left.filter_lp_q, right.filter_lp_q)
+        && left.filter_hp_slope == right.filter_hp_slope
+        && left.filter_lp_slope == right.filter_lp_slope
         && curve_near_eq(&left.editable_curve, &right.editable_curve)
         && left.quick_slots.len() == right.quick_slots.len()
         && left
@@ -80,6 +123,30 @@ impl PumpParams {
             realtime_free_rate_hz: std::array::from_fn(|_| AtomicF32::new(DEFAULT_FREE_RATE_HZ)),
             realtime_delay_beats: std::array::from_fn(|_| {
                 AtomicU32::new(DEFAULT_DELAY_BEATS as u32)
+            }),
+            filter_enabled: AtomicBool::new(DEFAULT_FILTER_ENABLED),
+            filter_hp_freq_hz: AtomicF32::new(DEFAULT_FILTER_HP_FREQ_HZ),
+            filter_hp_q: AtomicF32::new(DEFAULT_FILTER_HP_Q),
+            filter_lp_freq_hz: AtomicF32::new(DEFAULT_FILTER_LP_FREQ_HZ),
+            filter_lp_q: AtomicF32::new(DEFAULT_FILTER_LP_Q),
+            filter_hp_slope: AtomicU32::new(DEFAULT_FILTER_SLOPE as u32),
+            filter_lp_slope: AtomicU32::new(DEFAULT_FILTER_SLOPE as u32),
+            realtime_filter_enabled: std::array::from_fn(|_| {
+                AtomicBool::new(DEFAULT_FILTER_ENABLED)
+            }),
+            realtime_filter_hp_freq_hz: std::array::from_fn(|_| {
+                AtomicF32::new(DEFAULT_FILTER_HP_FREQ_HZ)
+            }),
+            realtime_filter_hp_q: std::array::from_fn(|_| AtomicF32::new(DEFAULT_FILTER_HP_Q)),
+            realtime_filter_lp_freq_hz: std::array::from_fn(|_| {
+                AtomicF32::new(DEFAULT_FILTER_LP_FREQ_HZ)
+            }),
+            realtime_filter_lp_q: std::array::from_fn(|_| AtomicF32::new(DEFAULT_FILTER_LP_Q)),
+            realtime_filter_hp_slope: std::array::from_fn(|_| {
+                AtomicU32::new(DEFAULT_FILTER_SLOPE as u32)
+            }),
+            realtime_filter_lp_slope: std::array::from_fn(|_| {
+                AtomicU32::new(DEFAULT_FILTER_SLOPE as u32)
             }),
             realtime_curve: std::array::from_fn(|_| {
                 std::array::from_fn(|index| AtomicF32::new(default_curve[index]))
@@ -191,6 +258,47 @@ impl PumpParams {
         clamp_delay_beats(
             self.realtime_delay_beats[self.realtime_index()].load(Ordering::Relaxed) as f32,
         )
+    }
+
+    /// Return whether frequency-selective pumping is enabled.
+    pub fn filter_enabled(&self) -> bool {
+        self.realtime_filter_enabled[self.realtime_index()].load(Ordering::Relaxed)
+    }
+
+    /// Return the high-pass cutoff frequency in hertz.
+    pub fn filter_hp_freq_hz(&self) -> f32 {
+        clamp_filter_frequency(
+            self.realtime_filter_hp_freq_hz[self.realtime_index()].load(Ordering::Relaxed),
+        )
+    }
+
+    /// Return the high-pass Q amount.
+    pub fn filter_hp_q(&self) -> f32 {
+        clamp_filter_q(self.realtime_filter_hp_q[self.realtime_index()].load(Ordering::Relaxed))
+    }
+
+    /// Return the low-pass cutoff frequency in hertz.
+    pub fn filter_lp_freq_hz(&self) -> f32 {
+        clamp_filter_frequency(
+            self.realtime_filter_lp_freq_hz[self.realtime_index()].load(Ordering::Relaxed),
+        )
+    }
+
+    /// Return the low-pass Q amount.
+    pub fn filter_lp_q(&self) -> f32 {
+        clamp_filter_q(self.realtime_filter_lp_q[self.realtime_index()].load(Ordering::Relaxed))
+    }
+
+    /// Return the high-pass slope index.
+    pub fn filter_hp_slope(&self) -> usize {
+        (self.realtime_filter_hp_slope[self.realtime_index()].load(Ordering::Relaxed) as usize)
+            .min(MAX_FILTER_SLOPE)
+    }
+
+    /// Return the low-pass slope index.
+    pub fn filter_lp_slope(&self) -> usize {
+        (self.realtime_filter_lp_slope[self.realtime_index()].load(Ordering::Relaxed) as usize)
+            .min(MAX_FILTER_SLOPE)
     }
 
     /// Return whether complete Pump output is currently bypassed.
@@ -346,6 +454,66 @@ impl PumpParams {
         let value = clamp_delay_beats(value) as u32;
         self.delay_beats.store(value, Ordering::Relaxed);
         self.realtime_delay_beats[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set whether frequency-selective pumping is enabled.
+    pub fn set_filter_enabled(&self, value: f32) {
+        let enabled = value.is_finite() && value.round() >= 1.0;
+        self.filter_enabled.store(enabled, Ordering::Relaxed);
+        self.realtime_filter_enabled[self.realtime_index()].store(enabled, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the high-pass cutoff frequency in hertz.
+    pub fn set_filter_hp_freq_hz(&self, value: f32) {
+        // Store each host parameter independently. The effective band is
+        // normalized atomically by the DSP, so restoring or automating a
+        // high-pass value never depends on the order in which its low-pass
+        // partner arrives.
+        let value = clamp_filter_frequency(value);
+        self.filter_hp_freq_hz.store(value, Ordering::Relaxed);
+        self.realtime_filter_hp_freq_hz[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the high-pass Q amount.
+    pub fn set_filter_hp_q(&self, value: f32) {
+        let value = clamp_filter_q(value);
+        self.filter_hp_q.store(value, Ordering::Relaxed);
+        self.realtime_filter_hp_q[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the low-pass cutoff frequency in hertz.
+    pub fn set_filter_lp_freq_hz(&self, value: f32) {
+        let value = clamp_filter_frequency(value);
+        self.filter_lp_freq_hz.store(value, Ordering::Relaxed);
+        self.realtime_filter_lp_freq_hz[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the low-pass Q amount.
+    pub fn set_filter_lp_q(&self, value: f32) {
+        let value = clamp_filter_q(value);
+        self.filter_lp_q.store(value, Ordering::Relaxed);
+        self.realtime_filter_lp_q[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the high-pass slope index.
+    pub fn set_filter_hp_slope(&self, value: f32) {
+        let value = clamp_filter_slope(value) as u32;
+        self.filter_hp_slope.store(value, Ordering::Relaxed);
+        self.realtime_filter_hp_slope[self.realtime_index()].store(value, Ordering::Relaxed);
+        self.mark_active_sound_dirty();
+    }
+
+    /// Set the low-pass slope index.
+    pub fn set_filter_lp_slope(&self, value: f32) {
+        let value = clamp_filter_slope(value) as u32;
+        self.filter_lp_slope.store(value, Ordering::Relaxed);
+        self.realtime_filter_lp_slope[self.realtime_index()].store(value, Ordering::Relaxed);
         self.mark_active_sound_dirty();
     }
 
@@ -655,6 +823,13 @@ impl PumpParams {
             timing_mode: self.timing_mode(),
             free_rate_hz: self.free_rate_hz(),
             delay_beats: self.delay_beats(),
+            filter_hp_slope: self.filter_hp_slope(),
+            filter_lp_slope: self.filter_lp_slope(),
+            filter_enabled: self.filter_enabled(),
+            filter_hp_freq_hz: self.filter_hp_freq_hz(),
+            filter_hp_q: self.filter_hp_q(),
+            filter_lp_freq_hz: self.filter_lp_freq_hz(),
+            filter_lp_q: self.filter_lp_q(),
             editable_curve,
             quick_slots,
         }
@@ -713,6 +888,15 @@ impl PumpParams {
                 timing_mode: self.realtime_timing_mode[index].load(Ordering::Acquire) as usize,
                 free_rate_hz: self.realtime_free_rate_hz[index].load(Ordering::Acquire),
                 delay_beats: self.realtime_delay_beats[index].load(Ordering::Acquire) as usize,
+                filter_enabled: self.realtime_filter_enabled[index].load(Ordering::Acquire),
+                filter_hp_freq_hz: self.realtime_filter_hp_freq_hz[index].load(Ordering::Acquire),
+                filter_hp_q: self.realtime_filter_hp_q[index].load(Ordering::Acquire),
+                filter_lp_freq_hz: self.realtime_filter_lp_freq_hz[index].load(Ordering::Acquire),
+                filter_lp_q: self.realtime_filter_lp_q[index].load(Ordering::Acquire),
+                filter_hp_slope: self.realtime_filter_hp_slope[index].load(Ordering::Acquire)
+                    as usize,
+                filter_lp_slope: self.realtime_filter_lp_slope[index].load(Ordering::Acquire)
+                    as usize,
                 editable_curve,
                 quick_slots,
             };
@@ -846,6 +1030,48 @@ impl PumpParams {
             clamp_delay_beats(state.delay_beats as f32) as u32,
             Ordering::Relaxed,
         );
+        let filter_hp_freq_hz = clamp_filter_frequency(state.filter_hp_freq_hz);
+        let filter_lp_freq_hz = clamp_filter_frequency(state.filter_lp_freq_hz)
+            .max(filter_hp_freq_hz + FILTER_MIN_SEPARATION_HZ)
+            .min(MAX_FILTER_FREQ_HZ);
+        let filter_hp_freq_hz = filter_hp_freq_hz
+            .min(filter_lp_freq_hz - FILTER_MIN_SEPARATION_HZ)
+            .max(MIN_FILTER_FREQ_HZ);
+        if index == active_index {
+            self.filter_enabled
+                .store(state.filter_enabled, Ordering::Relaxed);
+            self.filter_hp_freq_hz
+                .store(filter_hp_freq_hz, Ordering::Relaxed);
+            self.filter_hp_q
+                .store(clamp_filter_q(state.filter_hp_q), Ordering::Relaxed);
+            self.filter_lp_freq_hz
+                .store(filter_lp_freq_hz, Ordering::Relaxed);
+            self.filter_lp_q
+                .store(clamp_filter_q(state.filter_lp_q), Ordering::Relaxed);
+            self.filter_hp_slope.store(
+                clamp_filter_slope(state.filter_hp_slope as f32) as u32,
+                Ordering::Relaxed,
+            );
+            self.filter_lp_slope.store(
+                clamp_filter_slope(state.filter_lp_slope as f32) as u32,
+                Ordering::Relaxed,
+            );
+        }
+        self.realtime_filter_enabled[index].store(state.filter_enabled, Ordering::Relaxed);
+        self.realtime_filter_hp_freq_hz[index].store(filter_hp_freq_hz, Ordering::Relaxed);
+        self.realtime_filter_hp_q[index]
+            .store(clamp_filter_q(state.filter_hp_q), Ordering::Relaxed);
+        self.realtime_filter_lp_freq_hz[index].store(filter_lp_freq_hz, Ordering::Relaxed);
+        self.realtime_filter_lp_q[index]
+            .store(clamp_filter_q(state.filter_lp_q), Ordering::Relaxed);
+        self.realtime_filter_hp_slope[index].store(
+            clamp_filter_slope(state.filter_hp_slope as f32) as u32,
+            Ordering::Relaxed,
+        );
+        self.realtime_filter_lp_slope[index].store(
+            clamp_filter_slope(state.filter_lp_slope as f32) as u32,
+            Ordering::Relaxed,
+        );
         let normalized = state.editable_curve.clone().normalized();
         let curve_table = editable_curve_to_table(&normalized);
         for (curve, value) in self.realtime_curve[index]
@@ -902,6 +1128,13 @@ impl PumpParams {
             timing_mode: self.timing_mode(),
             free_rate_hz: self.free_rate_hz(),
             delay_beats: self.delay_beats(),
+            filter_enabled: self.filter_enabled(),
+            filter_hp_freq_hz: self.filter_hp_freq_hz(),
+            filter_hp_q: self.filter_hp_q(),
+            filter_lp_freq_hz: self.filter_lp_freq_hz(),
+            filter_lp_q: self.filter_lp_q(),
+            filter_hp_slope: self.filter_hp_slope(),
+            filter_lp_slope: self.filter_lp_slope(),
             editable_curve: self.editable_curve_snapshot(),
             quick_slots: self.sound_state_snapshot(self.active_sound()).quick_slots,
         }
@@ -972,6 +1205,12 @@ impl PumpParams {
             preset.timing_mode = clamp_timing_mode(preset.timing_mode as f32);
             preset.free_rate_hz = clamp_free_rate_hz(preset.free_rate_hz);
             preset.delay_beats = preset.delay_beats.clamp(MIN_DELAY_BEATS, MAX_DELAY_BEATS);
+            preset.filter_hp_q = clamp_filter_q(preset.filter_hp_q);
+            preset.filter_lp_q = clamp_filter_q(preset.filter_lp_q);
+            preset.filter_hp_slope = clamp_filter_slope(preset.filter_hp_slope as f32);
+            preset.filter_lp_slope = clamp_filter_slope(preset.filter_lp_slope as f32);
+            (preset.filter_hp_freq_hz, preset.filter_lp_freq_hz) =
+                normalize_filter_cutoffs(preset.filter_hp_freq_hz, preset.filter_lp_freq_hz);
             preset.smooth = if preset.smooth.is_finite() {
                 preset.smooth.clamp(MIN_SMOOTH, MAX_SMOOTH)
             } else {
@@ -1011,6 +1250,11 @@ impl PumpParams {
         self.set_timing_mode(preset.timing_mode as f32);
         self.set_free_rate_hz(preset.free_rate_hz);
         self.set_delay_beats(preset.delay_beats as f32);
+        self.set_filter_enabled(if preset.filter_enabled { 1.0 } else { 0.0 });
+        self.set_filter_hp_freq_hz(preset.filter_hp_freq_hz);
+        self.set_filter_hp_q(preset.filter_hp_q);
+        self.set_filter_lp_freq_hz(preset.filter_lp_freq_hz);
+        self.set_filter_lp_q(preset.filter_lp_q);
         self.set_editable_curve_preserving_phase(&preset.editable_curve);
         let _ = self.set_active_sound_quick_slots(preset.quick_slots.clone());
     }
@@ -1324,6 +1568,11 @@ impl PumpParams {
                 existing.timing_mode = snapshot.timing_mode;
                 existing.free_rate_hz = snapshot.free_rate_hz;
                 existing.delay_beats = snapshot.delay_beats;
+                existing.filter_enabled = snapshot.filter_enabled;
+                existing.filter_hp_freq_hz = snapshot.filter_hp_freq_hz;
+                existing.filter_hp_q = snapshot.filter_hp_q;
+                existing.filter_lp_freq_hz = snapshot.filter_lp_freq_hz;
+                existing.filter_lp_q = snapshot.filter_lp_q;
                 existing.editable_curve = snapshot.editable_curve;
                 existing.quick_slots = snapshot.quick_slots;
             }
@@ -1374,6 +1623,11 @@ impl PumpParams {
             || current.timing_mode != selected.timing_mode
             || !float_near_eq(current.free_rate_hz, selected.free_rate_hz)
             || current.delay_beats != selected.delay_beats
+            || current.filter_enabled != selected.filter_enabled
+            || !float_near_eq(current.filter_hp_freq_hz, selected.filter_hp_freq_hz)
+            || !float_near_eq(current.filter_hp_q, selected.filter_hp_q)
+            || !float_near_eq(current.filter_lp_freq_hz, selected.filter_lp_freq_hz)
+            || !float_near_eq(current.filter_lp_q, selected.filter_lp_q)
             || !curve_near_eq(&current.editable_curve, &selected.editable_curve)
     }
 

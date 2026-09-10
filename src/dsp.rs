@@ -1,6 +1,9 @@
 //! Real-time gain-envelope DSP for Pump.
 
 use crate::curve::{sample_curve, CURVE_TABLE_LEN};
+use crate::params::{
+    DEFAULT_FILTER_HP_FREQ_HZ, DEFAULT_FILTER_HP_Q, DEFAULT_FILTER_LP_FREQ_HZ, DEFAULT_FILTER_LP_Q,
+};
 use toybox::dsp::{TransportClock, TransportState};
 
 /// Control-rate settings snapshot consumed by the DSP engine.
@@ -30,6 +33,20 @@ pub struct DspSettings {
     pub free_rate_hz: f32,
     /// Whether complete Pump output should crossfade to original dry unity.
     pub bypassed: bool,
+    /// Whether frequency-selective pumping is enabled.
+    pub filter_enabled: bool,
+    /// High-pass cutoff frequency in hertz.
+    pub filter_hp_freq_hz: f32,
+    /// High-pass resonance/Q amount.
+    pub filter_hp_q: f32,
+    /// Low-pass cutoff frequency in hertz.
+    pub filter_lp_freq_hz: f32,
+    /// Low-pass resonance/Q amount.
+    pub filter_lp_q: f32,
+    /// High-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
+    pub filter_hp_slope: usize,
+    /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
+    pub filter_lp_slope: usize,
 }
 
 /// Host-bypass crossfade duration in seconds.
@@ -40,6 +57,19 @@ pub const SMOOTH_COMPATIBILITY_KNEE: f32 = 0.75;
 
 /// Maximum one-pole time constant at 100% Smooth.
 pub const MAX_SMOOTH_TIME_SECONDS: f32 = 0.25;
+
+/// Lowest supported frequency-selective filter cutoff.
+pub const FILTER_MIN_FREQ_HZ: f32 = 20.0;
+/// Highest supported frequency-selective filter cutoff at the host/UI rate.
+pub const FILTER_MAX_FREQ_HZ: f32 = 20_000.0;
+/// Lowest supported filter Q. Values below this are overdamped and difficult
+/// to use musically, while this floor remains stable at all supported rates.
+pub const FILTER_MIN_Q: f32 = 0.25;
+/// Highest supported filter Q. This gives a useful resonant peak without
+/// approaching the unstable edge of a direct-form biquad.
+pub const FILTER_MAX_Q: f32 = 4.0;
+const FILTER_MIN_SEPARATION_HZ: f32 = 1.0;
+const FILTER_PARAMETER_RAMP_SECONDS: f32 = 0.005;
 
 /// Return the one-pole time constant selected by a Smooth amount.
 ///
@@ -175,6 +205,12 @@ pub struct PumpEngine {
     phase_offset: OnePole,
     swing: OnePole,
     output_gain_db: OnePole,
+    filter_enabled: OnePole,
+    filter_hp_freq_hz: OnePole,
+    filter_hp_q: OnePole,
+    filter_lp_freq_hz: OnePole,
+    filter_lp_q: OnePole,
+    filter: StereoBandPass,
     wet_gain_smoother: GainSmoother,
     curve_current: [f32; CURVE_TABLE_LEN],
     curve_pending: [f32; CURVE_TABLE_LEN],
@@ -207,6 +243,28 @@ impl PumpEngine {
             phase_offset: OnePole::new(0.0, sample_rate, 0.01),
             swing: OnePole::new(0.0, sample_rate, 0.01),
             output_gain_db: OnePole::new(0.0, sample_rate, 0.01),
+            filter_enabled: OnePole::new(0.0, sample_rate, FILTER_PARAMETER_RAMP_SECONDS),
+            filter_hp_freq_hz: OnePole::new(
+                DEFAULT_FILTER_HP_FREQ_HZ,
+                sample_rate,
+                FILTER_PARAMETER_RAMP_SECONDS,
+            ),
+            filter_hp_q: OnePole::new(
+                DEFAULT_FILTER_HP_Q,
+                sample_rate,
+                FILTER_PARAMETER_RAMP_SECONDS,
+            ),
+            filter_lp_freq_hz: OnePole::new(
+                DEFAULT_FILTER_LP_FREQ_HZ,
+                sample_rate,
+                FILTER_PARAMETER_RAMP_SECONDS,
+            ),
+            filter_lp_q: OnePole::new(
+                DEFAULT_FILTER_LP_Q,
+                sample_rate,
+                FILTER_PARAMETER_RAMP_SECONDS,
+            ),
+            filter: StereoBandPass::default(),
             wet_gain_smoother: GainSmoother::new(1.0),
             curve_current: curve,
             curve_pending: curve,
@@ -236,6 +294,7 @@ impl PumpEngine {
     /// Reset DSP history and snap bypass to restored activation state.
     pub fn reset_with_bypass(&mut self, bypassed: bool) {
         self.wet_gain_smoother.reset(1.0);
+        self.filter.reset();
         self.bypass.reset(bypassed);
         self.free_phase = 0.0;
         self.free_phase_active = false;
@@ -291,6 +350,18 @@ impl PumpEngine {
             .output_gain_db
             .next(settings.output_gain_db.clamp(-60.0, 24.0));
 
+        let filter_mix = self
+            .filter_enabled
+            .next(if settings.filter_enabled { 1.0 } else { 0.0 })
+            .clamp(0.0, 1.0);
+        let (filter_hp_freq_hz, filter_lp_freq_hz) = sanitize_filter_band(
+            self.filter_hp_freq_hz.next(settings.filter_hp_freq_hz),
+            self.filter_lp_freq_hz.next(settings.filter_lp_freq_hz),
+            self.sample_rate,
+        );
+        let filter_hp_q = sanitize_filter_q(self.filter_hp_q.next(settings.filter_hp_q));
+        let filter_lp_q = sanitize_filter_q(self.filter_lp_q.next(settings.filter_lp_q));
+
         // Keep the zero-swing path byte-for-byte compatible with the legacy
         // phase calculation. Non-zero swing warps the cyclic phase first and
         // then applies phase offset as a pure cyclic translation.
@@ -330,8 +401,31 @@ impl PumpEngine {
         let output_gain = db_to_linear(output_gain_db);
         let gain = (blend_gain * output_gain).clamp(0.0, 4.0);
 
-        let pumped_left = dry_left * gain;
-        let pumped_right = dry_right * gain;
+        // The filter selects the part of the input affected by Pump. Keeping
+        // the residual in the form `(gain - 1) * band` makes gain=1 an exact
+        // unity null even while the filters are settling or changing phase.
+        let (pumped_left, pumped_right) = if filter_mix <= f32::EPSILON {
+            self.filter.reset();
+            (dry_left * gain, dry_right * gain)
+        } else {
+            let (band_left, band_right) = self.filter.process(
+                dry_left,
+                dry_right,
+                self.sample_rate,
+                filter_hp_freq_hz,
+                filter_hp_q,
+                filter_lp_freq_hz,
+                filter_lp_q,
+                settings.filter_hp_slope,
+                settings.filter_lp_slope,
+            );
+            let selective_left = (dry_left + band_left * (blend_gain - 1.0)) * output_gain;
+            let selective_right = (dry_right + band_right * (blend_gain - 1.0)) * output_gain;
+            (
+                lerp(dry_left * gain, selective_left, filter_mix),
+                lerp(dry_right * gain, selective_right, filter_mix),
+            )
+        };
         let bypass_blend = self.bypass.next(settings.bypassed);
         if bypass_blend == 1.0 {
             *left = dry_left;
@@ -459,6 +553,683 @@ pub fn gain_to_db(gain: f32) -> Option<f32> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct BiquadCoefficients {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+}
+
+impl BiquadCoefficients {
+    fn low_pass(sample_rate: f32, frequency_hz: f32, q: f32) -> Self {
+        Self::new(sample_rate, frequency_hz, q, false)
+    }
+
+    fn high_pass(sample_rate: f32, frequency_hz: f32, q: f32) -> Self {
+        Self::new(sample_rate, frequency_hz, q, true)
+    }
+
+    fn new(sample_rate: f32, frequency_hz: f32, q: f32, high_pass: bool) -> Self {
+        let sample_rate = sample_rate.max(1.0);
+        let (minimum_frequency_hz, maximum_frequency_hz) = filter_frequency_bounds(sample_rate);
+        let frequency_hz = frequency_hz.clamp(minimum_frequency_hz, maximum_frequency_hz);
+        let q = sanitize_filter_q(q);
+        // Keep the cutoff below Nyquist while allowing the full 20 kHz UI
+        // range at common 44.1/48 kHz rates.
+        let omega = (std::f32::consts::TAU * frequency_hz / sample_rate)
+            .clamp(0.0, std::f32::consts::PI * 0.9);
+        let cosine = omega.cos();
+        let alpha = omega.sin() / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        let (b0, b1, b2) = if high_pass {
+            ((1.0 + cosine) * 0.5, -(1.0 + cosine), (1.0 + cosine) * 0.5)
+        } else {
+            ((1.0 - cosine) * 0.5, 1.0 - cosine, (1.0 - cosine) * 0.5)
+        };
+        let resonance_scale = unity_resonance_scale(q);
+        Self {
+            b0: b0 / a0 * resonance_scale,
+            b1: b1 / a0 * resonance_scale,
+            b2: b2 / a0 * resonance_scale,
+            a1: -2.0 * cosine / a0,
+            a2: (1.0 - alpha) / a0,
+        }
+    }
+
+    fn magnitude(self, frequency_hz: f32, sample_rate: f32) -> f32 {
+        let omega = std::f32::consts::TAU * frequency_hz.max(0.0) / sample_rate.max(1.0);
+        let cosine = omega.cos();
+        let sine = omega.sin();
+        let cosine_2 = (omega * 2.0).cos();
+        let sine_2 = (omega * 2.0).sin();
+        let numerator_real = self.b0 + self.b1 * cosine + self.b2 * cosine_2;
+        let numerator_imag = -(self.b1 * sine + self.b2 * sine_2);
+        let denominator_real = 1.0 + self.a1 * cosine + self.a2 * cosine_2;
+        let denominator_imag = -(self.a1 * sine + self.a2 * sine_2);
+        let denominator = denominator_real * denominator_real + denominator_imag * denominator_imag;
+        if denominator <= f32::MIN_POSITIVE || !denominator.is_finite() {
+            0.0
+        } else {
+            ((numerator_real * numerator_real + numerator_imag * numerator_imag) / denominator)
+                .sqrt()
+                .clamp(0.0, 32.0)
+        }
+    }
+}
+
+/// Keep resonant filter stages at or below unity while retaining Q's
+/// bandwidth/shape control. The analytical peak-gain expression is shared by
+/// the realtime coefficients and the UI response plot.
+fn unity_resonance_scale(q: f32) -> f32 {
+    let knee = std::f32::consts::FRAC_1_SQRT_2;
+    if q <= knee {
+        return 1.0;
+    }
+    let denominator = (1.0 - 1.0 / (4.0 * q * q)).max(f32::MIN_POSITIVE).sqrt();
+    (denominator / q).clamp(0.0, 1.0)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BiquadState {
+    x1: f32,
+    x2: f32,
+    y1: f32,
+    y2: f32,
+}
+
+impl BiquadState {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn process(&mut self, input: f32, coefficients: BiquadCoefficients) -> f32 {
+        let input = finite_filter_sample(input);
+        let output =
+            coefficients.b0 * input + coefficients.b1 * self.x1 + coefficients.b2 * self.x2
+                - coefficients.a1 * self.y1
+                - coefficients.a2 * self.y2;
+        self.x2 = flush_filter_state(self.x1);
+        self.x1 = input;
+        self.y2 = flush_filter_state(self.y1);
+        self.y1 = flush_filter_state(output);
+        self.y1
+    }
+}
+
+const FILTER_DENORMAL_THRESHOLD: f32 = 1.0e-20;
+
+fn flush_filter_state(value: f32) -> f32 {
+    if value.is_finite() && value.abs() >= FILTER_DENORMAL_THRESHOLD {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn finite_filter_sample(value: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BandPassChannel {
+    high_pass: [BiquadState; 4],
+    /// A fully warmed LP cascade for each selectable HP order. This retains
+    /// continuity when either endpoint's order changes.
+    low_pass: [[BiquadState; 4]; 3],
+}
+
+impl BandPassChannel {
+    fn reset(&mut self) {
+        for stage in &mut self.high_pass {
+            stage.reset();
+        }
+        for bank in &mut self.low_pass {
+            for stage in bank {
+                stage.reset();
+            }
+        }
+    }
+
+    fn process(
+        &mut self,
+        input: f32,
+        high_pass: BiquadCoefficients,
+        low_pass: BiquadCoefficients,
+        high_pass_slope: usize,
+        low_pass_slope: usize,
+    ) -> f32 {
+        let mut high_values = [0.0; 4];
+        let mut high = input;
+        for (index, stage) in self.high_pass.iter_mut().enumerate() {
+            high = stage.process(high, high_pass);
+            high_values[index] = high;
+        }
+        let mut outputs = [0.0; 3];
+        for (bank_index, (bank, high)) in self
+            .low_pass
+            .iter_mut()
+            .zip([high_values[0], high_values[1], high_values[3]])
+            .enumerate()
+        {
+            let mut low = high;
+            for (stage_index, stage) in bank.iter_mut().enumerate() {
+                low = stage.process(low, low_pass);
+                if stage_index + 1 == slope_to_stage_count(low_pass_slope) {
+                    outputs[bank_index] = low;
+                }
+            }
+        }
+        outputs[match slope_to_stage_count(high_pass_slope) {
+            1 => 0,
+            2 => 1,
+            _ => 2,
+        }]
+    }
+}
+
+fn slope_to_stage_count(slope: usize) -> usize {
+    match slope.min(2) {
+        0 => 1,
+        1 => 2,
+        _ => 4,
+    }
+}
+
+/// Allocation-free, independent stereo state for the selective Pump band.
+#[derive(Clone, Copy, Debug, Default)]
+struct StereoBandPass {
+    left: BandPassChannel,
+    right: BandPassChannel,
+    /// Independent state retained for the old fully-normalized cascade while
+    /// a discrete slope change crossfades. Cloning at the switch keeps both
+    /// paths continuous; it never freezes a prior sample.
+    previous_left: BandPassChannel,
+    previous_right: BandPassChannel,
+    high_pass: BiquadCoefficients,
+    low_pass: BiquadCoefficients,
+    last_sample_rate: f32,
+    last_hp_frequency_hz: f32,
+    last_hp_q: f32,
+    last_lp_frequency_hz: f32,
+    last_lp_q: f32,
+    active_hp_slope: usize,
+    active_lp_slope: usize,
+    previous_hp_slope: usize,
+    previous_lp_slope: usize,
+    /// Gain which restores the complete HP×LP transfer to unity at its
+    /// strongest frequency. Each individual stage is already bounded at
+    /// unity, so this compensates the loss caused by cascading two low-Q
+    /// stages without introducing a resonant boost.
+    normalization: f32,
+    previous_normalization: f32,
+    slope_transition_progress: f32,
+    coefficients_initialized: bool,
+}
+
+impl StereoBandPass {
+    fn reset(&mut self) {
+        self.left.reset();
+        self.right.reset();
+        self.previous_left.reset();
+        self.previous_right.reset();
+        self.slope_transition_progress = 1.0;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process(
+        &mut self,
+        left: f32,
+        right: f32,
+        sample_rate: f32,
+        hp_frequency_hz: f32,
+        hp_q: f32,
+        lp_frequency_hz: f32,
+        lp_q: f32,
+        hp_slope: usize,
+        lp_slope: usize,
+    ) -> (f32, f32) {
+        let hp_slope = hp_slope.min(2);
+        let lp_slope = lp_slope.min(2);
+        let initializing = !self.coefficients_initialized;
+        // Parameter smoothing makes the first few milliseconds intentionally
+        // dynamic; once settled, avoid paying for fresh trigonometry on every
+        // audio sample. A sub-cent frequency / tiny-Q tolerance is inaudible
+        // and keeps this cache allocation free.
+        if !self.coefficients_initialized
+            || self.last_sample_rate != sample_rate
+            || (self.last_hp_frequency_hz - hp_frequency_hz).abs() > 0.05
+            || (self.last_lp_frequency_hz - lp_frequency_hz).abs() > 0.05
+            || (self.last_hp_q - hp_q).abs() > 1.0e-4
+            || (self.last_lp_q - lp_q).abs() > 1.0e-4
+        {
+            self.high_pass = BiquadCoefficients::high_pass(sample_rate, hp_frequency_hz, hp_q);
+            self.low_pass = BiquadCoefficients::low_pass(sample_rate, lp_frequency_hz, lp_q);
+            self.last_sample_rate = sample_rate;
+            self.last_hp_frequency_hz = hp_frequency_hz;
+            self.last_hp_q = hp_q;
+            self.last_lp_frequency_hz = lp_frequency_hz;
+            self.last_lp_q = lp_q;
+            let normalization_hp_slope = if initializing {
+                hp_slope
+            } else {
+                self.active_hp_slope
+            };
+            let normalization_lp_slope = if initializing {
+                lp_slope
+            } else {
+                self.active_lp_slope
+            };
+            self.normalization = complete_band_normalization(
+                sample_rate,
+                hp_frequency_hz,
+                hp_q,
+                lp_frequency_hz,
+                lp_q,
+                normalization_hp_slope,
+                normalization_lp_slope,
+            );
+            if self.slope_transition_progress < 1.0 {
+                self.previous_normalization = complete_band_normalization(
+                    sample_rate,
+                    hp_frequency_hz,
+                    hp_q,
+                    lp_frequency_hz,
+                    lp_q,
+                    self.previous_hp_slope,
+                    self.previous_lp_slope,
+                );
+            }
+            if initializing {
+                self.active_hp_slope = hp_slope;
+                self.active_lp_slope = lp_slope;
+                self.previous_hp_slope = hp_slope;
+                self.previous_lp_slope = lp_slope;
+                self.previous_normalization = self.normalization;
+                self.slope_transition_progress = 1.0;
+            }
+            self.coefficients_initialized = true;
+        }
+
+        if self.slope_transition_progress >= 1.0
+            && (hp_slope != self.active_hp_slope || lp_slope != self.active_lp_slope)
+        {
+            self.previous_left = self.left;
+            self.previous_right = self.right;
+            self.previous_hp_slope = self.active_hp_slope;
+            self.previous_lp_slope = self.active_lp_slope;
+            self.previous_normalization = self.normalization;
+            self.active_hp_slope = hp_slope;
+            self.active_lp_slope = lp_slope;
+            self.normalization = complete_band_normalization(
+                sample_rate,
+                hp_frequency_hz,
+                hp_q,
+                lp_frequency_hz,
+                lp_q,
+                hp_slope,
+                lp_slope,
+            );
+            self.slope_transition_progress = 0.0;
+        }
+
+        let current_left = self.left.process(
+            left,
+            self.high_pass,
+            self.low_pass,
+            self.active_hp_slope,
+            self.active_lp_slope,
+        ) * self.normalization;
+        let current_right = self.right.process(
+            right,
+            self.high_pass,
+            self.low_pass,
+            self.active_hp_slope,
+            self.active_lp_slope,
+        ) * self.normalization;
+        if self.slope_transition_progress >= 1.0 {
+            return (current_left, current_right);
+        }
+
+        let previous_left = self.previous_left.process(
+            left,
+            self.high_pass,
+            self.low_pass,
+            self.previous_hp_slope,
+            self.previous_lp_slope,
+        ) * self.previous_normalization;
+        let previous_right = self.previous_right.process(
+            right,
+            self.high_pass,
+            self.low_pass,
+            self.previous_hp_slope,
+            self.previous_lp_slope,
+        ) * self.previous_normalization;
+        let progress = self.slope_transition_progress;
+        self.slope_transition_progress = (progress
+            + 1.0 / (sample_rate.max(1.0) * FILTER_PARAMETER_RAMP_SECONDS).max(1.0))
+        .min(1.0);
+        (
+            lerp(previous_left, current_left, progress),
+            lerp(previous_right, current_right, progress),
+        )
+    }
+}
+
+fn sanitize_filter_q(q: f32) -> f32 {
+    if q.is_finite() {
+        q.clamp(FILTER_MIN_Q, FILTER_MAX_Q)
+    } else {
+        DEFAULT_FILTER_HP_Q
+    }
+}
+
+fn sanitize_filter_band(
+    hp_frequency_hz: f32,
+    lp_frequency_hz: f32,
+    sample_rate: f32,
+) -> (f32, f32) {
+    let (minimum, maximum) = filter_frequency_bounds(sample_rate);
+    let spacing = FILTER_MIN_SEPARATION_HZ
+        .min((maximum - minimum) * 0.5)
+        .max(0.0);
+    let hp = if hp_frequency_hz.is_finite() {
+        hp_frequency_hz.clamp(minimum, (maximum - spacing).max(minimum))
+    } else {
+        DEFAULT_FILTER_HP_FREQ_HZ.clamp(minimum, (maximum - spacing).max(minimum))
+    };
+    let lp_target = if lp_frequency_hz.is_finite() {
+        lp_frequency_hz.clamp((minimum + spacing).min(maximum), maximum)
+    } else {
+        DEFAULT_FILTER_LP_FREQ_HZ.min(maximum)
+    };
+    let lp = lp_target.max(hp + spacing).min(maximum);
+    let hp = hp.min(lp - spacing).max(minimum);
+    (hp, lp)
+}
+
+fn filter_frequency_bounds(sample_rate: f32) -> (f32, f32) {
+    let maximum = (sample_rate.max(1.0) * 0.45).clamp(f32::MIN_POSITIVE, FILTER_MAX_FREQ_HZ);
+    (FILTER_MIN_FREQ_HZ.min(maximum), maximum)
+}
+
+const FILTER_PEAK_BISECTION_STEPS: usize = 32;
+// Four low-Q stages at each endpoint can have a very small individual peak.
+// This is still a unity-bounded *normalized transfer*, so allow the full
+// representable compensation rather than silently weakening a 48 dB/oct band.
+const MAX_FILTER_NORMALIZATION: f32 = 65_536.0;
+
+/// Return the gain needed to make the *complete* HP×LP selection reach unity
+/// at its strongest frequency.
+///
+/// The two RBJ stages use bilinear-transform frequencies. With
+/// `y = tan(omega / 2)^2`, the derivative of their unscaled cascade is a
+/// quartic. Its recursively isolated real roots give every stationary point
+/// without a frequency grid, so this remains allocation-free and bounded on
+/// the audio thread even while controls slew.
+fn complete_band_normalization(
+    sample_rate: f32,
+    hp_frequency_hz: f32,
+    hp_q: f32,
+    lp_frequency_hz: f32,
+    lp_q: f32,
+    hp_slope: usize,
+    lp_slope: usize,
+) -> f32 {
+    let (hp_frequency_hz, lp_frequency_hz) =
+        sanitize_filter_band(hp_frequency_hz, lp_frequency_hz, sample_rate);
+    let hp_q = sanitize_filter_q(hp_q);
+    let lp_q = sanitize_filter_q(lp_q);
+    let sample_rate = sample_rate.max(1.0) as f64;
+    let hp = (std::f64::consts::PI * hp_frequency_hz as f64 / sample_rate).tan();
+    let lp = (std::f64::consts::PI * lp_frequency_hz as f64 / sample_rate).tan();
+    if !hp.is_finite() || !lp.is_finite() || hp <= 0.0 || lp < hp {
+        return 1.0;
+    }
+
+    let hp_squared = hp * hp;
+    let lp_squared = lp * lp;
+    let hp_fourth = hp_squared * hp_squared;
+    let lp_fourth = lp_squared * lp_squared;
+    let a = hp_squared * (1.0 / (hp_q as f64).powi(2) - 2.0);
+    let b = lp_squared * (1.0 / (lp_q as f64).powi(2) - 2.0);
+    let hp_stages = slope_to_stage_count(hp_slope) as i32;
+    let lp_stages = slope_to_stage_count(lp_slope) as i32;
+    let stage_scale_squared = (unity_resonance_scale(hp_q) as f64).powi(2 * hp_stages)
+        * (unity_resonance_scale(lp_q) as f64).powi(2 * lp_stages);
+
+    let lower_bound = 0.0;
+    let derivative_coefficients = filter_peak_polynomial(
+        hp_fourth,
+        lp_fourth,
+        a,
+        b,
+        hp_stages as f64,
+        lp_stages as f64,
+    );
+    let upper_bound = polynomial_positive_root_bound(&derivative_coefficients).max(lp_squared);
+    let mut peak_squared = complete_band_magnitude_squared(
+        lower_bound,
+        hp_fourth,
+        lp_fourth,
+        a,
+        b,
+        stage_scale_squared,
+        hp_stages,
+        lp_stages,
+    )
+    .max(complete_band_magnitude_squared(
+        upper_bound,
+        hp_fourth,
+        lp_fourth,
+        a,
+        b,
+        stage_scale_squared,
+        hp_stages,
+        lp_stages,
+    ));
+
+    let mut roots = [0.0; 4];
+    let root_count = polynomial_roots_in_interval(
+        &derivative_coefficients,
+        4,
+        lower_bound,
+        upper_bound,
+        &mut roots,
+    );
+    for root in roots.into_iter().take(root_count) {
+        peak_squared = peak_squared.max(complete_band_magnitude_squared(
+            root,
+            hp_fourth,
+            lp_fourth,
+            a,
+            b,
+            stage_scale_squared,
+            hp_stages,
+            lp_stages,
+        ));
+    }
+
+    if peak_squared.is_finite() && peak_squared > f64::MIN_POSITIVE {
+        (1.0 / peak_squared.sqrt() as f32).clamp(1.0, MAX_FILTER_NORMALIZATION)
+    } else {
+        1.0
+    }
+}
+
+/// Derivative numerator for the unscaled HP×LP magnitude squared in the
+/// bilinear frequency coordinate `y = tan(omega / 2)^2`.
+fn filter_peak_polynomial(
+    hp_fourth: f64,
+    lp_fourth: f64,
+    a: f64,
+    b: f64,
+    hp_stages: f64,
+    lp_stages: f64,
+) -> [f64; 5] {
+    [
+        2.0 * hp_stages * hp_fourth * lp_fourth,
+        hp_stages * a * lp_fourth + (2.0 * hp_stages - lp_stages) * b * hp_fourth,
+        (hp_stages - lp_stages) * (a * b + 2.0 * hp_fourth),
+        hp_stages * a - lp_stages * (2.0 * a + b),
+        -2.0 * lp_stages,
+    ]
+}
+
+fn polynomial_positive_root_bound(coefficients: &[f64; 5]) -> f64 {
+    let leading = coefficients[4].abs().max(f64::MIN_POSITIVE);
+    1.0 + coefficients[..4]
+        .iter()
+        .map(|coefficient| coefficient.abs() / leading)
+        .fold(0.0, f64::max)
+}
+
+fn polynomial_value(coefficients: &[f64; 5], degree: usize, x: f64) -> f64 {
+    (0..=degree)
+        .rev()
+        .fold(0.0, |value, index| value.mul_add(x, coefficients[index]))
+}
+
+fn polynomial_roots_in_interval(
+    coefficients: &[f64; 5],
+    degree: usize,
+    lower: f64,
+    upper: f64,
+    roots: &mut [f64; 4],
+) -> usize {
+    if degree == 0 || !lower.is_finite() || !upper.is_finite() || upper < lower {
+        return 0;
+    }
+    if degree == 1 {
+        let root = -coefficients[0] / coefficients[1];
+        if root.is_finite() && root >= lower && root <= upper {
+            roots[0] = root;
+            return 1;
+        }
+        return 0;
+    }
+
+    let mut derivative = [0.0; 5];
+    for index in 1..=degree {
+        derivative[index - 1] = coefficients[index] * index as f64;
+    }
+    let mut critical = [0.0; 4];
+    let critical_count =
+        polynomial_roots_in_interval(&derivative, degree - 1, lower, upper, &mut critical);
+    let mut count = 0;
+    let mut left = lower;
+    let mut left_value = polynomial_value(coefficients, degree, left);
+    for right in critical[..critical_count]
+        .iter()
+        .copied()
+        .chain(std::iter::once(upper))
+    {
+        let right_value = polynomial_value(coefficients, degree, right);
+        if left_value.is_finite()
+            && right_value.is_finite()
+            && (left_value == 0.0
+                || left_value.is_sign_positive() != right_value.is_sign_positive())
+            && count < roots.len()
+        {
+            let mut low = left;
+            let mut high = right;
+            let mut low_value = left_value;
+            for _ in 0..FILTER_PEAK_BISECTION_STEPS {
+                let middle = (low + high) * 0.5;
+                let value = polynomial_value(coefficients, degree, middle);
+                if value == 0.0 {
+                    low = middle;
+                    high = middle;
+                    break;
+                }
+                if low_value.is_sign_positive() == value.is_sign_positive() {
+                    low = middle;
+                    low_value = value;
+                } else {
+                    high = middle;
+                }
+            }
+            roots[count] = (low + high) * 0.5;
+            count += 1;
+        }
+        if right_value.abs() <= 1.0e-12 && count < roots.len() {
+            let root = right;
+            if count == 0 || (roots[count - 1] - root).abs() > 1.0e-9 {
+                roots[count] = root;
+                count += 1;
+            }
+        }
+        left = right;
+        left_value = right_value;
+    }
+    count
+}
+
+#[allow(clippy::too_many_arguments)] // Analytic transfer terms avoid a realtime allocation.
+fn complete_band_magnitude_squared(
+    y: f64,
+    hp_fourth: f64,
+    lp_fourth: f64,
+    a: f64,
+    b: f64,
+    stage_scale_squared: f64,
+    hp_stages: i32,
+    lp_stages: i32,
+) -> f64 {
+    let denominator = (y * y + a * y + hp_fourth) * (y * y + b * y + lp_fourth);
+    if denominator.is_finite() && denominator > f64::MIN_POSITIVE {
+        (y.powi(2 * hp_stages) * lp_fourth.powi(lp_stages) * stage_scale_squared
+            / (y * y + a * y + hp_fourth).powi(hp_stages)
+            / (y * y + b * y + lp_fourth).powi(lp_stages))
+        .max(0.0)
+    } else {
+        0.0
+    }
+}
+
+/// Return the selective filter's frequency response in decibels for UI plots.
+#[allow(clippy::too_many_arguments)] // Mirrors the two endpoint controls used by the UI plot.
+pub(crate) fn filter_response_db(
+    frequency_hz: f32,
+    sample_rate: f32,
+    hp_frequency_hz: f32,
+    hp_q: f32,
+    lp_frequency_hz: f32,
+    lp_q: f32,
+    hp_slope: usize,
+    lp_slope: usize,
+) -> f32 {
+    let (hp_frequency_hz, lp_frequency_hz) =
+        sanitize_filter_band(hp_frequency_hz, lp_frequency_hz, sample_rate);
+    let high_pass = BiquadCoefficients::high_pass(sample_rate, hp_frequency_hz, hp_q);
+    let low_pass = BiquadCoefficients::low_pass(sample_rate, lp_frequency_hz, lp_q);
+    let magnitude = high_pass
+        .magnitude(frequency_hz, sample_rate)
+        .powi(slope_to_stage_count(hp_slope) as i32)
+        * low_pass
+            .magnitude(frequency_hz, sample_rate)
+            .powi(slope_to_stage_count(lp_slope) as i32)
+        * complete_band_normalization(
+            sample_rate,
+            hp_frequency_hz,
+            hp_q,
+            lp_frequency_hz,
+            lp_q,
+            hp_slope,
+            lp_slope,
+        );
+    if magnitude <= f32::MIN_POSITIVE || !magnitude.is_finite() {
+        -96.0
+    } else {
+        (20.0 * magnitude.log10()).clamp(-96.0, 24.0)
+    }
+}
+
 struct OnePole {
     value: f32,
     coeff: f32,
@@ -544,8 +1315,8 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        curve_value_to_gain, db_to_linear, smooth_time_constant_seconds, swing_warp_phase,
-        sync_phase_from_beats, DspSettings, PumpEngine, MAX_SMOOTH_TIME_SECONDS,
+        curve_value_to_gain, db_to_linear, filter_response_db, smooth_time_constant_seconds,
+        swing_warp_phase, sync_phase_from_beats, DspSettings, PumpEngine, MAX_SMOOTH_TIME_SECONDS,
         SMOOTH_COMPATIBILITY_KNEE,
     };
     use crate::curve::{default_editable_curve, editable_curve_to_table, sample_curve};
@@ -569,6 +1340,13 @@ mod tests {
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
 
         let mut left = 1.0;
@@ -611,6 +1389,13 @@ mod tests {
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let mut engine = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
         let mut left = 1.0;
@@ -623,6 +1408,373 @@ mod tests {
     fn db_to_linear_matches_reference_points() {
         assert!((db_to_linear(0.0) - 1.0).abs() < 1.0e-6);
         assert!((db_to_linear(6.0) - 1.9952623).abs() < 1.0e-4);
+    }
+
+    fn filter_test_settings(enabled: bool) -> DspSettings {
+        DspSettings {
+            mix: 1.0,
+            depth_db: 120.0,
+            floor_db: -60.0,
+            phase_offset: 0.0,
+            output_gain_db: 0.0,
+            beats_per_cycle: 1.0,
+            delay_beats: 0,
+            smooth: 0.0,
+            swing: 0.0,
+            timing_mode: crate::params::DEFAULT_TIMING_MODE,
+            free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
+            bypassed: false,
+            filter_enabled: enabled,
+            filter_hp_freq_hz: 500.0,
+            filter_hp_q: 0.707,
+            filter_lp_freq_hz: 2_000.0,
+            filter_lp_q: 0.707,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
+        }
+    }
+
+    fn filter_test_transport() -> TransportState {
+        TransportState {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: None,
+        }
+    }
+
+    fn sine_rms_after_settling(frequency_hz: f32, settings: DspSettings) -> f32 {
+        const SAMPLE_RATE: f32 = 48_000.0;
+        const WARMUP_SAMPLES: usize = 24_000;
+        const MEASURE_SAMPLES: usize = 4_096;
+        let mut engine = PumpEngine::new(SAMPLE_RATE, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut sum = 0.0;
+        for index in 0..WARMUP_SAMPLES + MEASURE_SAMPLES {
+            let phase = std::f32::consts::TAU * frequency_hz * index as f32 / SAMPLE_RATE;
+            let input = phase.sin();
+            let mut left = input;
+            let mut right = input;
+            engine.process_sample(&mut left, &mut right, settings, filter_test_transport());
+            if index >= WARMUP_SAMPLES {
+                sum += left * left;
+            }
+        }
+        (sum / MEASURE_SAMPLES as f32).sqrt()
+    }
+
+    #[test]
+    fn disabled_filter_preserves_legacy_output_bit_for_bit() {
+        let mut first = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
+        let mut second = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
+        let first_settings = filter_test_settings(false);
+        let mut second_settings = first_settings;
+        second_settings.filter_hp_freq_hz = 20_000.0;
+        second_settings.filter_hp_q = 4.0;
+        second_settings.filter_lp_freq_hz = 20.0;
+        second_settings.filter_lp_q = 4.0;
+        for index in 0..256 {
+            let input = (index as f32 * 0.173).sin() * 0.87;
+            let mut first_left = input;
+            let mut first_right = -input;
+            let mut second_left = input;
+            let mut second_right = -input;
+            first.process_sample(
+                &mut first_left,
+                &mut first_right,
+                first_settings,
+                filter_test_transport(),
+            );
+            second.process_sample(
+                &mut second_left,
+                &mut second_right,
+                second_settings,
+                filter_test_transport(),
+            );
+            assert_eq!(first_left.to_bits(), second_left.to_bits());
+            assert_eq!(first_right.to_bits(), second_right.to_bits());
+        }
+    }
+
+    #[test]
+    fn selective_filter_only_modulates_the_selected_band() {
+        let settings = filter_test_settings(true);
+        let below_band = sine_rms_after_settling(100.0, settings);
+        let inside_band = sine_rms_after_settling(1_000.0, settings);
+        let above_band = sine_rms_after_settling(8_000.0, settings);
+
+        assert!(
+            below_band > 0.55,
+            "low residual should pass normally: {below_band}"
+        );
+        assert!(
+            above_band > 0.55,
+            "high residual should pass normally: {above_band}"
+        );
+        assert!(
+            inside_band < 0.4,
+            "selected band should be pumped: {inside_band}"
+        );
+        assert!(below_band > inside_band * 2.0);
+        assert!(above_band > inside_band * 2.0);
+    }
+
+    #[test]
+    fn low_q_near_coincident_band_pumps_deeply_at_all_supported_slopes() {
+        let mut settings = filter_test_settings(true);
+        settings.filter_hp_freq_hz = 90.0;
+        settings.filter_lp_freq_hz = 94.0;
+        settings.filter_hp_q = 0.44;
+        settings.filter_lp_q = 0.44;
+
+        for slope in [0, 2] {
+            settings.filter_hp_slope = slope;
+            settings.filter_lp_slope = slope;
+            let rms = sine_rms_after_settling(92.0, settings);
+            assert!(
+                rms < 0.08,
+                "90/94 Hz Q .44 {slope:?} slope should retain deep pumping, got RMS {rms}"
+            );
+        }
+    }
+
+    #[test]
+    fn unity_pumping_is_an_exact_null_with_filter_enabled() {
+        let mut engine = PumpEngine::new(48_000.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
+        let settings = filter_test_settings(true);
+        for index in 0..2_048 {
+            let input = (index as f32 * 0.37).sin() * 0.83;
+            let mut left = input;
+            let mut right = -input;
+            engine.process_sample(&mut left, &mut right, settings, filter_test_transport());
+            assert_eq!(left, input);
+            assert_eq!(right, -input);
+        }
+    }
+
+    #[test]
+    fn filter_toggle_crossfades_without_a_jump_and_keeps_trim_global() {
+        let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let off = filter_test_settings(false);
+        let mut left: f32;
+        let mut right: f32;
+        let mut previous = 0.0;
+        for _ in 0..2_048 {
+            left = 1.0;
+            right = 1.0;
+            engine.process_sample(&mut left, &mut right, off, filter_test_transport());
+            previous = left;
+        }
+
+        let mut on = off;
+        on.filter_enabled = true;
+        left = 1.0;
+        right = 1.0;
+        engine.process_sample(&mut left, &mut right, on, filter_test_transport());
+        assert!(
+            (left - previous).abs() < 0.05,
+            "enable jump: {previous} -> {left}"
+        );
+        for _ in 0..24_000 {
+            left = 1.0;
+            right = 1.0;
+            engine.process_sample(&mut left, &mut right, on, filter_test_transport());
+        }
+        let previous = left;
+        let mut disabled_again = on;
+        disabled_again.filter_enabled = false;
+        left = 1.0;
+        right = 1.0;
+        engine.process_sample(
+            &mut left,
+            &mut right,
+            disabled_again,
+            filter_test_transport(),
+        );
+        assert!(
+            (left - previous).abs() < 0.05,
+            "disable jump: {previous} -> {left}"
+        );
+
+        let mut trimmed = on;
+        trimmed.output_gain_db = 6.0;
+        for _ in 0..24_000 {
+            left = 1.0;
+            right = 1.0;
+            engine.process_sample(&mut left, &mut right, trimmed, filter_test_transport());
+        }
+        assert!((left - db_to_linear(6.0)).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn filter_response_allows_the_full_high_cutoff_range() {
+        let high_cutoff =
+            filter_response_db(18_000.0, 48_000.0, 20_000.0, 0.707, 20_000.0, 0.707, 0, 0);
+        let legacy_clamped_cutoff =
+            filter_response_db(18_000.0, 48_000.0, 10_700.0, 0.707, 20_000.0, 0.707, 0, 0);
+        assert!(
+            high_cutoff < -2.0,
+            "20 kHz cutoff should still attenuate 18 kHz: {high_cutoff}"
+        );
+        assert!(
+            legacy_clamped_cutoff - high_cutoff > 2.0,
+            "20 kHz cutoff must not silently become 10.7 kHz: {legacy_clamped_cutoff} vs {high_cutoff}"
+        );
+    }
+
+    #[test]
+    fn normalized_complete_band_response_is_bounded_at_asymmetric_corners() {
+        for (hp, hp_q, lp, lp_q, hp_slope, lp_slope) in [
+            (90.0, 0.44, 94.0, 0.44, 0, 0),
+            (90.0, 0.44, 94.0, 0.44, 2, 2),
+            (320.0, 0.25, 4_800.0, 4.0, 2, 0),
+            (2_000.0, 4.0, 2_005.0, 0.25, 1, 2),
+            (20.0, 4.0, 20_000.0, 4.0, 2, 1),
+        ] {
+            let mut peak = -96.0_f32;
+            for step in 0..=1_024 {
+                let frequency = (20.0_f32.ln()
+                    + step as f32 / 1_024.0 * (20_000.0_f32.ln() - 20.0_f32.ln()))
+                .exp();
+                let response =
+                    filter_response_db(frequency, 48_000.0, hp, hp_q, lp, lp_q, hp_slope, lp_slope);
+                assert!(response.is_finite());
+                peak = peak.max(response);
+            }
+            assert!(
+                peak <= 0.05,
+                "normalized HP {hp}/{hp_q} LP {lp}/{lp_q} slopes {hp_slope}/{lp_slope} peaked at {peak} dB"
+            );
+            // The 2 kHz/2.005 kHz high-Q corner is narrower than this
+            // deliberately coarse display-rate scan. Its analytic peak is
+            // normalized; this guards the sampled response from a missed
+            // gain boost without pretending the plot grid hits every peak.
+            assert!(peak > -0.5, "normalization missed its peak: {peak} dB");
+        }
+    }
+
+    #[test]
+    fn steeper_slopes_increase_stopband_rejection() {
+        let response =
+            |slope| filter_response_db(100.0, 48_000.0, 320.0, 0.707, 4_800.0, 0.707, slope, slope);
+        let twelve = response(0);
+        let twenty_four = response(1);
+        let forty_eight = response(2);
+        assert!(
+            twenty_four < twelve - 6.0,
+            "24 dB/oct should reject more than 12: {twelve} -> {twenty_four}"
+        );
+        assert!(
+            forty_eight < twenty_four - 12.0,
+            "48 dB/oct should reject more than 24: {twenty_four} -> {forty_eight}"
+        );
+    }
+
+    #[test]
+    fn narrow_max_q_band_stays_finite_bounded_and_flushes_silent_tail() {
+        let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut settings = filter_test_settings(true);
+        settings.filter_hp_freq_hz = 1_000.0;
+        settings.filter_lp_freq_hz = 1_001.0;
+        settings.filter_hp_q = 4.0;
+        settings.filter_lp_q = 4.0;
+        let transport = filter_test_transport();
+        for _ in 0..24_000 {
+            let mut left = 0.0;
+            let mut right = 0.0;
+            engine.process_sample(&mut left, &mut right, settings, transport);
+        }
+
+        let mut peak: f32 = 0.0;
+        for index in 0..24_000 {
+            let mut left = if index == 0 { 1.0 } else { 0.0 };
+            let mut right = 0.0;
+            engine.process_sample(&mut left, &mut right, settings, transport);
+            assert!(left.is_finite() && right.is_finite());
+            assert_eq!(right.to_bits(), 0.0_f32.to_bits());
+            peak = peak.max(left.abs());
+        }
+        assert!(
+            peak <= 1.05,
+            "narrow resonant band amplified the impulse: {peak}"
+        );
+
+        let mut tail_peak: f32 = 0.0;
+        for _ in 0..24_000 {
+            let mut left = 0.0;
+            let mut right = 0.0;
+            engine.process_sample(&mut left, &mut right, settings, transport);
+            tail_peak = tail_peak.max(left.abs());
+            assert!(left.is_finite() && right.is_finite());
+        }
+        assert!(
+            tail_peak < 1.0e-12,
+            "silent filter tail did not decay: {tail_peak}"
+        );
+    }
+
+    #[test]
+    fn rapid_filter_parameter_changes_remain_finite_and_bounded() {
+        let mut engine = PumpEngine::new(48_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut settings = filter_test_settings(true);
+        let transport = filter_test_transport();
+        let mut peak = 0.0_f32;
+        for index in 0..16_384 {
+            let cycle = index % 257;
+            settings.filter_hp_freq_hz = if cycle < 128 { 20.0 } else { 19_500.0 };
+            settings.filter_lp_freq_hz = if cycle < 64 {
+                21.0
+            } else if cycle < 192 {
+                20_000.0
+            } else {
+                100.0
+            };
+            settings.filter_hp_q = if cycle % 3 == 0 { 4.0 } else { 0.25 };
+            settings.filter_lp_q = if cycle % 5 == 0 { 4.0 } else { 0.25 };
+            settings.filter_hp_slope = cycle % 3;
+            settings.filter_lp_slope = (cycle / 3) % 3;
+            let phase = index as f32 * 0.173;
+            let mut left = phase.sin() * 0.9;
+            let mut right = (phase * 1.31).sin() * 0.9;
+            engine.process_sample(&mut left, &mut right, settings, transport);
+            assert!(left.is_finite() && right.is_finite());
+            peak = peak.max(left.abs()).max(right.abs());
+        }
+        assert!(peak < 4.0, "rapid filter changes became unbounded: {peak}");
+    }
+
+    #[test]
+    fn narrow_band_slope_automation_crossfades_without_discontinuity() {
+        const SAMPLE_RATE: f32 = 48_000.0;
+        let mut engine = PumpEngine::new(SAMPLE_RATE, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut settings = filter_test_settings(true);
+        settings.filter_hp_freq_hz = 90.0;
+        settings.filter_lp_freq_hz = 94.0;
+        settings.filter_hp_q = 0.44;
+        settings.filter_lp_q = 0.44;
+        let transport = filter_test_transport();
+        let mut previous = 0.0_f32;
+        let mut maximum_step = 0.0_f32;
+        let mut peak = 0.0_f32;
+        for index in 0..24_000 {
+            if index % 240 == 0 {
+                settings.filter_hp_slope = (index / 240) % 3;
+                settings.filter_lp_slope = (index / 480) % 3;
+            }
+            let input = (std::f32::consts::TAU * 92.0 * index as f32 / SAMPLE_RATE).sin();
+            let mut left = input;
+            let mut right = input;
+            engine.process_sample(&mut left, &mut right, settings, transport);
+            assert!(left.is_finite() && right.is_finite());
+            if index > 2_000 {
+                maximum_step = maximum_step.max((left - previous).abs());
+                peak = peak.max(left.abs());
+            }
+            previous = left;
+        }
+        assert!(peak < 2.05, "slope automation overshot: {peak}");
+        assert!(
+            maximum_step < 0.08,
+            "slope automation produced a discontinuity: {maximum_step}"
+        );
     }
 
     fn bypass_test_settings(bypassed: bool) -> DspSettings {
@@ -639,6 +1791,13 @@ mod tests {
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         }
     }
 
@@ -761,6 +1920,13 @@ mod tests {
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -797,6 +1963,13 @@ mod tests {
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
 
         let mut min_gain = 1.0_f32;
@@ -836,6 +2009,13 @@ mod tests {
             timing_mode: crate::params::TIMING_MODE_FREE,
             free_rate_hz: 10.0,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let mut first = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         let mut second = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
@@ -890,6 +2070,13 @@ mod tests {
             timing_mode: crate::params::TIMING_MODE_FREE,
             free_rate_hz: 10.0,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let mut engine = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         for _ in 0..1_000 {
@@ -916,6 +2103,13 @@ mod tests {
             timing_mode: crate::params::TIMING_MODE_FREE,
             free_rate_hz: 10.0,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let sync = DspSettings {
             timing_mode: crate::params::TIMING_MODE_SYNC,
@@ -966,6 +2160,13 @@ mod tests {
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         }
     }
 
@@ -1234,6 +2435,13 @@ mod tests {
             timing_mode: crate::params::TIMING_MODE_SYNC,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         }
     }
 

@@ -91,7 +91,7 @@ fn sync_division_options_append_long_cycle_choices() {
 
 #[test]
 fn sync_division_host_text_and_normalized_max_include_eight_bars() {
-    assert_eq!(super::param_count(), 13);
+    assert_eq!(super::param_count(), 20);
     assert_eq!(MAX_SYNC_DIVISION, 9.0);
     let flags = super::param_flags_for_index(3).expect("CLAP division metadata");
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -118,7 +118,7 @@ fn sync_division_host_text_and_normalized_max_include_eight_bars() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 13);
+    assert_eq!(super::param_count(), 20);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -196,6 +196,58 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
 }
 
 #[test]
+fn filter_host_parameters_have_stable_ranges_and_text_rules() {
+    let params = PumpParams::new();
+    assert_eq!(super::param_count(), 20);
+    let filter_flags = super::param_flags_for_index(13).expect("filter metadata should exist");
+    assert!(filter_flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
+    assert!(filter_flags.contains(ParamInfoFlags::IS_STEPPED));
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_FILTER_ENABLED_ID),
+        Some(0.0)
+    );
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_FILTER_HP_FREQ_ID),
+        Some(super::DEFAULT_FILTER_HP_FREQ_HZ as f64)
+    );
+
+    super::apply_param_event(&params, super::PARAM_FILTER_ENABLED_ID, 1.0);
+    super::apply_param_event(&params, super::PARAM_FILTER_HP_FREQ_ID, 12_000.0);
+    super::apply_param_event(&params, super::PARAM_FILTER_HP_Q_ID, 2.5);
+    super::apply_param_event(&params, super::PARAM_FILTER_LP_FREQ_ID, 18_000.0);
+    super::apply_param_event(&params, super::PARAM_FILTER_LP_Q_ID, 3.25);
+    assert!(params.filter_enabled());
+    assert_eq!(params.filter_hp_freq_hz(), 12_000.0);
+    assert_eq!(params.filter_hp_q(), 2.5);
+    assert_eq!(params.filter_lp_freq_hz(), 18_000.0);
+    assert_eq!(params.filter_lp_q(), 3.25);
+    assert_eq!(
+        super::format_plain_value_text(super::PARAM_FILTER_HP_FREQ_ID, 12_000.0),
+        Some("12.00 kHz".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_FILTER_LP_FREQ_ID, "18 kHz"),
+        Some(18_000.0)
+    );
+    assert_eq!(
+        super::format_plain_value_text(super::PARAM_FILTER_HP_Q_ID, 2.5),
+        Some("2.50 Q".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_FILTER_LP_Q_ID, "3.25 Q"),
+        Some(3.25)
+    );
+    assert_eq!(
+        super::format_plain_value_text(super::PARAM_FILTER_ENABLED_ID, 1.0),
+        Some("ON".into())
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_FILTER_ENABLED_ID, "off"),
+        Some(0.0)
+    );
+}
+
+#[test]
 fn free_rate_clap_and_vst3_normalized_mapping_agree() {
     for normalized in [0.0, 0.1, 0.5, 0.9, 1.0] {
         let plain = super::host_api::plain_from_normalized_value(PARAM_FREE_RATE_ID, normalized)
@@ -228,7 +280,7 @@ fn free_rate_clap_and_vst3_normalized_mapping_agree() {
 #[test]
 fn free_timing_parameters_use_stable_ids_and_lossless_units() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 13);
+    assert_eq!(super::param_count(), 20);
     assert_eq!(
         super::get_param_value(&params, super::PARAM_TIMING_MODE_ID),
         Some(0.0)
@@ -277,8 +329,7 @@ fn delay_parameter_has_integer_beats_text_default_and_automation_contract() {
         super::get_param_value(&params, PARAM_DELAY_ID),
         Some(super::DEFAULT_DELAY_BEATS as f64)
     );
-    let flags = super::param_flags_for_index((super::param_count() - 1) as usize)
-        .expect("delay metadata should exist");
+    let flags = super::param_flags_for_index(12).expect("delay metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
     assert!(!flags.contains(ParamInfoFlags::IS_ENUM));
@@ -509,7 +560,7 @@ fn editor_closed_host_switch_preserves_active_side_curve_during_scalar_save() {
 
 #[test]
 fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
-    assert_eq!(super::param_count(), 13);
+    assert_eq!(super::param_count(), 20);
     let flags = super::param_flags_for_index(7).expect("bypass metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -539,6 +590,11 @@ fn state_roundtrip_preserves_values() {
     params.set_trigger_mode(TRIGGER_MODE_SIDECHAIN as f32);
     params.set_mode(PROCESSING_MODE_PUNCH as f32);
     params.set_bypass(1.0);
+    params.set_filter_enabled(1.0);
+    params.set_filter_hp_freq_hz(1_200.0);
+    params.set_filter_hp_q(2.5);
+    params.set_filter_lp_freq_hz(8_500.0);
+    params.set_filter_lp_q(3.25);
     params
         .save_current_state_by_name("Init")
         .expect("preset snapshot should save");
@@ -576,6 +632,11 @@ fn state_roundtrip_preserves_values() {
     assert_eq!(restored.trigger_mode(), TRIGGER_MODE_HOST);
     assert_eq!(restored.mode(), PROCESSING_MODE_CLASSIC);
     assert!(restored.bypassed());
+    assert!(restored.filter_enabled());
+    assert!((restored.filter_hp_freq_hz() - 1_200.0).abs() < 1.0e-6);
+    assert!((restored.filter_hp_q() - 2.5).abs() < 1.0e-6);
+    assert!((restored.filter_lp_freq_hz() - 8_500.0).abs() < 1.0e-6);
+    assert!((restored.filter_lp_q() - 3.25).abs() < 1.0e-6);
     assert!((restored.preset_bank_snapshot().presets[0].smooth - 0.67).abs() < 1.0e-6);
     assert!((restored.preset_bank_snapshot().presets[0].swing - 0.42).abs() < 1.0e-6);
     assert_eq!(restored.preset_bank_snapshot().presets[0].delay_beats, 7);
@@ -583,9 +644,49 @@ fn state_roundtrip_preserves_values() {
         restored.preset_bank_snapshot().presets[0].mode,
         PROCESSING_MODE_CLASSIC
     );
+    assert!(restored.preset_bank_snapshot().presets[0].filter_enabled);
+    assert!(
+        (restored.preset_bank_snapshot().presets[0].filter_hp_freq_hz - 1_200.0).abs() < 1.0e-6
+    );
+    assert!((restored.preset_bank_snapshot().presets[0].filter_hp_q - 2.5).abs() < 1.0e-6);
+    assert!(
+        (restored.preset_bank_snapshot().presets[0].filter_lp_freq_hz - 8_500.0).abs() < 1.0e-6
+    );
+    assert!((restored.preset_bank_snapshot().presets[0].filter_lp_q - 3.25).abs() < 1.0e-6);
     let editable = restored.editable_curve_snapshot();
     assert_eq!(editable.nodes.len(), 3);
     assert_eq!(editable.segments.len(), 2);
+}
+
+#[test]
+fn filter_cutoff_restore_does_not_depend_on_setter_order() {
+    let source = PumpParams::new();
+    source.set_filter_enabled(1.0);
+    source.set_filter_hp_freq_hz(12_000.0);
+    source.set_filter_hp_q(3.5);
+    source.set_filter_lp_freq_hz(18_000.0);
+    source.set_filter_lp_q(2.75);
+    source
+        .save_current_state_by_name("High Band")
+        .expect("high band preset should save");
+    let payload = encode_state_payload(&source);
+
+    let restored = PumpParams::new();
+    // Start with a low LP cutoff to catch implementations that clamp HP to the
+    // current LP value while applying a state payload in field order.
+    restored.set_filter_lp_freq_hz(2_000.0);
+    restored.set_filter_hp_freq_hz(80.0);
+    decode_state_payload(&restored, &payload).expect("high band state should decode");
+
+    assert!(restored.filter_enabled());
+    assert_eq!(restored.filter_hp_freq_hz(), 12_000.0);
+    assert_eq!(restored.filter_hp_q(), 3.5);
+    assert_eq!(restored.filter_lp_freq_hz(), 18_000.0);
+    assert_eq!(restored.filter_lp_q(), 2.75);
+    let preset = &restored.preset_bank_snapshot().presets[1];
+    assert!(preset.filter_enabled);
+    assert_eq!(preset.filter_hp_freq_hz, 12_000.0);
+    assert_eq!(preset.filter_lp_freq_hz, 18_000.0);
 }
 
 #[test]
@@ -1137,6 +1238,13 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     timing_mode: super::DEFAULT_TIMING_MODE,
                     free_rate_hz: super::DEFAULT_FREE_RATE_HZ,
                     delay_beats: super::DEFAULT_DELAY_BEATS,
+                    filter_enabled: super::DEFAULT_FILTER_ENABLED,
+                    filter_hp_freq_hz: super::DEFAULT_FILTER_HP_FREQ_HZ,
+                    filter_hp_q: super::DEFAULT_FILTER_HP_Q,
+                    filter_lp_freq_hz: super::DEFAULT_FILTER_LP_FREQ_HZ,
+                    filter_lp_q: super::DEFAULT_FILTER_LP_Q,
+                    filter_hp_slope: 0,
+                    filter_lp_slope: 0,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1158,6 +1266,13 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     timing_mode: super::DEFAULT_TIMING_MODE,
                     free_rate_hz: super::DEFAULT_FREE_RATE_HZ,
                     delay_beats: super::DEFAULT_DELAY_BEATS,
+                    filter_enabled: super::DEFAULT_FILTER_ENABLED,
+                    filter_hp_freq_hz: super::DEFAULT_FILTER_HP_FREQ_HZ,
+                    filter_hp_q: super::DEFAULT_FILTER_HP_Q,
+                    filter_lp_freq_hz: super::DEFAULT_FILTER_LP_FREQ_HZ,
+                    filter_lp_q: super::DEFAULT_FILTER_LP_Q,
+                    filter_hp_slope: 0,
+                    filter_lp_slope: 0,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1434,7 +1549,7 @@ fn vst3_gui_parameter_ids_follow_the_declared_vst3_parameter_table() {
 #[cfg(feature = "vst3")]
 #[test]
 fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
-    assert_eq!(vst3_param_count(), 14);
+    assert_eq!(vst3_param_count(), 21);
     let ids = (0..vst3_param_count() as i32)
         .map(|index| {
             vst3_param_info_for_index(index)
@@ -1442,7 +1557,10 @@ fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
                 .id
         })
         .collect::<Vec<_>>();
-    assert_eq!(ids, vec![1, 3, 4, 5, 2, 6, 8, 10, 11, 12, 13, 14, 16, 15]);
+    assert_eq!(
+        ids,
+        vec![1, 3, 4, 5, 2, 6, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 15,]
+    );
     let mut sorted_ids = ids.clone();
     sorted_ids.sort_unstable();
     sorted_ids.dedup();
@@ -1453,7 +1571,7 @@ fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
     assert_eq!(legacy.step_count, 7);
     assert_eq!(legacy.default_normalized, 4.0 / 7.0);
 
-    let extended = vst3_param_info_for_index(13).expect("extended division metadata");
+    let extended = vst3_param_info_for_index(20).expect("extended division metadata");
     assert_eq!(extended.id, PARAM_SYNC_DIVISION_VST3_V2_NUM);
     assert_eq!(extended.title, "Division Extended");
     assert_eq!(extended.step_count, 9);

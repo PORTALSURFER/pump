@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 12;
+const PRESET_STORE_VERSION: u32 = 14;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
@@ -282,6 +282,13 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&(preset.timing_mode as u32).to_le_bytes());
     payload.extend_from_slice(&preset.free_rate_hz.to_le_bytes());
     payload.extend_from_slice(&(clamp_delay_beats(preset.delay_beats as f32) as u32).to_le_bytes());
+    payload.push(u8::from(preset.filter_enabled));
+    payload.extend_from_slice(&preset.filter_hp_freq_hz.to_le_bytes());
+    payload.extend_from_slice(&preset.filter_hp_q.to_le_bytes());
+    payload.extend_from_slice(&preset.filter_lp_freq_hz.to_le_bytes());
+    payload.extend_from_slice(&preset.filter_lp_q.to_le_bytes());
+    payload.push(preset.filter_hp_slope.min(MAX_FILTER_SLOPE) as u8);
+    payload.push(preset.filter_lp_slope.min(MAX_FILTER_SLOPE) as u8);
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -441,6 +448,58 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         } else {
             DEFAULT_DELAY_BEATS
         };
+        let (filter_enabled, filter_hp_freq_hz, filter_hp_q, filter_lp_freq_hz, filter_lp_q) =
+            if version >= 13 {
+                let filter_enabled = read_u8(&mut cursor)
+                    .ok_or_else(|| "invalid preset filter enabled".to_string())?
+                    != 0;
+                let filter_hp_freq_hz = read_f32(&mut cursor)
+                    .ok_or_else(|| "invalid preset filter HP frequency".to_string())?;
+                let filter_hp_q = read_f32(&mut cursor)
+                    .ok_or_else(|| "invalid preset filter HP Q".to_string())?;
+                let filter_lp_freq_hz = read_f32(&mut cursor)
+                    .ok_or_else(|| "invalid preset filter LP frequency".to_string())?;
+                let filter_lp_q = read_f32(&mut cursor)
+                    .ok_or_else(|| "invalid preset filter LP Q".to_string())?;
+                if ![
+                    filter_hp_freq_hz,
+                    filter_hp_q,
+                    filter_lp_freq_hz,
+                    filter_lp_q,
+                ]
+                .into_iter()
+                .all(f32::is_finite)
+                {
+                    return Err("invalid preset filter field".to_string());
+                }
+                (
+                    filter_enabled,
+                    filter_hp_freq_hz,
+                    filter_hp_q,
+                    filter_lp_freq_hz,
+                    filter_lp_q,
+                )
+            } else {
+                (
+                    DEFAULT_FILTER_ENABLED,
+                    DEFAULT_FILTER_HP_FREQ_HZ,
+                    DEFAULT_FILTER_HP_Q,
+                    DEFAULT_FILTER_LP_FREQ_HZ,
+                    DEFAULT_FILTER_LP_Q,
+                )
+            };
+        let (filter_hp_slope, filter_lp_slope) = if version >= 14 {
+            let hp =
+                read_u8(&mut cursor).ok_or_else(|| "invalid preset filter HP slope".to_string())?;
+            let lp =
+                read_u8(&mut cursor).ok_or_else(|| "invalid preset filter LP slope".to_string())?;
+            (
+                hp.min(MAX_FILTER_SLOPE as u8) as usize,
+                lp.min(MAX_FILTER_SLOPE as u8) as usize,
+            )
+        } else {
+            (DEFAULT_FILTER_SLOPE, DEFAULT_FILTER_SLOPE)
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -459,6 +518,13 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             timing_mode,
             free_rate_hz,
             delay_beats,
+            filter_enabled,
+            filter_hp_freq_hz,
+            filter_hp_q,
+            filter_lp_freq_hz,
+            filter_lp_q,
+            filter_hp_slope,
+            filter_lp_slope,
             editable_curve,
             quick_slots,
         });
@@ -654,6 +720,13 @@ mod tests {
                 timing_mode: DEFAULT_TIMING_MODE,
                 free_rate_hz: DEFAULT_FREE_RATE_HZ,
                 delay_beats: DEFAULT_DELAY_BEATS,
+                filter_enabled: DEFAULT_FILTER_ENABLED,
+                filter_hp_freq_hz: DEFAULT_FILTER_HP_FREQ_HZ,
+                filter_hp_q: DEFAULT_FILTER_HP_Q,
+                filter_lp_freq_hz: DEFAULT_FILTER_LP_FREQ_HZ,
+                filter_lp_q: DEFAULT_FILTER_LP_Q,
+                filter_hp_slope: 0,
+                filter_lp_slope: 0,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -662,9 +735,10 @@ mod tests {
 
     fn encoded_v3_preset_bank() -> Vec<u8> {
         let mut payload = encoded_single_preset_bank();
-        // Delay was added in v11, timing metadata in v10, and Swing in v9;
-        // all three trailing fields are absent from a v3 store.
-        payload.truncate(payload.len().saturating_sub(16));
+        // Filter metadata was added in v13; delay was added in v11, timing
+        // metadata in v10, and Swing in v9. All four trailing fields are
+        // absent from a v3 store.
+        payload.truncate(payload.len().saturating_sub(19 + 16));
         // Favorite metadata was added in v6, Smooth in v7, and trigger mode
         // in v5; processing mode was added in v8. Remove all four before
         // emulating v3.
@@ -714,6 +788,13 @@ mod tests {
                     timing_mode: DEFAULT_TIMING_MODE,
                     free_rate_hz: DEFAULT_FREE_RATE_HZ,
                     delay_beats: 9,
+                    filter_enabled: DEFAULT_FILTER_ENABLED,
+                    filter_hp_freq_hz: DEFAULT_FILTER_HP_FREQ_HZ,
+                    filter_hp_q: DEFAULT_FILTER_HP_Q,
+                    filter_lp_freq_hz: DEFAULT_FILTER_LP_FREQ_HZ,
+                    filter_lp_q: DEFAULT_FILTER_LP_Q,
+                    filter_hp_slope: 0,
+                    filter_lp_slope: 0,
                     editable_curve: default_editable_curve(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -735,6 +816,13 @@ mod tests {
                     timing_mode: DEFAULT_TIMING_MODE,
                     free_rate_hz: DEFAULT_FREE_RATE_HZ,
                     delay_beats: DEFAULT_DELAY_BEATS,
+                    filter_enabled: DEFAULT_FILTER_ENABLED,
+                    filter_hp_freq_hz: DEFAULT_FILTER_HP_FREQ_HZ,
+                    filter_hp_q: DEFAULT_FILTER_HP_Q,
+                    filter_lp_freq_hz: DEFAULT_FILTER_LP_FREQ_HZ,
+                    filter_lp_q: DEFAULT_FILTER_LP_Q,
+                    filter_hp_slope: 0,
+                    filter_lp_slope: 0,
                     editable_curve: EditableCurve {
                         nodes: vec![
                             CurveNode { x: 0.0, y: 1.0 },
@@ -804,6 +892,9 @@ mod tests {
     #[test]
     fn preset_store_v11_defaults_origin_clip_metadata_to_false() {
         let mut payload = encoded_single_preset_bank();
+        // Filter metadata was added in v13; remove it before emulating v11
+        // so the compatibility fixture has no newer trailing fields.
+        payload.truncate(payload.len().saturating_sub(19));
         write_payload_u32(&mut payload, 4, 11);
 
         let bank = decode_preset_bank_payload(&payload).expect("v11 preset store should decode");
@@ -813,6 +904,25 @@ mod tests {
                 .quick_slots
                 .iter()
                 .all(|slot| !slot.curve.origin_is_clip));
+        }
+    }
+
+    #[test]
+    fn preset_store_v12_defaults_filter_controls() {
+        let mut payload = encoded_single_preset_bank();
+        // Filter metadata was appended in v13. Remove it to exercise the
+        // decoder's v12 compatibility path while keeping the v12 curve
+        // origin metadata intact.
+        payload.truncate(payload.len().saturating_sub(19));
+        write_payload_u32(&mut payload, 4, 12);
+
+        let bank = decode_preset_bank_payload(&payload).expect("v12 preset store should decode");
+        for preset in bank.presets {
+            assert!(!preset.filter_enabled);
+            assert_eq!(preset.filter_hp_freq_hz, DEFAULT_FILTER_HP_FREQ_HZ);
+            assert_eq!(preset.filter_hp_q, DEFAULT_FILTER_HP_Q);
+            assert_eq!(preset.filter_lp_freq_hz, DEFAULT_FILTER_LP_FREQ_HZ);
+            assert_eq!(preset.filter_lp_q, DEFAULT_FILTER_LP_Q);
         }
     }
 

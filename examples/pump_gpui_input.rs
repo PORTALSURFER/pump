@@ -41,6 +41,18 @@ mod macos {
     const CURVE_SEGMENT_Y: f64 = 185.0;
     const CURVE_PLOT_X: f64 = 300.0;
     const CURVE_PLOT_Y: f64 = 90.0;
+    // At the fixed 640x400 contract, the filter plot maps 320 Hz to roughly
+    // this x coordinate. The y coordinate is discovered from the rendered
+    // marker below because the native capture may use a different backing
+    // scale or a slightly different curve layout.
+    const FILTER_HP_HANDLE_X_APPROX: f64 = 265.0;
+    const FILTER_HP_HANDLE_Y_APPROX: f64 = 221.0;
+    // When an HP node is selected, the compact filter controls are appended
+    // to the existing lower deck. These are logical-point positions for the
+    // fixed 640-point fixture; the marker itself is located from the frame.
+    const FILTER_HP_FREQ_KNOB_X: f64 = 408.0;
+    const FILTER_CONTROL_KNOB_Y: f64 = 333.0;
+    const FILTER_HP_SLOPE_48_X: f64 = 618.0;
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
@@ -333,6 +345,79 @@ mod macos {
             .capture_rgba()
             .unwrap_or_else(|error| panic!("{context} should render a GPUI frame: {error}"));
         capture
+    }
+
+    fn filter_handle_position(
+        capture: &(u32, u32, Vec<u8>),
+        approximate_x: f64,
+        approximate_y: f64,
+        context: &str,
+    ) -> (f64, f64) {
+        let (width, height, pixels) = capture;
+        let scale_x = f64::from(*width) / f64::from(OUTPUT_WIDTH);
+        let scale_y = f64::from(*height) / f64::from(OUTPUT_HEIGHT);
+        let expected_x = approximate_x * scale_x;
+        let expected_y = approximate_y * scale_y;
+        let radius = 7.5 * scale_x.max(scale_y);
+        let ring_inner = 3.0 * scale_x.min(scale_y);
+        let ring_inner_squared = ring_inner * ring_inner;
+        let ring_outer_squared = radius * radius;
+        let search_x = (expected_x - 32.0 * scale_x).max(0.0) as u32
+            ..=((expected_x + 32.0 * scale_x).min(f64::from(*width - 1))) as u32;
+        let search_y = (expected_y - 36.0 * scale_y).max(0.0) as u32
+            ..=((expected_y + 36.0 * scale_y).min(f64::from(*height - 1))) as u32;
+        let is_overlay_orange = |offset: usize| {
+            let red = pixels[offset];
+            let green = pixels[offset + 1];
+            let blue = pixels[offset + 2];
+            red > 100 && green > 70 && green < 210 && blue < 130 && red > green + 25
+        };
+        let orange_pixels = search_y
+            .clone()
+            .flat_map(|y| search_x.clone().map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let offset = ((usize::try_from(*y).unwrap() * usize::try_from(*width).unwrap())
+                    + usize::try_from(*x).unwrap())
+                    * 4;
+                is_overlay_orange(offset)
+            })
+            .collect::<Vec<_>>();
+        let mut best = None;
+        for candidate_y in search_y.clone() {
+            for candidate_x in search_x.clone() {
+                let mut score = 0usize;
+                for &(x, y) in &orange_pixels {
+                    let dx = f64::from(x) - f64::from(candidate_x);
+                    let dy = f64::from(y) - f64::from(candidate_y);
+                    let distance_squared = dx * dx + dy * dy;
+                    if distance_squared >= ring_inner_squared
+                        && distance_squared <= ring_outer_squared
+                    {
+                        score += 1;
+                    }
+                }
+                let distance_to_expected = (f64::from(candidate_x) - expected_x).powi(2)
+                    + (f64::from(candidate_y) - expected_y).powi(2);
+                let replace = best.is_none_or(|(best_score, best_distance, _, _)| {
+                    score > best_score
+                        || (score == best_score && distance_to_expected < best_distance)
+                });
+                if replace {
+                    best = Some((score, distance_to_expected, candidate_x, candidate_y));
+                }
+            }
+        }
+        let (score, _, x, y) = best.unwrap_or((0, 0.0, 0, 0));
+        assert!(
+            score >= 5,
+            "{context}: rendered HP filter marker not found near ({approximate_x:.1}, {approximate_y:.1}) in {width}x{height} capture (best orange ring score {score})"
+        );
+        let logical = (f64::from(x) / scale_x, f64::from(y) / scale_y);
+        eprintln!(
+            "{context}: rendered HP filter marker at ({:.2}, {:.2}) from {width}x{height} capture (orange ring score {score})",
+            logical.0, logical.1
+        );
+        logical
     }
 
     unsafe fn send_mouse_event(window: id, event_type: usize, x: f64, top_y: f64, modifiers: u64) {
@@ -663,6 +748,92 @@ mod macos {
             selected_sync_division,
             "native timing dropdown should select a sync subdivision"
         );
+
+        // Filter handles are drawn above the curve canvas and must capture a
+        // real native drag before the curve's own gesture admission runs.
+        // Locate the rendered marker so the native event lands at its center
+        // across backing-scale and layout differences.
+        params.set_filter_enabled(1.0);
+        params.set_filter_hp_freq_hz(320.0);
+        params.set_filter_hp_q(0.25);
+        params.set_filter_lp_freq_hz(4_800.0);
+        params.set_filter_lp_q(0.25);
+        // Parameter setters update the shared state directly and do not by
+        // themselves request a GPUI repaint. Capture the next rendered frame
+        // before deriving native input from the fixed plot geometry so the
+        // filter overlay and its hit target are committed on slower runners.
+        let filter_capture = capture_pixels(&gui, "filter handles ready");
+        let (filter_hp_x, filter_hp_y) = filter_handle_position(
+            &filter_capture,
+            FILTER_HP_HANDLE_X_APPROX,
+            FILTER_HP_HANDLE_Y_APPROX,
+            "filter handles ready",
+        );
+        let filter_curve_before = params.editable_curve_snapshot();
+        let filter_hp_before = params.filter_hp_freq_hz();
+        send_mouse_move(fixture.window, filter_hp_x, filter_hp_y);
+        pump_appkit(app, &gui, 0.04);
+        send_mouse_down(fixture.window, filter_hp_x, filter_hp_y, 0);
+        send_mouse_dragged(fixture.window, filter_hp_x + 42.0, filter_hp_y - 10.0, 0);
+        send_mouse_up(fixture.window, filter_hp_x + 42.0, filter_hp_y - 10.0, 0);
+        pump_appkit(app, &gui, 0.05);
+        assert!(
+            params.filter_hp_freq_hz() > filter_hp_before,
+            "native HP handle drag should update its cutoff"
+        );
+        assert_eq!(
+            params.filter_lp_freq_hz(),
+            4_800.0,
+            "native HP handle drag must leave LP cutoff unchanged"
+        );
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            filter_curve_before,
+            "native filter handle drag must not mutate the pump curve"
+        );
+
+        // Releasing the node retains its selection and exposes the compact
+        // HP Frequency/Q knobs. Exercise the real native knob and slope
+        // selector while the curve remains unchanged.
+        capture_frame(&gui, "selected HP filter controls");
+        let filter_hp_knob_before = params.filter_hp_freq_hz();
+        send_mouse_move(fixture.window, FILTER_HP_FREQ_KNOB_X, FILTER_CONTROL_KNOB_Y);
+        send_mouse_down(
+            fixture.window,
+            FILTER_HP_FREQ_KNOB_X,
+            FILTER_CONTROL_KNOB_Y,
+            0,
+        );
+        send_mouse_dragged(
+            fixture.window,
+            FILTER_HP_FREQ_KNOB_X,
+            FILTER_CONTROL_KNOB_Y - 30.0,
+            0,
+        );
+        send_mouse_up(
+            fixture.window,
+            FILTER_HP_FREQ_KNOB_X,
+            FILTER_CONTROL_KNOB_Y - 30.0,
+            0,
+        );
+        pump_appkit(app, &gui, 0.05);
+        assert!(
+            params.filter_hp_freq_hz() > filter_hp_knob_before,
+            "native selected HP Frequency knob should update its cutoff"
+        );
+        send_click(
+            fixture.window,
+            FILTER_HP_SLOPE_48_X,
+            FILTER_CONTROL_KNOB_Y,
+            0,
+        );
+        pump_appkit(app, &gui, 0.04);
+        assert_eq!(
+            params.filter_hp_slope(),
+            2,
+            "native selected HP slope control should select 48 dB/oct"
+        );
+        params.set_filter_enabled(0.0);
 
         // Exercise the curve's retained visual feedback through real native
         // hover/modifier/drag events before mutating its authored points.
@@ -1282,7 +1453,7 @@ mod macos {
         );
         gui.close();
         eprintln!(
-            "PASS native Pump GPUI delay typing/arrows/Backspace, marquee deletion, cyclic node drags, seam handles, insertion, offset direction, timing dropdown, clipboard, Smooth controls, host projection, transport, and reopen input"
+            "PASS native Pump GPUI filter handle selection/drag, filter knobs/slope, delay typing/arrows/Backspace, marquee deletion, cyclic node drags, seam handles, insertion, offset direction, timing dropdown, clipboard, Smooth controls, host projection, transport, and reopen input"
         );
     }
 

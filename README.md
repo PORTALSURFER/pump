@@ -91,6 +91,14 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 - `Phase Offset`: shifts where the curve starts in the sync cycle. In Sync,
   raw Offset 0 is the host-cycle/transport origin.
 - `Output Gain`: level trim after ducking.
+- `Filter`: limits pumping to the selected frequency band. Turn it on to show
+  the overlay over the curve editor: drag the HP and LP handles to set each
+  cutoff and Q, or drag the center handle to move the whole band while keeping
+  its width. Select an HP or LP handle to expose its Frequency and Q knobs and
+  choose a 12, 24, or 48 dB/oct slope. The center handle remains a shared band
+  drag control. Filter controls disappear when Filter is off. The combined
+  response is normalized so close cutoffs do not dilute the pumping depth at
+  the response peak.
 - `Delay`: in Sync mode, holds the cycle-start phase for an integer number of
   quarter-note beats (`0` to `32`) before the selected division runs. The
   control is hidden in Free mode, where the same slot shows `Rate`.
@@ -99,7 +107,9 @@ The curve is sampled in real time and applied to stereo gain for controlled pump
 Depth and Floor control the curve's wet gain mapping. Depth ranges from `0` to
 `120 dB` and defaults to `120 dB`; `0 dB` is no effect. Floor supports `−∞`
 plus values above `−60` through `0 dB` finite values. Processing is curve → Depth → Floor → Mix →
-Output Gain. See [docs/depth-floor.md](docs/depth-floor.md) for the exact
+Output Gain. With Filter enabled, the gain change is applied to the HP-to-LP
+band and frequencies outside it pass through normally. See
+[docs/depth-floor.md](docs/depth-floor.md) for the exact
 mapping and compatibility behavior.
 - `Division`: beat-synced cycle length from `1/16` to `8 Bars`.
 

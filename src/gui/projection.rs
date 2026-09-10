@@ -169,6 +169,13 @@ mod tests {
             timing_mode: TIMING_MODE_SYNC,
             free_rate_hz: DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -220,6 +227,13 @@ mod tests {
             timing_mode: TIMING_MODE_SYNC,
             free_rate_hz: DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let transition_settings = DspSettings {
             phase_offset: target_phase_offset,
