@@ -43,6 +43,10 @@ pub struct DspSettings {
     pub filter_lp_freq_hz: f32,
     /// Low-pass resonance/Q amount.
     pub filter_lp_q: f32,
+    /// High-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
+    pub filter_hp_slope: usize,
+    /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
+    pub filter_lp_slope: usize,
 }
 
 /// Host-bypass crossfade duration in seconds.
@@ -412,6 +416,8 @@ impl PumpEngine {
                 filter_hp_q,
                 filter_lp_freq_hz,
                 filter_lp_q,
+                settings.filter_hp_slope,
+                settings.filter_lp_slope,
             );
             let selective_left = (dry_left + band_left * (blend_gain - 1.0)) * output_gain;
             let selective_right = (dry_right + band_right * (blend_gain - 1.0)) * output_gain;
@@ -672,14 +678,22 @@ fn finite_filter_sample(value: f32) -> f32 {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BandPassChannel {
-    high_pass: BiquadState,
-    low_pass: BiquadState,
+    high_pass: [BiquadState; 4],
+    /// A fully warmed LP cascade for each selectable HP order. This retains
+    /// continuity when either endpoint's order changes.
+    low_pass: [[BiquadState; 4]; 3],
 }
 
 impl BandPassChannel {
     fn reset(&mut self) {
-        self.high_pass.reset();
-        self.low_pass.reset();
+        for stage in &mut self.high_pass {
+            stage.reset();
+        }
+        for bank in &mut self.low_pass {
+            for stage in bank {
+                stage.reset();
+            }
+        }
     }
 
     fn process(
@@ -687,9 +701,43 @@ impl BandPassChannel {
         input: f32,
         high_pass: BiquadCoefficients,
         low_pass: BiquadCoefficients,
+        high_pass_slope: usize,
+        low_pass_slope: usize,
     ) -> f32 {
-        self.low_pass
-            .process(self.high_pass.process(input, high_pass), low_pass)
+        let mut high_values = [0.0; 4];
+        let mut high = input;
+        for (index, stage) in self.high_pass.iter_mut().enumerate() {
+            high = stage.process(high, high_pass);
+            high_values[index] = high;
+        }
+        let mut outputs = [0.0; 3];
+        for (bank_index, (bank, high)) in self
+            .low_pass
+            .iter_mut()
+            .zip([high_values[0], high_values[1], high_values[3]])
+            .enumerate()
+        {
+            let mut low = high;
+            for (stage_index, stage) in bank.iter_mut().enumerate() {
+                low = stage.process(low, low_pass);
+                if stage_index + 1 == slope_to_stage_count(low_pass_slope) {
+                    outputs[bank_index] = low;
+                }
+            }
+        }
+        outputs[match slope_to_stage_count(high_pass_slope) {
+            1 => 0,
+            2 => 1,
+            _ => 2,
+        }]
+    }
+}
+
+fn slope_to_stage_count(slope: usize) -> usize {
+    match slope.min(2) {
+        0 => 1,
+        1 => 2,
+        _ => 4,
     }
 }
 
@@ -698,6 +746,11 @@ impl BandPassChannel {
 struct StereoBandPass {
     left: BandPassChannel,
     right: BandPassChannel,
+    /// Independent state retained for the old fully-normalized cascade while
+    /// a discrete slope change crossfades. Cloning at the switch keeps both
+    /// paths continuous; it never freezes a prior sample.
+    previous_left: BandPassChannel,
+    previous_right: BandPassChannel,
     high_pass: BiquadCoefficients,
     low_pass: BiquadCoefficients,
     last_sample_rate: f32,
@@ -705,6 +758,17 @@ struct StereoBandPass {
     last_hp_q: f32,
     last_lp_frequency_hz: f32,
     last_lp_q: f32,
+    active_hp_slope: usize,
+    active_lp_slope: usize,
+    previous_hp_slope: usize,
+    previous_lp_slope: usize,
+    /// Gain which restores the complete HP×LP transfer to unity at its
+    /// strongest frequency. Each individual stage is already bounded at
+    /// unity, so this compensates the loss caused by cascading two low-Q
+    /// stages without introducing a resonant boost.
+    normalization: f32,
+    previous_normalization: f32,
+    slope_transition_progress: f32,
     coefficients_initialized: bool,
 }
 
@@ -712,6 +776,9 @@ impl StereoBandPass {
     fn reset(&mut self) {
         self.left.reset();
         self.right.reset();
+        self.previous_left.reset();
+        self.previous_right.reset();
+        self.slope_transition_progress = 1.0;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -724,7 +791,12 @@ impl StereoBandPass {
         hp_q: f32,
         lp_frequency_hz: f32,
         lp_q: f32,
+        hp_slope: usize,
+        lp_slope: usize,
     ) -> (f32, f32) {
+        let hp_slope = hp_slope.min(2);
+        let lp_slope = lp_slope.min(2);
+        let initializing = !self.coefficients_initialized;
         // Parameter smoothing makes the first few milliseconds intentionally
         // dynamic; once settled, avoid paying for fresh trigonometry on every
         // audio sample. A sub-cent frequency / tiny-Q tolerance is inaudible
@@ -743,11 +815,108 @@ impl StereoBandPass {
             self.last_hp_q = hp_q;
             self.last_lp_frequency_hz = lp_frequency_hz;
             self.last_lp_q = lp_q;
+            let normalization_hp_slope = if initializing {
+                hp_slope
+            } else {
+                self.active_hp_slope
+            };
+            let normalization_lp_slope = if initializing {
+                lp_slope
+            } else {
+                self.active_lp_slope
+            };
+            self.normalization = complete_band_normalization(
+                sample_rate,
+                hp_frequency_hz,
+                hp_q,
+                lp_frequency_hz,
+                lp_q,
+                normalization_hp_slope,
+                normalization_lp_slope,
+            );
+            if self.slope_transition_progress < 1.0 {
+                self.previous_normalization = complete_band_normalization(
+                    sample_rate,
+                    hp_frequency_hz,
+                    hp_q,
+                    lp_frequency_hz,
+                    lp_q,
+                    self.previous_hp_slope,
+                    self.previous_lp_slope,
+                );
+            }
+            if initializing {
+                self.active_hp_slope = hp_slope;
+                self.active_lp_slope = lp_slope;
+                self.previous_hp_slope = hp_slope;
+                self.previous_lp_slope = lp_slope;
+                self.previous_normalization = self.normalization;
+                self.slope_transition_progress = 1.0;
+            }
             self.coefficients_initialized = true;
         }
+
+        if self.slope_transition_progress >= 1.0
+            && (hp_slope != self.active_hp_slope || lp_slope != self.active_lp_slope)
+        {
+            self.previous_left = self.left;
+            self.previous_right = self.right;
+            self.previous_hp_slope = self.active_hp_slope;
+            self.previous_lp_slope = self.active_lp_slope;
+            self.previous_normalization = self.normalization;
+            self.active_hp_slope = hp_slope;
+            self.active_lp_slope = lp_slope;
+            self.normalization = complete_band_normalization(
+                sample_rate,
+                hp_frequency_hz,
+                hp_q,
+                lp_frequency_hz,
+                lp_q,
+                hp_slope,
+                lp_slope,
+            );
+            self.slope_transition_progress = 0.0;
+        }
+
+        let current_left = self.left.process(
+            left,
+            self.high_pass,
+            self.low_pass,
+            self.active_hp_slope,
+            self.active_lp_slope,
+        ) * self.normalization;
+        let current_right = self.right.process(
+            right,
+            self.high_pass,
+            self.low_pass,
+            self.active_hp_slope,
+            self.active_lp_slope,
+        ) * self.normalization;
+        if self.slope_transition_progress >= 1.0 {
+            return (current_left, current_right);
+        }
+
+        let previous_left = self.previous_left.process(
+            left,
+            self.high_pass,
+            self.low_pass,
+            self.previous_hp_slope,
+            self.previous_lp_slope,
+        ) * self.previous_normalization;
+        let previous_right = self.previous_right.process(
+            right,
+            self.high_pass,
+            self.low_pass,
+            self.previous_hp_slope,
+            self.previous_lp_slope,
+        ) * self.previous_normalization;
+        let progress = self.slope_transition_progress;
+        self.slope_transition_progress = (progress
+            + 1.0 / (sample_rate.max(1.0) * FILTER_PARAMETER_RAMP_SECONDS).max(1.0))
+        .min(1.0);
         (
-            self.left.process(left, self.high_pass, self.low_pass),
-            self.right.process(right, self.high_pass, self.low_pass),
+            lerp(previous_left, current_left, progress),
+            lerp(previous_right, current_right, progress),
         )
     }
 }
@@ -789,7 +958,242 @@ fn filter_frequency_bounds(sample_rate: f32) -> (f32, f32) {
     (FILTER_MIN_FREQ_HZ.min(maximum), maximum)
 }
 
+const FILTER_PEAK_BISECTION_STEPS: usize = 32;
+// Four low-Q stages at each endpoint can have a very small individual peak.
+// This is still a unity-bounded *normalized transfer*, so allow the full
+// representable compensation rather than silently weakening a 48 dB/oct band.
+const MAX_FILTER_NORMALIZATION: f32 = 65_536.0;
+
+/// Return the gain needed to make the *complete* HP×LP selection reach unity
+/// at its strongest frequency.
+///
+/// The two RBJ stages use bilinear-transform frequencies. With
+/// `y = tan(omega / 2)^2`, the derivative of their unscaled cascade is a
+/// quartic. Its recursively isolated real roots give every stationary point
+/// without a frequency grid, so this remains allocation-free and bounded on
+/// the audio thread even while controls slew.
+fn complete_band_normalization(
+    sample_rate: f32,
+    hp_frequency_hz: f32,
+    hp_q: f32,
+    lp_frequency_hz: f32,
+    lp_q: f32,
+    hp_slope: usize,
+    lp_slope: usize,
+) -> f32 {
+    let (hp_frequency_hz, lp_frequency_hz) =
+        sanitize_filter_band(hp_frequency_hz, lp_frequency_hz, sample_rate);
+    let hp_q = sanitize_filter_q(hp_q);
+    let lp_q = sanitize_filter_q(lp_q);
+    let sample_rate = sample_rate.max(1.0) as f64;
+    let hp = (std::f64::consts::PI * hp_frequency_hz as f64 / sample_rate).tan();
+    let lp = (std::f64::consts::PI * lp_frequency_hz as f64 / sample_rate).tan();
+    if !hp.is_finite() || !lp.is_finite() || hp <= 0.0 || lp < hp {
+        return 1.0;
+    }
+
+    let hp_squared = hp * hp;
+    let lp_squared = lp * lp;
+    let hp_fourth = hp_squared * hp_squared;
+    let lp_fourth = lp_squared * lp_squared;
+    let a = hp_squared * (1.0 / (hp_q as f64).powi(2) - 2.0);
+    let b = lp_squared * (1.0 / (lp_q as f64).powi(2) - 2.0);
+    let hp_stages = slope_to_stage_count(hp_slope) as i32;
+    let lp_stages = slope_to_stage_count(lp_slope) as i32;
+    let stage_scale_squared = (unity_resonance_scale(hp_q) as f64).powi(2 * hp_stages)
+        * (unity_resonance_scale(lp_q) as f64).powi(2 * lp_stages);
+
+    let lower_bound = 0.0;
+    let derivative_coefficients = filter_peak_polynomial(
+        hp_fourth,
+        lp_fourth,
+        a,
+        b,
+        hp_stages as f64,
+        lp_stages as f64,
+    );
+    let upper_bound = polynomial_positive_root_bound(&derivative_coefficients).max(lp_squared);
+    let mut peak_squared = complete_band_magnitude_squared(
+        lower_bound,
+        hp_fourth,
+        lp_fourth,
+        a,
+        b,
+        stage_scale_squared,
+        hp_stages,
+        lp_stages,
+    )
+    .max(complete_band_magnitude_squared(
+        upper_bound,
+        hp_fourth,
+        lp_fourth,
+        a,
+        b,
+        stage_scale_squared,
+        hp_stages,
+        lp_stages,
+    ));
+
+    let mut roots = [0.0; 4];
+    let root_count = polynomial_roots_in_interval(
+        &derivative_coefficients,
+        4,
+        lower_bound,
+        upper_bound,
+        &mut roots,
+    );
+    for root in roots.into_iter().take(root_count) {
+        peak_squared = peak_squared.max(complete_band_magnitude_squared(
+            root,
+            hp_fourth,
+            lp_fourth,
+            a,
+            b,
+            stage_scale_squared,
+            hp_stages,
+            lp_stages,
+        ));
+    }
+
+    if peak_squared.is_finite() && peak_squared > f64::MIN_POSITIVE {
+        (1.0 / peak_squared.sqrt() as f32).clamp(1.0, MAX_FILTER_NORMALIZATION)
+    } else {
+        1.0
+    }
+}
+
+/// Derivative numerator for the unscaled HP×LP magnitude squared in the
+/// bilinear frequency coordinate `y = tan(omega / 2)^2`.
+fn filter_peak_polynomial(
+    hp_fourth: f64,
+    lp_fourth: f64,
+    a: f64,
+    b: f64,
+    hp_stages: f64,
+    lp_stages: f64,
+) -> [f64; 5] {
+    [
+        2.0 * hp_stages * hp_fourth * lp_fourth,
+        hp_stages * a * lp_fourth + (2.0 * hp_stages - lp_stages) * b * hp_fourth,
+        (hp_stages - lp_stages) * (a * b + 2.0 * hp_fourth),
+        hp_stages * a - lp_stages * (2.0 * a + b),
+        -2.0 * lp_stages,
+    ]
+}
+
+fn polynomial_positive_root_bound(coefficients: &[f64; 5]) -> f64 {
+    let leading = coefficients[4].abs().max(f64::MIN_POSITIVE);
+    1.0 + coefficients[..4]
+        .iter()
+        .map(|coefficient| coefficient.abs() / leading)
+        .fold(0.0, f64::max)
+}
+
+fn polynomial_value(coefficients: &[f64; 5], degree: usize, x: f64) -> f64 {
+    (0..=degree)
+        .rev()
+        .fold(0.0, |value, index| value.mul_add(x, coefficients[index]))
+}
+
+fn polynomial_roots_in_interval(
+    coefficients: &[f64; 5],
+    degree: usize,
+    lower: f64,
+    upper: f64,
+    roots: &mut [f64; 4],
+) -> usize {
+    if degree == 0 || !lower.is_finite() || !upper.is_finite() || upper < lower {
+        return 0;
+    }
+    if degree == 1 {
+        let root = -coefficients[0] / coefficients[1];
+        if root.is_finite() && root >= lower && root <= upper {
+            roots[0] = root;
+            return 1;
+        }
+        return 0;
+    }
+
+    let mut derivative = [0.0; 5];
+    for index in 1..=degree {
+        derivative[index - 1] = coefficients[index] * index as f64;
+    }
+    let mut critical = [0.0; 4];
+    let critical_count =
+        polynomial_roots_in_interval(&derivative, degree - 1, lower, upper, &mut critical);
+    let mut count = 0;
+    let mut left = lower;
+    let mut left_value = polynomial_value(coefficients, degree, left);
+    for right in critical[..critical_count]
+        .iter()
+        .copied()
+        .chain(std::iter::once(upper))
+    {
+        let right_value = polynomial_value(coefficients, degree, right);
+        if left_value.is_finite()
+            && right_value.is_finite()
+            && (left_value == 0.0
+                || left_value.is_sign_positive() != right_value.is_sign_positive())
+            && count < roots.len()
+        {
+            let mut low = left;
+            let mut high = right;
+            let mut low_value = left_value;
+            for _ in 0..FILTER_PEAK_BISECTION_STEPS {
+                let middle = (low + high) * 0.5;
+                let value = polynomial_value(coefficients, degree, middle);
+                if value == 0.0 {
+                    low = middle;
+                    high = middle;
+                    break;
+                }
+                if low_value.is_sign_positive() == value.is_sign_positive() {
+                    low = middle;
+                    low_value = value;
+                } else {
+                    high = middle;
+                }
+            }
+            roots[count] = (low + high) * 0.5;
+            count += 1;
+        }
+        if right_value.abs() <= 1.0e-12 && count < roots.len() {
+            let root = right;
+            if count == 0 || (roots[count - 1] - root).abs() > 1.0e-9 {
+                roots[count] = root;
+                count += 1;
+            }
+        }
+        left = right;
+        left_value = right_value;
+    }
+    count
+}
+
+#[allow(clippy::too_many_arguments)] // Analytic transfer terms avoid a realtime allocation.
+fn complete_band_magnitude_squared(
+    y: f64,
+    hp_fourth: f64,
+    lp_fourth: f64,
+    a: f64,
+    b: f64,
+    stage_scale_squared: f64,
+    hp_stages: i32,
+    lp_stages: i32,
+) -> f64 {
+    let denominator = (y * y + a * y + hp_fourth) * (y * y + b * y + lp_fourth);
+    if denominator.is_finite() && denominator > f64::MIN_POSITIVE {
+        (y.powi(2 * hp_stages) * lp_fourth.powi(lp_stages) * stage_scale_squared
+            / (y * y + a * y + hp_fourth).powi(hp_stages)
+            / (y * y + b * y + lp_fourth).powi(lp_stages))
+        .max(0.0)
+    } else {
+        0.0
+    }
+}
+
 /// Return the selective filter's frequency response in decibels for UI plots.
+#[allow(clippy::too_many_arguments)] // Mirrors the two endpoint controls used by the UI plot.
 pub(crate) fn filter_response_db(
     frequency_hz: f32,
     sample_rate: f32,
@@ -797,13 +1201,28 @@ pub(crate) fn filter_response_db(
     hp_q: f32,
     lp_frequency_hz: f32,
     lp_q: f32,
+    hp_slope: usize,
+    lp_slope: usize,
 ) -> f32 {
     let (hp_frequency_hz, lp_frequency_hz) =
         sanitize_filter_band(hp_frequency_hz, lp_frequency_hz, sample_rate);
     let high_pass = BiquadCoefficients::high_pass(sample_rate, hp_frequency_hz, hp_q);
     let low_pass = BiquadCoefficients::low_pass(sample_rate, lp_frequency_hz, lp_q);
-    let magnitude = high_pass.magnitude(frequency_hz, sample_rate)
-        * low_pass.magnitude(frequency_hz, sample_rate);
+    let magnitude = high_pass
+        .magnitude(frequency_hz, sample_rate)
+        .powi(slope_to_stage_count(hp_slope) as i32)
+        * low_pass
+            .magnitude(frequency_hz, sample_rate)
+            .powi(slope_to_stage_count(lp_slope) as i32)
+        * complete_band_normalization(
+            sample_rate,
+            hp_frequency_hz,
+            hp_q,
+            lp_frequency_hz,
+            lp_q,
+            hp_slope,
+            lp_slope,
+        );
     if magnitude <= f32::MIN_POSITIVE || !magnitude.is_finite() {
         -96.0
     } else {
@@ -926,6 +1345,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
 
         let mut left = 1.0;
@@ -973,6 +1394,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let mut engine = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
         let mut left = 1.0;
@@ -1006,6 +1429,8 @@ mod tests {
             filter_hp_q: 0.707,
             filter_lp_freq_hz: 2_000.0,
             filter_lp_q: 0.707,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         }
     }
 
@@ -1093,6 +1518,25 @@ mod tests {
     }
 
     #[test]
+    fn low_q_near_coincident_band_pumps_deeply_at_all_supported_slopes() {
+        let mut settings = filter_test_settings(true);
+        settings.filter_hp_freq_hz = 90.0;
+        settings.filter_lp_freq_hz = 94.0;
+        settings.filter_hp_q = 0.44;
+        settings.filter_lp_q = 0.44;
+
+        for slope in [0, 2] {
+            settings.filter_hp_slope = slope;
+            settings.filter_lp_slope = slope;
+            let rms = sine_rms_after_settling(92.0, settings);
+            assert!(
+                rms < 0.08,
+                "90/94 Hz Q .44 {slope:?} slope should retain deep pumping, got RMS {rms}"
+            );
+        }
+    }
+
+    #[test]
     fn unity_pumping_is_an_exact_null_with_filter_enabled() {
         let mut engine = PumpEngine::new(48_000.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
         let settings = filter_test_settings(true);
@@ -1162,16 +1606,65 @@ mod tests {
 
     #[test]
     fn filter_response_allows_the_full_high_cutoff_range() {
-        let high_cutoff = filter_response_db(18_000.0, 48_000.0, 20_000.0, 0.707, 20_000.0, 0.707);
+        let high_cutoff =
+            filter_response_db(18_000.0, 48_000.0, 20_000.0, 0.707, 20_000.0, 0.707, 0, 0);
         let legacy_clamped_cutoff =
-            filter_response_db(18_000.0, 48_000.0, 10_700.0, 0.707, 20_000.0, 0.707);
+            filter_response_db(18_000.0, 48_000.0, 10_700.0, 0.707, 20_000.0, 0.707, 0, 0);
         assert!(
-            high_cutoff < -5.0,
+            high_cutoff < -2.0,
             "20 kHz cutoff should still attenuate 18 kHz: {high_cutoff}"
         );
         assert!(
-            legacy_clamped_cutoff - high_cutoff > 5.0,
+            legacy_clamped_cutoff - high_cutoff > 2.0,
             "20 kHz cutoff must not silently become 10.7 kHz: {legacy_clamped_cutoff} vs {high_cutoff}"
+        );
+    }
+
+    #[test]
+    fn normalized_complete_band_response_is_bounded_at_asymmetric_corners() {
+        for (hp, hp_q, lp, lp_q, hp_slope, lp_slope) in [
+            (90.0, 0.44, 94.0, 0.44, 0, 0),
+            (90.0, 0.44, 94.0, 0.44, 2, 2),
+            (320.0, 0.25, 4_800.0, 4.0, 2, 0),
+            (2_000.0, 4.0, 2_005.0, 0.25, 1, 2),
+            (20.0, 4.0, 20_000.0, 4.0, 2, 1),
+        ] {
+            let mut peak = -96.0_f32;
+            for step in 0..=1_024 {
+                let frequency = (20.0_f32.ln()
+                    + step as f32 / 1_024.0 * (20_000.0_f32.ln() - 20.0_f32.ln()))
+                .exp();
+                let response =
+                    filter_response_db(frequency, 48_000.0, hp, hp_q, lp, lp_q, hp_slope, lp_slope);
+                assert!(response.is_finite());
+                peak = peak.max(response);
+            }
+            assert!(
+                peak <= 0.05,
+                "normalized HP {hp}/{hp_q} LP {lp}/{lp_q} slopes {hp_slope}/{lp_slope} peaked at {peak} dB"
+            );
+            // The 2 kHz/2.005 kHz high-Q corner is narrower than this
+            // deliberately coarse display-rate scan. Its analytic peak is
+            // normalized; this guards the sampled response from a missed
+            // gain boost without pretending the plot grid hits every peak.
+            assert!(peak > -0.5, "normalization missed its peak: {peak} dB");
+        }
+    }
+
+    #[test]
+    fn steeper_slopes_increase_stopband_rejection() {
+        let response =
+            |slope| filter_response_db(100.0, 48_000.0, 320.0, 0.707, 4_800.0, 0.707, slope, slope);
+        let twelve = response(0);
+        let twenty_four = response(1);
+        let forty_eight = response(2);
+        assert!(
+            twenty_four < twelve - 6.0,
+            "24 dB/oct should reject more than 12: {twelve} -> {twenty_four}"
+        );
+        assert!(
+            forty_eight < twenty_four - 12.0,
+            "48 dB/oct should reject more than 24: {twenty_four} -> {forty_eight}"
         );
     }
 
@@ -1236,6 +1729,8 @@ mod tests {
             };
             settings.filter_hp_q = if cycle % 3 == 0 { 4.0 } else { 0.25 };
             settings.filter_lp_q = if cycle % 5 == 0 { 4.0 } else { 0.25 };
+            settings.filter_hp_slope = cycle % 3;
+            settings.filter_lp_slope = (cycle / 3) % 3;
             let phase = index as f32 * 0.173;
             let mut left = phase.sin() * 0.9;
             let mut right = (phase * 1.31).sin() * 0.9;
@@ -1244,6 +1739,42 @@ mod tests {
             peak = peak.max(left.abs()).max(right.abs());
         }
         assert!(peak < 4.0, "rapid filter changes became unbounded: {peak}");
+    }
+
+    #[test]
+    fn narrow_band_slope_automation_crossfades_without_discontinuity() {
+        const SAMPLE_RATE: f32 = 48_000.0;
+        let mut engine = PumpEngine::new(SAMPLE_RATE, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut settings = filter_test_settings(true);
+        settings.filter_hp_freq_hz = 90.0;
+        settings.filter_lp_freq_hz = 94.0;
+        settings.filter_hp_q = 0.44;
+        settings.filter_lp_q = 0.44;
+        let transport = filter_test_transport();
+        let mut previous = 0.0_f32;
+        let mut maximum_step = 0.0_f32;
+        let mut peak = 0.0_f32;
+        for index in 0..24_000 {
+            if index % 240 == 0 {
+                settings.filter_hp_slope = (index / 240) % 3;
+                settings.filter_lp_slope = (index / 480) % 3;
+            }
+            let input = (std::f32::consts::TAU * 92.0 * index as f32 / SAMPLE_RATE).sin();
+            let mut left = input;
+            let mut right = input;
+            engine.process_sample(&mut left, &mut right, settings, transport);
+            assert!(left.is_finite() && right.is_finite());
+            if index > 2_000 {
+                maximum_step = maximum_step.max((left - previous).abs());
+                peak = peak.max(left.abs());
+            }
+            previous = left;
+        }
+        assert!(peak < 2.05, "slope automation overshot: {peak}");
+        assert!(
+            maximum_step < 0.08,
+            "slope automation produced a discontinuity: {maximum_step}"
+        );
     }
 
     fn bypass_test_settings(bypassed: bool) -> DspSettings {
@@ -1265,6 +1796,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         }
     }
 
@@ -1392,6 +1925,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -1433,6 +1968,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
 
         let mut min_gain = 1.0_f32;
@@ -1477,6 +2014,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let mut first = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         let mut second = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
@@ -1536,6 +2075,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let mut engine = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         for _ in 0..1_000 {
@@ -1567,6 +2108,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let sync = DspSettings {
             timing_mode: crate::params::TIMING_MODE_SYNC,
@@ -1622,6 +2165,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         }
     }
 
@@ -1895,6 +2440,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         }
     }
 

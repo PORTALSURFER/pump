@@ -170,6 +170,23 @@ fn v17_extension_start(payload: &[u8]) -> usize {
     offset + 20
 }
 
+fn v20_extension_start(payload: &[u8]) -> usize {
+    let mut offset = first_preset_start(payload);
+    let preset_count = read_u32(payload, offset - 4) as usize;
+    for _ in 0..preset_count {
+        let name_len = read_u32(payload, offset) as usize;
+        offset += 4 + name_len + 6 * 4 + 1;
+        offset = skip_encoded_curve(payload, offset, true);
+        let quick_slot_count = read_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_slot_count {
+            offset = skip_encoded_curve(payload, offset, true);
+        }
+        offset += 4 + 4 + 4 + 1 + 4 + 8 + 4 + 19;
+    }
+    offset + 20
+}
+
 fn v19_extension_start(payload: &[u8]) -> usize {
     let mut offset = first_preset_start(payload);
     let preset_count = read_u32(payload, offset - 4) as usize;
@@ -207,7 +224,7 @@ fn preset_delay_offsets(payload: &[u8]) -> Vec<usize> {
     delay_offsets
 }
 
-fn preset_filter_offsets(payload: &[u8]) -> Vec<usize> {
+fn preset_filter_offsets(payload: &[u8], has_slopes: bool) -> Vec<usize> {
     let mut offset = first_preset_start(payload);
     let preset_count = read_u32(payload, offset - 4) as usize;
     let mut filter_offsets = Vec::with_capacity(preset_count);
@@ -222,7 +239,7 @@ fn preset_filter_offsets(payload: &[u8]) -> Vec<usize> {
         }
         offset += 4 + 4 + 4 + 1 + 4 + 8;
         filter_offsets.push(offset + 4);
-        offset += 4 + 17;
+        offset += 4 + 17 + usize::from(has_slopes) * 2;
     }
     filter_offsets
 }
@@ -255,7 +272,7 @@ fn remove_v19_filter_fields(payload: &mut Vec<u8>) {
     // Filter metadata is the final field in every preset/sound record and in
     // the top-level timing extension. Remove it before applying older
     // version migrations so their existing offsets remain meaningful.
-    let mut filter_offsets = preset_filter_offsets(payload);
+    let mut filter_offsets = preset_filter_offsets(payload, false);
     let extension_start = v19_extension_start(payload);
     let (_, _, a_end) = sound_state_offsets(payload, extension_start + 4);
     let b_start = a_end + 29;
@@ -273,7 +290,38 @@ fn remove_v19_filter_fields(payload: &mut Vec<u8>) {
     ]);
     filter_offsets.sort_unstable();
     for offset in filter_offsets.into_iter().rev() {
+        assert!(
+            offset + 17 <= payload.len(),
+            "filter fixture offset {offset} exceeds payload {}",
+            payload.len()
+        );
         payload.drain(offset..offset + 17);
+    }
+}
+
+fn remove_v20_filter_slope_fields(payload: &mut Vec<u8>) {
+    let mut offsets: Vec<usize> = preset_filter_offsets(payload, true)
+        .into_iter()
+        .map(|offset| offset + 17)
+        .collect();
+    let extension_start = v20_extension_start(payload);
+    let (_, _, a_end) = sound_state_offsets(payload, extension_start + 4);
+    let b_start = a_end + 31;
+    let (_, _, b_end) = sound_state_offsets(payload, b_start);
+    let stored_a_start = b_end + 31;
+    let (_, _, stored_a_end) = sound_state_offsets(payload, stored_a_start);
+    let stored_b_start = stored_a_end + 31;
+    let (_, _, stored_b_end) = sound_state_offsets(payload, stored_b_start);
+    offsets.extend([
+        a_end + 29,
+        b_end + 29,
+        stored_a_end + 29,
+        stored_b_end + 29,
+        stored_b_end + 60,
+    ]);
+    offsets.sort_unstable();
+    for offset in offsets.into_iter().rev() {
+        payload.drain(offset..offset + 2);
     }
 }
 
@@ -325,6 +373,9 @@ fn sound_state_offsets(payload: &[u8], start: usize) -> (usize, usize, usize) {
 
 pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 20 {
+        remove_v20_filter_slope_fields(&mut payload);
+    }
     if version < 19 {
         // Filter controls were appended in v19. Remove them before applying
         // the older migrations below so all existing offsets remain valid.
@@ -612,7 +663,7 @@ fn decode_v7_state_defaults_trigger_mode_to_host() {
 fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
     let source = sample_params();
     let mut payload = encode_state_payload(&source);
-    let extension_start = v19_extension_start(&payload);
+    let extension_start = v20_extension_start(&payload);
     write_f32(
         &mut payload,
         extension_start - 20,
@@ -635,13 +686,13 @@ fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
         super::PROCESSING_MODE_PUNCH as u32,
     );
     let (a_trigger, a_mode, a_end) = sound_state_offsets(&payload, extension_start + 4);
-    let b_start = a_end + 29;
+    let b_start = a_end + 31;
     let (b_trigger, b_mode, b_end) = sound_state_offsets(&payload, b_start);
-    assert_eq!(a_end + 29, b_start);
-    let (stored_a_trigger, stored_a_mode, stored_a_end) = sound_state_offsets(&payload, b_end + 29);
+    assert_eq!(a_end + 31, b_start);
+    let (stored_a_trigger, stored_a_mode, stored_a_end) = sound_state_offsets(&payload, b_end + 31);
     let (stored_b_trigger, stored_b_mode, stored_b_end) =
-        sound_state_offsets(&payload, stored_a_end + 29);
-    assert_eq!(stored_b_end + 58, payload.len());
+        sound_state_offsets(&payload, stored_a_end + 31);
+    assert_eq!(stored_b_end + 62, payload.len());
     write_u32(
         &mut payload,
         a_trigger,
@@ -917,7 +968,7 @@ fn decode_rejects_trailing_bytes_without_mutating_state() {
 fn decode_rejects_nonfinite_v14_ab_scalar_without_mutating_state() {
     let params = sample_params();
     let mut payload = encode_state_payload(&params);
-    let offset = v19_extension_start(&payload) + 4;
+    let offset = v20_extension_start(&payload) + 4;
     write_f32(&mut payload, offset, f32::NAN);
     assert_decode_error_preserves_state(&params, &payload, "invalid A/B scalar field");
 }

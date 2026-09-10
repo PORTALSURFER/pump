@@ -153,6 +153,8 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         filter_hp_q: params.filter_hp_q(),
         filter_lp_freq_hz: params.filter_lp_freq_hz(),
         filter_lp_q: params.filter_lp_q(),
+        filter_hp_slope: params.filter_hp_slope(),
+        filter_lp_slope: params.filter_lp_slope(),
     }
 }
 

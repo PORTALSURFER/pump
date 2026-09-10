@@ -91,7 +91,7 @@ fn sync_division_options_append_long_cycle_choices() {
 
 #[test]
 fn sync_division_host_text_and_normalized_max_include_eight_bars() {
-    assert_eq!(super::param_count(), 18);
+    assert_eq!(super::param_count(), 20);
     assert_eq!(MAX_SYNC_DIVISION, 9.0);
     let flags = super::param_flags_for_index(3).expect("CLAP division metadata");
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -118,7 +118,7 @@ fn sync_division_host_text_and_normalized_max_include_eight_bars() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 18);
+    assert_eq!(super::param_count(), 20);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -198,7 +198,7 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
 #[test]
 fn filter_host_parameters_have_stable_ranges_and_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 18);
+    assert_eq!(super::param_count(), 20);
     let filter_flags = super::param_flags_for_index(13).expect("filter metadata should exist");
     assert!(filter_flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(filter_flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -280,7 +280,7 @@ fn free_rate_clap_and_vst3_normalized_mapping_agree() {
 #[test]
 fn free_timing_parameters_use_stable_ids_and_lossless_units() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 18);
+    assert_eq!(super::param_count(), 20);
     assert_eq!(
         super::get_param_value(&params, super::PARAM_TIMING_MODE_ID),
         Some(0.0)
@@ -560,7 +560,7 @@ fn editor_closed_host_switch_preserves_active_side_curve_during_scalar_save() {
 
 #[test]
 fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
-    assert_eq!(super::param_count(), 18);
+    assert_eq!(super::param_count(), 20);
     let flags = super::param_flags_for_index(7).expect("bypass metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -1243,6 +1243,8 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     filter_hp_q: super::DEFAULT_FILTER_HP_Q,
                     filter_lp_freq_hz: super::DEFAULT_FILTER_LP_FREQ_HZ,
                     filter_lp_q: super::DEFAULT_FILTER_LP_Q,
+                    filter_hp_slope: 0,
+                    filter_lp_slope: 0,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1269,6 +1271,8 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     filter_hp_q: super::DEFAULT_FILTER_HP_Q,
                     filter_lp_freq_hz: super::DEFAULT_FILTER_LP_FREQ_HZ,
                     filter_lp_q: super::DEFAULT_FILTER_LP_Q,
+                    filter_hp_slope: 0,
+                    filter_lp_slope: 0,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1545,7 +1549,7 @@ fn vst3_gui_parameter_ids_follow_the_declared_vst3_parameter_table() {
 #[cfg(feature = "vst3")]
 #[test]
 fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
-    assert_eq!(vst3_param_count(), 19);
+    assert_eq!(vst3_param_count(), 21);
     let ids = (0..vst3_param_count() as i32)
         .map(|index| {
             vst3_param_info_for_index(index)
@@ -1555,7 +1559,7 @@ fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
         .collect::<Vec<_>>();
     assert_eq!(
         ids,
-        vec![1, 3, 4, 5, 2, 6, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 15]
+        vec![1, 3, 4, 5, 2, 6, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 15,]
     );
     let mut sorted_ids = ids.clone();
     sorted_ids.sort_unstable();
@@ -1567,7 +1571,7 @@ fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
     assert_eq!(legacy.step_count, 7);
     assert_eq!(legacy.default_normalized, 4.0 / 7.0);
 
-    let extended = vst3_param_info_for_index(18).expect("extended division metadata");
+    let extended = vst3_param_info_for_index(20).expect("extended division metadata");
     assert_eq!(extended.id, PARAM_SYNC_DIVISION_VST3_V2_NUM);
     assert_eq!(extended.title, "Division Extended");
     assert_eq!(extended.step_count, 9);

@@ -83,7 +83,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 18] = [
+const PARAM_DEFS: [ParamDef; 20] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -354,6 +354,36 @@ const PARAM_DEFS: [ParamDef; 18] = [
         default_value: DEFAULT_FILTER_LP_Q as f64,
         flags: AUTO,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FILTER_HP_SLOPE_NUM,
+        id: PARAM_FILTER_HP_SLOPE_ID,
+        name: "Filter HP Slope",
+        #[cfg(feature = "vst3")]
+        short_name: "HP Slope",
+        #[cfg(feature = "vst3")]
+        units: "dB/oct",
+        module: "Pump",
+        min_value: 0.0,
+        max_value: MAX_FILTER_SLOPE as f64,
+        default_value: DEFAULT_FILTER_SLOPE as f64,
+        flags: AUTO_STEPPED,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_FILTER_LP_SLOPE_NUM,
+        id: PARAM_FILTER_LP_SLOPE_ID,
+        name: "Filter LP Slope",
+        #[cfg(feature = "vst3")]
+        short_name: "LP Slope",
+        #[cfg(feature = "vst3")]
+        units: "dB/oct",
+        module: "Pump",
+        min_value: 0.0,
+        max_value: MAX_FILTER_SLOPE as f64,
+        default_value: DEFAULT_FILTER_SLOPE as f64,
+        flags: AUTO_STEPPED,
+    },
 ];
 
 fn param_def_for_id(param_id: ClapId) -> Option<ParamDef> {
@@ -480,6 +510,8 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
             | PARAM_TIMING_MODE_ID
             | PARAM_DELAY_ID
             | PARAM_FILTER_ENABLED_ID
+            | PARAM_FILTER_HP_SLOPE_ID
+            | PARAM_FILTER_LP_SLOPE_ID
     ) {
         return Some(plain.round());
     }
@@ -595,6 +627,8 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_FILTER_HP_Q_ID => Some(params.filter_hp_q() as f64),
         PARAM_FILTER_LP_FREQ_ID => Some(params.filter_lp_freq_hz() as f64),
         PARAM_FILTER_LP_Q_ID => Some(params.filter_lp_q() as f64),
+        PARAM_FILTER_HP_SLOPE_ID => Some(params.filter_hp_slope() as f64),
+        PARAM_FILTER_LP_SLOPE_ID => Some(params.filter_lp_slope() as f64),
         _ => None,
     }
 }
@@ -632,6 +666,8 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         PARAM_FILTER_HP_Q_ID => params.set_filter_hp_q(value as f32),
         PARAM_FILTER_LP_FREQ_ID => params.set_filter_lp_freq_hz(value as f32),
         PARAM_FILTER_LP_Q_ID => params.set_filter_lp_q(value as f32),
+        PARAM_FILTER_HP_SLOPE_ID => params.set_filter_hp_slope(value as f32),
+        PARAM_FILTER_LP_SLOPE_ID => params.set_filter_lp_slope(value as f32),
         _ => return false,
     }
     true
@@ -775,6 +811,10 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
         }
         PARAM_FILTER_HP_FREQ_ID | PARAM_FILTER_LP_FREQ_ID => Some(format_frequency(value as f32)),
         PARAM_FILTER_HP_Q_ID | PARAM_FILTER_LP_Q_ID => Some(format!("{:.2} Q", value)),
+        PARAM_FILTER_HP_SLOPE_ID | PARAM_FILTER_LP_SLOPE_ID => Some(format!(
+            "{} dB/oct",
+            12usize << (value.round() as usize).min(MAX_FILTER_SLOPE)
+        )),
         _ => None,
     }
 }
@@ -875,6 +915,18 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
                 .parse::<f64>()
                 .ok()
                 .map(|value| value.clamp(MIN_FILTER_Q as f64, MAX_FILTER_Q as f64))
+        }
+        PARAM_FILTER_HP_SLOPE_ID | PARAM_FILTER_LP_SLOPE_ID => {
+            let value = raw.trim().trim_end_matches("dB/oct").trim();
+            match value {
+                "12" => Some(0.0),
+                "24" => Some(1.0),
+                "48" => Some(2.0),
+                _ => value
+                    .parse::<f64>()
+                    .ok()
+                    .map(|value| value.round().clamp(0.0, MAX_FILTER_SLOPE as f64)),
+            }
         }
         _ => None,
     }

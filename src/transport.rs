@@ -183,6 +183,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         }
     }
 
@@ -283,6 +285,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let transport = TransportState {
             tempo_bpm: 128.0,
@@ -314,6 +318,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let transport = TransportState {
             tempo_bpm: 128.0,
@@ -347,6 +353,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         for (host_beats, expected) in [(0.0, 0.0), (0.25, 0.25), (0.5, 0.5), (0.75, 0.75)] {
             let phase = gui_phase_from_transport(
@@ -433,6 +441,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let resolved = gui_phase_from_transport(
             TransportState {
@@ -482,6 +492,8 @@ mod tests {
             filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: 0,
+            filter_lp_slope: 0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,

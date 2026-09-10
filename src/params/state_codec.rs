@@ -59,6 +59,8 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     payload.extend_from_slice(&params.filter_hp_q().to_le_bytes());
     payload.extend_from_slice(&params.filter_lp_freq_hz().to_le_bytes());
     payload.extend_from_slice(&params.filter_lp_q().to_le_bytes());
+    payload.push(params.filter_hp_slope() as u8);
+    payload.push(params.filter_lp_slope() as u8);
 
     payload
 }
@@ -144,6 +146,8 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 filter_hp_q: DEFAULT_FILTER_HP_Q,
                 filter_lp_freq_hz: DEFAULT_FILTER_LP_FREQ_HZ,
                 filter_lp_q: DEFAULT_FILTER_LP_Q,
+                filter_hp_slope: DEFAULT_FILTER_SLOPE,
+                filter_lp_slope: DEFAULT_FILTER_SLOPE,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -253,6 +257,8 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
             filter_hp_q: DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: DEFAULT_FILTER_SLOPE,
+            filter_lp_slope: DEFAULT_FILTER_SLOPE,
             editable_curve: editable_curve.clone(),
             quick_slots: preset_bank
                 .presets
@@ -324,6 +330,16 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 DEFAULT_FILTER_LP_Q,
             )
         };
+    let (filter_hp_slope, filter_lp_slope) = if version >= 20 {
+        let hp = read_u8(&mut cursor).ok_or("invalid filter HP slope field")?;
+        let lp = read_u8(&mut cursor).ok_or("invalid filter LP slope field")?;
+        (
+            hp.min(MAX_FILTER_SLOPE as u8) as usize,
+            lp.min(MAX_FILTER_SLOPE as u8) as usize,
+        )
+    } else {
+        (DEFAULT_FILTER_SLOPE, DEFAULT_FILTER_SLOPE)
+    };
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -347,6 +363,8 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_filter_hp_q(filter_hp_q);
     params.set_filter_lp_freq_hz(filter_lp_freq_hz);
     params.set_filter_lp_q(filter_lp_q);
+    params.set_filter_hp_slope(filter_hp_slope as f32);
+    params.set_filter_lp_slope(filter_lp_slope as f32);
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
     params.set_sound_states_with_references_without_persistence(
@@ -382,6 +400,8 @@ fn encode_sound_state(payload: &mut Vec<u8>, state: &PumpSoundState) {
     payload.extend_from_slice(&state.filter_hp_q.to_le_bytes());
     payload.extend_from_slice(&state.filter_lp_freq_hz.to_le_bytes());
     payload.extend_from_slice(&state.filter_lp_q.to_le_bytes());
+    payload.push(state.filter_hp_slope.min(MAX_FILTER_SLOPE) as u8);
+    payload.push(state.filter_lp_slope.min(MAX_FILTER_SLOPE) as u8);
 }
 
 fn decode_sound_state(
@@ -487,6 +507,16 @@ fn decode_sound_state(
                 DEFAULT_FILTER_LP_Q,
             )
         };
+    let (filter_hp_slope, filter_lp_slope) = if version >= 20 {
+        let hp = read_u8(cursor).ok_or("invalid A/B filter HP slope field")?;
+        let lp = read_u8(cursor).ok_or("invalid A/B filter LP slope field")?;
+        (
+            hp.min(MAX_FILTER_SLOPE as u8) as usize,
+            lp.min(MAX_FILTER_SLOPE as u8) as usize,
+        )
+    } else {
+        (DEFAULT_FILTER_SLOPE, DEFAULT_FILTER_SLOPE)
+    };
     if ![
         mix,
         depth_db,
@@ -524,6 +554,8 @@ fn decode_sound_state(
         filter_hp_q,
         filter_lp_freq_hz,
         filter_lp_q,
+        filter_hp_slope,
+        filter_lp_slope,
         editable_curve: editable_curve.normalized(),
         quick_slots,
     })
@@ -558,6 +590,8 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.filter_hp_q.to_le_bytes());
     payload.extend_from_slice(&preset.filter_lp_freq_hz.to_le_bytes());
     payload.extend_from_slice(&preset.filter_lp_q.to_le_bytes());
+    payload.push(preset.filter_hp_slope.min(MAX_FILTER_SLOPE) as u8);
+    payload.push(preset.filter_lp_slope.min(MAX_FILTER_SLOPE) as u8);
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -833,6 +867,16 @@ fn decode_preset_bank(
                     DEFAULT_FILTER_LP_Q,
                 )
             };
+        let (filter_hp_slope, filter_lp_slope) = if version >= 20 {
+            let hp = read_u8(cursor).ok_or("invalid preset filter HP slope")?;
+            let lp = read_u8(cursor).ok_or("invalid preset filter LP slope")?;
+            (
+                hp.min(MAX_FILTER_SLOPE as u8) as usize,
+                lp.min(MAX_FILTER_SLOPE as u8) as usize,
+            )
+        } else {
+            (DEFAULT_FILTER_SLOPE, DEFAULT_FILTER_SLOPE)
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -856,6 +900,8 @@ fn decode_preset_bank(
             filter_hp_q,
             filter_lp_freq_hz,
             filter_lp_q,
+            filter_hp_slope,
+            filter_lp_slope,
             editable_curve: editable_curve.normalized(),
             quick_slots,
         });
@@ -960,6 +1006,8 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
         filter_hp_q: DEFAULT_FILTER_HP_Q,
         filter_lp_freq_hz: DEFAULT_FILTER_LP_FREQ_HZ,
         filter_lp_q: DEFAULT_FILTER_LP_Q,
+        filter_hp_slope: DEFAULT_FILTER_SLOPE,
+        filter_lp_slope: DEFAULT_FILTER_SLOPE,
         editable_curve: params.editable_curve_snapshot(),
         quick_slots: seeded_quick_shape_slots(),
     };
@@ -988,6 +1036,8 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             filter_hp_q: DEFAULT_FILTER_HP_Q,
             filter_lp_freq_hz: DEFAULT_FILTER_LP_FREQ_HZ,
             filter_lp_q: DEFAULT_FILTER_LP_Q,
+            filter_hp_slope: DEFAULT_FILTER_SLOPE,
+            filter_lp_slope: DEFAULT_FILTER_SLOPE,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],

@@ -21,12 +21,13 @@ use crate::params::{
     parse_plain_value_text, plain_from_normalized_value, PumpParams, PumpSoundState, SoundSide,
     BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, DEFAULT_DELAY_BEATS, DEFAULT_FREE_RATE_HZ,
     DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, DEFAULT_SWING, FILTER_MIN_SEPARATION_HZ,
-    MAX_DELAY_BEATS, MAX_FILTER_FREQ_HZ, MAX_FILTER_Q, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
-    MIN_DELAY_BEATS, MIN_FILTER_FREQ_HZ, MIN_FILTER_Q, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID,
-    PARAM_DELAY_ID, PARAM_FILTER_ENABLED_ID, PARAM_FILTER_HP_FREQ_ID, PARAM_FILTER_HP_Q_ID,
-    PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID,
-    PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID, TIMING_MODE_FREE, TIMING_MODE_SYNC,
+    MAX_DELAY_BEATS, MAX_FILTER_FREQ_HZ, MAX_FILTER_Q, MAX_FILTER_SLOPE, MAX_OUTPUT_GAIN_DB,
+    MAX_SYNC_DIVISION, MIN_DELAY_BEATS, MIN_FILTER_FREQ_HZ, MIN_FILTER_Q, MIN_OUTPUT_GAIN_DB,
+    PARAM_BYPASS_ID, PARAM_DELAY_ID, PARAM_FILTER_ENABLED_ID, PARAM_FILTER_HP_FREQ_ID,
+    PARAM_FILTER_HP_Q_ID, PARAM_FILTER_HP_SLOPE_ID, PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID,
+    PARAM_FILTER_LP_SLOPE_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
+    PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID,
+    PARAM_TIMING_MODE_ID, TIMING_MODE_FREE, TIMING_MODE_SYNC,
 };
 use crate::GuiStatus;
 
@@ -804,6 +805,10 @@ pub(crate) enum NumericEntryTarget {
     Swing,
     FreeRate,
     Delay,
+    FilterHpFrequency,
+    FilterHpQ,
+    FilterLpFrequency,
+    FilterLpQ,
 }
 
 impl NumericEntryTarget {
@@ -815,6 +820,10 @@ impl NumericEntryTarget {
             Self::Swing => PARAM_SWING_ID,
             Self::FreeRate => PARAM_FREE_RATE_ID,
             Self::Delay => PARAM_DELAY_ID,
+            Self::FilterHpFrequency => PARAM_FILTER_HP_FREQ_ID,
+            Self::FilterHpQ => PARAM_FILTER_HP_Q_ID,
+            Self::FilterLpFrequency => PARAM_FILTER_LP_FREQ_ID,
+            Self::FilterLpQ => PARAM_FILTER_LP_Q_ID,
         }
     }
 
@@ -826,6 +835,10 @@ impl NumericEntryTarget {
             Self::Swing => "numeric-entry-swing",
             Self::FreeRate => "numeric-entry-free-rate",
             Self::Delay => "numeric-entry-delay",
+            Self::FilterHpFrequency => "numeric-entry-filter-hp-frequency",
+            Self::FilterHpQ => "numeric-entry-filter-hp-q",
+            Self::FilterLpFrequency => "numeric-entry-filter-lp-frequency",
+            Self::FilterLpQ => "numeric-entry-filter-lp-q",
         }
     }
 
@@ -837,6 +850,10 @@ impl NumericEntryTarget {
             Self::Swing => params.swing() as f64,
             Self::FreeRate => params.free_rate_hz() as f64,
             Self::Delay => params.delay_beats() as f64,
+            Self::FilterHpFrequency => params.filter_hp_freq_hz() as f64,
+            Self::FilterHpQ => params.filter_hp_q() as f64,
+            Self::FilterLpFrequency => params.filter_lp_freq_hz() as f64,
+            Self::FilterLpQ => params.filter_lp_q() as f64,
         }
     }
 }
@@ -922,6 +939,7 @@ pub(crate) struct PumpEditorState {
     active_curve_offset: Option<ActiveCurveOffsetDrag>,
     active_curve_marquee: Option<ActiveCurveMarquee>,
     active_filter_drag: Option<ActiveFilterDrag>,
+    selected_filter_handle: Option<FilterHandle>,
     selected_curve_nodes: Vec<usize>,
     preview_curve_offset: Option<EditableCurve>,
     hover_curve_node: Option<usize>,
@@ -962,6 +980,8 @@ pub(crate) struct HistorySnapshot {
     filter_hp_q: f32,
     filter_lp_freq_hz: f32,
     filter_lp_q: f32,
+    filter_hp_slope: usize,
+    filter_lp_slope: usize,
     curve: EditableCurve,
     active_sound: SoundSide,
     sound_states: [PumpSoundState; 2],
@@ -989,6 +1009,10 @@ pub(crate) enum EditorMessage {
     CopyAndSelectSound(SoundSide),
     ToggleBypass,
     ToggleFilter,
+    SetFilterSlope {
+        handle: FilterHandle,
+        index: usize,
+    },
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
     NumericEntry(NumericEntryMessage),
@@ -1039,6 +1063,7 @@ impl PumpEditorState {
             active_curve_offset: None,
             active_curve_marquee: None,
             active_filter_drag: None,
+            selected_filter_handle: None,
             selected_curve_nodes: Vec::new(),
             preview_curve_offset: None,
             hover_curve_node: None,
@@ -1080,6 +1105,8 @@ impl PumpEditorState {
             filter_hp_q: self.params.filter_hp_q(),
             filter_lp_freq_hz: self.params.filter_lp_freq_hz(),
             filter_lp_q: self.params.filter_lp_q(),
+            filter_hp_slope: self.params.filter_hp_slope(),
+            filter_lp_slope: self.params.filter_lp_slope(),
             curve: self.params.editable_curve_snapshot(),
             active_sound: self.params.active_sound(),
             sound_states: [
@@ -1127,6 +1154,10 @@ impl PumpEditorState {
         self.params
             .set_filter_lp_freq_hz(snapshot.filter_lp_freq_hz);
         self.params.set_filter_lp_q(snapshot.filter_lp_q);
+        self.params
+            .set_filter_hp_slope(snapshot.filter_hp_slope as f32);
+        self.params
+            .set_filter_lp_slope(snapshot.filter_lp_slope as f32);
         self.params
             .set_editable_curve_preserving_phase(&snapshot.curve);
         self.params
@@ -1222,6 +1253,26 @@ impl PumpEditorState {
                 normalized_from_plain_value(PARAM_DELAY_ID, DEFAULT_DELAY_BEATS as f64)
                     .unwrap_or(0.0) as f32
             }
+            NumericEntryTarget::FilterHpFrequency => normalized_from_plain_value(
+                PARAM_FILTER_HP_FREQ_ID,
+                crate::params::DEFAULT_FILTER_HP_FREQ_HZ as f64,
+            )
+            .unwrap_or(0.0) as f32,
+            NumericEntryTarget::FilterHpQ => normalized_from_plain_value(
+                PARAM_FILTER_HP_Q_ID,
+                crate::params::DEFAULT_FILTER_HP_Q as f64,
+            )
+            .unwrap_or(0.0) as f32,
+            NumericEntryTarget::FilterLpFrequency => normalized_from_plain_value(
+                PARAM_FILTER_LP_FREQ_ID,
+                crate::params::DEFAULT_FILTER_LP_FREQ_HZ as f64,
+            )
+            .unwrap_or(1.0) as f32,
+            NumericEntryTarget::FilterLpQ => normalized_from_plain_value(
+                PARAM_FILTER_LP_Q_ID,
+                crate::params::DEFAULT_FILTER_LP_Q as f64,
+            )
+            .unwrap_or(0.0) as f32,
         }
     }
 
@@ -1305,6 +1356,10 @@ impl PumpEditorState {
 
     pub(crate) fn active_filter_handle(&self) -> Option<FilterHandle> {
         self.active_filter_drag.map(|drag| drag.handle)
+    }
+
+    pub(crate) fn selected_filter_handle(&self) -> Option<FilterHandle> {
+        self.selected_filter_handle
     }
 
     pub(crate) fn hover_filter_handle(&self) -> Option<FilterHandle> {
@@ -1508,6 +1563,26 @@ fn knob_plain_value(target: NumericEntryTarget, value: f32) -> (ClapId, f32) {
             PARAM_DELAY_ID,
             plain_from_normalized_value(PARAM_DELAY_ID, value as f64).unwrap_or(0.0) as f32,
         ),
+        NumericEntryTarget::FilterHpFrequency => (
+            PARAM_FILTER_HP_FREQ_ID,
+            plain_from_normalized_value(PARAM_FILTER_HP_FREQ_ID, value as f64)
+                .unwrap_or(crate::params::DEFAULT_FILTER_HP_FREQ_HZ as f64) as f32,
+        ),
+        NumericEntryTarget::FilterHpQ => (
+            PARAM_FILTER_HP_Q_ID,
+            plain_from_normalized_value(PARAM_FILTER_HP_Q_ID, value as f64)
+                .unwrap_or(crate::params::DEFAULT_FILTER_HP_Q as f64) as f32,
+        ),
+        NumericEntryTarget::FilterLpFrequency => (
+            PARAM_FILTER_LP_FREQ_ID,
+            plain_from_normalized_value(PARAM_FILTER_LP_FREQ_ID, value as f64)
+                .unwrap_or(crate::params::DEFAULT_FILTER_LP_FREQ_HZ as f64) as f32,
+        ),
+        NumericEntryTarget::FilterLpQ => (
+            PARAM_FILTER_LP_Q_ID,
+            plain_from_normalized_value(PARAM_FILTER_LP_Q_ID, value as f64)
+                .unwrap_or(crate::params::DEFAULT_FILTER_LP_Q as f64) as f32,
+        ),
     }
 }
 
@@ -1520,6 +1595,10 @@ fn set_knob_param(params: &PumpParams, target: NumericEntryTarget, value: f32) -
         NumericEntryTarget::Swing => params.set_swing(value),
         NumericEntryTarget::FreeRate => params.set_free_rate_hz(plain_value),
         NumericEntryTarget::Delay => params.set_delay_beats(plain_value),
+        NumericEntryTarget::FilterHpFrequency => params.set_filter_hp_freq_hz(plain_value),
+        NumericEntryTarget::FilterHpQ => params.set_filter_hp_q(plain_value),
+        NumericEntryTarget::FilterLpFrequency => params.set_filter_lp_freq_hz(plain_value),
+        NumericEntryTarget::FilterLpQ => params.set_filter_lp_q(plain_value),
     }
     (param_id, plain_value)
 }
@@ -1663,6 +1742,36 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 state
                     .params
                     .set_filter_enabled(if enabled { 1.0 } else { 0.0 });
+                if !enabled {
+                    state.selected_filter_handle = None;
+                }
+            }
+        }
+        EditorMessage::SetFilterSlope { handle, index } => {
+            if !state.params.filter_enabled() {
+                return;
+            }
+            let index = index.min(MAX_FILTER_SLOPE);
+            let (param_id, current) = match handle {
+                FilterHandle::HighPass => {
+                    (PARAM_FILTER_HP_SLOPE_ID, state.params.filter_hp_slope())
+                }
+                FilterHandle::LowPass => (PARAM_FILTER_LP_SLOPE_ID, state.params.filter_lp_slope()),
+                FilterHandle::Both => return,
+            };
+            if index == current {
+                return;
+            }
+            if state
+                .host_param_edit_sink
+                .edit(&state.automation_config, param_id, index as f64)
+            {
+                state.push_history();
+                match handle {
+                    FilterHandle::HighPass => state.params.set_filter_hp_slope(index as f32),
+                    FilterHandle::LowPass => state.params.set_filter_lp_slope(index as f32),
+                    FilterHandle::Both => unreachable!("both filter slope is not a side control"),
+                }
             }
         }
         EditorMessage::Curve(message) => {
@@ -1822,6 +1931,10 @@ fn apply_numeric_entry_value(state: &mut PumpEditorState, target: NumericEntryTa
         NumericEntryTarget::Swing => state.params.set_swing(value as f32),
         NumericEntryTarget::FreeRate => state.params.set_free_rate_hz(value as f32),
         NumericEntryTarget::Delay => state.params.set_delay_beats(value as f32),
+        NumericEntryTarget::FilterHpFrequency => state.params.set_filter_hp_freq_hz(value as f32),
+        NumericEntryTarget::FilterHpQ => state.params.set_filter_hp_q(value as f32),
+        NumericEntryTarget::FilterLpFrequency => state.params.set_filter_lp_freq_hz(value as f32),
+        NumericEntryTarget::FilterLpQ => state.params.set_filter_lp_q(value as f32),
     }
 
     push_param_update(state, target.param_id(), value);
@@ -1962,6 +2075,7 @@ fn reduce_curve_message(state: &mut PumpEditorState, message: CurvePreviewMessag
                 start_lp_freq_hz: state.params.filter_lp_freq_hz(),
                 start_lp_q: state.params.filter_lp_q(),
             });
+            state.selected_filter_handle = Some(handle);
             state.active_curve_node = None;
             state.active_curve_node_drag = None;
             state.active_curve_paint = None;
@@ -4427,6 +4541,78 @@ mod tests {
             crate::params::DEFAULT_FILTER_LP_Q
         );
         assert!(!state.has_active_gesture());
+    }
+
+    #[test]
+    fn filter_handle_selection_persists_and_side_slope_is_undoable() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(Arc::clone(&sink));
+        state.dispatch(EditorMessage::ToggleFilter);
+
+        state.dispatch(EditorMessage::Curve(
+            CurvePreviewMessage::PressFilterHandle {
+                handle: FilterHandle::HighPass,
+                frequency_hz: 320.0,
+                q: 0.707,
+            },
+        ));
+        assert_eq!(state.active_filter_handle(), Some(FilterHandle::HighPass));
+        assert_eq!(state.selected_filter_handle(), Some(FilterHandle::HighPass));
+        state.dispatch(EditorMessage::Curve(CurvePreviewMessage::ReleaseFilter {
+            handle: FilterHandle::HighPass,
+            frequency_hz: 320.0,
+            q: 0.707,
+        }));
+        assert_eq!(state.active_filter_handle(), None);
+        assert_eq!(state.selected_filter_handle(), Some(FilterHandle::HighPass));
+
+        state.dispatch(EditorMessage::SetFilterSlope {
+            handle: FilterHandle::HighPass,
+            index: 2,
+        });
+        assert_eq!(state.params().filter_hp_slope(), 2);
+        assert_eq!(state.params().filter_lp_slope(), 0);
+        assert!(sink.events().iter().any(|event| {
+            matches!(event, SinkEvent::Edit(id, value) if *id == PARAM_FILTER_HP_SLOPE_ID && *value == 2.0)
+        }));
+
+        state.dispatch(EditorMessage::Undo);
+        assert_eq!(state.params().filter_hp_slope(), 0);
+        state.dispatch(EditorMessage::ToggleFilter);
+        assert!(!state.params().filter_enabled());
+        assert_eq!(state.selected_filter_handle(), None);
+    }
+
+    #[test]
+    fn filter_frequency_and_q_knobs_use_filter_host_parameters() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(Arc::clone(&sink));
+        state.dispatch(EditorMessage::ToggleFilter);
+
+        let frequency_target = NumericEntryTarget::FilterHpFrequency;
+        let frequency = normalized_from_plain_value(PARAM_FILTER_HP_FREQ_ID, 640.0)
+            .expect("filter frequency should normalize") as f32;
+        state.dispatch(EditorMessage::Knob {
+            target: frequency_target,
+            message: KnobMessage::Discrete { value: frequency },
+        });
+        assert!((state.params().filter_hp_freq_hz() - 640.0).abs() < 0.01);
+
+        let q_target = NumericEntryTarget::FilterHpQ;
+        let q = normalized_from_plain_value(PARAM_FILTER_HP_Q_ID, 1.5)
+            .expect("filter Q should normalize") as f32;
+        state.dispatch(EditorMessage::Knob {
+            target: q_target,
+            message: KnobMessage::Discrete { value: q },
+        });
+        assert!((state.params().filter_hp_q() - 1.5).abs() < 0.01);
+        assert!(sink.events().iter().any(|event| {
+            matches!(event, SinkEvent::Begin(id) if *id == PARAM_FILTER_HP_FREQ_ID)
+        }));
+        assert!(sink
+            .events()
+            .iter()
+            .any(|event| { matches!(event, SinkEvent::End(id) if *id == PARAM_FILTER_HP_Q_ID) }));
     }
 
     #[test]

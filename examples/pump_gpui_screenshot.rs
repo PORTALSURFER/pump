@@ -162,6 +162,75 @@ mod macos {
         (width, height, pixels)
     }
 
+    fn filter_handle_position(
+        capture: &(u32, u32, Vec<u8>),
+        approximate_x: f64,
+        approximate_y: f64,
+        context: &str,
+    ) -> (f64, f64) {
+        let (width, height, pixels) = capture;
+        let scale_x = f64::from(*width) / f64::from(CAPTURE_WIDTH);
+        let scale_y = f64::from(*height) / f64::from(CAPTURE_HEIGHT);
+        let expected_x = approximate_x * scale_x;
+        let expected_y = approximate_y * scale_y;
+        let radius = 7.5 * scale_x.max(scale_y);
+        let ring_inner = 3.0 * scale_x.min(scale_y);
+        let ring_inner_squared = ring_inner * ring_inner;
+        let ring_outer_squared = radius * radius;
+        let search_x = (expected_x - 32.0 * scale_x).max(0.0) as u32
+            ..=((expected_x + 32.0 * scale_x).min(f64::from(*width - 1))) as u32;
+        let search_y = (expected_y - 36.0 * scale_y).max(0.0) as u32
+            ..=((expected_y + 36.0 * scale_y).min(f64::from(*height - 1))) as u32;
+        let orange_pixels = search_y
+            .clone()
+            .flat_map(|y| search_x.clone().map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let offset = ((usize::try_from(*y).unwrap() * usize::try_from(*width).unwrap())
+                    + usize::try_from(*x).unwrap())
+                    * 4;
+                let red = pixels[offset];
+                let green = pixels[offset + 1];
+                let blue = pixels[offset + 2];
+                red > 100 && green > 70 && green < 210 && blue < 130 && red > green + 25
+            })
+            .collect::<Vec<_>>();
+        let mut best = None;
+        for candidate_y in search_y {
+            for candidate_x in search_x.clone() {
+                let score = orange_pixels
+                    .iter()
+                    .filter(|&&(x, y)| {
+                        let dx = f64::from(x) - f64::from(candidate_x);
+                        let dy = f64::from(y) - f64::from(candidate_y);
+                        let distance_squared = dx * dx + dy * dy;
+                        distance_squared >= ring_inner_squared
+                            && distance_squared <= ring_outer_squared
+                    })
+                    .count();
+                let distance_to_expected = (f64::from(candidate_x) - expected_x).powi(2)
+                    + (f64::from(candidate_y) - expected_y).powi(2);
+                let replace = best.is_none_or(|(best_score, best_distance, _, _)| {
+                    score > best_score
+                        || (score == best_score && distance_to_expected < best_distance)
+                });
+                if replace {
+                    best = Some((score, distance_to_expected, candidate_x, candidate_y));
+                }
+            }
+        }
+        let (score, _, x, y) = best.unwrap_or((0, 0.0, 0, 0));
+        assert!(
+            score >= 5,
+            "{context}: rendered filter marker not found near ({approximate_x:.1}, {approximate_y:.1}) in {width}x{height} capture (best orange ring score {score})"
+        );
+        let logical = (f64::from(x) / scale_x, f64::from(y) / scale_y);
+        eprintln!(
+            "{context}: rendered filter marker at ({:.2}, {:.2}) from {width}x{height} capture (orange ring score {score})",
+            logical.0, logical.1
+        );
+        logical
+    }
+
     fn numeric_label_pixels(capture: &(u32, u32, Vec<u8>), center_x: u32) -> Vec<u8> {
         let (width, height, pixels) = capture;
         let x0 = (center_x - 35) * width / 640;
@@ -351,12 +420,36 @@ mod macos {
             params.set_filter_hp_q(1.25);
             params.set_filter_lp_freq_hz(7_500.0);
             params.set_filter_lp_q(1.75);
-            capture(
+            params.set_filter_hp_slope(1.0);
+            params.set_filter_lp_slope(2.0);
+            let filter_capture = capture(
                 app,
                 &fixture,
                 &gui,
                 &root,
                 "pump-filter-enabled-640x400",
+                640,
+                400,
+            );
+            let (filter_hp_x, filter_hp_y) = filter_handle_position(
+                &filter_capture,
+                265.0,
+                135.0,
+                "pump-filter-enabled-640x400",
+            );
+            send_click(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                filter_hp_x,
+                filter_hp_y,
+            );
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-filter-selected-hp-640x400",
                 640,
                 400,
             );
