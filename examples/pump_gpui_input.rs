@@ -677,7 +677,11 @@ mod macos {
         params.set_filter_hp_q(0.25);
         params.set_filter_lp_freq_hz(4_800.0);
         params.set_filter_lp_q(0.25);
-        pump_appkit(app, &gui, 0.05);
+        // Parameter setters update the shared state directly and do not by
+        // themselves request a GPUI repaint. Capture the next rendered frame
+        // before deriving native input from the fixed plot geometry so the
+        // filter overlay and its hit target are committed on slower runners.
+        capture_frame(&gui, "filter handles ready");
         let filter_curve_before = params.editable_curve_snapshot();
         let filter_hp_before = params.filter_hp_freq_hz();
         send_mouse_move(fixture.window, FILTER_HP_HANDLE_X, FILTER_HANDLE_MIN_Q_Y);
