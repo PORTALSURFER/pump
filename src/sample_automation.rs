@@ -148,6 +148,11 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         timing_mode: params.timing_mode(),
         free_rate_hz: params.free_rate_hz(),
         bypassed: params.bypassed(),
+        filter_enabled: params.filter_enabled(),
+        filter_hp_freq_hz: params.filter_hp_freq_hz(),
+        filter_hp_q: params.filter_hp_q(),
+        filter_lp_freq_hz: params.filter_lp_freq_hz(),
+        filter_lp_q: params.filter_lp_q(),
     }
 }
 

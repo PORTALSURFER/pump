@@ -22,6 +22,7 @@ use radiant::{
     },
 };
 
+use super::radiant_editor::{CURVE_SAMPLE_COUNT, FILTER_OVERLAY_COLOR};
 use super::visual_system::{pump_meter_colors, pump_theme, PUMP_TYPOGRAPHY, PUMP_VISUAL_METRICS};
 use super::{
     RadiantPumpEditor, MAX_WINDOW_HEIGHT, MAX_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
@@ -251,6 +252,67 @@ fn render_case_with_bypass(
         ImageFormat::Png,
     )
     .expect("screenshot PNG should be writable");
+    (plan, pixels)
+}
+
+fn render_filter_enabled_case(
+    name: &str,
+    width: u32,
+    height: u32,
+    dpi: DpiScale,
+) -> (SurfacePaintPlan, Vec<u8>) {
+    let store_path = std::env::temp_dir().join(format!(
+        "pump-filter-enabled-screenshot-{}-{}.bin",
+        std::process::id(),
+        name
+    ));
+    let (plan, pixels) = with_test_curve_slot_path(store_path.clone(), || {
+        let params = Arc::new(PumpParams::new());
+        params.set_filter_enabled(1.0);
+        params.set_filter_hp_freq_hz(320.0);
+        params.set_filter_hp_q(1.4);
+        params.set_filter_lp_freq_hz(4_800.0);
+        params.set_filter_lp_q(1.8);
+        params.set_depth_db(72.0);
+        params.set_floor_db(-24.0);
+        let mut editor = RadiantPumpEditor::new(
+            params,
+            Arc::new(GuiStatus::default()),
+            Arc::new(PumpAutomationQueue::default()),
+            None,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
+        editor.resize(width, height);
+        let plan = editor.paint_plan().clone();
+        let mut renderer = toybox::radiant_gui::bundled_offscreen_capture(
+            Vector2::new(width as f32, height as f32),
+            dpi,
+        )
+        .expect("Vello offscreen adapter should be available for filter screenshot");
+        let pixels = renderer
+            .capture(&plan)
+            .expect("filter paint plan should render through Vello");
+        (plan, pixels)
+    });
+    let _ = fs::remove_file(store_path);
+    let (physical_width, physical_height) = (
+        (width as f32 * dpi.factor()).ceil() as u32,
+        (height as f32 * dpi.factor()).ceil() as u32,
+    );
+    assert_eq!(
+        pixels.len(),
+        physical_width as usize * physical_height as usize * 4
+    );
+    image::save_buffer_with_format(
+        screenshot_root().join(format!("{name}.png")),
+        &pixels,
+        physical_width,
+        physical_height,
+        ColorType::Rgba8,
+        ImageFormat::Png,
+    )
+    .expect("filter screenshot PNG should be writable");
     (plan, pixels)
 }
 
@@ -966,6 +1028,7 @@ fn assert_layout_contract(plan: &SurfacePaintPlan, width: u32, height: u32) {
         "SMOOTH",
         "MIX",
         "OUTPUT",
+        "FILTER",
     ] {
         assert!(labels.contains(&label), "missing editor label {label:?}");
     }
@@ -1170,6 +1233,41 @@ fn pump_editor_screenshot_fixture_renders_waveform_layers() {
                     && (stroke.width - 2.0).abs() < 1.0e-6
         )
     }));
+}
+
+#[test]
+fn pump_editor_screenshot_fixture_renders_enabled_filter_overlay() {
+    let (plan, pixels) = render_filter_enabled_case(
+        "pump-filter-enabled-640x400",
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        DpiScale::ONE,
+    );
+    assert!(!pixels.is_empty());
+    let response = plan
+        .primitives
+        .iter()
+        .find_map(|primitive| match primitive {
+            PaintPrimitive::StrokePolyline(line)
+                if line.color == FILTER_OVERLAY_COLOR
+                    && line.points.len() == CURVE_SAMPLE_COUNT + 1 =>
+            {
+                Some(line)
+            }
+            _ => None,
+        });
+    assert!(
+        response.is_some(),
+        "enabled filter should paint its response curve"
+    );
+    for expected in ["FILTER", "HP", "LP", "BOTH"] {
+        assert!(
+            plan.primitives.iter().any(
+                |primitive| matches!(primitive, PaintPrimitive::Text(text) if text.text.contains(expected))
+            ),
+            "filter screenshot should expose {expected}"
+        );
+    }
 }
 
 #[test]

@@ -44,11 +44,13 @@ use crate::params::{
     format_plain_value_text, normalized_from_plain_value, parse_plain_value_text,
     plain_from_normalized_value, sync_division_label, PumpParams, PumpSoundState, SoundSide,
     BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, BYPASS_LABELS, DEFAULT_FREE_RATE_HZ, DEFAULT_MIX,
-    DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, GLOBAL_CURVE_SLOT_COUNT, MAX_OUTPUT_GAIN_DB,
-    MAX_SYNC_DIVISION, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DELAY_ID, PARAM_FREE_RATE_ID,
-    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID,
-    PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID, SYNC_DIVISIONS, TIMING_MODE_FREE,
-    TIMING_MODE_SYNC,
+    DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, FILTER_MIN_SEPARATION_HZ, GLOBAL_CURVE_SLOT_COUNT,
+    MAX_FILTER_FREQ_HZ, MAX_FILTER_Q, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION, MIN_FILTER_FREQ_HZ,
+    MIN_FILTER_Q, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID, PARAM_DELAY_ID, PARAM_FILTER_ENABLED_ID,
+    PARAM_FILTER_HP_FREQ_ID, PARAM_FILTER_HP_Q_ID, PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID,
+    PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID,
+    PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID, SYNC_DIVISIONS,
+    TIMING_MODE_FREE, TIMING_MODE_SYNC,
 };
 use crate::GuiStatus;
 
@@ -172,7 +174,8 @@ const CONTROL_ROW_HEIGHT: f32 = PUMP_VISUAL_METRICS.label_line;
 const CONTROL_VALUE_WIDTH: f32 = 66.3;
 const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
 const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.divider;
-const CURVE_SAMPLE_COUNT: usize = 96;
+const FILTER_TOGGLE_WIDTH: f32 = 66.0;
+pub(crate) const CURVE_SAMPLE_COUNT: usize = 96;
 const CURVE_OFFSET_BAR_HEIGHT: f32 = 10.2;
 const CURVE_OFFSET_BAR_INSET: f32 = PUMP_VISUAL_METRICS.space_8;
 const CURVE_OFFSET_HANDLE_WIDTH: f32 = PUMP_VISUAL_METRICS.space_16;
@@ -207,6 +210,13 @@ const CURVE_PLAYHEAD_CORE_COLOR: Rgba8 = Rgba8::new(128, 132, 132, 255);
 const CURVE_SEGMENT_MOVE_COLOR: Rgba8 = Rgba8::new(96, 176, 255, 255);
 const CURVE_OFFSET_MOVE_COLOR: Rgba8 = Rgba8::new(255, 168, 88, 255);
 const CURVE_OFFSET_HOVER_COLOR: Rgba8 = CURVE_OFFSET_MOVE_COLOR.with_alpha(224);
+pub(crate) const FILTER_OVERLAY_COLOR: Rgba8 = Rgba8::new(255, 184, 84, 255);
+const FILTER_OVERLAY_MUTED_COLOR: Rgba8 = Rgba8::new(255, 184, 84, 112);
+const FILTER_HANDLE_HIT_RADIUS: f32 = 12.0;
+const FILTER_HANDLE_RADIUS: f32 = 5.1;
+const FILTER_RESPONSE_DB_MIN: f32 = -48.0;
+const FILTER_RESPONSE_DB_MAX: f32 = 6.0;
+const FILTER_HANDLE_MARGIN: f32 = 11.0;
 const CURVE_PAINT_PREVIEW_WIDTH: f32 = 2.25;
 const CURVE_REFERENCE_LABEL_HEIGHT: f32 = 10.2;
 const CURVE_REFERENCE_FONT_SIZE: f32 = PUMP_TYPOGRAPHY.meta.0;
@@ -1852,12 +1862,14 @@ struct RadiantEditorState {
     active_curve_segment: Option<ActiveCurveSegmentDrag>,
     active_curve_offset: Option<ActiveCurveOffsetDrag>,
     active_curve_marquee: Option<ActiveCurveMarquee>,
+    active_filter_drag: Option<ActiveFilterDrag>,
     selected_curve_nodes: Vec<usize>,
     preview_curve_offset: Option<EditableCurve>,
     hover_curve_node: Option<usize>,
     preview_curve_node: Option<CurveNode>,
     hover_curve_segment: Option<usize>,
     hover_curve_segment_zone: Option<CurveSegmentHitZone>,
+    hover_filter_handle: Option<FilterHandle>,
     option_hover_held: bool,
     command_hover_held: bool,
     shift_hover_held: bool,
@@ -1886,6 +1898,11 @@ struct RadiantHistorySnapshot {
     timing_mode: usize,
     free_rate_hz: f32,
     delay_beats: usize,
+    filter_enabled: bool,
+    filter_hp_freq_hz: f32,
+    filter_hp_q: f32,
+    filter_lp_freq_hz: f32,
+    filter_lp_q: f32,
     curve: EditableCurve,
     active_sound: SoundSide,
     sound_states: [PumpSoundState; 2],
@@ -1912,6 +1929,7 @@ enum RadiantEditorMessage {
     },
     CopyAndSelectSound(SoundSide),
     ToggleBypass,
+    ToggleFilter,
     Curve(CurvePreviewMessage),
     CurveSlot(CurveSlotMessage),
     NumericEntry(NumericEntryMessage),
@@ -2281,12 +2299,14 @@ impl RadiantEditorState {
             active_curve_segment: None,
             active_curve_offset: None,
             active_curve_marquee: None,
+            active_filter_drag: None,
             selected_curve_nodes: Vec::new(),
             preview_curve_offset: None,
             hover_curve_node: None,
             preview_curve_node: None,
             hover_curve_segment: None,
             hover_curve_segment_zone: None,
+            hover_filter_handle: None,
             option_hover_held: false,
             command_hover_held: false,
             shift_hover_held: false,
@@ -2316,6 +2336,11 @@ impl RadiantEditorState {
             timing_mode: self.params.timing_mode(),
             free_rate_hz: self.params.free_rate_hz(),
             delay_beats: self.params.delay_beats(),
+            filter_enabled: self.params.filter_enabled(),
+            filter_hp_freq_hz: self.params.filter_hp_freq_hz(),
+            filter_hp_q: self.params.filter_hp_q(),
+            filter_lp_freq_hz: self.params.filter_lp_freq_hz(),
+            filter_lp_q: self.params.filter_lp_q(),
             curve: self.params.editable_curve_snapshot(),
             active_sound: self.params.active_sound(),
             sound_states: [
@@ -2355,6 +2380,14 @@ impl RadiantEditorState {
         self.params.set_timing_mode(snapshot.timing_mode as f32);
         self.params.set_free_rate_hz(snapshot.free_rate_hz);
         self.params.set_delay_beats(snapshot.delay_beats as f32);
+        self.params
+            .set_filter_enabled(if snapshot.filter_enabled { 1.0 } else { 0.0 });
+        self.params
+            .set_filter_hp_freq_hz(snapshot.filter_hp_freq_hz);
+        self.params.set_filter_hp_q(snapshot.filter_hp_q);
+        self.params
+            .set_filter_lp_freq_hz(snapshot.filter_lp_freq_hz);
+        self.params.set_filter_lp_q(snapshot.filter_lp_q);
         self.params
             .set_editable_curve_preserving_phase(&snapshot.curve);
         self.params
@@ -2411,6 +2444,11 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
     let delay = params.delay_beats();
     let free_timing = params.timing_mode() == TIMING_MODE_FREE;
     let free_rate = params.free_rate_hz();
+    let filter_enabled = params.filter_enabled();
+    let filter_hp_freq_hz = params.filter_hp_freq_hz();
+    let filter_hp_q = params.filter_hp_q();
+    let filter_lp_freq_hz = params.filter_lp_freq_hz();
+    let filter_lp_q = params.filter_lp_q();
     let waveform_live_mode = state.status.waveform_live_mode();
     let dsp_snapshot = state.status.dsp_snapshot();
     let applied_phase_offset = dsp_snapshot
@@ -2606,6 +2644,15 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
                 .with_phase_offset(state.params.phase_offset())
                 .with_applied_phase_offset(applied_phase_offset)
                 .with_gain_mapping(depth, floor)
+                .with_filter(
+                    filter_enabled,
+                    filter_hp_freq_hz,
+                    filter_hp_q,
+                    filter_lp_freq_hz,
+                    filter_lp_q,
+                    state.active_filter_drag.map(|drag| drag.handle),
+                    state.hover_filter_handle,
+                )
                 .with_playhead_phase(playhead_phase),
                 RadiantEditorMessage::Curve,
             )
@@ -2640,6 +2687,14 @@ fn project_editor_surface(state: &mut RadiantEditorState) -> Arc<UiSurface<Radia
             .message(|_| RadiantEditorMessage::ToggleWaveformMode)
             .size(WAVEFORM_MODE_CONTROL_WIDTH, CONTROL_ROW_HEIGHT)
             .tooltip("Live waveform replacement; off holds each completed cycle"),
+            toggle("FILTER", filter_enabled)
+                .message(|_| RadiantEditorMessage::ToggleFilter)
+                .size(FILTER_TOGGLE_WIDTH, CONTROL_ROW_HEIGHT)
+                .tooltip(if filter_enabled {
+                    "Disable frequency selective pumping"
+                } else {
+                    "Enable frequency selective pumping"
+                }),
             spacer().fill_width(),
             custom_widget_mapped(
                 BypassControlWidget::new(params.bypassed(), params.bypass_automation_recent())
@@ -3118,6 +3173,19 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                 }
             }
         }
+        RadiantEditorMessage::ToggleFilter => {
+            let enabled = !state.params.filter_enabled();
+            if state.host_param_edit_sink.edit(
+                &state.automation_config,
+                PARAM_FILTER_ENABLED_ID,
+                if enabled { 1.0 } else { 0.0 },
+            ) {
+                state.push_history();
+                state
+                    .params
+                    .set_filter_enabled(if enabled { 1.0 } else { 0.0 });
+            }
+        }
         RadiantEditorMessage::Curve(message) => {
             if matches!(
                 message,
@@ -3129,6 +3197,7 @@ fn reduce_editor_message(state: &mut RadiantEditorState, message: RadiantEditorM
                     | CurvePreviewMessage::DeleteSelectedNodes
                     | CurvePreviewMessage::PressSegment { .. }
                     | CurvePreviewMessage::PressSegmentMove { .. }
+                    | CurvePreviewMessage::PressFilterHandle { .. }
             ) {
                 state.push_history();
             }
@@ -3319,6 +3388,14 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.hover_curve_segment = Some(index);
             state.hover_curve_segment_zone = Some(CurveSegmentHitZone::OuterProximity);
         }
+        CurvePreviewMessage::HoverFilterHandle { handle } => {
+            state.hover_filter_handle = handle;
+            if handle.is_some() {
+                state.hover_curve_node = None;
+                state.preview_curve_node = None;
+                state.clear_curve_segment_hover();
+            }
+        }
         CurvePreviewMessage::ModifiersChanged {
             option_held,
             command_held,
@@ -3372,6 +3449,56 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
                 }
                 state.hover_curve_segment = None;
                 state.hover_curve_segment_zone = None;
+            }
+        }
+        CurvePreviewMessage::PressFilterHandle {
+            handle,
+            frequency_hz: _,
+            q: _,
+        } => {
+            if !state.params.filter_enabled() {
+                return;
+            }
+            state.clear_curve_selection();
+            state.active_filter_drag = Some(ActiveFilterDrag {
+                handle,
+                start_hp_freq_hz: state.params.filter_hp_freq_hz(),
+                start_hp_q: state.params.filter_hp_q(),
+                start_lp_freq_hz: state.params.filter_lp_freq_hz(),
+                start_lp_q: state.params.filter_lp_q(),
+            });
+            state.active_curve_node = None;
+            state.active_curve_node_drag = None;
+            state.active_curve_paint = None;
+            state.active_curve_segment = None;
+            state.active_curve_offset = None;
+            state.active_curve_marquee = None;
+            state.preview_curve_offset = None;
+            state.hover_curve_node = None;
+            state.preview_curve_node = None;
+            state.clear_curve_segment_hover();
+            state.hover_filter_handle = Some(handle);
+        }
+        CurvePreviewMessage::DragFilter {
+            handle,
+            frequency_hz,
+            q,
+        }
+        | CurvePreviewMessage::ReleaseFilter {
+            handle,
+            frequency_hz,
+            q,
+        } => {
+            let Some(drag) = state.active_filter_drag else {
+                return;
+            };
+            if drag.handle != handle {
+                return;
+            }
+            let (hp_freq_hz, hp_q, lp_freq_hz, lp_q) = filter_drag_values(drag, frequency_hz, q);
+            apply_filter_values(state, hp_freq_hz, hp_q, lp_freq_hz, lp_q);
+            if matches!(message, CurvePreviewMessage::ReleaseFilter { .. }) {
+                state.active_filter_drag = None;
             }
         }
         CurvePreviewMessage::PressPaint { sample } => {
@@ -3956,6 +4083,15 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
         }
         CurvePreviewMessage::Cancel => {
             state.active_curve_paint = None;
+            if let Some(drag) = state.active_filter_drag.take() {
+                apply_filter_values(
+                    state,
+                    drag.start_hp_freq_hz,
+                    drag.start_hp_q,
+                    drag.start_lp_freq_hz,
+                    drag.start_lp_q,
+                );
+            }
             if let Some(drag) = state.active_curve_offset.take() {
                 if state.params.phase_offset() != drag.origin_phase_offset
                     && state.host_param_edit_sink.gesture_value(
@@ -3982,9 +4118,80 @@ fn reduce_curve_message(state: &mut RadiantEditorState, message: CurvePreviewMes
             state.preview_curve_node = None;
             state.hover_curve_segment = None;
             state.hover_curve_segment_zone = None;
+            state.hover_filter_handle = None;
             state.option_hover_held = false;
             state.command_hover_held = false;
             state.shift_hover_held = false;
+        }
+    }
+}
+
+fn filter_drag_values(
+    drag: ActiveFilterDrag,
+    target_frequency_hz: f32,
+    target_q: f32,
+) -> (f32, f32, f32, f32) {
+    let minimum = MIN_FILTER_FREQ_HZ;
+    let maximum = MAX_FILTER_FREQ_HZ;
+    let spacing = FILTER_MIN_SEPARATION_HZ.min((maximum - minimum) * 0.5);
+    let target_frequency_hz = target_frequency_hz.clamp(minimum, maximum).max(minimum);
+    let target_q = target_q.clamp(MIN_FILTER_Q, MAX_FILTER_Q);
+    match drag.handle {
+        FilterHandle::HighPass => (
+            target_frequency_hz.min((drag.start_lp_freq_hz - spacing).max(minimum)),
+            target_q,
+            drag.start_lp_freq_hz.clamp(minimum + spacing, maximum),
+            drag.start_lp_q.clamp(MIN_FILTER_Q, MAX_FILTER_Q),
+        ),
+        FilterHandle::LowPass => (
+            drag.start_hp_freq_hz.clamp(minimum, maximum - spacing),
+            drag.start_hp_q.clamp(MIN_FILTER_Q, MAX_FILTER_Q),
+            target_frequency_hz.max((drag.start_hp_freq_hz + spacing).min(maximum)),
+            target_q,
+        ),
+        FilterHandle::Both => {
+            let span = (drag.start_lp_freq_hz.max(minimum + spacing)
+                / drag.start_hp_freq_hz.clamp(minimum, maximum - spacing))
+            .ln()
+            .max((1.0 + spacing / minimum).ln());
+            let half_span = span * 0.5;
+            let minimum_center = minimum.ln() + half_span;
+            let maximum_center = maximum.ln() - half_span;
+            let center = target_frequency_hz
+                .ln()
+                .clamp(minimum_center, maximum_center.max(minimum_center));
+            let hp = (center - half_span).exp().clamp(minimum, maximum - spacing);
+            let lp = (center + half_span).exp().clamp(minimum + spacing, maximum);
+            (hp, target_q, lp.max(hp + spacing).min(maximum), target_q)
+        }
+    }
+}
+
+fn apply_filter_values(
+    state: &mut RadiantEditorState,
+    hp_freq_hz: f32,
+    hp_q: f32,
+    lp_freq_hz: f32,
+    lp_q: f32,
+) {
+    let updates = [
+        (PARAM_FILTER_HP_FREQ_ID, hp_freq_hz),
+        (PARAM_FILTER_HP_Q_ID, hp_q),
+        (PARAM_FILTER_LP_FREQ_ID, lp_freq_hz),
+        (PARAM_FILTER_LP_Q_ID, lp_q),
+    ];
+    for (param_id, value) in updates {
+        if state
+            .host_param_edit_sink
+            .edit(&state.automation_config, param_id, value as f64)
+        {
+            match param_id {
+                PARAM_FILTER_HP_FREQ_ID => state.params.set_filter_hp_freq_hz(value),
+                PARAM_FILTER_HP_Q_ID => state.params.set_filter_hp_q(value),
+                PARAM_FILTER_LP_FREQ_ID => state.params.set_filter_lp_freq_hz(value),
+                PARAM_FILTER_LP_Q_ID => state.params.set_filter_lp_q(value),
+                _ => {}
+            }
         }
     }
 }
@@ -5403,6 +5610,22 @@ struct PendingOptionGesture {
     target: PendingOptionTarget,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FilterHandle {
+    HighPass,
+    LowPass,
+    Both,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ActiveFilterDrag {
+    handle: FilterHandle,
+    start_hp_freq_hz: f32,
+    start_hp_q: f32,
+    start_lp_freq_hz: f32,
+    start_lp_q: f32,
+}
+
 #[derive(Clone)]
 struct CurvePreviewWidget {
     common: WidgetCommon,
@@ -5433,6 +5656,13 @@ struct CurvePreviewWidget {
     applied_phase_offset: f32,
     depth_db: f32,
     floor_db: f32,
+    filter_enabled: bool,
+    filter_hp_freq_hz: f32,
+    filter_hp_q: f32,
+    filter_lp_freq_hz: f32,
+    filter_lp_q: f32,
+    active_filter_handle: Option<FilterHandle>,
+    hover_filter_handle: Option<FilterHandle>,
 }
 
 impl CurvePreviewWidget {
@@ -5480,6 +5710,13 @@ impl CurvePreviewWidget {
             applied_phase_offset: crate::params::DEFAULT_PHASE_OFFSET,
             depth_db: crate::params::DEFAULT_DEPTH_DB,
             floor_db: crate::params::DEFAULT_FLOOR_DB,
+            filter_enabled: crate::params::DEFAULT_FILTER_ENABLED,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
+            active_filter_handle: None,
+            hover_filter_handle: None,
         }
     }
 
@@ -5572,6 +5809,116 @@ impl CurvePreviewWidget {
         self.depth_db = depth_db;
         self.floor_db = floor_db;
         self
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_filter(
+        mut self,
+        enabled: bool,
+        hp_freq_hz: f32,
+        hp_q: f32,
+        lp_freq_hz: f32,
+        lp_q: f32,
+        active_handle: Option<FilterHandle>,
+        hover_handle: Option<FilterHandle>,
+    ) -> Self {
+        self.filter_enabled = enabled;
+        self.filter_hp_freq_hz = hp_freq_hz;
+        self.filter_hp_q = hp_q;
+        self.filter_lp_freq_hz = lp_freq_hz;
+        self.filter_lp_q = lp_q;
+        self.active_filter_handle = active_handle;
+        self.hover_filter_handle = hover_handle;
+        self
+    }
+
+    fn filter_frequency_x(curve_bounds: Rect, frequency_hz: f32) -> f32 {
+        let minimum = MIN_FILTER_FREQ_HZ.ln();
+        let maximum = MAX_FILTER_FREQ_HZ.ln();
+        let frequency_hz = frequency_hz.clamp(MIN_FILTER_FREQ_HZ, MAX_FILTER_FREQ_HZ);
+        let phase = ((frequency_hz.ln() - minimum) / (maximum - minimum)).clamp(0.0, 1.0);
+        curve_bounds.min.x + phase * (curve_bounds.width().max(1.0) - 1.0)
+    }
+
+    fn filter_frequency_from_x(curve_bounds: Rect, x: f32) -> f32 {
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let phase = ((x - curve_bounds.min.x) / width).clamp(0.0, 1.0);
+        (MIN_FILTER_FREQ_HZ.ln() + phase * (MAX_FILTER_FREQ_HZ.ln() - MIN_FILTER_FREQ_HZ.ln()))
+            .exp()
+    }
+
+    fn filter_q_y(curve_bounds: Rect, q: f32) -> f32 {
+        let minimum = MIN_FILTER_Q.ln();
+        let maximum = MAX_FILTER_Q.ln();
+        let phase = ((q.clamp(MIN_FILTER_Q, MAX_FILTER_Q).ln() - minimum) / (maximum - minimum))
+            .clamp(0.0, 1.0);
+        let top = curve_bounds.min.y + FILTER_HANDLE_MARGIN;
+        let bottom = curve_bounds.max.y - FILTER_HANDLE_MARGIN;
+        bottom - phase * (bottom - top).max(1.0)
+    }
+
+    fn filter_q_from_y(curve_bounds: Rect, y: f32) -> f32 {
+        let top = curve_bounds.min.y + FILTER_HANDLE_MARGIN;
+        let bottom = curve_bounds.max.y - FILTER_HANDLE_MARGIN;
+        let phase = ((bottom - y) / (bottom - top).max(1.0)).clamp(0.0, 1.0);
+        (MIN_FILTER_Q.ln() + phase * (MAX_FILTER_Q.ln() - MIN_FILTER_Q.ln())).exp()
+    }
+
+    fn filter_handle_points(&self, bounds: Rect) -> [(FilterHandle, Point); 3] {
+        let curve_bounds = Self::curve_bounds(bounds);
+        let center_frequency_hz = (self.filter_hp_freq_hz * self.filter_lp_freq_hz)
+            .max(MIN_FILTER_FREQ_HZ * MIN_FILTER_FREQ_HZ)
+            .sqrt();
+        let center_q = (self.filter_hp_q * self.filter_lp_q)
+            .max(MIN_FILTER_Q * MIN_FILTER_Q)
+            .sqrt();
+        [
+            (
+                FilterHandle::HighPass,
+                Point::new(
+                    Self::filter_frequency_x(curve_bounds, self.filter_hp_freq_hz),
+                    Self::filter_q_y(curve_bounds, self.filter_hp_q),
+                ),
+            ),
+            (
+                FilterHandle::LowPass,
+                Point::new(
+                    Self::filter_frequency_x(curve_bounds, self.filter_lp_freq_hz),
+                    Self::filter_q_y(curve_bounds, self.filter_lp_q),
+                ),
+            ),
+            (
+                FilterHandle::Both,
+                Point::new(
+                    Self::filter_frequency_x(curve_bounds, center_frequency_hz),
+                    Self::filter_q_y(curve_bounds, center_q),
+                ),
+            ),
+        ]
+    }
+
+    fn hit_filter_handle(&self, bounds: Rect, position: Point) -> Option<FilterHandle> {
+        if !self.filter_enabled || !Self::curve_bounds(bounds).contains(position) {
+            return None;
+        }
+        let radius_squared = FILTER_HANDLE_HIT_RADIUS * FILTER_HANDLE_HIT_RADIUS;
+        self.filter_handle_points(bounds)
+            .into_iter()
+            .filter_map(|(handle, center)| {
+                let distance_squared =
+                    (center.x - position.x).powi(2) + (center.y - position.y).powi(2);
+                (distance_squared <= radius_squared).then_some((handle, distance_squared))
+            })
+            .min_by(|(_, left), (_, right)| left.total_cmp(right))
+            .map(|(handle, _)| handle)
+    }
+
+    fn filter_values_at_pointer(&self, bounds: Rect, position: Point) -> (f32, f32) {
+        let curve_bounds = Self::curve_bounds(bounds);
+        (
+            Self::filter_frequency_from_x(curve_bounds, position.x),
+            Self::filter_q_from_y(curve_bounds, position.y),
+        )
     }
 
     fn curve_bounds(bounds: Rect) -> Rect {
@@ -6666,6 +7013,179 @@ impl CurvePreviewWidget {
         }
     }
 
+    fn push_filter_overlay(
+        &self,
+        primitives: &mut Vec<PaintPrimitive>,
+        bounds: Rect,
+        theme: &ThemeTokens,
+    ) {
+        if !self.filter_enabled {
+            return;
+        }
+        let curve_bounds = Self::curve_bounds(bounds);
+        let width = (curve_bounds.width().max(1.0) - 1.0).max(1.0);
+        let height = (curve_bounds.height().max(1.0) - 1.0).max(1.0);
+        let response_points: Vec<Point> = (0..=CURVE_SAMPLE_COUNT)
+            .map(|step| {
+                let phase = step as f32 / CURVE_SAMPLE_COUNT as f32;
+                let frequency_hz = (MIN_FILTER_FREQ_HZ.ln()
+                    + phase * (MAX_FILTER_FREQ_HZ.ln() - MIN_FILTER_FREQ_HZ.ln()))
+                .exp();
+                let response_db = crate::dsp::filter_response_db(
+                    frequency_hz,
+                    48_000.0,
+                    self.filter_hp_freq_hz,
+                    self.filter_hp_q,
+                    self.filter_lp_freq_hz,
+                    self.filter_lp_q,
+                );
+                let response_phase = ((response_db - FILTER_RESPONSE_DB_MIN)
+                    / (FILTER_RESPONSE_DB_MAX - FILTER_RESPONSE_DB_MIN))
+                    .clamp(0.0, 1.0);
+                Point::new(
+                    curve_bounds.min.x + phase * width,
+                    curve_bounds.max.y - response_phase * height,
+                )
+            })
+            .collect();
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: Arc::from(response_points),
+            color: FILTER_OVERLAY_COLOR,
+            width: 2.15,
+        }));
+
+        let handle_points = self.filter_handle_points(bounds);
+        for (handle, center) in handle_points {
+            if handle == FilterHandle::Both {
+                continue;
+            }
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from([
+                    Point::new(center.x, curve_bounds.min.y),
+                    Point::new(center.x, curve_bounds.max.y),
+                ]),
+                color: FILTER_OVERLAY_MUTED_COLOR,
+                width: 1.0,
+            }));
+        }
+
+        let hp_center = handle_points[0].1;
+        let lp_center = handle_points[1].1;
+        let both_center = handle_points[2].1;
+        for (handle, center) in [
+            (FilterHandle::HighPass, hp_center),
+            (FilterHandle::LowPass, lp_center),
+        ] {
+            let selected = self.active_filter_handle == Some(handle);
+            let hovered = self.hover_filter_handle == Some(handle);
+            let radius = FILTER_HANDLE_RADIUS + f32::from(selected || hovered) * 1.7;
+            primitives.push(PaintPrimitive::FillPath(PaintFillPath::new(
+                self.common.id,
+                circle_path(center, radius),
+                PaintBrush::solid(if selected {
+                    theme.accent_mint
+                } else if hovered {
+                    theme.accent_warning
+                } else {
+                    theme.surface_raised
+                }),
+            )));
+            primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+                widget_id: self.common.id,
+                points: Arc::from(circle_points(center, radius)),
+                color: FILTER_OVERLAY_COLOR,
+                width: if hovered || selected { 1.7 } else { 1.15 },
+            }));
+        }
+        let both_radius = FILTER_HANDLE_RADIUS
+            + f32::from(
+                self.active_filter_handle == Some(FilterHandle::Both)
+                    || self.hover_filter_handle == Some(FilterHandle::Both),
+            ) * 1.7;
+        primitives.push(PaintPrimitive::FillPolygon(PaintFillPolygon {
+            widget_id: self.common.id,
+            points: Arc::from([
+                Point::new(both_center.x, both_center.y - both_radius),
+                Point::new(both_center.x + both_radius, both_center.y),
+                Point::new(both_center.x, both_center.y + both_radius),
+                Point::new(both_center.x - both_radius, both_center.y),
+            ]),
+            color: if self.active_filter_handle == Some(FilterHandle::Both) {
+                theme.accent_mint
+            } else if self.hover_filter_handle == Some(FilterHandle::Both) {
+                theme.accent_warning
+            } else {
+                theme.surface_raised
+            },
+        }));
+        primitives.push(PaintPrimitive::StrokePolyline(PaintStrokePolyline {
+            widget_id: self.common.id,
+            points: Arc::from([
+                Point::new(both_center.x, both_center.y - both_radius),
+                Point::new(both_center.x + both_radius, both_center.y),
+                Point::new(both_center.x, both_center.y + both_radius),
+                Point::new(both_center.x - both_radius, both_center.y),
+                Point::new(both_center.x, both_center.y - both_radius),
+            ]),
+            color: FILTER_OVERLAY_COLOR,
+            width: 1.15,
+        }));
+
+        let text_height = CURVE_REFERENCE_LABEL_HEIGHT;
+        let label_for = |text: String, x: f32, y: f32, label_width: f32, align: PaintTextAlign| {
+            let label_width = label_width.min(curve_bounds.width().max(1.0));
+            let x = x.clamp(
+                curve_bounds.min.x,
+                (curve_bounds.max.x - label_width).max(curve_bounds.min.x),
+            );
+            let y = y.clamp(
+                curve_bounds.min.y,
+                (curve_bounds.max.y - text_height).max(curve_bounds.min.y),
+            );
+            PaintTextRun {
+                widget_id: self.common.id,
+                text: PaintText::from(text),
+                rect: Rect::from_xy_size(x, y, label_width, text_height),
+                font_size: CURVE_REFERENCE_FONT_SIZE,
+                baseline: None,
+                color: FILTER_OVERLAY_COLOR,
+                align,
+                wrap: TextWrap::None,
+            }
+        };
+        primitives.push(PaintPrimitive::Text(label_for(
+            format!(
+                "HP {}  Q {:.2}",
+                filter_frequency_text(self.filter_hp_freq_hz),
+                self.filter_hp_q
+            ),
+            curve_bounds.min.x + 4.0,
+            curve_bounds.min.y + 2.0,
+            112.0,
+            PaintTextAlign::Left,
+        )));
+        primitives.push(PaintPrimitive::Text(label_for(
+            format!(
+                "LP {}  Q {:.2}",
+                filter_frequency_text(self.filter_lp_freq_hz),
+                self.filter_lp_q
+            ),
+            curve_bounds.max.x - 116.0,
+            curve_bounds.min.y + 2.0,
+            112.0,
+            PaintTextAlign::Right,
+        )));
+        primitives.push(PaintPrimitive::Text(label_for(
+            "BOTH · drag to move band".to_string(),
+            curve_bounds.center().x - 78.0,
+            curve_bounds.max.y - text_height - 3.0,
+            156.0,
+            PaintTextAlign::Center,
+        )));
+    }
+
     fn push_marquee(
         &self,
         primitives: &mut Vec<PaintPrimitive>,
@@ -6731,6 +7251,14 @@ impl CurvePreviewWidget {
     }
 }
 
+fn filter_frequency_text(frequency_hz: f32) -> String {
+    if frequency_hz >= 1_000.0 {
+        format!("{:.1} kHz", frequency_hz / 1_000.0)
+    } else {
+        format!("{:.0} Hz", frequency_hz)
+    }
+}
+
 impl Widget for CurvePreviewWidget {
     fn common(&self) -> &WidgetCommon {
         &self.common
@@ -6752,7 +7280,9 @@ impl Widget for CurvePreviewWidget {
 
         let on_offset_track = Self::offset_bar_bounds(bounds).contains(*position)
             && !Self::offset_handle_bounds(bounds, self.phase_offset).contains(*position);
-        if on_offset_track {
+        if self.hit_filter_handle(bounds, *position).is_some() {
+            PointerPressAdmission::Legacy
+        } else if on_offset_track {
             PointerPressAdmission::Blocked
         } else {
             PointerPressAdmission::Legacy
@@ -6795,6 +7325,16 @@ impl Widget for CurvePreviewWidget {
                 ..
             } => {
                 self.common.state.hovered = bounds.contains(position);
+                if let Some(handle) = self.hit_filter_handle(bounds, position) {
+                    let (frequency_hz, q) = self.filter_values_at_pointer(bounds, position);
+                    return Some(WidgetOutput::typed(
+                        CurvePreviewMessage::PressFilterHandle {
+                            handle,
+                            frequency_hz,
+                            q,
+                        },
+                    ));
+                }
                 if modifiers.alt
                     && !modifiers.command
                     && !modifiers.shift
@@ -6906,7 +7446,14 @@ impl Widget for CurvePreviewWidget {
             }
             WidgetInput::PointerMove { position, .. } => {
                 self.common.state.hovered = bounds.contains(position);
-                if let Some(pending) = self.pending_option_gesture {
+                if let Some(handle) = self.active_filter_handle {
+                    let (frequency_hz, q) = self.filter_values_at_pointer(bounds, position);
+                    Some(CurvePreviewMessage::DragFilter {
+                        handle,
+                        frequency_hz,
+                        q,
+                    })
+                } else if let Some(pending) = self.pending_option_gesture {
                     if Self::option_gesture_drag_started(pending.origin, position) {
                         self.pending_option_gesture = None;
                         Some(self.pending_option_handoff_message(bounds, pending))
@@ -6949,6 +7496,14 @@ impl Widget for CurvePreviewWidget {
                         ),
                     })
                 } else {
+                    let filter_handle = self.hit_filter_handle(bounds, position);
+                    if filter_handle != self.hover_filter_handle {
+                        return Some(WidgetOutput::typed(
+                            CurvePreviewMessage::HoverFilterHandle {
+                                handle: filter_handle,
+                            },
+                        ));
+                    }
                     let hover = self.hover_at(
                         bounds,
                         position,
@@ -7052,7 +7607,14 @@ impl Widget for CurvePreviewWidget {
                 ..
             } => {
                 self.common.state.hovered = bounds.contains(position);
-                if self.active_marquee.is_some() {
+                if let Some(handle) = self.active_filter_handle {
+                    let (frequency_hz, q) = self.filter_values_at_pointer(bounds, position);
+                    Some(CurvePreviewMessage::ReleaseFilter {
+                        handle,
+                        frequency_hz,
+                        q,
+                    })
+                } else if self.active_marquee.is_some() {
                     Some(CurvePreviewMessage::ReleaseMarquee {
                         current: self.raw_node_from_display_point(bounds, position),
                     })
@@ -7101,6 +7663,8 @@ impl Widget for CurvePreviewWidget {
                         || self.preview_node.is_some()
                         || self.hover_segment.is_some()
                         || self.hover_segment_zone.is_some()
+                        || self.hover_filter_handle.is_some()
+                        || self.active_filter_handle.is_some()
                         || self.option_hover_held
                         || self.command_hover_held
                         || self.shift_hover_held))
@@ -7118,6 +7682,7 @@ impl Widget for CurvePreviewWidget {
         self.common.state.hovered = previous.common.state.hovered;
         self.pending_option_gesture = previous.pending_option_gesture;
         self.last_pointer_position = previous.last_pointer_position;
+        self.hover_filter_handle = previous.hover_filter_handle;
     }
 
     fn append_paint(
@@ -7135,6 +7700,7 @@ impl Widget for CurvePreviewWidget {
         self.push_offset_bar(primitives, bounds, theme);
         self.push_marquee(primitives, bounds, theme);
         self.push_nodes(primitives, bounds, theme);
+        self.push_filter_overlay(primitives, bounds, theme);
         self.push_playhead(primitives, bounds);
     }
 }
@@ -7149,6 +7715,9 @@ enum CurvePreviewMessage {
     HoverProximitySegment {
         index: usize,
     },
+    HoverFilterHandle {
+        handle: Option<FilterHandle>,
+    },
     ModifiersChanged {
         option_held: bool,
         command_held: bool,
@@ -7160,6 +7729,21 @@ enum CurvePreviewMessage {
         shift_held: bool,
         option_held: bool,
         command_held: bool,
+    },
+    PressFilterHandle {
+        handle: FilterHandle,
+        frequency_hz: f32,
+        q: f32,
+    },
+    DragFilter {
+        handle: FilterHandle,
+        frequency_hz: f32,
+        q: f32,
+    },
+    ReleaseFilter {
+        handle: FilterHandle,
+        frequency_hz: f32,
+        q: f32,
     },
     PressPaint {
         sample: CurvePaintSample,
@@ -16414,6 +16998,185 @@ mod tests {
     }
 
     #[test]
+    fn curve_preview_filter_overlay_is_hidden_when_disabled_and_paints_when_enabled() {
+        let curve = PumpParams::new().editable_curve_snapshot();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let theme = ThemeTokens::default();
+        let disabled = CurvePreviewWidget::new(curve.clone(), None, None, None, None, None, false);
+        let mut disabled_primitives = Vec::new();
+        disabled.append_paint(
+            &mut disabled_primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &theme,
+        );
+        assert!(!disabled_primitives.iter().any(|primitive| {
+            matches!(
+                primitive,
+                PaintPrimitive::StrokePolyline(line)
+                    if line.color == FILTER_OVERLAY_COLOR
+                        && line.points.len() == CURVE_SAMPLE_COUNT + 1
+            )
+        }));
+
+        let enabled = CurvePreviewWidget::new(curve, None, None, None, None, None, false)
+            .with_filter(true, 250.0, 0.8, 4_500.0, 1.2, None, None);
+        let mut enabled_primitives = Vec::new();
+        enabled.append_paint(
+            &mut enabled_primitives,
+            bounds,
+            &LayoutOutput::default(),
+            &theme,
+        );
+        let response = enabled_primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                PaintPrimitive::StrokePolyline(line)
+                    if line.color == FILTER_OVERLAY_COLOR
+                        && line.points.len() == CURVE_SAMPLE_COUNT + 1 =>
+                {
+                    Some(line)
+                }
+                _ => None,
+            });
+        let response = response.expect("enabled filter should paint a response overlay");
+        let curve_bounds = CurvePreviewWidget::curve_bounds(bounds);
+        assert!(response.points.iter().all(|point| {
+            point.x >= curve_bounds.min.x
+                && point.x <= curve_bounds.max.x
+                && point.y >= curve_bounds.min.y
+                && point.y <= curve_bounds.max.y
+        }));
+        for label in ["HP", "LP", "BOTH"] {
+            assert!(enabled_primitives.iter().any(|primitive| {
+                matches!(primitive, PaintPrimitive::Text(text) if text.text.starts_with(label))
+            }));
+        }
+
+        for (expected_handle, center) in enabled.filter_handle_points(bounds) {
+            let mut widget = enabled.clone();
+            let output = widget
+                .handle_input(
+                    bounds,
+                    WidgetInput::pointer_press(
+                        center,
+                        PointerButton::Primary,
+                        PointerModifiers::default(),
+                    ),
+                )
+                .expect("filter handle should accept a primary press");
+            assert!(matches!(
+                output.typed_copied(),
+                Some(CurvePreviewMessage::PressFilterHandle { handle, .. }) if handle == expected_handle
+            ));
+        }
+    }
+
+    #[test]
+    fn filter_handle_drag_preserves_band_span_and_prevents_crossing() {
+        let drag = ActiveFilterDrag {
+            handle: FilterHandle::Both,
+            start_hp_freq_hz: 500.0,
+            start_hp_q: 0.8,
+            start_lp_freq_hz: 4_000.0,
+            start_lp_q: 1.6,
+        };
+        let start_span = (drag.start_lp_freq_hz / drag.start_hp_freq_hz).ln();
+        let (hp, hp_q, lp, lp_q) = filter_drag_values(drag, 8_000.0, 3.0);
+        assert!((hp_q - 3.0).abs() < f32::EPSILON);
+        assert!((lp_q - 3.0).abs() < f32::EPSILON);
+        assert!(((lp / hp).ln() - start_span).abs() < 1.0e-5);
+        assert!(hp >= MIN_FILTER_FREQ_HZ);
+        assert!(lp <= MAX_FILTER_FREQ_HZ);
+
+        let hp_drag = ActiveFilterDrag {
+            handle: FilterHandle::HighPass,
+            ..drag
+        };
+        let (hp, _, lp, _) = filter_drag_values(hp_drag, MAX_FILTER_FREQ_HZ, 2.0);
+        assert!(hp <= lp - FILTER_MIN_SEPARATION_HZ + 1.0e-5);
+        assert!(lp - hp >= FILTER_MIN_SEPARATION_HZ - 1.0e-5);
+
+        let lp_drag = ActiveFilterDrag {
+            handle: FilterHandle::LowPass,
+            ..drag
+        };
+        let (hp, _, lp, _) = filter_drag_values(lp_drag, MIN_FILTER_FREQ_HZ, 2.0);
+        assert!(lp >= hp + FILTER_MIN_SEPARATION_HZ - 1.0e-5);
+    }
+
+    #[test]
+    fn filter_toggle_and_drag_update_params_with_one_undo_entry() {
+        let params = Arc::new(PumpParams::new());
+        let mut state = editor_state(Arc::clone(&params));
+        reduce_editor_message(&mut state, RadiantEditorMessage::ToggleFilter);
+        assert!(params.filter_enabled());
+        assert_eq!(state.undo_history.len(), 1);
+
+        let before_hp = params.filter_hp_freq_hz();
+        let bounds = Rect::from_xy_size(0.0, 0.0, 396.0, CURVE_PREVIEW_HEIGHT);
+        let widget = CurvePreviewWidget::new(
+            params.editable_curve_snapshot(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .with_filter(
+            true,
+            params.filter_hp_freq_hz(),
+            params.filter_hp_q(),
+            params.filter_lp_freq_hz(),
+            params.filter_lp_q(),
+            None,
+            None,
+        );
+        let (_, center) = widget
+            .filter_handle_points(bounds)
+            .into_iter()
+            .find(|(handle, _)| *handle == FilterHandle::HighPass)
+            .expect("HP handle should exist");
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::PressFilterHandle {
+                handle: FilterHandle::HighPass,
+                frequency_hz: params.filter_hp_freq_hz(),
+                q: params.filter_hp_q(),
+            }),
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::DragFilter {
+                handle: FilterHandle::HighPass,
+                frequency_hz: 1_000.0,
+                q: 2.0,
+            }),
+        );
+        assert!(params.filter_hp_freq_hz() > before_hp);
+        assert_eq!(
+            state.active_filter_drag.map(|drag| drag.handle),
+            Some(FilterHandle::HighPass)
+        );
+        reduce_editor_message(
+            &mut state,
+            RadiantEditorMessage::Curve(CurvePreviewMessage::ReleaseFilter {
+                handle: FilterHandle::HighPass,
+                frequency_hz: 1_000.0,
+                q: 2.0,
+            }),
+        );
+        assert!(state.active_filter_drag.is_none());
+        assert!(
+            center.x
+                < CurvePreviewWidget::filter_handle_points(&widget, bounds)[1]
+                    .1
+                    .x
+        );
+    }
+
+    #[test]
     fn curve_preview_widget_maps_processed_waveform_with_display_phase_and_gain() {
         let curve = EditableCurve {
             nodes: vec![
@@ -16495,6 +17258,11 @@ mod tests {
             timing_mode: TIMING_MODE_SYNC,
             free_rate_hz: DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -16557,6 +17325,11 @@ mod tests {
             timing_mode: TIMING_MODE_SYNC,
             free_rate_hz: DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
         };
         let transition_settings = DspSettings {
             phase_offset: target_phase_offset,

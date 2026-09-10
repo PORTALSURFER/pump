@@ -135,6 +135,11 @@ mod tests {
             timing_mode: crate::params::TIMING_MODE_SYNC,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
         }
     }
 
@@ -230,6 +235,11 @@ mod tests {
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
         };
         let transport = TransportState {
             tempo_bpm: 128.0,
@@ -256,6 +266,11 @@ mod tests {
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
         };
         let transport = TransportState {
             tempo_bpm: 128.0,
@@ -284,6 +299,11 @@ mod tests {
             timing_mode: crate::params::TIMING_MODE_SYNC,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
         };
         for (host_beats, expected) in [(0.0, 0.0), (0.25, 0.25), (0.5, 0.5), (0.75, 0.75)] {
             let phase = gui_phase_from_transport(
@@ -365,6 +385,11 @@ mod tests {
             timing_mode: crate::params::TIMING_MODE_FREE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
         };
         let resolved = gui_phase_from_transport(
             TransportState {
@@ -409,6 +434,11 @@ mod tests {
             timing_mode: crate::params::DEFAULT_TIMING_MODE,
             free_rate_hz: crate::params::DEFAULT_FREE_RATE_HZ,
             bypassed: false,
+            filter_enabled: false,
+            filter_hp_freq_hz: crate::params::DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: crate::params::DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: crate::params::DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,

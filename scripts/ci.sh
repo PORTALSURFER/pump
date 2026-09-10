@@ -84,6 +84,7 @@ if [[ "${want_screenshots}" == "1" ]]; then
     target/ui-screenshots/pump/pump-components-states-720x360-2x.png
     target/ui-screenshots/pump/pump-bypass-active-640x400.png
     target/ui-screenshots/pump/pump-bypass-bypassed-640x400.png
+    target/ui-screenshots/pump/pump-filter-enabled-640x400.png
     target/ui-screenshots/pump/pump-header-normal-640x400.png
     target/ui-screenshots/pump/pump-header-hovered-640x400.png
     target/ui-screenshots/pump/pump-header-copy-hovered-640x400.png

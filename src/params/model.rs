@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 17;
+pub(crate) const STATE_VERSION: u32 = 18;
 
 /// The two independently editable Pump sound sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +67,16 @@ pub struct PumpSoundState {
     pub free_rate_hz: f32,
     /// Number of quarter-note beats to hold at the cycle start in Sync mode.
     pub delay_beats: usize,
+    /// Whether frequency-selective pumping is enabled.
+    pub filter_enabled: bool,
+    /// High-pass cutoff frequency in hertz.
+    pub filter_hp_freq_hz: f32,
+    /// High-pass resonance/Q amount.
+    pub filter_hp_q: f32,
+    /// Low-pass cutoff frequency in hertz.
+    pub filter_lp_freq_hz: f32,
+    /// Low-pass resonance/Q amount.
+    pub filter_lp_q: f32,
     pub editable_curve: EditableCurve,
     pub quick_slots: Vec<QuickShapeSlot>,
 }
@@ -87,6 +97,11 @@ impl PumpSoundState {
             timing_mode: DEFAULT_TIMING_MODE,
             free_rate_hz: DEFAULT_FREE_RATE_HZ,
             delay_beats: DEFAULT_DELAY_BEATS,
+            filter_enabled: DEFAULT_FILTER_ENABLED,
+            filter_hp_freq_hz: DEFAULT_FILTER_HP_FREQ_HZ,
+            filter_hp_q: DEFAULT_FILTER_HP_Q,
+            filter_lp_freq_hz: DEFAULT_FILTER_LP_FREQ_HZ,
+            filter_lp_q: DEFAULT_FILTER_LP_Q,
             editable_curve: default_editable_curve(),
             quick_slots: seeded_quick_shape_slots(),
         }
@@ -128,6 +143,16 @@ pub const PARAM_TIMING_MODE_NUM: u32 = 13;
 pub const PARAM_FREE_RATE_NUM: u32 = 14;
 /// Host-visible numeric parameter id for the synchronized cycle-start delay.
 pub const PARAM_DELAY_NUM: u32 = 15;
+/// Host-visible numeric parameter id for selective filter enable.
+pub const PARAM_FILTER_ENABLED_NUM: u32 = 17;
+/// Host-visible numeric parameter id for selective filter high-pass cutoff.
+pub const PARAM_FILTER_HP_FREQ_NUM: u32 = 18;
+/// Host-visible numeric parameter id for selective filter high-pass Q.
+pub const PARAM_FILTER_HP_Q_NUM: u32 = 19;
+/// Host-visible numeric parameter id for selective filter low-pass cutoff.
+pub const PARAM_FILTER_LP_FREQ_NUM: u32 = 20;
+/// Host-visible numeric parameter id for selective filter low-pass Q.
+pub const PARAM_FILTER_LP_Q_NUM: u32 = 21;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
@@ -161,6 +186,16 @@ pub const PARAM_TIMING_MODE_ID: ClapId = ClapId::new(PARAM_TIMING_MODE_NUM);
 pub const PARAM_FREE_RATE_ID: ClapId = ClapId::new(PARAM_FREE_RATE_NUM);
 /// Parameter id for the synchronized cycle-start delay.
 pub const PARAM_DELAY_ID: ClapId = ClapId::new(PARAM_DELAY_NUM);
+/// Parameter id for selective filter enable.
+pub const PARAM_FILTER_ENABLED_ID: ClapId = ClapId::new(PARAM_FILTER_ENABLED_NUM);
+/// Parameter id for selective filter high-pass cutoff.
+pub const PARAM_FILTER_HP_FREQ_ID: ClapId = ClapId::new(PARAM_FILTER_HP_FREQ_NUM);
+/// Parameter id for selective filter high-pass Q.
+pub const PARAM_FILTER_HP_Q_ID: ClapId = ClapId::new(PARAM_FILTER_HP_Q_NUM);
+/// Parameter id for selective filter low-pass cutoff.
+pub const PARAM_FILTER_LP_FREQ_ID: ClapId = ClapId::new(PARAM_FILTER_LP_FREQ_NUM);
+/// Parameter id for selective filter low-pass Q.
+pub const PARAM_FILTER_LP_Q_ID: ClapId = ClapId::new(PARAM_FILTER_LP_Q_NUM);
 
 /// Plain host value for active processing.
 pub const BYPASS_ACTIVE_VALUE: f32 = 0.0;
@@ -238,6 +273,16 @@ pub const MIN_DELAY_BEATS: usize = 0;
 pub const MAX_DELAY_BEATS: usize = 32;
 /// Default synchronized cycle-start delay in quarter-note beats.
 pub const DEFAULT_DELAY_BEATS: usize = 0;
+/// Default selective filter enabled state.
+pub const DEFAULT_FILTER_ENABLED: bool = false;
+/// Default selective filter high-pass cutoff.
+pub const DEFAULT_FILTER_HP_FREQ_HZ: f32 = 80.0;
+/// Default selective filter high-pass Q.
+pub const DEFAULT_FILTER_HP_Q: f32 = 0.707;
+/// Default selective filter low-pass cutoff.
+pub const DEFAULT_FILTER_LP_FREQ_HZ: f32 = 16_000.0;
+/// Default selective filter low-pass Q.
+pub const DEFAULT_FILTER_LP_Q: f32 = 0.707;
 /// Default sync division index (`1/4`).
 pub const DEFAULT_SYNC_DIVISION_INDEX: usize = 4;
 /// Maximum number of stored user presets.
@@ -279,6 +324,16 @@ pub const MIN_SMOOTH: f32 = 0.0;
 pub const MIN_SWING: f32 = 0.0;
 /// Maximum swing amount. At 100%, a cycle midpoint lands at 2/3 of the cycle.
 pub const MAX_SWING: f32 = 1.0;
+/// Minimum selective filter cutoff frequency.
+pub const MIN_FILTER_FREQ_HZ: f32 = 20.0;
+/// Maximum selective filter cutoff frequency.
+pub const MAX_FILTER_FREQ_HZ: f32 = 20_000.0;
+/// Minimum selective filter Q.
+pub const MIN_FILTER_Q: f32 = 0.25;
+/// Maximum selective filter Q.
+pub const MAX_FILTER_Q: f32 = 4.0;
+/// Minimum frequency spacing retained between the two filter cutoffs.
+pub const FILTER_MIN_SEPARATION_HZ: f32 = 1.0;
 
 /// Clamp a timing source value into the supported enum range.
 pub fn clamp_timing_mode(value: f32) -> usize {
@@ -451,6 +506,16 @@ pub struct PumpPreset {
     pub free_rate_hz: f32,
     /// Number of quarter-note beats to hold at the cycle start in Sync mode.
     pub delay_beats: usize,
+    /// Whether frequency-selective pumping is enabled.
+    pub filter_enabled: bool,
+    /// High-pass cutoff frequency in hertz.
+    pub filter_hp_freq_hz: f32,
+    /// High-pass resonance/Q amount.
+    pub filter_hp_q: f32,
+    /// Low-pass cutoff frequency in hertz.
+    pub filter_lp_freq_hz: f32,
+    /// Low-pass resonance/Q amount.
+    pub filter_lp_q: f32,
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
     /// Overwriteable quick-slot curves shown below the editor for this preset.
@@ -522,6 +587,11 @@ impl PumpPresetBank {
                 timing_mode: DEFAULT_TIMING_MODE,
                 free_rate_hz: DEFAULT_FREE_RATE_HZ,
                 delay_beats: DEFAULT_DELAY_BEATS,
+                filter_enabled: DEFAULT_FILTER_ENABLED,
+                filter_hp_freq_hz: DEFAULT_FILTER_HP_FREQ_HZ,
+                filter_hp_q: DEFAULT_FILTER_HP_Q,
+                filter_lp_freq_hz: DEFAULT_FILTER_LP_FREQ_HZ,
+                filter_lp_q: DEFAULT_FILTER_LP_Q,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -592,6 +662,11 @@ pub struct PumpParams {
     pub(super) timing_mode: AtomicU32,
     pub(super) free_rate_hz: AtomicF32,
     pub(super) delay_beats: AtomicU32,
+    pub(super) filter_enabled: AtomicBool,
+    pub(super) filter_hp_freq_hz: AtomicF32,
+    pub(super) filter_hp_q: AtomicF32,
+    pub(super) filter_lp_freq_hz: AtomicF32,
+    pub(super) filter_lp_q: AtomicF32,
     pub(super) bypass: AtomicBool,
     pub(super) bypass_revision: AtomicU32,
     pub(super) bypass_last_automation_micros: AtomicU64,
@@ -616,6 +691,11 @@ pub struct PumpParams {
     pub(super) realtime_timing_mode: [AtomicU32; 2],
     pub(super) realtime_free_rate_hz: [AtomicF32; 2],
     pub(super) realtime_delay_beats: [AtomicU32; 2],
+    pub(super) realtime_filter_enabled: [AtomicBool; 2],
+    pub(super) realtime_filter_hp_freq_hz: [AtomicF32; 2],
+    pub(super) realtime_filter_hp_q: [AtomicF32; 2],
+    pub(super) realtime_filter_lp_freq_hz: [AtomicF32; 2],
+    pub(super) realtime_filter_lp_q: [AtomicF32; 2],
     pub(super) realtime_curve: [[AtomicF32; CURVE_TABLE_LEN]; 2],
     pub(super) sound_states: RwLock<[PumpSoundState; 2]>,
     /// Durable per-side reference states used for A/B dirty indicators.
