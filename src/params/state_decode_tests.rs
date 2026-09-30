@@ -982,34 +982,84 @@ fn decode_rejects_nonfinite_v14_ab_scalar_without_mutating_state() {
 
 // Existing migration fixtures intentionally start at v20, then remove fields
 // to represent each historical wire format. Keep their byte offsets stable.
-fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
-    let mut payload = encode_current_state_payload(params);
-    let mut offset = skip_encoded_curve(&payload, 32, true) + 8;
-    let count = read_u32(&payload, offset - 4) as usize;
+fn effect_record_offsets(payload: &[u8]) -> Vec<usize> {
+    let mut offset = skip_encoded_curve(payload, 32, true) + 8;
+    let count = read_u32(payload, offset - 4) as usize;
     let mut remove = Vec::new();
     for _ in 0..count {
-        let name_len = read_u32(&payload, offset) as usize;
+        let name_len = read_u32(payload, offset) as usize;
         offset += 4 + name_len + 6 * 4 + 1;
-        offset = skip_encoded_curve(&payload, offset, true);
-        let slots = read_u32(&payload, offset) as usize;
+        offset = skip_encoded_curve(payload, offset, true);
+        let slots = read_u32(payload, offset) as usize;
         offset += 4;
         for _ in 0..slots {
-            offset = skip_encoded_curve(&payload, offset, true);
+            offset = skip_encoded_curve(payload, offset, true);
         }
         offset += 4 + 4 + 4 + 1 + 4 + 8 + 4 + 19;
         remove.push(offset);
-        offset += 48;
+        offset += 28;
     }
     offset += 20 + 4;
     for _ in 0..4 {
-        let (_, _, end) = sound_state_offsets(&payload, offset);
+        let (_, _, end) = sound_state_offsets(payload, offset);
         remove.push(end + 31);
-        offset = end + 31 + 48;
+        offset = end + 31 + 28;
     }
-    remove.push(payload.len() - 48);
-    for start in remove.into_iter().rev() {
-        payload.drain(start..start + 48);
+    remove.push(payload.len() - 28);
+    remove
+}
+
+fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
+    let mut payload = encode_current_state_payload(params);
+    for start in effect_record_offsets(&payload).into_iter().rev() {
+        payload.drain(start..start + 28);
     }
     write_u32(&mut payload, 4, 20);
     payload
+}
+
+#[test]
+fn v21_spectral_state_migrates_all_dual_records_and_rejects_invalid_removed_data() {
+    let source = PumpParams::new();
+    for (i, value) in [1., 900., 0., 0.2, 0.8, 1., 0.].iter().enumerate() {
+        source.set_effect(i, *value);
+    }
+    assert!(source.store_active_sound_state());
+    let mut bank = source.preset_bank_snapshot();
+    bank.presets[0].effects = [1., 1700., 1., 0.5, 0.3, 0., 1.];
+    source.set_preset_bank_without_persistence(bank);
+    let mut old = encode_current_state_payload(&source);
+    let removed = [1_f32, 36., 0.1, 2000., 1.]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect::<Vec<_>>();
+    for start in effect_record_offsets(&old).into_iter().rev() {
+        old.splice(start + 28..start + 28, removed.iter().copied());
+    }
+    write_u32(&mut old, 4, 21);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &old).unwrap();
+    assert_eq!(restored.effects(), source.effects());
+    assert_eq!(
+        restored.preset_bank_snapshot(),
+        source.preset_bank_snapshot()
+    );
+    for side in [super::SoundSide::A, super::SoundSide::B] {
+        assert_eq!(
+            restored.sound_state_snapshot(side).effects,
+            source.sound_state_snapshot(side).effects
+        );
+        assert_eq!(
+            restored.stored_sound_state_snapshot(side).effects,
+            source.stored_sound_state_snapshot(side).effects
+        );
+    }
+    let before = encode_current_state_payload(&restored);
+    let last = old.len() - 4;
+    old[last..].copy_from_slice(&f32::NAN.to_le_bytes());
+    assert!(decode_state_payload(&restored, &old).is_err());
+    assert_eq!(encode_current_state_payload(&restored), before);
+    old.truncate(last);
+    assert!(decode_state_payload(&restored, &old).is_err());
+    assert_eq!(encode_current_state_payload(&restored), before);
 }

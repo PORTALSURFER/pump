@@ -68,20 +68,18 @@ fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
 }
 
 impl PumpParams {
-    pub fn effects_for_side(&self, index: usize) -> [f32; crate::dual_spectral::COUNT] {
+    pub fn effects_for_side(&self, index: usize) -> [f32; crate::dual_band::COUNT] {
         std::array::from_fn(|i| self.realtime_effects[index][i].load(Ordering::Relaxed))
     }
-    pub fn effects(&self) -> [f32; crate::dual_spectral::COUNT] {
+    pub fn effects(&self) -> [f32; crate::dual_band::COUNT] {
         self.effects_for_side(self.realtime_index())
     }
     pub fn set_effect(&self, index: usize, value: f32) {
-        if index >= crate::dual_spectral::COUNT {
+        if index >= crate::dual_band::COUNT {
             return;
         }
-        self.realtime_effects[self.realtime_index()][index].store(
-            crate::dual_spectral::sanitize(index, value),
-            Ordering::Relaxed,
-        );
+        self.realtime_effects[self.realtime_index()][index]
+            .store(crate::dual_band::sanitize(index, value), Ordering::Relaxed);
         self.mark_active_sound_dirty();
     }
 
@@ -96,7 +94,7 @@ impl PumpParams {
         let default_curve = editable_curve_to_table(&editable_curve);
         let params = Self {
             realtime_effects: std::array::from_fn(|_| {
-                crate::dual_spectral::DEFAULTS.map(AtomicF32::new)
+                crate::dual_band::DEFAULTS.map(AtomicF32::new)
             }),
             mix: AtomicF32::new(DEFAULT_MIX),
             depth_db: AtomicF32::new(DEFAULT_DEPTH_DB),
@@ -1097,7 +1095,7 @@ impl PumpParams {
         );
         for (i, value) in state.effects.iter().enumerate() {
             self.realtime_effects[index][i]
-                .store(crate::dual_spectral::sanitize(i, *value), Ordering::Relaxed);
+                .store(crate::dual_band::sanitize(i, *value), Ordering::Relaxed);
         }
         let normalized = state.editable_curve.clone().normalized();
         let curve_table = editable_curve_to_table(&normalized);
@@ -1207,7 +1205,7 @@ impl PumpParams {
         for (index, preset) in bank.presets.iter_mut().enumerate() {
             preset.name = sanitize_preset_name(&preset.name, index);
             for (i, value) in preset.effects.iter_mut().enumerate() {
-                *value = crate::dual_spectral::sanitize(i, *value);
+                *value = crate::dual_band::sanitize(i, *value);
             }
             // Persist the field for backward-compatible serialization, but keep
             // runtime behavior fully writable across all presets.

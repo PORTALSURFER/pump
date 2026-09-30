@@ -91,7 +91,7 @@ fn sync_division_options_append_long_cycle_choices() {
 
 #[test]
 fn sync_division_host_text_and_normalized_max_include_eight_bars() {
-    assert_eq!(super::param_count(), 32);
+    assert_eq!(super::param_count(), 27);
     assert_eq!(MAX_SYNC_DIVISION, 9.0);
     let flags = super::param_flags_for_index(3).expect("CLAP division metadata");
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -118,7 +118,7 @@ fn sync_division_host_text_and_normalized_max_include_eight_bars() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 32);
+    assert_eq!(super::param_count(), 27);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -198,7 +198,7 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
 #[test]
 fn filter_host_parameters_have_stable_ranges_and_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 32);
+    assert_eq!(super::param_count(), 27);
     let filter_flags = super::param_flags_for_index(13).expect("filter metadata should exist");
     assert!(filter_flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(filter_flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -280,7 +280,7 @@ fn free_rate_clap_and_vst3_normalized_mapping_agree() {
 #[test]
 fn free_timing_parameters_use_stable_ids_and_lossless_units() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 32);
+    assert_eq!(super::param_count(), 27);
     assert_eq!(
         super::get_param_value(&params, super::PARAM_TIMING_MODE_ID),
         Some(0.0)
@@ -560,7 +560,7 @@ fn editor_closed_host_switch_preserves_active_side_curve_during_scalar_save() {
 
 #[test]
 fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
-    assert_eq!(super::param_count(), 32);
+    assert_eq!(super::param_count(), 27);
     let flags = super::param_flags_for_index(7).expect("bypass metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -1245,7 +1245,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     filter_lp_q: super::DEFAULT_FILTER_LP_Q,
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
-                    effects: crate::dual_spectral::DEFAULTS,
+                    effects: crate::dual_band::DEFAULTS,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1274,7 +1274,7 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     filter_lp_q: super::DEFAULT_FILTER_LP_Q,
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
-                    effects: crate::dual_spectral::DEFAULTS,
+                    effects: crate::dual_band::DEFAULTS,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1551,7 +1551,7 @@ fn vst3_gui_parameter_ids_follow_the_declared_vst3_parameter_table() {
 #[cfg(feature = "vst3")]
 #[test]
 fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
-    assert_eq!(vst3_param_count(), 33);
+    assert_eq!(vst3_param_count(), 28);
     let ids = (0..vst3_param_count() as i32)
         .map(|index| {
             vst3_param_info_for_index(index)
@@ -1563,7 +1563,7 @@ fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
         ids,
         vec![
             1, 3, 4, 5, 2, 6, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 15, 24, 25,
-            26, 27, 28, 29, 30, 31, 32, 33, 34, 35
+            26, 27, 28, 29, 30
         ]
     );
     let mut sorted_ids = ids.clone();
@@ -1685,9 +1685,9 @@ fn save_by_name_blocks_when_preset_bank_is_full() {
 }
 
 #[test]
-fn dual_spectral_controls_round_trip_working_stored_sounds_and_presets() {
+fn dual_band_controls_round_trip_working_stored_sounds_and_presets() {
     let params = PumpParams::new();
-    let a = [1., 350., 0., 0.25, 0.8, 1., 0., 1., 18., 2., 300., 1.];
+    let a = [1., 350., 0., 0.25, 0.8, 1., 0.];
     for (i, v) in a.iter().enumerate() {
         params.set_effect(i, *v);
     }
@@ -1696,7 +1696,7 @@ fn dual_spectral_controls_round_trip_working_stored_sounds_and_presets() {
     bank.presets[0].effects = a;
     params.set_preset_bank_without_persistence(bank);
     params.set_active_sound(super::SoundSide::B);
-    let b = [1., 2500., 1., 0.7, 0.3, 0., 1., 1., 8., 40., 800., 0.];
+    let b = [1., 2500., 1., 0.7, 0.3, 0., 1.];
     for (i, v) in b.iter().enumerate() {
         params.set_effect(i, *v);
     }
@@ -1726,12 +1726,12 @@ fn dual_spectral_controls_round_trip_working_stored_sounds_and_presets() {
 }
 
 #[test]
-fn dual_spectral_host_controls_keep_ids_and_text_round_trips() {
+fn dual_band_host_controls_keep_ids_and_text_round_trips() {
     use toybox::clack_plugin::utils::ClapId;
     let params = PumpParams::new();
-    for i in 0..crate::dual_spectral::COUNT {
+    for i in 0..crate::dual_band::COUNT {
         let id = ClapId::new(24 + i as u32);
-        let value = crate::dual_spectral::DEFAULTS[i];
+        let value = crate::dual_band::DEFAULTS[i];
         super::apply_param_event(&params, id, value);
         let text = super::format_plain_value_text(id, value as f64).unwrap();
         let parsed = super::parse_plain_value_text(id, &text).unwrap();
@@ -1742,4 +1742,19 @@ fn dual_spectral_host_controls_keep_ids_and_text_round_trips() {
         params.set_effect(i, f32::NAN);
         assert_eq!(params.effects()[i], value);
     }
+}
+
+#[test]
+fn removed_spectral_ids_are_not_advertised_or_applied() {
+    let params = PumpParams::new();
+    let before = params.effects();
+    for raw in 31..=35 {
+        let id = toybox::clack_plugin::utils::ClapId::new(raw);
+        assert!(super::normalized_from_plain_value(id, 1.).is_none());
+        assert!(super::format_plain_value_text(id, 1.).is_none());
+        super::apply_param_event(&params, id, 1.);
+        #[cfg(feature = "vst3")]
+        assert!(super::clap_id_from_vst3_param_id(raw).is_none());
+    }
+    assert_eq!(params.effects(), before);
 }

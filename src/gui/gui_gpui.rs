@@ -974,7 +974,6 @@ struct PumpEditor {
     last_pointer: Option<Point<Pixels>>,
     button_focus_handles: HashMap<&'static str, FocusHandle>,
     button_activation_keys: HashSet<String>,
-    effects_spectral_view: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1132,7 +1131,6 @@ impl PumpEditor {
             last_pointer: None,
             button_focus_handles,
             button_activation_keys: HashSet::new(),
-            effects_spectral_view: false,
         }
     }
 
@@ -3731,7 +3729,7 @@ fn draw_crossover_preview(
         for step in 0..=96 {
             let phase = step as f32 / 96.;
             let hz = 20. * 1000_f32.powf(phase);
-            let magnitude = crate::dual_spectral::crossover_magnitudes(
+            let magnitude = crate::dual_band::crossover_magnitudes(
                 hz,
                 48000.,
                 controls[1],
@@ -4602,187 +4600,54 @@ impl PumpEditor {
     }
 
     fn effects_strip(&self, cx: &mut Context<Self>) -> gpui::Div {
-        const IDS: [&str; 12] = [
-            "dual-on",
-            "dual-freq",
+        let slope = self.state.borrow().params().effects()[2];
+        let slope_button = button(
             "dual-slope",
-            "dual-low",
-            "dual-high",
-            "dual-solo-low",
-            "dual-solo-high",
-            "spectral-on",
-            "spectral-depth",
-            "spectral-attack",
-            "spectral-release",
-            "spectral-mode",
-        ];
-        let values = self.state.borrow().params().effects();
-        let theme = pump_theme();
-        let indices: &[usize] = if self.effects_spectral_view {
-            &[7, 8, 9, 10, 11]
-        } else {
-            &[2]
-        };
-        let controls = indices.iter().copied().map(|i| {
-            let label = crate::params::format_plain_value_text(
-                toybox::clack_plugin::utils::ClapId::new(24 + i as u32),
-                values[i] as f64,
-            )
-            .unwrap_or_default();
-            if i == 2 {
-                return div().w(px(92.)).child(
-                    button(IDS[i], label, false, 90., None)
-                        .h(px(24.))
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            let value = 1. - view.state.borrow().params().effects()[i];
-                            view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
-                        }))
-                        .on_scroll_wheel(cx.listener(
-                            move |view, event: &ScrollWheelEvent, _, cx| {
-                                let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
-                                if delta == 0. {
-                                    return;
-                                }
-                                let current = view.state.borrow().params().effects()[i];
-                                let value = current + delta.signum();
-                                view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
-                            },
-                        )),
-                );
-            }
-            let mut control = button(
-                IDS[i],
-                label,
-                crate::dual_spectral::stepped(i) && values[i] >= 0.5,
-                60.,
-                None,
-            )
-            .h(px(22.))
-            .text_size(px(9.));
-            control = control
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    if crate::dual_spectral::stepped(i) {
-                        let value = 1. - view.state.borrow().params().effects()[i];
-                        view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
-                    }
-                }))
-                .on_scroll_wheel(cx.listener(
-                    move |view, event: &ScrollWheelEvent, _window, cx| {
-                        let current = view.state.borrow().params().effects()[i];
-                        let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
-                        if delta == 0. {
-                            return;
-                        }
-                        let direction = if delta > 0. { 1. } else { -1. };
-                        let value = if crate::dual_spectral::stepped(i) {
-                            current + direction
-                        } else if i == 1 {
-                            current * 2_f32.powf(direction / 12.)
-                        } else {
-                            current
-                                + direction
-                                    * (crate::dual_spectral::MAX[i] - crate::dual_spectral::MIN[i])
-                                    / 100.
-                        };
-                        view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
-                    },
-                ));
-            div()
-                .w(px(60.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(2.))
-                .child(
-                    div()
-                        .text_size(px(8.))
-                        .text_color(solid(theme.text_muted))
-                        .child(match i {
-                            7 => "DUCK",
-                            8 => "DEPTH",
-                            9 => "ATTACK",
-                            10 => "RELEASE",
-                            _ => "ENV",
-                        }),
-                )
-                .child(control)
-        });
-        let (input, reduction) = self.state.borrow().status().spectral_snapshot();
-        let meter = div().h(px(18.)).flex().items_end().gap(px(2.)).children(
-            (0..crate::dual_spectral::BANDS).map(|i| {
-                div()
-                    .flex_1()
-                    .h(px(2. + 16. * (input[i] * 8.).clamp(0., 1.)))
-                    .bg(solid(if reduction[i] < -0.5 {
-                        theme.accent_copper
-                    } else {
-                        theme.accent_mint
-                    }))
-            }),
-        );
-        let switcher = button(
-            "effects-view",
-            if self.effects_spectral_view {
-                "BACK"
+            if slope >= 0.5 {
+                "24 dB/oct"
             } else {
-                "SPECTRAL"
+                "12 dB/oct"
             }
             .into(),
             false,
-            75.,
+            90.,
             None,
         )
         .h(px(24.))
-        .ml_auto()
         .on_click(cx.listener(|view, _, _, cx| {
-            view.effects_spectral_view = !view.effects_spectral_view;
-            cx.notify();
+            let value = 1. - view.state.borrow().params().effects()[2];
+            view.dispatch(EditorMessage::SetEffect { index: 2, value }, cx);
+        }))
+        .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+            let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+            if delta != 0. {
+                let value = view.state.borrow().params().effects()[2] + delta.signum();
+                view.dispatch(EditorMessage::SetEffect { index: 2, value }, cx);
+            }
         }));
-        let mut strip = div()
+        div()
             .w_full()
             .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap(px(3.))
             .py(px(2.))
             .border_t_1()
             .border_b_1()
-            .border_color(solid(theme.grid_soft))
+            .border_color(solid(pump_theme().grid_soft))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(slope_button)
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(4.))
-                    .text_size(px(8.))
-                    .text_color(solid(theme.text_muted))
-                    .children(controls)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(212.))
-                            .flex()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .w(px(if self.effects_spectral_view {
-                                        212.
-                                    } else {
-                                        280.
-                                    }))
-                                    .h(px(28.))
-                                    .flex()
-                                    .flex_col()
-                                    .child(self.slider_element(NumericEntryTarget::Smooth, cx))
-                                    .child(self.slider_element(NumericEntryTarget::Swing, cx)),
-                            ),
-                    )
-                    .child(switcher),
-            );
-        if self.effects_spectral_view {
-            strip = strip.child(meter);
-        }
-        strip
+                div().flex_1().flex().justify_center().child(
+                    div()
+                        .w(px(280.))
+                        .h(px(28.))
+                        .flex()
+                        .flex_col()
+                        .child(self.slider_element(NumericEntryTarget::Smooth, cx))
+                        .child(self.slider_element(NumericEntryTarget::Swing, cx)),
+                ),
+            )
+            .child(div().w(px(90.)))
     }
 }
 
@@ -4914,11 +4779,7 @@ impl Render for PumpEditor {
             .flex_1()
             // Reserve space for the effect strip at the 640 × 400 minimum.
             // The curve still expands to fill larger editor windows.
-            .min_h(px(if self.effects_spectral_view {
-                100.
-            } else {
-                140.
-            }))
+            .min_h(px(140.))
             .border_1()
             .border_color(solid(theme.border))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::curve_mouse_down))

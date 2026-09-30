@@ -149,7 +149,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 filter_lp_q: DEFAULT_FILTER_LP_Q,
                 filter_hp_slope: DEFAULT_FILTER_SLOPE,
                 filter_lp_slope: DEFAULT_FILTER_SLOPE,
-                effects: crate::dual_spectral::DEFAULTS,
+                effects: crate::dual_band::DEFAULTS,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -261,7 +261,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
             filter_lp_q: DEFAULT_FILTER_LP_Q,
             filter_hp_slope: DEFAULT_FILTER_SLOPE,
             filter_lp_slope: DEFAULT_FILTER_SLOPE,
-            effects: crate::dual_spectral::DEFAULTS,
+            effects: crate::dual_band::DEFAULTS,
             editable_curve: editable_curve.clone(),
             quick_slots: preset_bank
                 .presets
@@ -1021,7 +1021,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
         filter_lp_q: DEFAULT_FILTER_LP_Q,
         filter_hp_slope: DEFAULT_FILTER_SLOPE,
         filter_lp_slope: DEFAULT_FILTER_SLOPE,
-        effects: crate::dual_spectral::DEFAULTS,
+        effects: crate::dual_band::DEFAULTS,
         editable_curve: params.editable_curve_snapshot(),
         quick_slots: seeded_quick_shape_slots(),
     };
@@ -1052,7 +1052,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             filter_lp_q: DEFAULT_FILTER_LP_Q,
             filter_hp_slope: DEFAULT_FILTER_SLOPE,
             filter_lp_slope: DEFAULT_FILTER_SLOPE,
-            effects: crate::dual_spectral::DEFAULTS,
+            effects: crate::dual_band::DEFAULTS,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],
@@ -1087,23 +1087,30 @@ fn remaining_bytes(cursor: &Cursor<&[u8]>) -> usize {
         .saturating_sub(cursor.position() as usize)
 }
 
-fn encode_effects(payload: &mut Vec<u8>, values: [f32; crate::dual_spectral::COUNT]) {
+fn encode_effects(payload: &mut Vec<u8>, values: [f32; crate::dual_band::COUNT]) {
     for (i, value) in values.iter().enumerate() {
-        payload.extend_from_slice(&crate::dual_spectral::sanitize(i, *value).to_le_bytes());
+        payload.extend_from_slice(&crate::dual_band::sanitize(i, *value).to_le_bytes());
     }
 }
 fn decode_effects(
     cursor: &mut Cursor<&[u8]>,
     version: u32,
-) -> Result<[f32; crate::dual_spectral::COUNT], &'static str> {
-    let mut values = crate::dual_spectral::DEFAULTS;
+) -> Result<[f32; crate::dual_band::COUNT], &'static str> {
+    let mut values = crate::dual_band::DEFAULTS;
     if version >= 21 {
-        for (i, value) in values.iter_mut().enumerate() {
-            let raw = read_f32(cursor).ok_or("truncated dual/spectral settings")?;
+        let count = if version == 21 {
+            12
+        } else {
+            crate::dual_band::COUNT
+        };
+        for i in 0..count {
+            let raw = read_f32(cursor).ok_or("truncated dual-band settings")?;
             if !raw.is_finite() {
-                return Err("invalid dual/spectral settings");
+                return Err("invalid dual-band settings");
             }
-            *value = crate::dual_spectral::sanitize(i, raw);
+            if let Some(value) = values.get_mut(i) {
+                *value = crate::dual_band::sanitize(i, raw);
+            }
         }
     }
     Ok(values)

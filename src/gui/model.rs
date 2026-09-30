@@ -983,7 +983,7 @@ pub(crate) struct HistorySnapshot {
     filter_lp_q: f32,
     filter_hp_slope: usize,
     filter_lp_slope: usize,
-    effects: [f32; crate::dual_spectral::COUNT],
+    effects: [f32; crate::dual_band::COUNT],
     curve: EditableCurve,
     active_sound: SoundSide,
     sound_states: [PumpSoundState; 2],
@@ -1775,7 +1775,7 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 }
                 KnobMessage::ValueChanged { value } => {
                     if state.active_effect_gesture == Some(index) {
-                        let value = crate::dual_spectral::sanitize(index, value);
+                        let value = crate::dual_band::sanitize(index, value);
                         if state.host_param_edit_sink.gesture_value(
                             &state.automation_config,
                             id,
@@ -1799,10 +1799,10 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
             }
         }
         EditorMessage::SetEffect { index, value } => {
-            if index >= crate::dual_spectral::COUNT {
+            if index >= crate::dual_band::COUNT {
                 return;
             }
-            let value = crate::dual_spectral::sanitize(index, value);
+            let value = crate::dual_band::sanitize(index, value);
             if state.params.effects()[index] == value {
                 return;
             }
@@ -4818,7 +4818,7 @@ mod tests {
     }
 
     #[test]
-    fn dual_spectral_edits_use_host_sink_and_undo() {
+    fn dual_band_edits_use_host_sink_and_undo() {
         let sink = Arc::new(RecordingSink::default());
         let mut state = editor(Arc::clone(&sink));
         state.dispatch(EditorMessage::SetEffect {

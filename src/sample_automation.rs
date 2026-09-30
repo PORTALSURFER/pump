@@ -163,7 +163,6 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
 pub(crate) struct StereoBlockSlices<'a> {
     pub(crate) left: &'a mut [f32],
     pub(crate) right: &'a mut [f32],
-    pub(crate) sidechain: Option<(&'a [f32], &'a [f32])>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -177,11 +176,7 @@ pub(crate) fn process_stereo_block(
     transport: TransportState,
     mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
-    let StereoBlockSlices {
-        left,
-        right,
-        sidechain,
-    } = block;
+    let StereoBlockSlices { left, right } = block;
     let frame_count = left.len().min(right.len());
     let mut transport_for_sample = transport;
     let mut last_telemetry = None;
@@ -197,9 +192,6 @@ pub(crate) fn process_stereo_block(
         }
         let input_left = left[sample_offset];
         let input_right = right[sample_offset];
-        engine.set_sidechain_sample(
-            sidechain.and_then(|(l, r)| Some([*l.get(sample_offset)?, *r.get(sample_offset)?])),
-        );
         let (telemetry, raw_cycle_phase) = engine.process_sample_with_raw_cycle_phase(
             &mut left[sample_offset],
             &mut right[sample_offset],
@@ -265,8 +257,6 @@ pub(crate) struct RawStereoBlock {
     pub(crate) input_right: *const f32,
     pub(crate) output_left: *mut f32,
     pub(crate) output_right: *mut f32,
-    pub(crate) sidechain_left: *const f32,
-    pub(crate) sidechain_right: *const f32,
 }
 
 #[cfg(feature = "vst3")]
@@ -312,17 +302,6 @@ pub(crate) unsafe fn process_stereo_block_raw(
         let mut right = unsafe { block.input_right.add(sample_offset).read() };
         let input_left = left;
         let input_right = right;
-        let sidechain = if block.sidechain_left.is_null() || block.sidechain_right.is_null() {
-            None
-        } else {
-            Some(unsafe {
-                [
-                    block.sidechain_left.add(sample_offset).read(),
-                    block.sidechain_right.add(sample_offset).read(),
-                ]
-            })
-        };
-        engine.set_sidechain_sample(sidechain);
         let (telemetry, raw_cycle_phase) = engine.process_sample_with_raw_cycle_phase(
             &mut left,
             &mut right,
@@ -435,7 +414,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -459,7 +437,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -495,7 +472,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -540,7 +516,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -575,7 +550,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -631,7 +605,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut [],
                 right: &mut [],
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -666,7 +639,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -687,7 +659,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut silent_left,
                 right: &mut silent_right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -721,7 +692,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -822,7 +792,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -845,7 +814,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut next_left,
                 right: &mut next_right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -880,7 +848,6 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
-                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -905,20 +872,20 @@ mod tests {
         );
     }
     #[test]
-    fn crossover_and_spectral_automation_apply_at_sample_offsets() {
+    fn crossover_automation_applies_at_sample_offsets() {
         let params = PumpParams::new();
         let mut settings = dsp_settings_from_params(&params);
         let mut schedule = ParamEventSchedule::default();
         schedule.begin_block(16);
         schedule.push(3, ClapId::new(25), 1200.);
-        schedule.push(7, ClapId::new(31), 1.);
+        schedule.push(7, ClapId::new(26), 0.);
         schedule.prepare();
         schedule.apply_through(2, &params, &mut settings);
         assert_eq!(settings.effects[1], 200.);
         schedule.apply_through(3, &params, &mut settings);
         assert_eq!(settings.effects[1], 1200.);
-        assert_eq!(settings.effects[7], 0.);
+        assert_eq!(settings.effects[2], 1.);
         schedule.apply_through(7, &params, &mut settings);
-        assert_eq!(settings.effects[7], 1.);
+        assert_eq!(settings.effects[2], 0.);
     }
 }

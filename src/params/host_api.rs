@@ -83,7 +83,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 32] = [
+const PARAM_DEFS: [ParamDef; 27] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -388,180 +388,105 @@ const PARAM_DEFS: [ParamDef; 32] = [
         #[cfg(feature = "vst3")]
         vst3_id: 24,
         id: ClapId::new(24),
-        name: crate::dual_spectral::NAMES[0],
+        name: crate::dual_band::NAMES[0],
         #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[0],
+        short_name: crate::dual_band::NAMES[0],
         #[cfg(feature = "vst3")]
         units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[0] as f64,
-        max_value: crate::dual_spectral::MAX[0] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[0] as f64,
+        module: "Dual Band",
+        min_value: crate::dual_band::MIN[0] as f64,
+        max_value: crate::dual_band::MAX[0] as f64,
+        default_value: crate::dual_band::DEFAULTS[0] as f64,
         flags: AUTO_ENUM,
     },
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: 25,
         id: ClapId::new(25),
-        name: crate::dual_spectral::NAMES[1],
+        name: crate::dual_band::NAMES[1],
         #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[1],
+        short_name: crate::dual_band::NAMES[1],
         #[cfg(feature = "vst3")]
         units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[1] as f64,
-        max_value: crate::dual_spectral::MAX[1] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[1] as f64,
+        module: "Dual Band",
+        min_value: crate::dual_band::MIN[1] as f64,
+        max_value: crate::dual_band::MAX[1] as f64,
+        default_value: crate::dual_band::DEFAULTS[1] as f64,
         flags: AUTO,
     },
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: 26,
         id: ClapId::new(26),
-        name: crate::dual_spectral::NAMES[2],
+        name: crate::dual_band::NAMES[2],
         #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[2],
+        short_name: crate::dual_band::NAMES[2],
         #[cfg(feature = "vst3")]
         units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[2] as f64,
-        max_value: crate::dual_spectral::MAX[2] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[2] as f64,
+        module: "Dual Band",
+        min_value: crate::dual_band::MIN[2] as f64,
+        max_value: crate::dual_band::MAX[2] as f64,
+        default_value: crate::dual_band::DEFAULTS[2] as f64,
         flags: AUTO_ENUM,
     },
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: 27,
         id: ClapId::new(27),
-        name: crate::dual_spectral::NAMES[3],
+        name: crate::dual_band::NAMES[3],
         #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[3],
+        short_name: crate::dual_band::NAMES[3],
         #[cfg(feature = "vst3")]
         units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[3] as f64,
-        max_value: crate::dual_spectral::MAX[3] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[3] as f64,
+        module: "Dual Band",
+        min_value: crate::dual_band::MIN[3] as f64,
+        max_value: crate::dual_band::MAX[3] as f64,
+        default_value: crate::dual_band::DEFAULTS[3] as f64,
         flags: AUTO,
     },
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: 28,
         id: ClapId::new(28),
-        name: crate::dual_spectral::NAMES[4],
+        name: crate::dual_band::NAMES[4],
         #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[4],
+        short_name: crate::dual_band::NAMES[4],
         #[cfg(feature = "vst3")]
         units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[4] as f64,
-        max_value: crate::dual_spectral::MAX[4] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[4] as f64,
+        module: "Dual Band",
+        min_value: crate::dual_band::MIN[4] as f64,
+        max_value: crate::dual_band::MAX[4] as f64,
+        default_value: crate::dual_band::DEFAULTS[4] as f64,
         flags: AUTO,
     },
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: 29,
         id: ClapId::new(29),
-        name: crate::dual_spectral::NAMES[5],
+        name: crate::dual_band::NAMES[5],
         #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[5],
+        short_name: crate::dual_band::NAMES[5],
         #[cfg(feature = "vst3")]
         units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[5] as f64,
-        max_value: crate::dual_spectral::MAX[5] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[5] as f64,
+        module: "Dual Band",
+        min_value: crate::dual_band::MIN[5] as f64,
+        max_value: crate::dual_band::MAX[5] as f64,
+        default_value: crate::dual_band::DEFAULTS[5] as f64,
         flags: AUTO_ENUM,
     },
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: 30,
         id: ClapId::new(30),
-        name: crate::dual_spectral::NAMES[6],
+        name: crate::dual_band::NAMES[6],
         #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[6],
-        #[cfg(feature = "vst3")]
-        units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[6] as f64,
-        max_value: crate::dual_spectral::MAX[6] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[6] as f64,
-        flags: AUTO_ENUM,
-    },
-    ParamDef {
-        #[cfg(feature = "vst3")]
-        vst3_id: 31,
-        id: ClapId::new(31),
-        name: crate::dual_spectral::NAMES[7],
-        #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[7],
+        short_name: crate::dual_band::NAMES[6],
         #[cfg(feature = "vst3")]
         units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[7] as f64,
-        max_value: crate::dual_spectral::MAX[7] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[7] as f64,
-        flags: AUTO_ENUM,
-    },
-    ParamDef {
-        #[cfg(feature = "vst3")]
-        vst3_id: 32,
-        id: ClapId::new(32),
-        name: crate::dual_spectral::NAMES[8],
-        #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[8],
-        #[cfg(feature = "vst3")]
-        units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[8] as f64,
-        max_value: crate::dual_spectral::MAX[8] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[8] as f64,
-        flags: AUTO,
-    },
-    ParamDef {
-        #[cfg(feature = "vst3")]
-        vst3_id: 33,
-        id: ClapId::new(33),
-        name: crate::dual_spectral::NAMES[9],
-        #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[9],
-        #[cfg(feature = "vst3")]
-        units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[9] as f64,
-        max_value: crate::dual_spectral::MAX[9] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[9] as f64,
-        flags: AUTO,
-    },
-    ParamDef {
-        #[cfg(feature = "vst3")]
-        vst3_id: 34,
-        id: ClapId::new(34),
-        name: crate::dual_spectral::NAMES[10],
-        #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[10],
-        #[cfg(feature = "vst3")]
-        units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[10] as f64,
-        max_value: crate::dual_spectral::MAX[10] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[10] as f64,
-        flags: AUTO,
-    },
-    ParamDef {
-        #[cfg(feature = "vst3")]
-        vst3_id: 35,
-        id: ClapId::new(35),
-        name: crate::dual_spectral::NAMES[11],
-        #[cfg(feature = "vst3")]
-        short_name: crate::dual_spectral::NAMES[11],
-        #[cfg(feature = "vst3")]
-        units: "",
-        module: "Dual / Spectral",
-        min_value: crate::dual_spectral::MIN[11] as f64,
-        max_value: crate::dual_spectral::MAX[11] as f64,
-        default_value: crate::dual_spectral::DEFAULTS[11] as f64,
+        module: "Dual Band",
+        min_value: crate::dual_band::MIN[6] as f64,
+        max_value: crate::dual_band::MAX[6] as f64,
+        default_value: crate::dual_band::DEFAULTS[6] as f64,
         flags: AUTO_ENUM,
     },
 ];
@@ -678,7 +603,7 @@ pub fn normalized_from_plain_value(param_id: ClapId, plain: f64) -> Option<f64> 
 pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<f64> {
     let def = param_def_for_id(param_id)?;
     if let Some(i) = effect_index(param_id) {
-        return Some(crate::dual_spectral::sanitize(
+        return Some(crate::dual_band::sanitize(
             i,
             normalized_to_plain(normalized, def.min_value, def.max_value) as f32,
         ) as f64);
@@ -967,7 +892,7 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
         if !value.is_finite() {
             return None;
         }
-        let v = crate::dual_spectral::sanitize(i, value as f32);
+        let v = crate::dual_band::sanitize(i, value as f32);
         return Some(match i {
             0 | 5 | 6 | 7 => if v >= 1. { "ON" } else { "OFF" }.to_string(),
             1 => format_frequency(v),
@@ -1061,7 +986,7 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
         };
         return v
             .is_finite()
-            .then(|| crate::dual_spectral::sanitize(i, v) as f64);
+            .then(|| crate::dual_band::sanitize(i, v) as f64);
     }
 
     match param_id {
@@ -1281,5 +1206,5 @@ pub fn apply_param_event(params: &PumpParams, param_id: ClapId, value: f32) {
 }
 
 fn effect_index(id: ClapId) -> Option<usize> {
-    (0..crate::dual_spectral::COUNT).find(|i| id == ClapId::new(24 + *i as u32))
+    (0..crate::dual_band::COUNT).find(|i| id == ClapId::new(24 + *i as u32))
 }

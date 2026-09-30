@@ -417,7 +417,7 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 33);
+    assert_eq!(count, 28);
 }
 
 #[test]
@@ -725,7 +725,7 @@ fn vst3_ui_sink_commits_accepted_value_when_component_handler_rejects_end() {
 }
 
 #[test]
-fn processor_declares_main_and_optional_stereo_sidechain_bus() {
+fn processor_declares_only_main_stereo_bus() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
 
     assert_eq!(
@@ -735,7 +735,7 @@ fn processor_declares_main_and_optional_stereo_sidechain_bus() {
                 BusDirections_::kInput as BusDirection,
             )
         },
-        2
+        1
     );
     assert_eq!(
         unsafe {
@@ -747,6 +747,18 @@ fn processor_declares_main_and_optional_stereo_sidechain_bus() {
         1
     );
 
+    let mut removed = unsafe { std::mem::zeroed::<BusInfo>() };
+    assert_eq!(
+        unsafe {
+            processor.getBusInfo(
+                MediaTypes_::kAudio as MediaType,
+                BusDirections_::kInput as BusDirection,
+                1,
+                &mut removed,
+            )
+        },
+        kInvalidArgument
+    );
     let mut arrangement = SpeakerArrangement::default();
     assert_eq!(
         unsafe {

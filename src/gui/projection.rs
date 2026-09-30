@@ -176,7 +176,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
-            effects: crate::dual_spectral::DEFAULTS,
+            effects: crate::dual_band::DEFAULTS,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -235,7 +235,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
-            effects: crate::dual_spectral::DEFAULTS,
+            effects: crate::dual_band::DEFAULTS,
         };
         let transition_settings = DspSettings {
             phase_offset: target_phase_offset,
