@@ -929,12 +929,22 @@ fn record_screenshot_bounds(key: impl Into<String>, bounds: Bounds<Pixels>) {
 ))]
 #[doc(hidden)]
 pub fn screenshot_bounds(key: &str) -> [f32; 4] {
-    *SCREENSHOT_BOUNDS
+    screenshot_bounds_if_painted(key).unwrap_or_else(|| panic!("control {key} has not painted"))
+}
+
+/// Query a control without assuming its first native frame has completed.
+#[cfg(any(
+    feature = "screenshot-test",
+    all(test, target_os = "windows", feature = "vst3")
+))]
+#[doc(hidden)]
+pub fn screenshot_bounds_if_painted(key: &str) -> Option<[f32; 4]> {
+    SCREENSHOT_BOUNDS
         .get_or_init(Default::default)
         .lock()
         .expect("screenshot bounds lock")
         .get(key)
-        .unwrap_or_else(|| panic!("control {key} has not painted"))
+        .copied()
 }
 
 /// Exact envelope sample in logical plot coordinates for native fixtures.

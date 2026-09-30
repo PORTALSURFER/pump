@@ -568,6 +568,14 @@ mod macos {
         (f64::from(x + w * 0.5), f64::from(y + h * 0.5))
     }
 
+    unsafe fn wait_for_control(app: id, gui: &toybox::gpui_gui::GpuiHostedGui, key: &str) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while pump::gui_gpui::screenshot_bounds_if_painted(key).is_none() {
+            assert!(Instant::now() < deadline, "control {key} must paint");
+            pump_appkit(app, gui, 0.01);
+        }
+    }
+
     unsafe fn click_control(fixture: &NativeFixture, key: &str, modifiers: u64) {
         let (x, y) = center(key);
         send_click(fixture.window, x, y, modifiers);
@@ -763,8 +771,10 @@ mod macos {
         assert_eq!(params.timing_mode(), 1);
         click_control(fixture, "timing-value", 0);
         pump_appkit(app, &gui, 0.04);
+        wait_for_control(app, &gui, "timing-unit-ms");
         click_control(fixture, "timing-unit-ms", 0);
         pump_appkit(app, &gui, 0.04);
+        wait_for_control(app, &gui, "value-FreeRate");
         type_value(app, fixture, &gui, "value-FreeRate", "500 ms");
         assert!((params.free_rate_hz() - 2.).abs() < 0.001);
         click_control(fixture, "timing-mode", 0);
