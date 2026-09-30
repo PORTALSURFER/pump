@@ -3001,6 +3001,30 @@ impl PumpEditor {
         if self.state.borrow().numeric_entry_active() || numeric_input_focused {
             return;
         }
+        let modifiers = &event.keystroke.modifiers;
+        let history_command = match event.keystroke.key.as_str() {
+            "z" if (modifiers.platform || modifiers.control) && !modifiers.alt => {
+                Some(if modifiers.shift {
+                    EditorMessage::Redo
+                } else {
+                    EditorMessage::Undo
+                })
+            }
+            "u" if !modifiers.platform && !modifiers.control && !modifiers.alt => {
+                Some(if modifiers.shift {
+                    EditorMessage::Redo
+                } else {
+                    EditorMessage::Undo
+                })
+            }
+            _ => None,
+        };
+        if let Some(command) = history_command {
+            self.dispatch(command, cx);
+            window.prevent_default();
+            cx.stop_propagation();
+            return;
+        }
         if matches!(event.keystroke.key.as_str(), "space" | "enter")
             && !event.keystroke.modifiers.modified()
         {
@@ -5336,8 +5360,8 @@ impl Render for PumpEditor {
             .child(bypass_button);
         let hotkey_help = if state.hotkey_help_open() {
             const ROWS: [(&str, &str); 10] = [
-                ("u", "Undo"),
-                ("U", "Redo"),
+                ("Cmd/Ctrl + Z / u", "Undo"),
+                ("Cmd/Ctrl + Shift + Z / U", "Redo"),
                 ("Shift + drag node", "Lock gain"),
                 ("Shift + Option + drag node", "Lock time"),
                 ("Cmd + drag node", "Snap to beat grid"),
