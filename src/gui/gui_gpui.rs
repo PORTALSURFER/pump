@@ -63,7 +63,7 @@ const CURVE_METER_WIDTH: f32 = PUMP_VISUAL_METRICS.meter_panel;
 const SLOT_HEIGHT: f32 = 28.0;
 const SLOT_GAP: f32 = 4.0;
 const DECK_HEIGHT: f32 = PUMP_VISUAL_METRICS.deck_height;
-const HEADER_HEIGHT: f32 = 38.0;
+const HEADER_HEIGHT: f32 = 24.0;
 const HEADER_CONTROL_HEIGHT: f32 = PUMP_VISUAL_METRICS.control_height;
 const FOOTER_HEIGHT: f32 = PUMP_VISUAL_METRICS.label_line;
 const CURVE_OFFSET_BAR_HEIGHT: f32 = 10.2;
@@ -4461,12 +4461,13 @@ impl PumpEditor {
                     .text_color(solid(theme.text_muted))
                     .font(font("Ioskeley Mono"))
                     .text_size(px(9.))
+                    .line_height(px(12.))
                     .child(label),
             )
             .child(knob_canvas)
             .child(
                 div()
-                    .h(px(PUMP_TYPOGRAPHY.value.1 + 4.0))
+                    .h(px(PUMP_TYPOGRAPHY.value.1 + 2.0))
                     .w(px(PUMP_VISUAL_METRICS.knob_column))
                     .text_color(solid(theme.text_primary))
                     .font(font("Ioskeley Mono"))
@@ -4889,13 +4890,13 @@ impl Render for PumpEditor {
         if timing_free {
             level_controls.push(
                 self.knob_element(NumericEntryTarget::FreeRate, cx)
-                    .h(px(68.)),
+                    .h(px(60.)),
             );
         }
         level_controls.extend([
-            self.knob_element(NumericEntryTarget::Mix, cx).h(px(68.)),
+            self.knob_element(NumericEntryTarget::Mix, cx).h(px(60.)),
             self.knob_element(NumericEntryTarget::OutputGain, cx)
-                .h(px(68.)),
+                .h(px(60.)),
         ]);
         let deck = div()
             .h(px(DECK_HEIGHT))
@@ -5378,6 +5379,7 @@ impl Render for PumpEditor {
             .flex_col()
             .gap(px(SURFACE_SPACING))
             .p(px(SURFACE_PADDING))
+            .pb(px(PUMP_VISUAL_METRICS.space_8))
             .bg(solid(theme.clear))
             .border_1()
             .border_color(solid(theme.border))
@@ -5392,7 +5394,7 @@ impl Render for PumpEditor {
             .child(header)
             .child(
                 div()
-                    .h(px(16.))
+                    .h(px(24.))
                     .flex_shrink_0()
                     .border_b_1()
                     .border_color(solid(theme.border))

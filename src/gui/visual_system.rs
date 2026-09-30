@@ -149,14 +149,14 @@ pub(crate) const PUMP_VISUAL_METRICS: PumpVisualMetrics = PumpVisualMetrics {
     dropdown_min_width: 80.0,
     icon_hit: 28.0,
     icon: 13.6,
-    knob: 36.0,
+    knob: 32.0,
     knob_column: 64.0,
-    label_line: 13.6,
+    label_line: 12.0,
     meter_panel: 32.0,
     meter_track: 12.0,
     meter_segment: 3.4,
     meter_segment_gap: 1.7,
-    deck_height: 88.0,
+    deck_height: 80.0,
 };
 
 /// Typography roles for the target's license-safe text hierarchy.
@@ -228,8 +228,8 @@ mod tests {
     fn metrics_and_typography_match_the_visual_contract() {
         assert_eq!(PUMP_VISUAL_METRICS.base, 4.0);
         assert_eq!(PUMP_VISUAL_METRICS.control_height, 24.0);
-        assert_eq!(PUMP_VISUAL_METRICS.knob, 36.0);
-        assert_eq!(PUMP_VISUAL_METRICS.deck_height, 88.0);
+        assert_eq!(PUMP_VISUAL_METRICS.knob, 32.0);
+        assert_eq!(PUMP_VISUAL_METRICS.deck_height, 80.0);
         assert_eq!(PUMP_TYPOGRAPHY.brand, (17.0, 24.0));
         assert_eq!(PUMP_TYPOGRAPHY.meta, (8.0, 10.0));
     }
