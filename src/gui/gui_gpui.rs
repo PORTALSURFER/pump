@@ -5117,14 +5117,10 @@ impl Render for PumpEditor {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .child(div().text_size(px(PUMP_TYPOGRAPHY.brand.0)).child("PUMP"))
-                    .child(
-                        div()
-                            .text_size(px(8.))
-                            .text_color(solid(theme.text_muted))
-                            .child("PORTALSURFER"),
-                    ),
+                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
+                    .text_color(solid(theme.text_muted))
+                    .child("PORTALSURFER / ")
+                    .child(div().text_color(solid(theme.accent_copper)).child("PUMP")),
             )
             .children(storage_warning);
         let header = div()

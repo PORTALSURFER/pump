@@ -2,7 +2,7 @@
 
 The editor follows the supplied Technical Futurist Interface Style Guide: flat near-black surfaces, restrained orange emphasis, monospaced labels, thin functional rails, and a dominant envelope plot. Mint LP and blue HP distinguish frequency responses from the envelope.
 
-The header places product identity on the left and timing, history, A/B, and help controls on the right. Build metadata remains small and subdued at the top-right. The envelope keeps its full-area crossover overlay, offset editing, waveform display, and gain-reduction meter. Presets sit directly below the plot.
+The header places “PORTALSURFER / PUMP” on the left and timing, history, A/B, and help controls on the right. Build metadata remains small and subdued at the top-right. The envelope keeps its full-area crossover overlay, offset editing, waveform display, and gain-reduction meter. Presets sit directly below the plot.
 
 The parameter deck has three aligned groups:
 
