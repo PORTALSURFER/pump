@@ -391,6 +391,15 @@ mod macos {
 
             let (node_x, node_y) = pump::gui_gpui::screenshot_curve_point(&params, 0.08);
             let (segment_x, segment_y) = pump::gui_gpui::screenshot_curve_point(&params, 0.22);
+            let (before_x, before_y) = pump::gui_gpui::screenshot_curve_point(&params, 0.219);
+            let (after_x, after_y) = pump::gui_gpui::screenshot_curve_point(&params, 0.221);
+            let tangent_x = after_x - before_x;
+            let tangent_y = after_y - before_y;
+            let tangent_length = tangent_x.hypot(tangent_y);
+            // Segment proximity occupies the 8–14 px band around the curve.
+            // Offset along its normal so this remains valid after resizing.
+            let proximity_x = segment_x - tangent_y / tangent_length * 12.;
+            let proximity_y = segment_y + tangent_x / tangent_length * 12.;
             let (offset_x, offset_y) = center("curve-offset");
             // Curve feedback captures are driven through native AppKit
             // pointer/modifier events so they exercise the same admission and
@@ -416,8 +425,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                segment_x,
-                segment_y + 24.,
+                proximity_x,
+                proximity_y,
                 0,
             );
             capture(
@@ -433,8 +442,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                segment_x,
-                segment_y + 24.,
+                proximity_x,
+                proximity_y,
                 COMMAND,
             );
             capture(

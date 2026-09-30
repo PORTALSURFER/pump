@@ -1634,11 +1634,6 @@ impl PumpEditor {
         };
         let command = event.modifiers.platform || event.modifiers.control;
         let option = event.modifiers.alt;
-        #[cfg(feature = "screenshot-test")]
-        eprintln!(
-            "native curve hover: position={:?} node={node:?} segment={segment:?} command={command} option={option}",
-            event.position
-        );
         let preview_node = if !command && !option {
             segment
                 .and_then(|(_, distance)| {
