@@ -5205,13 +5205,14 @@ impl Render for PumpEditor {
             .child(sound_a_button)
             .child(sound_switch)
             .child(sound_b_button);
-        let header_left = div()
+        let header_toolbar = div()
             .flex()
             .items_center()
             .gap(px(PUMP_VISUAL_METRICS.gap))
             .child(timing_controls)
             .child(history)
-            .child(ab);
+            .child(ab)
+            .child(help_button);
         let brand_meta = if params.preset_persistence_warning().is_some() {
             super::PRESET_WARNING_STORAGE.to_owned()
         } else {
@@ -5220,7 +5221,7 @@ impl Render for PumpEditor {
         let brand = div()
             .flex()
             .flex_col()
-            .items_end()
+            .items_start()
             .justify_center()
             .gap(px(0.0))
             .child(
@@ -5252,15 +5253,8 @@ impl Render for PumpEditor {
             .flex()
             .items_center()
             .justify_between()
-            .child(header_left)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(PUMP_VISUAL_METRICS.gap))
-                    .child(brand)
-                    .child(help_button),
-            );
+            .child(brand)
+            .child(header_toolbar);
         let mut waveform_button = button(
             "waveform-mode",
             if state.status().waveform_live_mode() {
