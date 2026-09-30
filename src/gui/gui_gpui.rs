@@ -3292,18 +3292,7 @@ fn draw_curve(
     area.line_to(point(px(left), px(top + height)));
     area.close();
     if let Ok(area) = area.build() {
-        window.paint_path(
-            area,
-            solid(
-                theme
-                    .accent_mint
-                    .with_alpha(if state.params().effects()[0] >= 0.5 {
-                        18
-                    } else {
-                        50
-                    }),
-            ),
-        );
+        window.paint_path(area, solid(theme.accent_mint.with_alpha(50)));
     }
     // The authored fill fades into the editor surface toward the lower edge,
     // matching the legacy visualization without introducing a renderer-owned
@@ -3331,8 +3320,6 @@ fn draw_curve(
         CURVE_OFFSET_MOVE_COLOR
     } else if modifier_offset_hover {
         CURVE_OFFSET_HOVER_COLOR
-    } else if state.params().effects()[0] >= 0.5 {
-        theme.text_primary
     } else {
         theme.accent_mint
     };
@@ -3774,7 +3761,7 @@ fn draw_crossover_preview(
             window.paint_path(path, solid(color.with_alpha(20)));
         }
         if let Ok(path) = line.build() {
-            window.paint_path(path, solid(color));
+            window.paint_path(path, solid(color.with_alpha(140)));
         }
     }
     let crossover_x = plot_left + (controls[1] / 20.).ln() / 1000_f32.ln() * plot_width;
@@ -4331,9 +4318,9 @@ impl PumpEditor {
     fn effect_mix_slider(&self, index: usize, value: f32, cx: &Context<Self>) -> gpui::Div {
         let theme = pump_theme();
         let (id, label, color) = if index == 3 {
-            ("dual-low", "LP MIX", theme.accent_copper)
+            ("dual-low", "LP", theme.accent_copper)
         } else {
-            ("dual-high", "HP MIX", PumpColor::rgb(140, 170, 235))
+            ("dual-high", "HP", PumpColor::rgb(140, 170, 235))
         };
         let focus = self.button_focus_handle(id).clone();
         let focus_down = focus.clone();
@@ -4347,41 +4334,34 @@ impl PumpEditor {
                 let left = bounds.left() + px(5.);
                 let right = bounds.right() - px(5.);
                 let center = bounds.top() + bounds.size.height * 0.5;
-                let thumb = left + (right - left) * value;
+                let filled_to = left + (right - left) * value;
                 window.paint_quad(fill(
                     Bounds::from_corners(
-                        point(left, center - px(2.)),
-                        point(right, center + px(2.)),
+                        point(left, center - px(1.5)),
+                        point(right, center + px(1.5)),
                     ),
                     solid(theme.border_emphasis),
                 ));
                 window.paint_quad(fill(
                     Bounds::from_corners(
-                        point(left, center - px(2.)),
-                        point(thumb, center + px(2.)),
+                        point(left, center - px(1.5)),
+                        point(filled_to, center + px(1.5)),
                     ),
                     solid(color),
                 ));
-                window.paint_quad(fill(
-                    Bounds::from_corners(
-                        point(thumb - px(4.), center - px(7.)),
-                        point(thumb + px(4.), center + px(7.)),
-                    ),
-                    solid(theme.text_primary),
-                ));
             },
         )
-        .w(px(90.))
-        .h(px(22.));
-        div().w(px(92.)).child(
+        .w(px(98.))
+        .h(px(14.));
+        div().w(px(160.)).h(px(14.)).child(
             div()
                 .id(id)
                 .track_focus(&focus)
-                .w(px(92.))
+                .w(px(160.))
+                .h(px(14.))
                 .flex()
-                .flex_col()
                 .items_center()
-                .gap(px(2.))
+                .gap(px(4.))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -4441,18 +4421,19 @@ impl PumpEditor {
                 }))
                 .child(
                     div()
-                        .w_full()
-                        .flex()
-                        .justify_between()
+                        .w(px(18.))
                         .text_size(px(8.))
-                        .child(div().text_color(solid(color)).child(label))
-                        .child(
-                            div()
-                                .text_color(solid(theme.text_primary))
-                                .child(format!("{:.0}%", value * 100.)),
-                        ),
+                        .text_color(solid(color))
+                        .child(label),
                 )
-                .child(slider),
+                .child(slider)
+                .child(
+                    div()
+                        .w(px(30.))
+                        .text_size(px(8.))
+                        .text_color(solid(theme.text_primary))
+                        .child(format!("{:.0}%", value * 100.)),
+                ),
         )
     }
 
@@ -4476,17 +4457,80 @@ impl PumpEditor {
         let indices: &[usize] = if self.effects_spectral_view {
             &[7, 8, 9, 10, 11]
         } else {
-            &[1, 2, 3, 4, 5, 6]
+            &[1, 2, 3]
         };
         let controls = indices.iter().copied().map(|i| {
-            if matches!(i, 3 | 4) {
-                return self.effect_mix_slider(i, values[i], cx);
+            if i == 3 {
+                return div()
+                    .w(px(212.))
+                    .p(px(2.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(0.))
+                    .bg(solid(theme.clear))
+                    .border_1()
+                    .border_color(solid(theme.border))
+                    .rounded(px(1.))
+                    .children((3..=4).map(|mix_index| {
+                        let solo_index = mix_index + 2;
+                        let solo = button(
+                            IDS[solo_index],
+                            "SOLO".into(),
+                            values[solo_index] >= 0.5,
+                            38.,
+                            None,
+                        )
+                        .h(px(14.))
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            let value = 1. - view.state.borrow().params().effects()[solo_index];
+                            view.dispatch(
+                                EditorMessage::SetEffect {
+                                    index: solo_index,
+                                    value,
+                                },
+                                cx,
+                            );
+                        }));
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(self.effect_mix_slider(mix_index, values[mix_index], cx))
+                            .child(solo)
+                    }));
             }
             let label = crate::params::format_plain_value_text(
                 toybox::clack_plugin::utils::ClapId::new(24 + i as u32),
                 values[i] as f64,
             )
             .unwrap_or_default();
+            if matches!(i, 1 | 2) {
+                return div().w(px(92.)).child(
+                    button(IDS[i], label, false, 90., None)
+                        .h(px(24.))
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            if i == 2 {
+                                let value = 1. - view.state.borrow().params().effects()[i];
+                                view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
+                            }
+                        }))
+                        .on_scroll_wheel(cx.listener(
+                            move |view, event: &ScrollWheelEvent, _, cx| {
+                                let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+                                if delta == 0. {
+                                    return;
+                                }
+                                let current = view.state.borrow().params().effects()[i];
+                                let value = if i == 1 {
+                                    current * 2_f32.powf(delta.signum() / 12.)
+                                } else {
+                                    current + delta.signum()
+                                };
+                                view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
+                            },
+                        )),
+                );
+            }
             let mut control = button(
                 IDS[i],
                 label,
@@ -4550,58 +4594,39 @@ impl PumpEditor {
                     }))
             }),
         );
-        let tabs = div()
-            .flex()
-            .gap(px(4.))
-            .child(
-                button(
-                    "effects-dual-tab",
-                    "DUAL BAND".into(),
-                    !self.effects_spectral_view,
-                    90.,
-                    None,
-                )
-                .h(px(20.))
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.effects_spectral_view = false;
-                    cx.notify();
-                })),
-            )
-            .child(
-                button(
-                    "effects-spectral-tab",
-                    "SPECTRAL".into(),
-                    self.effects_spectral_view,
-                    90.,
-                    None,
-                )
-                .h(px(20.))
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.effects_spectral_view = true;
-                    cx.notify();
-                })),
-            )
-            .child(
-                div()
-                    .text_size(px(8.))
-                    .text_color(solid(theme.text_muted))
-                    .child("Shared envelope • Drag mix sliders • Scroll values"),
-            );
+        let switcher = button(
+            "effects-view",
+            if self.effects_spectral_view {
+                "DUAL"
+            } else {
+                "SPECTRAL"
+            }
+            .into(),
+            false,
+            75.,
+            None,
+        )
+        .h(px(24.))
+        .on_click(cx.listener(|view, _, _, cx| {
+            view.effects_spectral_view = !view.effects_spectral_view;
+            cx.notify();
+        }));
         let mut strip = div()
             .w_full()
             .flex_shrink_0()
             .flex()
             .flex_col()
             .gap(px(3.))
-            .child(tabs)
             .child(
                 div()
                     .flex()
                     .flex_wrap()
+                    .items_center()
                     .gap(px(3.))
                     .text_size(px(8.))
                     .text_color(solid(theme.text_muted))
-                    .children(controls),
+                    .children(controls)
+                    .child(switcher),
             );
         if self.effects_spectral_view {
             strip = strip.child(meter);
@@ -4738,7 +4763,11 @@ impl Render for PumpEditor {
             .flex_1()
             // Reserve space for the effect strip at the 640 × 400 minimum.
             // The curve still expands to fill larger editor windows.
-            .min_h(px(100.0))
+            .min_h(px(if self.effects_spectral_view {
+                100.
+            } else {
+                140.
+            }))
             .border_1()
             .border_color(solid(theme.border))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::curve_mouse_down))
