@@ -4592,7 +4592,7 @@ impl PumpEditor {
                 }));
                 div()
                     .h(px(DECK_HEIGHT * 0.5))
-                    .w(px(234.))
+                    .w(px(154.))
                     .flex()
                     .items_center()
                     .gap(px(4.))
