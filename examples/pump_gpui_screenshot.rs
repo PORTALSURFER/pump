@@ -162,81 +162,18 @@ mod macos {
         (width, height, pixels)
     }
 
-    fn filter_handle_position(
-        capture: &(u32, u32, Vec<u8>),
-        approximate_x: f64,
-        approximate_y: f64,
-        context: &str,
-    ) -> (f64, f64) {
-        let (width, height, pixels) = capture;
-        let scale_x = f64::from(*width) / f64::from(CAPTURE_WIDTH);
-        let scale_y = f64::from(*height) / f64::from(CAPTURE_HEIGHT);
-        let expected_x = approximate_x * scale_x;
-        let expected_y = approximate_y * scale_y;
-        let radius = 7.5 * scale_x.max(scale_y);
-        let ring_inner = 3.0 * scale_x.min(scale_y);
-        let ring_inner_squared = ring_inner * ring_inner;
-        let ring_outer_squared = radius * radius;
-        let search_x = (expected_x - 32.0 * scale_x).max(0.0) as u32
-            ..=((expected_x + 32.0 * scale_x).min(f64::from(*width - 1))) as u32;
-        let search_y = (expected_y - 36.0 * scale_y).max(0.0) as u32
-            ..=((expected_y + 36.0 * scale_y).min(f64::from(*height - 1))) as u32;
-        let orange_pixels = search_y
-            .clone()
-            .flat_map(|y| search_x.clone().map(move |x| (x, y)))
-            .filter(|(x, y)| {
-                let offset = ((usize::try_from(*y).unwrap() * usize::try_from(*width).unwrap())
-                    + usize::try_from(*x).unwrap())
-                    * 4;
-                let red = pixels[offset];
-                let green = pixels[offset + 1];
-                let blue = pixels[offset + 2];
-                red > 100 && green > 70 && green < 210 && blue < 130 && red > green + 25
-            })
-            .collect::<Vec<_>>();
-        let mut best = None;
-        for candidate_y in search_y {
-            for candidate_x in search_x.clone() {
-                let score = orange_pixels
-                    .iter()
-                    .filter(|&&(x, y)| {
-                        let dx = f64::from(x) - f64::from(candidate_x);
-                        let dy = f64::from(y) - f64::from(candidate_y);
-                        let distance_squared = dx * dx + dy * dy;
-                        distance_squared >= ring_inner_squared
-                            && distance_squared <= ring_outer_squared
-                    })
-                    .count();
-                let distance_to_expected = (f64::from(candidate_x) - expected_x).powi(2)
-                    + (f64::from(candidate_y) - expected_y).powi(2);
-                let replace = best.is_none_or(|(best_score, best_distance, _, _)| {
-                    score > best_score
-                        || (score == best_score && distance_to_expected < best_distance)
-                });
-                if replace {
-                    best = Some((score, distance_to_expected, candidate_x, candidate_y));
-                }
-            }
-        }
-        let (score, _, x, y) = best.unwrap_or((0, 0.0, 0, 0));
-        assert!(
-            score >= 5,
-            "{context}: rendered filter marker not found near ({approximate_x:.1}, {approximate_y:.1}) in {width}x{height} capture (best orange ring score {score})"
-        );
-        let logical = (f64::from(x) / scale_x, f64::from(y) / scale_y);
-        eprintln!(
-            "{context}: rendered filter marker at ({:.2}, {:.2}) from {width}x{height} capture (orange ring score {score})",
-            logical.0, logical.1
-        );
-        logical
+    fn center(key: &str) -> (f64, f64) {
+        let [x, y, w, h] = pump::gui_gpui::screenshot_bounds(key);
+        (f64::from(x + w * 0.5), f64::from(y + h * 0.5))
     }
 
-    fn numeric_label_pixels(capture: &(u32, u32, Vec<u8>), center_x: u32) -> Vec<u8> {
+    fn numeric_label_pixels(capture: &(u32, u32, Vec<u8>), key: &str) -> Vec<u8> {
         let (width, height, pixels) = capture;
-        let x0 = (center_x - 35) * width / 640;
-        let x1 = (center_x + 35) * width / 640;
-        let y0 = 357 * height / 400;
-        let y1 = 373 * height / 400;
+        let [x, y, w, h] = pump::gui_gpui::screenshot_bounds(key);
+        let x0 = (x * *width as f32 / 640.).floor().max(0.) as u32;
+        let x1 = ((x + w) * *width as f32 / 640.).ceil().min(*width as f32) as u32;
+        let y0 = (y * *height as f32 / 400.).floor().max(0.) as u32;
+        let y1 = ((y + h) * *height as f32 / 400.).ceil().min(*height as f32) as u32;
         let mut label = Vec::new();
         for y in y0..y1 {
             let start = ((y * width + x0) * 4) as usize;
@@ -422,34 +359,12 @@ mod macos {
             params.set_filter_lp_q(1.75);
             params.set_filter_hp_slope(1.0);
             params.set_filter_lp_slope(2.0);
-            let filter_capture = capture(
-                app,
-                &fixture,
-                &gui,
-                &root,
-                "pump-filter-enabled-640x400",
-                640,
-                400,
-            );
-            let (filter_hp_x, filter_hp_y) = filter_handle_position(
-                &filter_capture,
-                265.0,
-                135.0,
-                "pump-filter-enabled-640x400",
-            );
-            send_click(
-                fixture.window,
-                CAPTURE_WIDTH,
-                CAPTURE_HEIGHT,
-                filter_hp_x,
-                filter_hp_y,
-            );
             capture(
                 app,
                 &fixture,
                 &gui,
                 &root,
-                "pump-filter-selected-hp-640x400",
+                "pump-filter-enabled-640x400",
                 640,
                 400,
             );
@@ -474,6 +389,9 @@ mod macos {
             );
             params.set_phase_offset(phase_before_seam);
 
+            let (node_x, node_y) = pump::gui_gpui::screenshot_curve_point(&params, 0.08);
+            let (segment_x, segment_y) = pump::gui_gpui::screenshot_curve_point(&params, 0.22);
+            let (offset_x, offset_y) = center("curve-offset");
             // Curve feedback captures are driven through native AppKit
             // pointer/modifier events so they exercise the same admission and
             // retained-state paths as a hosted plug-in editor.
@@ -481,8 +399,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                95.0,
-                217.0,
+                node_x,
+                node_y,
                 0,
             );
             capture(
@@ -498,8 +416,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                170.0,
-                185.0,
+                segment_x,
+                segment_y,
                 0,
             );
             capture(
@@ -515,8 +433,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                170.0,
-                196.0,
+                segment_x,
+                segment_y + 10.,
                 COMMAND,
             );
             capture(
@@ -532,8 +450,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                170.0,
-                196.0,
+                segment_x,
+                segment_y + 10.,
                 0,
             );
             capture(
@@ -549,8 +467,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                58.0,
-                245.0,
+                offset_x,
+                offset_y,
                 COMMAND | SHIFT,
             );
             capture(
@@ -566,8 +484,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                100.0,
-                245.0,
+                offset_x + 42.,
+                offset_y,
                 COMMAND | SHIFT,
             );
             capture(
@@ -583,8 +501,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                100.0,
-                245.0,
+                offset_x + 42.,
+                offset_y,
                 COMMAND | SHIFT,
             );
             send_mouse_down(
@@ -671,8 +589,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                255.0,
-                32.0,
+                center("undo").0,
+                center("undo").1,
                 0,
             );
             capture(
@@ -688,8 +606,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                351.0,
-                32.0,
+                center("sound-switch").0,
+                center("sound-switch").1,
                 0,
             );
             capture(
@@ -705,8 +623,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                319.0,
-                32.0,
+                center("sound-a").0,
+                center("sound-a").1,
                 0,
             );
             capture(
@@ -722,8 +640,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                383.0,
-                32.0,
+                center("sound-b").0,
+                center("sound-b").1,
                 0,
             );
             capture(
@@ -739,8 +657,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                255.0,
-                32.0,
+                center("undo").0,
+                center("undo").1,
                 0,
             );
             capture(
@@ -756,8 +674,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                255.0,
-                32.0,
+                center("undo").0,
+                center("undo").1,
                 0,
             );
             send_mouse_move(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 20.0, 20.0, 0);
@@ -772,7 +690,13 @@ mod macos {
             );
 
             let initial_sound = params.active_sound();
-            send_click(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 319.0, 32.0);
+            send_click(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                center("sound-a").0,
+                center("sound-a").1,
+            );
             assert_eq!(
                 params.active_sound(),
                 initial_sound,
@@ -787,7 +711,13 @@ mod macos {
                 640,
                 400,
             );
-            send_click(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 383.0, 32.0);
+            send_click(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                center("sound-b").0,
+                center("sound-b").1,
+            );
             assert_ne!(
                 params.active_sound(),
                 initial_sound,
@@ -844,11 +774,26 @@ mod macos {
                 500,
             );
             gui.request_resize(640, 400);
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-returned-640x400",
+                640,
+                400,
+            );
 
             // Keep the extra state captures tied to real Pump interactions. The
             // old generic component gallery was a Radiant-only contract and did
             // not exercise a production Pump view.
-            send_click(fixture.window, CAPTURE_WIDTH, CAPTURE_HEIGHT, 195.0, 39.0);
+            send_click(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                center("delay-value").0,
+                center("delay-value").1,
+            );
             capture(
                 app,
                 &fixture,
@@ -862,16 +807,16 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                398.0,
-                333.0,
+                center("knob-Mix").0,
+                center("knob-Mix").1,
                 0,
             );
             send_mouse_move(
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                410.0,
-                320.0,
+                center("knob-Mix").0 + 12.,
+                center("knob-Mix").1 - 13.,
                 0,
             );
             capture(
@@ -887,8 +832,8 @@ mod macos {
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                410.0,
-                320.0,
+                center("knob-Mix").0 + 12.,
+                center("knob-Mix").1 - 13.,
                 0,
             );
 
@@ -917,15 +862,15 @@ mod macos {
                 400,
             );
 
-            for (name, center_x) in [
-                ("Smooth", 87),
-                ("Swing", 241),
-                ("Mix", 397),
-                ("Output", 551),
+            for (name, key) in [
+                ("Smooth", "value-Smooth"),
+                ("Swing", "value-Swing"),
+                ("Mix", "value-Mix"),
+                ("Output", "value-OutputGain"),
             ] {
                 assert_ne!(
-                    numeric_label_pixels(&default_capture, center_x),
-                    numeric_label_pixels(&host_updated_capture, center_x),
+                    numeric_label_pixels(&default_capture, key),
+                    numeric_label_pixels(&host_updated_capture, key),
                     "idle host {name} update must repaint its numeric label without clicking"
                 );
             }

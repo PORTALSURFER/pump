@@ -731,6 +731,8 @@ impl Element for NumericTextElement {
         self.input.update(cx, |input, _| {
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
+            #[cfg(feature = "screenshot-test")]
+            record_screenshot_bounds(format!("value-{:?}", input.target), bounds);
         });
     }
 }
@@ -880,6 +882,57 @@ fn new_hosted_gui(
             visibility_teardown_pending.set(true);
         }
     })
+}
+
+// Test-only geometry comes from painted controls, so native fixtures keep
+// exercising real hit targets when the composition changes.
+#[cfg(feature = "screenshot-test")]
+static SCREENSHOT_BOUNDS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, [f32; 4]>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(feature = "screenshot-test")]
+fn record_screenshot_bounds(key: impl Into<String>, bounds: Bounds<Pixels>) {
+    SCREENSHOT_BOUNDS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("screenshot bounds lock")
+        .insert(
+            key.into(),
+            [
+                f32::from(bounds.left()),
+                f32::from(bounds.top()),
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height),
+            ],
+        );
+}
+
+/// Painted logical bounds used by the native input and screenshot runners.
+#[cfg(feature = "screenshot-test")]
+#[doc(hidden)]
+pub fn screenshot_bounds(key: &str) -> [f32; 4] {
+    *SCREENSHOT_BOUNDS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("screenshot bounds lock")
+        .get(key)
+        .unwrap_or_else(|| panic!("control {key} has not painted"))
+}
+
+/// Exact envelope sample in logical plot coordinates for native fixtures.
+#[cfg(feature = "screenshot-test")]
+#[doc(hidden)]
+pub fn screenshot_curve_point(params: &PumpParams, phase: f32) -> (f64, f64) {
+    let [left, top, width, height] = screenshot_bounds("curve-plot");
+    let gain = crate::curve::sample_editable_curve(
+        &params.editable_curve_snapshot(),
+        phase + params.phase_offset(),
+    );
+    (
+        f64::from(left + phase * (width - 1.)),
+        f64::from(top + (1. - gain) * (height - 1.)),
+    )
 }
 
 /// Native fixture factory used by the release screenshot runner.
@@ -3174,6 +3227,8 @@ fn draw_curve(
         point(px(left), px(top)),
         point(px(left + width), px(top + height)),
     );
+    #[cfg(feature = "screenshot-test")]
+    record_screenshot_bounds("curve-plot", curve_bounds);
     let grid = super::curve_beat_grid(state.params().sync_division(), width);
     for (positions, color) in [
         (&grid.minor, theme.grid_soft),
@@ -3634,6 +3689,14 @@ fn draw_curve(
         cx,
     );
     let offset_y = top + height + CURVE_OFFSET_INSET;
+    #[cfg(feature = "screenshot-test")]
+    record_screenshot_bounds(
+        "curve-offset",
+        Bounds::new(
+            point(px(left), px(offset_y)),
+            gpui::size(px(width), px(CURVE_OFFSET_BAR_HEIGHT)),
+        ),
+    );
     let gr_value = text_line(
         window,
         format!("{reduction:.1}"),
@@ -4121,6 +4184,19 @@ fn button(
         .font(font("Ioskeley Mono"))
         .text_size(px(PUMP_TYPOGRAPHY.body.0))
         .line_height(px(PUMP_TYPOGRAPHY.body.1));
+    #[cfg(feature = "screenshot-test")]
+    {
+        button = button.relative().child(
+            canvas(
+                move |bounds, _, _| record_screenshot_bounds(id, bounds),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .size_full(),
+        );
+    }
     if let Some(focus_handle) = focus_handle {
         let focus_handle_for_mouse = focus_handle.clone();
         button = button.track_focus(focus_handle).on_mouse_down(
@@ -4204,6 +4280,8 @@ impl PumpEditor {
         let track = canvas(
             move |bounds, _, _| {
                 *paint_bounds.borrow_mut() = Some(bounds);
+                #[cfg(feature = "screenshot-test")]
+                record_screenshot_bounds(format!("slider-{target:?}"), bounds);
             },
             move |bounds, _, window, _| {
                 let left = bounds.left() + px(5.);
@@ -4315,6 +4393,8 @@ impl PumpEditor {
         let knob_canvas = canvas(
             move |_bounds, _, _| {},
             move |bounds, _, window, _cx| {
+                #[cfg(feature = "screenshot-test")]
+                record_screenshot_bounds(format!("knob-{target:?}"), bounds);
                 let center = point(
                     bounds.left() + bounds.size.width * 0.5,
                     bounds.top() + bounds.size.height * 0.5,
@@ -4409,6 +4489,8 @@ impl PumpEditor {
         let slider = canvas(
             move |bounds, _, _| {
                 *paint_bounds.borrow_mut() = Some(bounds);
+                #[cfg(feature = "screenshot-test")]
+                record_screenshot_bounds(format!("band-{index}"), bounds);
             },
             move |bounds, _, window, cx| {
                 let left = bounds.left() + px(5.);
@@ -4963,7 +5045,7 @@ impl Render for PumpEditor {
             },
         )
         .w(px(66.3))
-        .h(px(10.0));
+        .h(px(2.0));
         let delay_input =
             self.numeric_inputs[Self::numeric_input_index(NumericEntryTarget::Delay)].clone();
         let delay_value = div()
@@ -4991,7 +5073,7 @@ impl Render for PumpEditor {
             .child(
                 div()
                     .h(px(HEADER_CONTROL_HEIGHT
-                        - 10.0
+                        - 2.0
                         - PUMP_VISUAL_METRICS.space_4))
                     .w_full()
                     .flex()

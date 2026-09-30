@@ -1010,6 +1010,7 @@ pub(crate) enum EditorMessage {
     },
     CopyAndSelectSound(SoundSide),
     ToggleBypass,
+    #[cfg(test)]
     ToggleFilter,
     EffectGesture {
         index: usize,
@@ -1019,6 +1020,7 @@ pub(crate) enum EditorMessage {
         index: usize,
         value: f32,
     },
+    #[cfg(test)]
     SetFilterSlope {
         handle: FilterHandle,
         index: usize,
@@ -1859,6 +1861,7 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 state.push_history_snapshot(before);
             }
         }
+        #[cfg(test)]
         EditorMessage::ToggleFilter => {
             let enabled = !state.params.filter_enabled();
             if state.host_param_edit_sink.edit(
@@ -1875,6 +1878,7 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 }
             }
         }
+        #[cfg(test)]
         EditorMessage::SetFilterSlope { handle, index } => {
             if !state.params.filter_enabled() {
                 return;
