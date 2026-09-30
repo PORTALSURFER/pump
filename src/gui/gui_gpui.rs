@@ -58,10 +58,10 @@ const CURVE_HEIGHT: f32 = 153.0;
 const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
 const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.space_4;
 const CURVE_GUTTER: f32 = 40.8;
-const CURVE_METER_GAP: f32 = 2.72;
+const CURVE_METER_GAP: f32 = PUMP_VISUAL_METRICS.space_8;
 const CURVE_METER_WIDTH: f32 = PUMP_VISUAL_METRICS.meter_panel;
 const SLOT_HEIGHT: f32 = 34.0;
-const SLOT_GAP: f32 = 2.72;
+const SLOT_GAP: f32 = 4.0;
 const DECK_HEIGHT: f32 = PUMP_VISUAL_METRICS.deck_height;
 const HEADER_HEIGHT: f32 = 38.0;
 const HEADER_CONTROL_HEIGHT: f32 = PUMP_VISUAL_METRICS.control_height;
@@ -3596,10 +3596,11 @@ fn draw_curve(
         point(px(meter_left), px(top + 10.0)),
         point(px(meter_left + CURVE_METER_WIDTH), px(top + height - 10.0)),
     );
+    let meter_inset = (CURVE_METER_WIDTH - PUMP_VISUAL_METRICS.meter_track) * 0.5;
     let meter = Bounds::from_corners(
-        point(meter_panel.left() + px(8.2), meter_panel.top()),
+        point(meter_panel.left() + px(meter_inset), meter_panel.top()),
         point(
-            meter_panel.left() + px(8.2 + PUMP_VISUAL_METRICS.meter_track),
+            meter_panel.left() + px(meter_inset + PUMP_VISUAL_METRICS.meter_track),
             meter_panel.bottom(),
         ),
     );
@@ -4397,7 +4398,7 @@ impl PumpEditor {
                 div()
                     .text_color(solid(theme.text_muted))
                     .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
+                    .text_size(px(PUMP_TYPOGRAPHY.value.0))
                     .child(label),
             )
             .child(knob_canvas)
@@ -4723,6 +4724,10 @@ impl PumpEditor {
             .flex()
             .flex_col()
             .gap(px(3.))
+            .py(px(2.))
+            .border_t_1()
+            .border_b_1()
+            .border_color(solid(theme.grid_soft))
             .child(
                 div()
                     .flex()
@@ -4734,12 +4739,23 @@ impl PumpEditor {
                     .children(controls)
                     .child(
                         div()
-                            .w(px(212.))
-                            .h(px(28.))
+                            .flex_1()
+                            .min_w(px(212.))
                             .flex()
-                            .flex_col()
-                            .child(self.slider_element(NumericEntryTarget::Smooth, cx))
-                            .child(self.slider_element(NumericEntryTarget::Swing, cx)),
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w(px(if self.effects_spectral_view {
+                                        212.
+                                    } else {
+                                        280.
+                                    }))
+                                    .h(px(28.))
+                                    .flex()
+                                    .flex_col()
+                                    .child(self.slider_element(NumericEntryTarget::Smooth, cx))
+                                    .child(self.slider_element(NumericEntryTarget::Swing, cx)),
+                            ),
                     )
                     .child(switcher),
             );
@@ -4797,7 +4813,7 @@ fn curve_slot_element(
     button(id, String::new(), loaded || deviated, 1.0, None)
         .flex_1()
         .h(px(SLOT_HEIGHT))
-        .rounded(px(PUMP_VISUAL_METRICS.radius))
+        .rounded(px(2.0))
         .child(preview)
 }
 
@@ -4909,8 +4925,8 @@ impl Render for PumpEditor {
             div()
                 .id(id)
                 .w(px(PUMP_VISUAL_METRICS.divider))
-                .h(px(DECK_HEIGHT - 13.6))
-                .bg(solid(theme.grid_strong))
+                .h(px(DECK_HEIGHT - 24.0))
+                .bg(solid(theme.grid_soft))
         };
         let mut deck_children = vec![self.band_mix_group(cx)];
         if timing_free {
