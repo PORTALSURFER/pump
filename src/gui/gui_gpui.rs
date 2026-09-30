@@ -969,6 +969,7 @@ struct PumpEditor {
     pending_empty_node: Option<(Point<Pixels>, CurveNode)>,
     pending_seam: Option<(Point<Pixels>, bool)>,
     active_knob: Option<NumericEntryTarget>,
+    active_mix_slider: Option<(usize, f32, f32)>,
     last_pointer: Option<Point<Pixels>>,
     button_focus_handles: HashMap<&'static str, FocusHandle>,
     button_activation_keys: HashSet<String>,
@@ -1092,6 +1093,8 @@ impl PumpEditor {
             "undo",
             "redo",
             "sound-a",
+            "dual-low",
+            "dual-high",
             "sound-switch",
             "sound-b",
             "hotkey-help",
@@ -1124,6 +1127,7 @@ impl PumpEditor {
             pending_empty_node: None,
             pending_seam: None,
             active_knob: None,
+            active_mix_slider: None,
             last_pointer: None,
             button_focus_handles,
             button_activation_keys: HashSet::new(),
@@ -1295,6 +1299,7 @@ impl PumpEditor {
         self.pending_empty_node = None;
         self.pending_seam = None;
         self.active_knob = None;
+        self.active_mix_slider = None;
         self.last_pointer = None;
     }
 
@@ -2336,6 +2341,17 @@ impl PumpEditor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.consume_pointer_cancel(cx);
+        if let Some((index, left, width)) = self.active_mix_slider {
+            let value = ((f32::from(event.position.x) - left) / width).clamp(0., 1.);
+            self.dispatch(
+                EditorMessage::EffectGesture {
+                    index,
+                    message: KnobMessage::ValueChanged { value },
+                },
+                cx,
+            );
+            return true;
+        }
         if self.active_knob.is_some() {
             self.knob_move(event, window, cx);
             return true;
@@ -2363,7 +2379,9 @@ impl PumpEditor {
 
     fn captured_mouse_down(&mut self, cx: &mut Context<Self>) -> bool {
         self.consume_pointer_cancel(cx);
-        self.active_knob.is_some() || self.curve_active_button.is_some()
+        self.active_mix_slider.is_some()
+            || self.active_knob.is_some()
+            || self.curve_active_button.is_some()
     }
 
     fn captured_mouse_up(
@@ -2373,6 +2391,27 @@ impl PumpEditor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.consume_pointer_cancel(cx);
+        if let Some((index, left, width)) = self.active_mix_slider {
+            if event.button == MouseButton::Left {
+                let value = ((f32::from(event.position.x) - left) / width).clamp(0., 1.);
+                self.dispatch(
+                    EditorMessage::EffectGesture {
+                        index,
+                        message: KnobMessage::ValueChanged { value },
+                    },
+                    cx,
+                );
+                self.dispatch(
+                    EditorMessage::EffectGesture {
+                        index,
+                        message: KnobMessage::GestureEnded,
+                    },
+                    cx,
+                );
+                self.active_mix_slider = None;
+            }
+            return true;
+        }
         if self.active_knob.is_some() {
             if event.button == MouseButton::Left {
                 self.knob_up(event, window, cx);
@@ -2387,7 +2426,10 @@ impl PumpEditor {
     }
 
     fn captured_mouse_exit(&mut self, cx: &mut Context<Self>) {
-        if self.active_knob.is_none() && self.curve_active_button.is_none() {
+        if self.active_mix_slider.is_none()
+            && self.active_knob.is_none()
+            && self.curve_active_button.is_none()
+        {
             self.clear_curve_hover(cx);
             self.last_pointer = None;
         }
@@ -4286,6 +4328,134 @@ impl PumpEditor {
             )
     }
 
+    fn effect_mix_slider(&self, index: usize, value: f32, cx: &Context<Self>) -> gpui::Div {
+        let theme = pump_theme();
+        let (id, label, color) = if index == 3 {
+            ("dual-low", "LP MIX", theme.accent_copper)
+        } else {
+            ("dual-high", "HP MIX", PumpColor::rgb(140, 170, 235))
+        };
+        let focus = self.button_focus_handle(id).clone();
+        let focus_down = focus.clone();
+        let bounds = Rc::new(RefCell::new(None::<Bounds<Pixels>>));
+        let paint_bounds = Rc::clone(&bounds);
+        let slider = canvas(
+            move |bounds, _, _| {
+                *paint_bounds.borrow_mut() = Some(bounds);
+            },
+            move |bounds, _, window, _| {
+                let left = bounds.left() + px(5.);
+                let right = bounds.right() - px(5.);
+                let center = bounds.top() + bounds.size.height * 0.5;
+                let thumb = left + (right - left) * value;
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(left, center - px(2.)),
+                        point(right, center + px(2.)),
+                    ),
+                    solid(theme.border_emphasis),
+                ));
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(left, center - px(2.)),
+                        point(thumb, center + px(2.)),
+                    ),
+                    solid(color),
+                ));
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(thumb - px(4.), center - px(7.)),
+                        point(thumb + px(4.), center + px(7.)),
+                    ),
+                    solid(theme.text_primary),
+                ));
+            },
+        )
+        .w(px(90.))
+        .h(px(22.));
+        div().w(px(92.)).child(
+            div()
+                .id(id)
+                .track_focus(&focus)
+                .w(px(92.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(2.))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                        window.focus(&focus_down, cx);
+                        let Some(bounds) = *bounds.borrow() else {
+                            return;
+                        };
+                        if event.click_count >= 2 {
+                            view.dispatch(EditorMessage::SetEffect { index, value: 1. }, cx);
+                            return;
+                        }
+                        let left = f32::from(bounds.left()) + 5.;
+                        let width = (f32::from(bounds.size.width) - 10.).max(1.);
+                        view.active_mix_slider = Some((index, left, width));
+                        view.dispatch(
+                            EditorMessage::EffectGesture {
+                                index,
+                                message: KnobMessage::GestureStarted,
+                            },
+                            cx,
+                        );
+                        let value = ((f32::from(event.position.x) - left) / width).clamp(0., 1.);
+                        view.dispatch(
+                            EditorMessage::EffectGesture {
+                                index,
+                                message: KnobMessage::ValueChanged { value },
+                            },
+                            cx,
+                        );
+                    }),
+                )
+                .on_scroll_wheel(cx.listener(move |view, event: &ScrollWheelEvent, _, cx| {
+                    let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+                    if delta == 0. {
+                        return;
+                    }
+                    let value =
+                        view.state.borrow().params().effects()[index] + delta.signum() * 0.01;
+                    view.dispatch(EditorMessage::SetEffect { index, value }, cx);
+                }))
+                .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
+                    let current = view.state.borrow().params().effects()[index];
+                    let step = if event.keystroke.modifiers.shift {
+                        0.1
+                    } else {
+                        0.01
+                    };
+                    let value = match event.keystroke.key.as_str() {
+                        "left" | "down" => current - step,
+                        "right" | "up" => current + step,
+                        "home" => 0.,
+                        "end" => 1.,
+                        _ => return,
+                    };
+                    view.dispatch(EditorMessage::SetEffect { index, value }, cx);
+                    cx.stop_propagation();
+                }))
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .justify_between()
+                        .text_size(px(8.))
+                        .child(div().text_color(solid(color)).child(label))
+                        .child(
+                            div()
+                                .text_color(solid(theme.text_primary))
+                                .child(format!("{:.0}%", value * 100.)),
+                        ),
+                )
+                .child(slider),
+        )
+    }
+
     fn effects_strip(&self, cx: &mut Context<Self>) -> gpui::Div {
         const IDS: [&str; 12] = [
             "dual-on",
@@ -4309,6 +4479,9 @@ impl PumpEditor {
             &[1, 2, 3, 4, 5, 6]
         };
         let controls = indices.iter().copied().map(|i| {
+            if matches!(i, 3 | 4) {
+                return self.effect_mix_slider(i, values[i], cx);
+            }
             let label = crate::params::format_plain_value_text(
                 toybox::clack_plugin::utils::ClapId::new(24 + i as u32),
                 values[i] as f64,
@@ -4412,7 +4585,7 @@ impl PumpEditor {
                 div()
                     .text_size(px(8.))
                     .text_color(solid(theme.text_muted))
-                    .child("Shared envelope • Scroll values • Click switches"),
+                    .child("Shared envelope • Drag mix sliders • Scroll values"),
             );
         let mut strip = div()
             .w_full()

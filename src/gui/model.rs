@@ -953,6 +953,7 @@ pub(crate) struct PumpEditorState {
     loaded_global_curve_slot: Option<usize>,
     numeric_entry: Option<NumericEntryState>,
     active_knob_gesture: Option<NumericEntryTarget>,
+    active_effect_gesture: Option<usize>,
     timing_dropdown_open: bool,
     hotkey_help_open: bool,
     free_rate_unit: FreeRateUnit,
@@ -1010,6 +1011,10 @@ pub(crate) enum EditorMessage {
     CopyAndSelectSound(SoundSide),
     ToggleBypass,
     ToggleFilter,
+    EffectGesture {
+        index: usize,
+        message: KnobMessage,
+    },
     SetEffect {
         index: usize,
         value: f32,
@@ -1082,6 +1087,7 @@ impl PumpEditorState {
             loaded_global_curve_slot: None,
             numeric_entry: None,
             active_knob_gesture: None,
+            active_effect_gesture: None,
             timing_dropdown_open: false,
             hotkey_help_open: false,
             free_rate_unit: FreeRateUnit::Hertz,
@@ -1415,6 +1421,7 @@ impl PumpEditorState {
             || self.active_curve_marquee.is_some()
             || self.active_filter_drag.is_some()
             || self.active_knob_gesture.is_some()
+            || self.active_effect_gesture.is_some()
     }
 
     /// End every host gesture before the native child view is torn down.
@@ -1424,6 +1431,11 @@ impl PumpEditorState {
     /// end because their lifetime is owned by the automation queue/component
     /// handler rather than the curve reducer.
     pub(crate) fn cancel_active_gestures(&mut self) {
+        if let Some(index) = self.active_effect_gesture.take() {
+            let _ = self
+                .host_param_edit_sink
+                .gesture_ended(&self.automation_config, ClapId::new(24 + index as u32));
+        }
         if let Some(target) = self.active_knob_gesture.take() {
             let _ = self
                 .host_param_edit_sink
@@ -1445,6 +1457,11 @@ impl PumpEditorState {
     /// audible state and must be ended at that value rather than restored as
     /// it would be for an explicit Escape/cancel gesture.
     pub(crate) fn finish_for_teardown(&mut self) {
+        if let Some(index) = self.active_effect_gesture.take() {
+            let _ = self
+                .host_param_edit_sink
+                .gesture_ended(&self.automation_config, ClapId::new(24 + index as u32));
+        }
         if let Some(target) = self.active_knob_gesture.take() {
             let _ = self
                 .host_param_edit_sink
@@ -1740,12 +1757,64 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 }
             }
         }
+        EditorMessage::EffectGesture { index, message } => {
+            if !matches!(index, 3 | 4) {
+                return;
+            }
+            let id = ClapId::new(24 + index as u32);
+            match message {
+                KnobMessage::GestureStarted => {
+                    if !state.has_active_gesture()
+                        && state
+                            .host_param_edit_sink
+                            .gesture_started(&state.automation_config, id)
+                    {
+                        state.push_history();
+                        state.active_effect_gesture = Some(index);
+                    }
+                }
+                KnobMessage::ValueChanged { value } => {
+                    if state.active_effect_gesture == Some(index) {
+                        let value = crate::dual_spectral::sanitize(index, value);
+                        if state.host_param_edit_sink.gesture_value(
+                            &state.automation_config,
+                            id,
+                            value as f64,
+                        ) {
+                            state.params.set_effect(index, value);
+                        }
+                    }
+                }
+                KnobMessage::GestureEnded => {
+                    if state.active_effect_gesture == Some(index) {
+                        let _ = state
+                            .host_param_edit_sink
+                            .gesture_ended(&state.automation_config, id);
+                        state.active_effect_gesture = None;
+                    }
+                }
+                KnobMessage::Reset { value } | KnobMessage::Discrete { value } => {
+                    reduce_editor_message(state, EditorMessage::SetEffect { index, value });
+                }
+            }
+        }
         EditorMessage::SetEffect { index, value } => {
             if index >= crate::dual_spectral::COUNT {
                 return;
             }
             let value = crate::dual_spectral::sanitize(index, value);
             if state.params.effects()[index] == value {
+                return;
+            }
+            // Wheel or keyboard input during a drag belongs to that gesture.
+            if state.active_effect_gesture == Some(index) {
+                if state.host_param_edit_sink.gesture_value(
+                    &state.automation_config,
+                    ClapId::new(24 + index as u32),
+                    value as f64,
+                ) {
+                    state.params.set_effect(index, value);
+                }
                 return;
             }
             if state.host_param_edit_sink.edit(
@@ -4688,6 +4757,66 @@ mod tests {
         assert!(state.selected_curve_nodes.is_empty());
         assert!(!state.refresh_host_projection());
     }
+    #[test]
+    fn band_mix_slider_drag_is_one_undo_step_and_closes_on_teardown() {
+        for index in [3, 4] {
+            let sink = Arc::new(RecordingSink::default());
+            let mut state = editor(Arc::clone(&sink));
+            let id = ClapId::new(24 + index as u32);
+            state.dispatch(EditorMessage::EffectGesture {
+                index,
+                message: KnobMessage::GestureStarted,
+            });
+            for value in [0.8, 0.5, -0.2] {
+                state.dispatch(EditorMessage::EffectGesture {
+                    index,
+                    message: KnobMessage::ValueChanged { value },
+                });
+            }
+            state.dispatch(EditorMessage::SetEffect { index, value: 0.25 });
+            assert_eq!(state.params.effects()[index], 0.25);
+            assert_eq!(state.undo_history.len(), 1);
+            assert!(state.has_active_gesture());
+            state.dispatch(EditorMessage::EffectGesture {
+                index,
+                message: KnobMessage::GestureEnded,
+            });
+            assert!(!state.has_active_gesture());
+            assert_eq!(
+                sink.events(),
+                vec![
+                    SinkEvent::Begin(id),
+                    SinkEvent::Value(id, 0.8_f32 as f64),
+                    SinkEvent::Value(id, 0.5),
+                    SinkEvent::Value(id, 0.),
+                    SinkEvent::Value(id, 0.25),
+                    SinkEvent::End(id)
+                ]
+            );
+            state.dispatch(EditorMessage::Undo);
+            assert_eq!(state.params.effects()[index], 1.);
+            state.dispatch(EditorMessage::Redo);
+            assert_eq!(state.params.effects()[index], 0.25);
+            state.dispatch(EditorMessage::EffectGesture {
+                index,
+                message: KnobMessage::GestureStarted,
+            });
+            state.finish_for_teardown();
+            assert!(!state.has_active_gesture());
+            assert_eq!(sink.events().last(), Some(&SinkEvent::End(id)));
+            let count = sink.events().len();
+            state.cancel_active_gestures();
+            assert_eq!(sink.events().len(), count);
+            state.dispatch(EditorMessage::EffectGesture {
+                index,
+                message: KnobMessage::GestureStarted,
+            });
+            state.cancel_active_gestures();
+            assert!(!state.has_active_gesture());
+            assert_eq!(sink.events().last(), Some(&SinkEvent::End(id)));
+        }
+    }
+
     #[test]
     fn dual_spectral_edits_use_host_sink_and_undo() {
         let sink = Arc::new(RecordingSink::default());
