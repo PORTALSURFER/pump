@@ -5213,11 +5213,21 @@ impl Render for PumpEditor {
             .child(history)
             .child(ab)
             .child(help_button);
-        let brand_meta = if params.preset_persistence_warning().is_some() {
-            super::PRESET_WARNING_STORAGE.to_owned()
-        } else {
-            crate::gui::build_version_label()
-        };
+        let storage_warning = params.preset_persistence_warning().map(|_| {
+            div()
+                .text_color(solid(theme.accent_warning))
+                .text_size(px(PUMP_TYPOGRAPHY.meta.0))
+                .child(super::PRESET_WARNING_STORAGE)
+        });
+        let version_label = div()
+            .id("build-version")
+            .absolute()
+            .top(px(2.0))
+            .right(px(SURFACE_PADDING))
+            .text_color(solid(theme.text_muted.with_alpha(128)))
+            .text_size(px(6.0))
+            .line_height(px(8.0))
+            .child(crate::gui::build_version_label());
         let brand = div()
             .flex()
             .flex_col()
@@ -5240,13 +5250,7 @@ impl Render for PumpEditor {
                             .child("PUMP"),
                     ),
             )
-            .child(
-                div()
-                    .text_color(solid(theme.text_muted))
-                    .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.meta.0))
-                    .child(brand_meta),
-            );
+            .children(storage_warning);
         let header = div()
             .h(px(HEADER_HEIGHT))
             .w_full()
@@ -5433,6 +5437,7 @@ impl Render for PumpEditor {
             .child(self.effects_strip(cx))
             .child(deck)
             .child(footer)
+            .child(version_label)
             .child(hotkey_help)
     }
 }
