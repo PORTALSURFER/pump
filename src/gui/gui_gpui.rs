@@ -3726,7 +3726,7 @@ fn draw_crossover_preview(
     let plot_top = top + 12.;
     let plot_width = (width - 1.).max(1.);
     let plot_height = (height - 24.).max(1.);
-    let low_color = theme.accent_copper;
+    let low_color = PumpColor::rgb(143, 197, 170);
     let high_color = PumpColor::rgb(140, 170, 235);
     for (band, color) in [(0, low_color), (1, high_color)] {
         let mut area = gpui::PathBuilder::fill();
@@ -4318,7 +4318,7 @@ impl PumpEditor {
     fn effect_mix_slider(&self, index: usize, value: f32, cx: &Context<Self>) -> gpui::Div {
         let theme = pump_theme();
         let (id, label, color) = if index == 3 {
-            ("dual-low", "LP", theme.accent_copper)
+            ("dual-low", "LP", PumpColor::rgb(143, 197, 170))
         } else {
             ("dual-high", "HP", PumpColor::rgb(140, 170, 235))
         };
