@@ -172,3 +172,5 @@ host-automatable Swing mapping.
 Pump includes a one-crossover, 12/24 dB Linkwitz–Riley dual-band mode and external-sidechain spectral ducking across 24 bands. See [controls, compatibility and validation](docs/dual-spectral.md). Both bands share the authored envelope.
 
 Smooth and Swing use horizontal sliders without handles; Mix and Output retain their rotary knobs.
+
+The composition groups stacked Smooth/Swing sliders beside Mix/Output, with the compact band strip immediately below the curve presets. Dual activation lives with its band controls.

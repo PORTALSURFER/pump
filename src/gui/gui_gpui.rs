@@ -56,15 +56,15 @@ pub const MAX_WINDOW_HEIGHT: u32 = super::MAX_WINDOW_HEIGHT;
 
 const CURVE_HEIGHT: f32 = 153.0;
 const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
-const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.divider;
+const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.space_4;
 const CURVE_GUTTER: f32 = 40.8;
 const CURVE_METER_GAP: f32 = 2.72;
 const CURVE_METER_WIDTH: f32 = PUMP_VISUAL_METRICS.meter_panel;
-const SLOT_HEIGHT: f32 = 40.8;
+const SLOT_HEIGHT: f32 = 34.0;
 const SLOT_GAP: f32 = 2.72;
 const DECK_HEIGHT: f32 = PUMP_VISUAL_METRICS.deck_height;
-const HEADER_HEIGHT: f32 = 45.9;
-const HEADER_CONTROL_HEIGHT: f32 = 34.0;
+const HEADER_HEIGHT: f32 = 38.0;
+const HEADER_CONTROL_HEIGHT: f32 = PUMP_VISUAL_METRICS.control_height;
 const FOOTER_HEIGHT: f32 = PUMP_VISUAL_METRICS.label_line;
 const CURVE_OFFSET_BAR_HEIGHT: f32 = 10.2;
 const CURVE_OFFSET_INSET: f32 = PUMP_VISUAL_METRICS.space_8;
@@ -4270,7 +4270,8 @@ impl PumpEditor {
         .w_full()
         .h(px(24.));
         let interactive_track = div()
-            .w_full()
+            .flex_1()
+            .min_w(px(40.))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
@@ -4298,19 +4299,20 @@ impl PumpEditor {
             .child(track);
         div()
             .id(target.widget_key())
-            .flex_1()
-            .h(px(DECK_HEIGHT))
+            .w_full()
+            .h(px(DECK_HEIGHT * 0.5))
             .px(px(12.))
             .flex()
-            .flex_col()
             .items_center()
-            .justify_center()
+            .justify_between()
             .gap(px(PUMP_VISUAL_METRICS.space_4))
             .on_scroll_wheel(cx.listener(move |view, event, window, cx| {
                 view.knob_wheel(target, event, window, cx);
             }))
             .child(
                 div()
+                    .w(px(54.))
+                    .flex_shrink_0()
                     .text_color(solid(theme.text_muted))
                     .font(font("Ioskeley Mono"))
                     .text_size(px(PUMP_TYPOGRAPHY.body.0))
@@ -4320,7 +4322,8 @@ impl PumpEditor {
             .child(
                 div()
                     .h(px(PUMP_TYPOGRAPHY.value.1 + 4.))
-                    .w(px(PUMP_VISUAL_METRICS.knob_column))
+                    .w(px(42.))
+                    .flex_shrink_0()
                     .child(input),
             )
     }
@@ -4574,9 +4577,22 @@ impl PumpEditor {
         let indices: &[usize] = if self.effects_spectral_view {
             &[7, 8, 9, 10, 11]
         } else {
-            &[1, 2, 3]
+            &[0, 1, 2, 3]
         };
         let controls = indices.iter().copied().map(|i| {
+            if i == 0 {
+                return div().w(px(60.)).child(
+                    button(
+                        "filter",
+                        "DUAL".into(),
+                        values[0] >= 0.5,
+                        60.,
+                        Some(self.button_focus_handle("filter")),
+                    )
+                    .h(px(24.))
+                    .on_click(cx.listener(Self::toggle_filter)),
+                );
+            }
             if i == 3 {
                 return div()
                     .w(px(212.))
@@ -4584,10 +4600,6 @@ impl PumpEditor {
                     .flex()
                     .flex_col()
                     .gap(px(0.))
-                    .bg(solid(theme.clear))
-                    .border_1()
-                    .border_color(solid(theme.border))
-                    .rounded(px(1.))
                     .children((3..=4).map(|mix_index| {
                         let solo_index = mix_index + 2;
                         let solo = button(
@@ -4724,6 +4736,7 @@ impl PumpEditor {
             None,
         )
         .h(px(24.))
+        .ml_auto()
         .on_click(cx.listener(|view, _, _, cx| {
             view.effects_spectral_view = !view.effects_spectral_view;
             cx.notify();
@@ -4739,7 +4752,7 @@ impl PumpEditor {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(3.))
+                    .gap(px(6.))
                     .text_size(px(8.))
                     .text_color(solid(theme.text_muted))
                     .children(controls)
@@ -4914,11 +4927,15 @@ impl Render for PumpEditor {
                 .h(px(DECK_HEIGHT - 13.6))
                 .bg(solid(theme.grid_strong))
         };
-        let mut deck_children = vec![
-            self.slider_element(NumericEntryTarget::Smooth, cx),
-            divider("deck-divider-smooth"),
-            self.slider_element(NumericEntryTarget::Swing, cx),
-        ];
+        let mut deck_children = vec![div()
+            .id("timing-shape-controls")
+            .w_1_2()
+            .h(px(DECK_HEIGHT))
+            .flex()
+            .flex_col()
+            .justify_center()
+            .child(self.slider_element(NumericEntryTarget::Smooth, cx))
+            .child(self.slider_element(NumericEntryTarget::Swing, cx))];
         if timing_free {
             deck_children.push(divider("deck-divider-free-rate"));
             deck_children.push(self.knob_element(NumericEntryTarget::FreeRate, cx));
@@ -4926,6 +4943,7 @@ impl Render for PumpEditor {
         deck_children.extend([
             divider("deck-divider-mix"),
             self.knob_element(NumericEntryTarget::Mix, cx),
+            divider("deck-divider-output"),
             self.knob_element(NumericEntryTarget::OutputGain, cx),
         ]);
         let deck = div()
@@ -5256,15 +5274,6 @@ impl Render for PumpEditor {
         )
         .h(px(FOOTER_HEIGHT));
         waveform_button = waveform_button.on_click(cx.listener(Self::toggle_waveform));
-        let mut filter_button = button(
-            "filter",
-            "DUAL".into(),
-            params.effects()[0] >= 0.5,
-            66.0,
-            Some(self.button_focus_handle("filter")),
-        )
-        .h(px(FOOTER_HEIGHT));
-        filter_button = filter_button.on_click(cx.listener(Self::toggle_filter));
         let mut bypass_button = button(
             "bypass",
             String::new(),
@@ -5314,7 +5323,7 @@ impl Render for PumpEditor {
                 },
             )
             .w(px(PUMP_VISUAL_METRICS.icon_hit))
-            .h(px(PUMP_VISUAL_METRICS.icon_hit)),
+            .h(px(FOOTER_HEIGHT)),
         );
         bypass_button =
             bypass_button.child(div().child(if bypassed { "BYPASSED" } else { "ACTIVE" }));
@@ -5330,8 +5339,7 @@ impl Render for PumpEditor {
                     .flex()
                     .items_center()
                     .gap(px(PUMP_VISUAL_METRICS.space_4))
-                    .child(waveform_button)
-                    .child(filter_button),
+                    .child(waveform_button),
             )
             .child(bypass_button);
         let hotkey_help = if state.hotkey_help_open() {
@@ -5426,11 +5434,10 @@ impl Render for PumpEditor {
             .on_key_up(cx.listener(Self::handle_key_up))
             .on_modifiers_changed(cx.listener(Self::handle_modifiers))
             .child(header)
-            .child(div().h(px(PUMP_VISUAL_METRICS.space_4)))
             .child(curve_area)
             .child(slots)
-            .child(deck)
             .child(self.effects_strip(cx))
+            .child(deck)
             .child(footer)
             .child(hotkey_help)
     }
