@@ -1422,7 +1422,10 @@ impl PumpEditor {
     }
 
     fn hit_filter_handle(&self, position: Point<Pixels>) -> Option<FilterHandle> {
-        if !self.state.borrow().filter_enabled() || !self.curve_plot_contains(position) {
+        if self.state.borrow().params().effects()[0] >= 0.5
+            || !self.state.borrow().filter_enabled()
+            || !self.curve_plot_contains(position)
+        {
             return None;
         }
         let radius_squared = FILTER_HANDLE_HIT_RADIUS * FILTER_HANDLE_HIT_RADIUS;
@@ -3287,7 +3290,7 @@ fn draw_curve(
     if let Ok(area) = area.build() {
         window.paint_path(area, solid(theme.accent_mint.with_alpha(17)));
     }
-    if state.params().effects()[0] >= 0.5 {
+    if state.params().effects()[0] >= 0.5 || !state.filter_enabled() {
         draw_crossover_preview(curve_bounds, state, window, cx);
     }
     let curve_color = if active_offset {
@@ -3702,7 +3705,7 @@ fn draw_crossover_preview(
     let plot_width = (width - 1.).max(1.);
     let plot_height = (height - 24.).max(1.);
     let low_color = PumpColor::rgb(143, 197, 170);
-    let high_color = PumpColor::rgb(140, 170, 235);
+    let high_color = PumpColor::rgb(128, 158, 198);
     for (band, color) in [(0, low_color), (1, high_color)] {
         let mut area = gpui::PathBuilder::fill();
         let mut line = gpui::PathBuilder::stroke(px(1.25));
@@ -4397,7 +4400,7 @@ impl PumpEditor {
         let (id, label, color) = if index == 3 {
             ("dual-low", "LP", PumpColor::rgb(143, 197, 170))
         } else {
-            ("dual-high", "HP", PumpColor::rgb(140, 170, 235))
+            ("dual-high", "HP", PumpColor::rgb(128, 158, 198))
         };
         let focus = self.button_focus_handle(id).clone();
         let focus_down = focus.clone();
@@ -4775,7 +4778,7 @@ impl Render for PumpEditor {
             .id("curve-editor")
             .relative()
             .flex_1()
-            // Reserve space for the effect strip at the 640 × 400 minimum.
+            // Reserve space for the grouped parameter deck at the 640 × 400 minimum.
             // The curve still expands to fill larger editor windows.
             .min_h(px(140.))
             .border_1()
