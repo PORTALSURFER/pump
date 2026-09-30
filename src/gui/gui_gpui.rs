@@ -4428,36 +4428,63 @@ impl PumpEditor {
             move |bounds, _, _| {
                 *paint_bounds.borrow_mut() = Some(bounds);
             },
-            move |bounds, _, window, _| {
+            move |bounds, _, window, cx| {
                 let left = bounds.left() + px(5.);
                 let right = bounds.right() - px(5.);
                 let center = bounds.top() + bounds.size.height * 0.5;
-                let filled_to = left + (right - left) * value;
                 window.paint_quad(fill(
                     Bounds::from_corners(
-                        point(left, center - px(1.5)),
-                        point(right, center + px(1.5)),
+                        point(left, center - px(10.)),
+                        point(right, center + px(10.)),
                     ),
                     solid(theme.border_emphasis),
                 ));
+                let inner_left = left + px(1.);
+                let inner_right = right - px(1.);
                 window.paint_quad(fill(
                     Bounds::from_corners(
-                        point(left, center - px(1.5)),
-                        point(filled_to, center + px(1.5)),
+                        point(inner_left, center - px(9.)),
+                        point(inner_right, center + px(9.)),
                     ),
-                    solid(color),
+                    solid(theme.grid_soft),
                 ));
+                if value > 0. {
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(inner_left, center - px(9.)),
+                            point(
+                                inner_left + (inner_right - inner_left) * value,
+                                center + px(9.),
+                            ),
+                        ),
+                        solid(color.with_alpha(90)),
+                    ));
+                }
+                let percentage = text_line(
+                    window,
+                    format!("{:.0}%", value * 100.),
+                    9.,
+                    theme.text_primary,
+                );
+                let _ = percentage.paint(
+                    point(left, center - px(6.)),
+                    px(12.),
+                    gpui::TextAlign::Center,
+                    Some(right - left),
+                    window,
+                    cx,
+                );
             },
         )
         .flex_1()
         .min_w(px(40.))
-        .h(px(14.));
-        div().flex_1().h(px(14.)).child(
+        .h(px(24.));
+        div().flex_1().h(px(24.)).child(
             div()
                 .id(id)
                 .track_focus(&focus)
                 .w_full()
-                .h(px(14.))
+                .h(px(24.))
                 .flex()
                 .items_center()
                 .gap(px(4.))
@@ -4525,14 +4552,7 @@ impl PumpEditor {
                         .text_color(solid(color))
                         .child(label),
                 )
-                .child(slider)
-                .child(
-                    div()
-                        .w(px(30.))
-                        .text_size(px(8.))
-                        .text_color(solid(theme.text_primary))
-                        .child(format!("{:.0}%", value * 100.)),
-                ),
+                .child(slider),
         )
     }
 
@@ -4559,7 +4579,7 @@ impl PumpEditor {
                     38.,
                     None,
                 )
-                .h(px(14.))
+                .h(px(20.))
                 .on_click(cx.listener(move |view, _, _, cx| {
                     let value = 1. - view.state.borrow().params().effects()[solo_index];
                     view.dispatch(
