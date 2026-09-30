@@ -4434,8 +4434,8 @@ impl PumpEditor {
                 let center = bounds.top() + bounds.size.height * 0.5;
                 window.paint_quad(fill(
                     Bounds::from_corners(
-                        point(left, center - px(10.)),
-                        point(right, center + px(10.)),
+                        point(left, center - px(7.)),
+                        point(right, center + px(7.)),
                     ),
                     solid(theme.border_emphasis),
                 ));
@@ -4443,18 +4443,18 @@ impl PumpEditor {
                 let inner_right = right - px(1.);
                 window.paint_quad(fill(
                     Bounds::from_corners(
-                        point(inner_left, center - px(9.)),
-                        point(inner_right, center + px(9.)),
+                        point(inner_left, center - px(6.)),
+                        point(inner_right, center + px(6.)),
                     ),
                     solid(theme.grid_soft),
                 ));
                 if value > 0. {
                     window.paint_quad(fill(
                         Bounds::from_corners(
-                            point(inner_left, center - px(9.)),
+                            point(inner_left, center - px(6.)),
                             point(
                                 inner_left + (inner_right - inner_left) * value,
-                                center + px(9.),
+                                center + px(6.),
                             ),
                         ),
                         solid(color.with_alpha(90)),
@@ -4579,7 +4579,7 @@ impl PumpEditor {
                     38.,
                     None,
                 )
-                .h(px(20.))
+                .h(px(14.))
                 .on_click(cx.listener(move |view, _, _, cx| {
                     let value = 1. - view.state.borrow().params().effects()[solo_index];
                     view.dispatch(
@@ -4592,7 +4592,7 @@ impl PumpEditor {
                 }));
                 div()
                     .h(px(DECK_HEIGHT * 0.5))
-                    .w_full()
+                    .w(px(234.))
                     .flex()
                     .items_center()
                     .gap(px(4.))
