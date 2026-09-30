@@ -60,7 +60,7 @@ const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.space_4;
 const CURVE_GUTTER: f32 = 40.8;
 const CURVE_METER_GAP: f32 = PUMP_VISUAL_METRICS.space_8;
 const CURVE_METER_WIDTH: f32 = PUMP_VISUAL_METRICS.meter_panel;
-const SLOT_HEIGHT: f32 = 34.0;
+const SLOT_HEIGHT: f32 = 28.0;
 const SLOT_GAP: f32 = 4.0;
 const DECK_HEIGHT: f32 = PUMP_VISUAL_METRICS.deck_height;
 const HEADER_HEIGHT: f32 = 38.0;
@@ -3285,26 +3285,7 @@ fn draw_curve(
     area.line_to(point(px(left), px(top + height)));
     area.close();
     if let Ok(area) = area.build() {
-        window.paint_path(area, solid(theme.accent_mint.with_alpha(50)));
-    }
-    // The authored fill fades into the editor surface toward the lower edge,
-    // matching the legacy visualization without introducing a renderer-owned
-    // gradient abstraction.
-    const FILL_FADE_STRIPES: usize = 12;
-    for index in 0..FILL_FADE_STRIPES {
-        let start = index as f32 / FILL_FADE_STRIPES as f32;
-        let end = (index + 1) as f32 / FILL_FADE_STRIPES as f32;
-        let alpha = (start * start * 100.0).round() as u8;
-        if alpha == 0 {
-            continue;
-        }
-        window.paint_quad(fill(
-            Bounds::from_corners(
-                point(px(left), px(top + height * start)),
-                point(px(left + width), px(top + height * end)),
-            ),
-            solid(theme.clear.with_alpha(alpha)),
-        ));
+        window.paint_path(area, solid(theme.accent_mint.with_alpha(17)));
     }
     if state.params().effects()[0] >= 0.5 {
         draw_crossover_preview(curve_bounds, state, window, cx);
@@ -4122,7 +4103,7 @@ fn button(
         .flex()
         .items_center()
         .justify_center()
-        .border_1()
+        .border_b_1()
         .border_color(solid(if active {
             theme.accent_mint
         } else {
@@ -4387,7 +4368,7 @@ impl PumpEditor {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(PUMP_VISUAL_METRICS.space_4))
+            .gap(px(0.))
             .on_mouse_down(MouseButton::Left, state_down)
             .on_scroll_wheel(cx.listener(move |view, event, window, cx| {
                 view.knob_wheel(target, event, window, cx)
@@ -4396,7 +4377,7 @@ impl PumpEditor {
                 div()
                     .text_color(solid(theme.text_muted))
                     .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.value.0))
+                    .text_size(px(9.))
                     .child(label),
             )
             .child(knob_canvas)
@@ -4556,14 +4537,50 @@ impl PumpEditor {
 
     fn band_mix_group(&self, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
         let values = self.state.borrow().params().effects();
+        let slope = self.state.borrow().params().effects()[2];
+        let slope_button = button(
+            "dual-slope",
+            if slope >= 0.5 {
+                "24 dB/oct"
+            } else {
+                "12 dB/oct"
+            }
+            .into(),
+            false,
+            76.,
+            None,
+        )
+        .h(px(16.))
+        .on_click(cx.listener(|view, _, _, cx| {
+            let value = 1. - view.state.borrow().params().effects()[2];
+            view.dispatch(EditorMessage::SetEffect { index: 2, value }, cx);
+        }))
+        .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+            let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+            if delta != 0. {
+                let value = view.state.borrow().params().effects()[2] + delta.signum();
+                view.dispatch(EditorMessage::SetEffect { index: 2, value }, cx);
+            }
+        }));
         div()
             .id("band-mix-controls")
-            .w_1_2()
+            .w(px(176.))
+            .flex_shrink_0()
             .h(px(DECK_HEIGHT))
-            .px(px(12.))
             .flex()
             .flex_col()
-            .gap(px(0.))
+            .gap(px(4.))
+            .child(
+                div()
+                    .h(px(20.))
+                    .border_b_1()
+                    .border_color(solid(pump_theme().border))
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(group_heading("BANDS"))
+                    .child(slope_button),
+            )
             .children((3..=4).map(|mix_index| {
                 let solo_index = mix_index + 2;
                 let solo = button(
@@ -4589,7 +4606,7 @@ impl PumpEditor {
                     );
                 }));
                 div()
-                    .h(px(DECK_HEIGHT * 0.5))
+                    .h(px(24.))
                     .w(px(154.))
                     .flex()
                     .items_center()
@@ -4599,56 +4616,37 @@ impl PumpEditor {
             }))
     }
 
-    fn effects_strip(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let slope = self.state.borrow().params().effects()[2];
-        let slope_button = button(
-            "dual-slope",
-            if slope >= 0.5 {
-                "24 dB/oct"
-            } else {
-                "12 dB/oct"
-            }
-            .into(),
-            false,
-            90.,
-            None,
-        )
-        .h(px(24.))
-        .on_click(cx.listener(|view, _, _, cx| {
-            let value = 1. - view.state.borrow().params().effects()[2];
-            view.dispatch(EditorMessage::SetEffect { index: 2, value }, cx);
-        }))
-        .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
-            let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
-            if delta != 0. {
-                let value = view.state.borrow().params().effects()[2] + delta.signum();
-                view.dispatch(EditorMessage::SetEffect { index: 2, value }, cx);
-            }
-        }));
+    fn shape_group(&self, cx: &mut Context<Self>) -> gpui::Div {
         div()
-            .w_full()
+            .w(px(176.))
             .flex_shrink_0()
-            .py(px(2.))
-            .border_t_1()
-            .border_b_1()
-            .border_color(solid(pump_theme().grid_soft))
+            .h(px(DECK_HEIGHT))
             .flex()
-            .items_center()
+            .flex_col()
             .gap(px(4.))
-            .child(slope_button)
             .child(
-                div().flex_1().flex().justify_center().child(
-                    div()
-                        .w(px(280.))
-                        .h(px(28.))
-                        .flex()
-                        .flex_col()
-                        .child(self.slider_element(NumericEntryTarget::Smooth, cx))
-                        .child(self.slider_element(NumericEntryTarget::Swing, cx)),
-                ),
+                div()
+                    .h(px(20.))
+                    .border_b_1()
+                    .border_color(solid(pump_theme().border))
+                    .child(group_heading("SHAPE")),
             )
-            .child(div().w(px(90.)))
+            .child(
+                self.slider_element(NumericEntryTarget::Smooth, cx)
+                    .h(px(24.)),
+            )
+            .child(
+                self.slider_element(NumericEntryTarget::Swing, cx)
+                    .h(px(24.)),
+            )
     }
+}
+
+fn group_heading(label: &'static str) -> gpui::Div {
+    div()
+        .text_size(px(9.))
+        .text_color(solid(pump_theme().text_muted))
+        .child(label)
 }
 
 fn curve_slot_element(
@@ -4802,31 +4800,40 @@ impl Render for PumpEditor {
                 }));
                 slot
             }));
-        let divider = |id: &'static str| {
-            div()
-                .id(id)
-                .w(px(PUMP_VISUAL_METRICS.divider))
-                .h(px(DECK_HEIGHT - 24.0))
-                .bg(solid(theme.grid_soft))
-        };
-        let mut deck_children = vec![self.band_mix_group(cx)];
+        let mut level_controls = vec![];
         if timing_free {
-            deck_children.push(divider("deck-divider-free-rate"));
-            deck_children.push(self.knob_element(NumericEntryTarget::FreeRate, cx));
+            level_controls.push(
+                self.knob_element(NumericEntryTarget::FreeRate, cx)
+                    .h(px(68.)),
+            );
         }
-        deck_children.extend([
-            divider("deck-divider-mix"),
-            self.knob_element(NumericEntryTarget::Mix, cx),
-            divider("deck-divider-output"),
-            self.knob_element(NumericEntryTarget::OutputGain, cx),
+        level_controls.extend([
+            self.knob_element(NumericEntryTarget::Mix, cx).h(px(68.)),
+            self.knob_element(NumericEntryTarget::OutputGain, cx)
+                .h(px(68.)),
         ]);
         let deck = div()
             .h(px(DECK_HEIGHT))
             .w_full()
             .flex()
-            .items_center()
-            .justify_between()
-            .children(deck_children);
+            .gap(px(16.))
+            .child(self.shape_group(cx))
+            .child(self.band_mix_group(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(DECK_HEIGHT))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(20.))
+                            .border_b_1()
+                            .border_color(solid(theme.border))
+                            .child(group_heading("LEVEL")),
+                    )
+                    .child(div().flex().items_center().children(level_controls)),
+            );
         let mut timing_button = button(
             "timing-mode",
             if timing_free {
@@ -5105,23 +5112,18 @@ impl Render for PumpEditor {
         let brand = div()
             .flex()
             .flex_col()
-            .items_start()
             .justify_center()
-            .gap(px(0.0))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .text_color(solid(theme.text_muted))
-                    .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
-                    .child("PORTALSURFER / ")
+                    .gap(px(12.))
+                    .child(div().text_size(px(PUMP_TYPOGRAPHY.brand.0)).child("PUMP"))
                     .child(
                         div()
-                            .text_color(solid(theme.accent_copper))
-                            .font(font("Ioskeley Mono"))
-                            .text_size(px(PUMP_TYPOGRAPHY.body.0))
-                            .child("PUMP"),
+                            .text_size(px(8.))
+                            .text_color(solid(theme.text_muted))
+                            .child("PORTALSURFER"),
                     ),
             )
             .children(storage_warning);
@@ -5211,6 +5213,7 @@ impl Render for PumpEditor {
                     .flex()
                     .items_center()
                     .gap(px(PUMP_VISUAL_METRICS.space_4))
+                    .child(group_heading("WAVEFORM"))
                     .child(waveform_button),
             )
             .child(bypass_button);
@@ -5269,7 +5272,7 @@ impl Render for PumpEditor {
                 .bg(solid(theme.surface_overlay))
                 .border_1()
                 .border_color(solid(theme.border_emphasis))
-                .rounded(px(6.8))
+                .rounded(px(1.0))
                 .child(
                     div()
                         .h(px(25.5))
@@ -5306,9 +5309,16 @@ impl Render for PumpEditor {
             .on_key_up(cx.listener(Self::handle_key_up))
             .on_modifiers_changed(cx.listener(Self::handle_modifiers))
             .child(header)
+            .child(
+                div()
+                    .h(px(16.))
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(solid(theme.border))
+                    .child(group_heading("ENVELOPE")),
+            )
             .child(curve_area)
             .child(slots)
-            .child(self.effects_strip(cx))
             .child(deck)
             .child(footer)
             .child(version_label)
