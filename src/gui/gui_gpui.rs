@@ -969,6 +969,7 @@ struct PumpEditor {
     pending_empty_node: Option<(Point<Pixels>, CurveNode)>,
     pending_seam: Option<(Point<Pixels>, bool)>,
     active_knob: Option<NumericEntryTarget>,
+    knob_slider_track: Option<(f32, f32)>,
     active_mix_slider: Option<(usize, f32, f32)>,
     last_pointer: Option<Point<Pixels>>,
     button_focus_handles: HashMap<&'static str, FocusHandle>,
@@ -1127,6 +1128,7 @@ impl PumpEditor {
             pending_empty_node: None,
             pending_seam: None,
             active_knob: None,
+            knob_slider_track: None,
             active_mix_slider: None,
             last_pointer: None,
             button_focus_handles,
@@ -1299,6 +1301,7 @@ impl PumpEditor {
         self.pending_empty_node = None;
         self.pending_seam = None;
         self.active_knob = None;
+        self.knob_slider_track = None;
         self.active_mix_slider = None;
         self.last_pointer = None;
     }
@@ -2442,6 +2445,7 @@ impl PumpEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.knob_slider_track = None;
         let input = self.numeric_inputs[Self::numeric_input_index(target)].clone();
         let focus_handle = input.read(cx).focus_handle.clone();
         window.focus(&focus_handle, cx);
@@ -2476,6 +2480,19 @@ impl PumpEditor {
             self.last_pointer = Some(event.position);
             return;
         };
+        if let Some((left, width)) = self.knob_slider_track {
+            self.last_pointer = Some(event.position);
+            self.dispatch(
+                EditorMessage::Knob {
+                    target,
+                    message: KnobMessage::ValueChanged {
+                        value: ((f32::from(event.position.x) - left) / width).clamp(0.0, 1.0),
+                    },
+                },
+                cx,
+            );
+            return;
+        }
         let delta = (f32::from(previous.y) - f32::from(event.position.y)) * 0.004;
         self.last_pointer = Some(event.position);
         let current = self.state.borrow().params().clone();
@@ -2588,6 +2605,7 @@ impl PumpEditor {
             );
         }
         self.last_pointer = None;
+        self.knob_slider_track = None;
     }
 
     fn dismiss_timing_dropdown(&mut self, cx: &mut Context<Self>) {
@@ -4208,6 +4226,105 @@ fn icon_button(
 }
 
 impl PumpEditor {
+    fn slider_element(
+        &self,
+        target: NumericEntryTarget,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = pump_theme();
+        let label = if target == NumericEntryTarget::Smooth {
+            "SMOOTH"
+        } else {
+            "SWING"
+        };
+        let input = self.numeric_inputs[Self::numeric_input_index(target)].clone();
+        let normalized = knob_value(&self.state.borrow(), target).0;
+        let bounds = Rc::new(RefCell::new(None::<Bounds<Pixels>>));
+        let paint_bounds = Rc::clone(&bounds);
+        let track = canvas(
+            move |bounds, _, _| {
+                *paint_bounds.borrow_mut() = Some(bounds);
+            },
+            move |bounds, _, window, _| {
+                let left = bounds.left() + px(5.);
+                let right = bounds.right() - px(5.);
+                let center = bounds.top() + bounds.size.height * 0.5;
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(left, center - px(1.5)),
+                        point(right, center + px(1.5)),
+                    ),
+                    solid(theme.border_emphasis),
+                ));
+                if normalized > 0. {
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(left, center - px(1.5)),
+                            point(left + (right - left) * normalized, center + px(1.5)),
+                        ),
+                        solid(theme.accent_mint),
+                    ));
+                }
+            },
+        )
+        .w_full()
+        .h(px(24.));
+        let interactive_track = div()
+            .w_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    let Some(bounds) = *bounds.borrow() else {
+                        return;
+                    };
+                    view.knob_down(target, event, window, cx);
+                    if event.click_count < 2 {
+                        let left = f32::from(bounds.left()) + 5.;
+                        let width = (f32::from(bounds.size.width) - 10.).max(1.);
+                        view.knob_slider_track = Some((left, width));
+                        view.dispatch(
+                            EditorMessage::Knob {
+                                target,
+                                message: KnobMessage::ValueChanged {
+                                    value: ((f32::from(event.position.x) - left) / width)
+                                        .clamp(0., 1.),
+                                },
+                            },
+                            cx,
+                        );
+                    }
+                }),
+            )
+            .child(track);
+        div()
+            .id(target.widget_key())
+            .flex_1()
+            .h(px(DECK_HEIGHT))
+            .px(px(12.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(PUMP_VISUAL_METRICS.space_4))
+            .on_scroll_wheel(cx.listener(move |view, event, window, cx| {
+                view.knob_wheel(target, event, window, cx);
+            }))
+            .child(
+                div()
+                    .text_color(solid(theme.text_muted))
+                    .font(font("Ioskeley Mono"))
+                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
+                    .child(label),
+            )
+            .child(interactive_track)
+            .child(
+                div()
+                    .h(px(PUMP_TYPOGRAPHY.value.1 + 4.))
+                    .w(px(PUMP_VISUAL_METRICS.knob_column))
+                    .child(input),
+            )
+    }
+
     fn knob_element(
         &self,
         target: NumericEntryTarget,
@@ -4798,9 +4915,9 @@ impl Render for PumpEditor {
                 .bg(solid(theme.grid_strong))
         };
         let mut deck_children = vec![
-            self.knob_element(NumericEntryTarget::Smooth, cx),
+            self.slider_element(NumericEntryTarget::Smooth, cx),
             divider("deck-divider-smooth"),
-            self.knob_element(NumericEntryTarget::Swing, cx),
+            self.slider_element(NumericEntryTarget::Swing, cx),
         ];
         if timing_free {
             deck_children.push(divider("deck-divider-free-rate"));
