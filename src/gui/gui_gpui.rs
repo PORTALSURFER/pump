@@ -1100,7 +1100,6 @@ impl PumpEditor {
             "sound-b",
             "hotkey-help",
             "waveform-mode",
-            "filter",
             "bypass",
         ]
         .into_iter()
@@ -2794,22 +2793,6 @@ impl PumpEditor {
         self.dispatch(EditorMessage::ToggleWaveformMode, cx);
     }
 
-    fn toggle_filter(
-        &mut self,
-        event: &gpui::ClickEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let focus_handle = self.button_focus_handle("filter").clone();
-        window.focus(&focus_handle, cx);
-        if event.is_keyboard() {
-            return;
-        }
-        self.dismiss_timing_dropdown(cx);
-        let value = 1. - self.state.borrow().params().effects()[0];
-        self.dispatch(EditorMessage::SetEffect { index: 0, value }, cx);
-    }
-
     fn slot_click(
         &mut self,
         index: usize,
@@ -2866,7 +2849,6 @@ impl PumpEditor {
             "sound-b",
             "hotkey-help",
             "waveform-mode",
-            "filter",
             "bypass",
         ]
         .into_iter()
@@ -2926,11 +2908,6 @@ impl PumpEditor {
             "waveform-mode" => {
                 self.dismiss_timing_dropdown(cx);
                 self.dispatch(EditorMessage::ToggleWaveformMode, cx);
-            }
-            "filter" => {
-                self.dismiss_timing_dropdown(cx);
-                let value = 1. - self.state.borrow().params().effects()[0];
-                self.dispatch(EditorMessage::SetEffect { index: 0, value }, cx);
             }
             "bypass" => {
                 self.dismiss_timing_dropdown(cx);
@@ -4623,36 +4600,21 @@ impl PumpEditor {
         let indices: &[usize] = if self.effects_spectral_view {
             &[7, 8, 9, 10, 11]
         } else {
-            &[0, 1, 2]
+            &[2]
         };
         let controls = indices.iter().copied().map(|i| {
-            if i == 0 {
-                return div().w(px(60.)).child(
-                    button(
-                        "filter",
-                        "DUAL".into(),
-                        values[0] >= 0.5,
-                        60.,
-                        Some(self.button_focus_handle("filter")),
-                    )
-                    .h(px(24.))
-                    .on_click(cx.listener(Self::toggle_filter)),
-                );
-            }
             let label = crate::params::format_plain_value_text(
                 toybox::clack_plugin::utils::ClapId::new(24 + i as u32),
                 values[i] as f64,
             )
             .unwrap_or_default();
-            if matches!(i, 1 | 2) {
+            if i == 2 {
                 return div().w(px(92.)).child(
                     button(IDS[i], label, false, 90., None)
                         .h(px(24.))
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            if i == 2 {
-                                let value = 1. - view.state.borrow().params().effects()[i];
-                                view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
-                            }
+                            let value = 1. - view.state.borrow().params().effects()[i];
+                            view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
                         }))
                         .on_scroll_wheel(cx.listener(
                             move |view, event: &ScrollWheelEvent, _, cx| {
@@ -4661,11 +4623,7 @@ impl PumpEditor {
                                     return;
                                 }
                                 let current = view.state.borrow().params().effects()[i];
-                                let value = if i == 1 {
-                                    current * 2_f32.powf(delta.signum() / 12.)
-                                } else {
-                                    current + delta.signum()
-                                };
+                                let value = current + delta.signum();
                                 view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
                             },
                         )),
@@ -4744,7 +4702,7 @@ impl PumpEditor {
         let switcher = button(
             "effects-view",
             if self.effects_spectral_view {
-                "DUAL"
+                "BACK"
             } else {
                 "SPECTRAL"
             }
