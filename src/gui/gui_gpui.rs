@@ -4268,7 +4268,7 @@ impl PumpEditor {
             },
         )
         .w_full()
-        .h(px(24.));
+        .h(px(14.));
         let interactive_track = div()
             .flex_1()
             .min_w(px(40.))
@@ -4300,29 +4300,29 @@ impl PumpEditor {
         div()
             .id(target.widget_key())
             .w_full()
-            .h(px(DECK_HEIGHT * 0.5))
-            .px(px(12.))
+            .h(px(14.))
+            .px(px(2.))
             .flex()
             .items_center()
             .justify_between()
-            .gap(px(PUMP_VISUAL_METRICS.space_4))
+            .gap(px(3.))
             .on_scroll_wheel(cx.listener(move |view, event, window, cx| {
                 view.knob_wheel(target, event, window, cx);
             }))
             .child(
                 div()
-                    .w(px(54.))
+                    .w(px(44.))
                     .flex_shrink_0()
                     .text_color(solid(theme.text_muted))
                     .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
+                    .text_size(px(9.))
                     .child(label),
             )
             .child(interactive_track)
             .child(
                 div()
                     .h(px(PUMP_TYPOGRAPHY.value.1 + 4.))
-                    .w(px(42.))
+                    .w(px(32.))
                     .flex_shrink_0()
                     .child(input),
             )
@@ -4471,13 +4471,14 @@ impl PumpEditor {
                 ));
             },
         )
-        .w(px(98.))
+        .flex_1()
+        .min_w(px(40.))
         .h(px(14.));
-        div().w(px(160.)).h(px(14.)).child(
+        div().flex_1().h(px(14.)).child(
             div()
                 .id(id)
                 .track_focus(&focus)
-                .w(px(160.))
+                .w_full()
                 .h(px(14.))
                 .flex()
                 .items_center()
@@ -4557,6 +4558,51 @@ impl PumpEditor {
         )
     }
 
+    fn band_mix_group(&self, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let values = self.state.borrow().params().effects();
+        div()
+            .id("band-mix-controls")
+            .w_1_2()
+            .h(px(DECK_HEIGHT))
+            .px(px(12.))
+            .flex()
+            .flex_col()
+            .gap(px(0.))
+            .children((3..=4).map(|mix_index| {
+                let solo_index = mix_index + 2;
+                let solo = button(
+                    if solo_index == 5 {
+                        "dual-solo-low"
+                    } else {
+                        "dual-solo-high"
+                    },
+                    "SOLO".into(),
+                    values[solo_index] >= 0.5,
+                    38.,
+                    None,
+                )
+                .h(px(14.))
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    let value = 1. - view.state.borrow().params().effects()[solo_index];
+                    view.dispatch(
+                        EditorMessage::SetEffect {
+                            index: solo_index,
+                            value,
+                        },
+                        cx,
+                    );
+                }));
+                div()
+                    .h(px(DECK_HEIGHT * 0.5))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(self.effect_mix_slider(mix_index, values[mix_index], cx))
+                    .child(solo)
+            }))
+    }
+
     fn effects_strip(&self, cx: &mut Context<Self>) -> gpui::Div {
         const IDS: [&str; 12] = [
             "dual-on",
@@ -4577,7 +4623,7 @@ impl PumpEditor {
         let indices: &[usize] = if self.effects_spectral_view {
             &[7, 8, 9, 10, 11]
         } else {
-            &[0, 1, 2, 3]
+            &[0, 1, 2]
         };
         let controls = indices.iter().copied().map(|i| {
             if i == 0 {
@@ -4592,41 +4638,6 @@ impl PumpEditor {
                     .h(px(24.))
                     .on_click(cx.listener(Self::toggle_filter)),
                 );
-            }
-            if i == 3 {
-                return div()
-                    .w(px(212.))
-                    .p(px(2.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(0.))
-                    .children((3..=4).map(|mix_index| {
-                        let solo_index = mix_index + 2;
-                        let solo = button(
-                            IDS[solo_index],
-                            "SOLO".into(),
-                            values[solo_index] >= 0.5,
-                            38.,
-                            None,
-                        )
-                        .h(px(14.))
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            let value = 1. - view.state.borrow().params().effects()[solo_index];
-                            view.dispatch(
-                                EditorMessage::SetEffect {
-                                    index: solo_index,
-                                    value,
-                                },
-                                cx,
-                            );
-                        }));
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .child(self.effect_mix_slider(mix_index, values[mix_index], cx))
-                            .child(solo)
-                    }));
             }
             let label = crate::params::format_plain_value_text(
                 toybox::clack_plugin::utils::ClapId::new(24 + i as u32),
@@ -4664,10 +4675,11 @@ impl PumpEditor {
                 IDS[i],
                 label,
                 crate::dual_spectral::stepped(i) && values[i] >= 0.5,
-                90.,
+                60.,
                 None,
             )
-            .h(px(22.));
+            .h(px(22.))
+            .text_size(px(9.));
             control = control
                 .on_click(cx.listener(move |view, _, _, cx| {
                     if crate::dual_spectral::stepped(i) {
@@ -4697,7 +4709,7 @@ impl PumpEditor {
                     },
                 ));
             div()
-                .w(px(92.))
+                .w(px(60.))
                 .flex()
                 .flex_col()
                 .items_center()
@@ -4706,7 +4718,13 @@ impl PumpEditor {
                     div()
                         .text_size(px(8.))
                         .text_color(solid(theme.text_muted))
-                        .child(crate::dual_spectral::NAMES[i]),
+                        .child(match i {
+                            7 => "DUCK",
+                            8 => "DEPTH",
+                            9 => "ATTACK",
+                            10 => "RELEASE",
+                            _ => "ENV",
+                        }),
                 )
                 .child(control)
         });
@@ -4752,10 +4770,19 @@ impl PumpEditor {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(px(4.))
                     .text_size(px(8.))
                     .text_color(solid(theme.text_muted))
                     .children(controls)
+                    .child(
+                        div()
+                            .w(px(212.))
+                            .h(px(28.))
+                            .flex()
+                            .flex_col()
+                            .child(self.slider_element(NumericEntryTarget::Smooth, cx))
+                            .child(self.slider_element(NumericEntryTarget::Swing, cx)),
+                    )
                     .child(switcher),
             );
         if self.effects_spectral_view {
@@ -4927,15 +4954,7 @@ impl Render for PumpEditor {
                 .h(px(DECK_HEIGHT - 13.6))
                 .bg(solid(theme.grid_strong))
         };
-        let mut deck_children = vec![div()
-            .id("timing-shape-controls")
-            .w_1_2()
-            .h(px(DECK_HEIGHT))
-            .flex()
-            .flex_col()
-            .justify_center()
-            .child(self.slider_element(NumericEntryTarget::Smooth, cx))
-            .child(self.slider_element(NumericEntryTarget::Swing, cx))];
+        let mut deck_children = vec![self.band_mix_group(cx)];
         if timing_free {
             deck_children.push(divider("deck-divider-free-rate"));
             deck_children.push(self.knob_element(NumericEntryTarget::FreeRate, cx));
