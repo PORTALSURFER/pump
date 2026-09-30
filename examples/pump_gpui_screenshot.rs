@@ -134,6 +134,15 @@ mod macos {
         unsafe { pump_appkit(app, gui, 0.10) };
         let (width, height, pixels) = gui.capture_rgba().expect("live GPUI capture");
         eprintln!("{name}: captured {width}x{height}");
+        write_capture(
+            root,
+            name,
+            width,
+            height,
+            pixels.clone(),
+            output_width,
+            output_height,
+        );
         if name.contains("curve-segment-proximity") || name.contains("curve-segment-command-hover")
         {
             let blue = pixels
@@ -149,15 +158,6 @@ mod macos {
                 "{name}: expected blue segment feedback, got {blue} pixels"
             );
         }
-        write_capture(
-            root,
-            name,
-            width,
-            height,
-            pixels.clone(),
-            output_width,
-            output_height,
-        );
         let _ = fixture;
         (width, height, pixels)
     }
