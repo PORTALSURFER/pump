@@ -735,7 +735,12 @@ impl Element for NumericTextElement {
                 feature = "screenshot-test",
                 all(test, target_os = "windows", feature = "vst3")
             ))]
-            record_screenshot_bounds(format!("value-{:?}", input.target), bounds);
+            {
+                record_screenshot_bounds(format!("value-{:?}", input.target), bounds);
+                if input.target == NumericEntryTarget::Delay {
+                    record_screenshot_bounds("delay-value", bounds);
+                }
+            }
         });
     }
 }

@@ -18,7 +18,6 @@ mod macos {
     const OUTPUT_WIDTH: u32 = WINDOW_WIDTH;
     const OUTPUT_HEIGHT: u32 = WINDOW_HEIGHT;
     const COMMAND: u64 = 1_u64 << 20;
-    const OPTION: u64 = 1_u64 << 19;
     const SHIFT: u64 = 1_u64 << 17;
 
     #[link(name = "CoreGraphics", kind = "framework")]
