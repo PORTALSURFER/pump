@@ -808,7 +808,6 @@ mod macos {
         );
         send_key(app, fixture.window, &gui, "\r", 36, 0);
         assert!(params.bypassed());
-        gui.hide();
         gui.close();
         gui.set_parent_raw(fixture.parent_handle());
         assert!(gui.open(), "Pump editor should reopen");
