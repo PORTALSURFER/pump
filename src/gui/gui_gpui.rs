@@ -731,7 +731,7 @@ impl Element for NumericTextElement {
         self.input.update(cx, |input, _| {
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
-            #[cfg(feature = "screenshot-test")]
+            #[cfg(any(test, feature = "screenshot-test"))]
             record_screenshot_bounds(format!("value-{:?}", input.target), bounds);
         });
     }
@@ -886,12 +886,12 @@ fn new_hosted_gui(
 
 // Test-only geometry comes from painted controls, so native fixtures keep
 // exercising real hit targets when the composition changes.
-#[cfg(feature = "screenshot-test")]
+#[cfg(any(test, feature = "screenshot-test"))]
 static SCREENSHOT_BOUNDS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, [f32; 4]>>,
 > = std::sync::OnceLock::new();
 
-#[cfg(feature = "screenshot-test")]
+#[cfg(any(test, feature = "screenshot-test"))]
 fn record_screenshot_bounds(key: impl Into<String>, bounds: Bounds<Pixels>) {
     SCREENSHOT_BOUNDS
         .get_or_init(Default::default)
@@ -909,7 +909,7 @@ fn record_screenshot_bounds(key: impl Into<String>, bounds: Bounds<Pixels>) {
 }
 
 /// Painted logical bounds used by the native input and screenshot runners.
-#[cfg(feature = "screenshot-test")]
+#[cfg(any(test, feature = "screenshot-test"))]
 #[doc(hidden)]
 pub fn screenshot_bounds(key: &str) -> [f32; 4] {
     *SCREENSHOT_BOUNDS
@@ -921,7 +921,7 @@ pub fn screenshot_bounds(key: &str) -> [f32; 4] {
 }
 
 /// Exact envelope sample in logical plot coordinates for native fixtures.
-#[cfg(feature = "screenshot-test")]
+#[cfg(any(test, feature = "screenshot-test"))]
 #[doc(hidden)]
 pub fn screenshot_curve_point(params: &PumpParams, phase: f32) -> (f64, f64) {
     let [left, top, width, height] = screenshot_bounds("curve-plot");
@@ -936,7 +936,7 @@ pub fn screenshot_curve_point(params: &PumpParams, phase: f32) -> (f64, f64) {
 }
 
 /// Native fixture factory used by the release screenshot runner.
-#[cfg(feature = "screenshot-test")]
+#[cfg(any(test, feature = "screenshot-test"))]
 #[doc(hidden)]
 pub fn new_screenshot_gui() -> toybox::gpui_gui::GpuiHostedGui {
     new_screenshot_gui_with_params().0
@@ -944,7 +944,7 @@ pub fn new_screenshot_gui() -> toybox::gpui_gui::GpuiHostedGui {
 
 /// Construct the deterministic fixture and expose its shared parameter state
 /// for native input assertions.
-#[cfg(feature = "screenshot-test")]
+#[cfg(any(test, feature = "screenshot-test"))]
 #[doc(hidden)]
 pub fn new_screenshot_gui_with_params() -> (
     toybox::gpui_gui::GpuiHostedGui,
@@ -966,7 +966,7 @@ pub fn new_screenshot_gui_with_params() -> (
 /// exercises both the source and processed waveform layers. The production
 /// audio thread uses the same writer; this helper only makes the native
 /// capture deterministic without starting an audio host.
-#[cfg(feature = "screenshot-test")]
+#[cfg(any(test, feature = "screenshot-test"))]
 #[doc(hidden)]
 pub fn seed_screenshot_waveform(status: &crate::GuiStatus) {
     use crate::incoming_waveform::{IncomingWaveformWriter, INCOMING_WAVEFORM_BIN_COUNT};
@@ -3227,7 +3227,7 @@ fn draw_curve(
         point(px(left), px(top)),
         point(px(left + width), px(top + height)),
     );
-    #[cfg(feature = "screenshot-test")]
+    #[cfg(any(test, feature = "screenshot-test"))]
     record_screenshot_bounds("curve-plot", curve_bounds);
     let grid = super::curve_beat_grid(state.params().sync_division(), width);
     for (positions, color) in [
@@ -3689,7 +3689,7 @@ fn draw_curve(
         cx,
     );
     let offset_y = top + height + CURVE_OFFSET_INSET;
-    #[cfg(feature = "screenshot-test")]
+    #[cfg(any(test, feature = "screenshot-test"))]
     record_screenshot_bounds(
         "curve-offset",
         Bounds::new(
@@ -4184,7 +4184,7 @@ fn button(
         .font(font("Ioskeley Mono"))
         .text_size(px(PUMP_TYPOGRAPHY.body.0))
         .line_height(px(PUMP_TYPOGRAPHY.body.1));
-    #[cfg(feature = "screenshot-test")]
+    #[cfg(any(test, feature = "screenshot-test"))]
     {
         button = button.relative().child(
             canvas(
@@ -4280,7 +4280,7 @@ impl PumpEditor {
         let track = canvas(
             move |bounds, _, _| {
                 *paint_bounds.borrow_mut() = Some(bounds);
-                #[cfg(feature = "screenshot-test")]
+                #[cfg(any(test, feature = "screenshot-test"))]
                 record_screenshot_bounds(format!("slider-{target:?}"), bounds);
             },
             move |bounds, _, window, _| {
@@ -4393,7 +4393,7 @@ impl PumpEditor {
         let knob_canvas = canvas(
             move |_bounds, _, _| {},
             move |bounds, _, window, _cx| {
-                #[cfg(feature = "screenshot-test")]
+                #[cfg(any(test, feature = "screenshot-test"))]
                 record_screenshot_bounds(format!("knob-{target:?}"), bounds);
                 let center = point(
                     bounds.left() + bounds.size.width * 0.5,
@@ -4490,7 +4490,7 @@ impl PumpEditor {
         let slider = canvas(
             move |bounds, _, _| {
                 *paint_bounds.borrow_mut() = Some(bounds);
-                #[cfg(feature = "screenshot-test")]
+                #[cfg(any(test, feature = "screenshot-test"))]
                 record_screenshot_bounds(format!("band-{index}"), bounds);
             },
             move |bounds, _, window, cx| {
