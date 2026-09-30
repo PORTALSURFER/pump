@@ -982,6 +982,7 @@ pub(crate) struct HistorySnapshot {
     filter_lp_q: f32,
     filter_hp_slope: usize,
     filter_lp_slope: usize,
+    effects: [f32; crate::dual_spectral::COUNT],
     curve: EditableCurve,
     active_sound: SoundSide,
     sound_states: [PumpSoundState; 2],
@@ -1009,6 +1010,10 @@ pub(crate) enum EditorMessage {
     CopyAndSelectSound(SoundSide),
     ToggleBypass,
     ToggleFilter,
+    SetEffect {
+        index: usize,
+        value: f32,
+    },
     SetFilterSlope {
         handle: FilterHandle,
         index: usize,
@@ -1107,6 +1112,7 @@ impl PumpEditorState {
             filter_lp_q: self.params.filter_lp_q(),
             filter_hp_slope: self.params.filter_hp_slope(),
             filter_lp_slope: self.params.filter_lp_slope(),
+            effects: self.params.effects(),
             curve: self.params.editable_curve_snapshot(),
             active_sound: self.params.active_sound(),
             sound_states: [
@@ -1158,6 +1164,9 @@ impl PumpEditorState {
             .set_filter_hp_slope(snapshot.filter_hp_slope as f32);
         self.params
             .set_filter_lp_slope(snapshot.filter_lp_slope as f32);
+        for (i, value) in snapshot.effects.iter().enumerate() {
+            self.params.set_effect(i, *value);
+        }
         self.params
             .set_editable_curve_preserving_phase(&snapshot.curve);
         self.params
@@ -1729,6 +1738,23 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 {
                     state.automation_flush_count += 1;
                 }
+            }
+        }
+        EditorMessage::SetEffect { index, value } => {
+            if index >= crate::dual_spectral::COUNT {
+                return;
+            }
+            let value = crate::dual_spectral::sanitize(index, value);
+            if state.params.effects()[index] == value {
+                return;
+            }
+            if state.host_param_edit_sink.edit(
+                &state.automation_config,
+                ClapId::new(24 + index as u32),
+                value as f64,
+            ) {
+                state.push_history();
+                state.params.set_effect(index, value);
             }
         }
         EditorMessage::ToggleFilter => {
@@ -4661,6 +4687,21 @@ mod tests {
         assert_eq!(params.editable_curve_snapshot(), curve_b);
         assert!(state.selected_curve_nodes.is_empty());
         assert!(!state.refresh_host_projection());
+    }
+    #[test]
+    fn dual_spectral_edits_use_host_sink_and_undo() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(Arc::clone(&sink));
+        state.dispatch(EditorMessage::SetEffect {
+            index: 1,
+            value: 1200.,
+        });
+        assert_eq!(state.params.effects()[1], 1200.);
+        assert_eq!(state.undo_history.len(), 1);
+        state.dispatch(EditorMessage::Undo);
+        assert_eq!(state.params.effects()[1], 200.);
+        state.dispatch(EditorMessage::Redo);
+        assert_eq!(state.params.effects()[1], 1200.);
     }
 }
 

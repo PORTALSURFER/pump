@@ -114,16 +114,6 @@ const TIMING_SYNC_IDS: [&str; 10] = [
     "timing-sync-8",
     "timing-sync-9",
 ];
-const FILTER_HP_SLOPE_IDS: [&str; 3] = [
-    "filter-hp-slope-12",
-    "filter-hp-slope-24",
-    "filter-hp-slope-48",
-];
-const FILTER_LP_SLOPE_IDS: [&str; 3] = [
-    "filter-lp-slope-12",
-    "filter-lp-slope-24",
-    "filter-lp-slope-48",
-];
 
 /// Events emitted by the native numeric field. Keeping these separate from
 /// the editor reducer means GPUI text/IME transport never mutates parameters
@@ -982,6 +972,7 @@ struct PumpEditor {
     last_pointer: Option<Point<Pixels>>,
     button_focus_handles: HashMap<&'static str, FocusHandle>,
     button_activation_keys: HashSet<String>,
+    effects_spectral_view: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1136,6 +1127,7 @@ impl PumpEditor {
             last_pointer: None,
             button_focus_handles,
             button_activation_keys: HashSet::new(),
+            effects_spectral_view: false,
         }
     }
 
@@ -2717,22 +2709,6 @@ impl PumpEditor {
         cx.stop_propagation();
     }
 
-    fn select_filter_slope(
-        &mut self,
-        handle: FilterHandle,
-        index: usize,
-        event: &gpui::ClickEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.is_keyboard() {
-            return;
-        }
-        self.dismiss_timing_dropdown(cx);
-        self.dispatch(EditorMessage::SetFilterSlope { handle, index }, cx);
-        cx.stop_propagation();
-    }
-
     fn toggle_hotkey_help(
         &mut self,
         event: &gpui::ClickEvent,
@@ -2770,7 +2746,8 @@ impl PumpEditor {
             return;
         }
         self.dismiss_timing_dropdown(cx);
-        self.dispatch(EditorMessage::ToggleFilter, cx);
+        let value = 1. - self.state.borrow().params().effects()[0];
+        self.dispatch(EditorMessage::SetEffect { index: 0, value }, cx);
     }
 
     fn slot_click(
@@ -2892,7 +2869,8 @@ impl PumpEditor {
             }
             "filter" => {
                 self.dismiss_timing_dropdown(cx);
-                self.dispatch(EditorMessage::ToggleFilter, cx);
+                let value = 1. - self.state.borrow().params().effects()[0];
+                self.dispatch(EditorMessage::SetEffect { index: 0, value }, cx);
             }
             "bypass" => {
                 self.dismiss_timing_dropdown(cx);
@@ -3272,7 +3250,18 @@ fn draw_curve(
     area.line_to(point(px(left), px(top + height)));
     area.close();
     if let Ok(area) = area.build() {
-        window.paint_path(area, solid(theme.accent_mint.with_alpha(50)));
+        window.paint_path(
+            area,
+            solid(
+                theme
+                    .accent_mint
+                    .with_alpha(if state.params().effects()[0] >= 0.5 {
+                        18
+                    } else {
+                        50
+                    }),
+            ),
+        );
     }
     // The authored fill fades into the editor surface toward the lower edge,
     // matching the legacy visualization without introducing a renderer-owned
@@ -3293,10 +3282,15 @@ fn draw_curve(
             solid(theme.clear.with_alpha(alpha)),
         ));
     }
+    if state.params().effects()[0] >= 0.5 {
+        draw_crossover_preview(curve_bounds, state, window, cx);
+    }
     let curve_color = if active_offset {
         CURVE_OFFSET_MOVE_COLOR
     } else if modifier_offset_hover {
         CURVE_OFFSET_HOVER_COLOR
+    } else if state.params().effects()[0] >= 0.5 {
+        theme.text_primary
     } else {
         theme.accent_mint
     };
@@ -3503,7 +3497,9 @@ fn draw_curve(
             window.paint_path(path, solid(stroke_color));
         }
     }
-    draw_filter_overlay(bounds, state, window, cx);
+    if state.params().effects()[0] < 0.5 {
+        draw_filter_overlay(bounds, state, window, cx);
+    }
     if let Some((start, current)) = state.active_curve_marquee() {
         let start = curve_point_pixels(left, top, width, height, phase, start);
         let current = curve_point_pixels(left, top, width, height, phase, current);
@@ -3683,6 +3679,106 @@ fn draw_curve(
     ));
     let _ = curve_bounds;
     let _ = cx;
+}
+
+fn draw_crossover_preview(
+    bounds: Bounds<Pixels>,
+    state: &PumpEditorState,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let left = f32::from(bounds.left());
+    let top = f32::from(bounds.top());
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    let theme = pump_theme();
+    let controls = state.params().effects();
+    let plot_left = left;
+    let plot_top = top + 12.;
+    let plot_width = (width - 1.).max(1.);
+    let plot_height = (height - 24.).max(1.);
+    let low_color = theme.accent_copper;
+    let high_color = PumpColor::rgb(140, 170, 235);
+    for (band, color) in [(0, low_color), (1, high_color)] {
+        let mut area = gpui::PathBuilder::fill();
+        let mut line = gpui::PathBuilder::stroke(px(1.25));
+        area.move_to(point(px(plot_left), px(plot_top + plot_height)));
+        for step in 0..=96 {
+            let phase = step as f32 / 96.;
+            let hz = 20. * 1000_f32.powf(phase);
+            let magnitude = crate::dual_spectral::crossover_magnitudes(
+                hz,
+                48000.,
+                controls[1],
+                controls[2] as usize,
+            )[band];
+            let sample = point(
+                px(plot_left + phase * plot_width),
+                px(plot_top + (1. - magnitude) * plot_height),
+            );
+            area.line_to(sample);
+            if step == 0 {
+                line.move_to(sample);
+            } else {
+                line.line_to(sample);
+            }
+        }
+        area.line_to(point(
+            px(plot_left + plot_width),
+            px(plot_top + plot_height),
+        ));
+        area.close();
+        if let Ok(path) = area.build() {
+            window.paint_path(path, solid(color.with_alpha(20)));
+        }
+        if let Ok(path) = line.build() {
+            window.paint_path(path, solid(color));
+        }
+    }
+    let crossover_x = plot_left + (controls[1] / 20.).ln() / 1000_f32.ln() * plot_width;
+    window.paint_quad(fill(
+        Bounds::from_corners(
+            point(px(crossover_x), px(plot_top)),
+            point(px(crossover_x + 1.), px(plot_top + plot_height)),
+        ),
+        solid(theme.text_muted.with_alpha(96)),
+    ));
+    let frequency = crate::params::format_plain_value_text(
+        toybox::clack_plugin::utils::ClapId::new(25),
+        controls[1] as f64,
+    )
+    .unwrap_or_default();
+    for (label, lx, ly, color) in [
+        ("LP".to_string(), left + 8., top + 22., low_color),
+        ("HP".to_string(), left + width - 24., top + 22., high_color),
+        (
+            "20 Hz".to_string(),
+            left + 8.,
+            top + height - 13.,
+            theme.text_muted,
+        ),
+        (
+            frequency,
+            (crossover_x + 7.).clamp(left + 48., left + width - 90.),
+            top + height - 13.,
+            theme.text_primary,
+        ),
+        (
+            "20 kHz".to_string(),
+            left + width - 40.,
+            top + height - 13.,
+            theme.text_muted,
+        ),
+    ] {
+        let _ = text_line(window, label, 8., color).paint(
+            point(px(lx), px(ly)),
+            px(11.),
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
 }
 
 fn draw_filter_overlay(
@@ -4190,64 +4286,154 @@ impl PumpEditor {
             )
     }
 
-    fn filter_slope_element(
-        &self,
-        handle: FilterHandle,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let (label, current, ids) = match handle {
-            FilterHandle::HighPass => (
-                "FILTER HP",
-                self.state.borrow().params().filter_hp_slope(),
-                FILTER_HP_SLOPE_IDS,
-            ),
-            FilterHandle::LowPass => (
-                "FILTER LP",
-                self.state.borrow().params().filter_lp_slope(),
-                FILTER_LP_SLOPE_IDS,
-            ),
-            FilterHandle::Both => unreachable!("side slope controls cannot target both handles"),
-        };
-        let options = [12usize, 24, 48]
-            .into_iter()
-            .enumerate()
-            .map(|(index, slope)| {
-                let mut option =
-                    button(ids[index], slope.to_string(), index == current, 30.0, None).h(px(24.0));
-                option = option.on_click(cx.listener(move |view, event, window, cx| {
-                    view.select_filter_slope(handle, index, event, window, cx)
-                }));
-                option
-            });
+    fn effects_strip(&self, cx: &mut Context<Self>) -> gpui::Div {
+        const IDS: [&str; 12] = [
+            "dual-on",
+            "dual-freq",
+            "dual-slope",
+            "dual-low",
+            "dual-high",
+            "dual-solo-low",
+            "dual-solo-high",
+            "spectral-on",
+            "spectral-depth",
+            "spectral-attack",
+            "spectral-release",
+            "spectral-mode",
+        ];
+        let values = self.state.borrow().params().effects();
         let theme = pump_theme();
-        div()
-            .id(match handle {
-                FilterHandle::HighPass => "filter-hp-slope",
-                FilterHandle::LowPass => "filter-lp-slope",
-                FilterHandle::Both => "filter-both-slope",
-            })
-            .flex_1()
-            .h(px(DECK_HEIGHT))
+        let indices: &[usize] = if self.effects_spectral_view {
+            &[7, 8, 9, 10, 11]
+        } else {
+            &[1, 2, 3, 4, 5, 6]
+        };
+        let controls = indices.iter().copied().map(|i| {
+            let label = crate::params::format_plain_value_text(
+                toybox::clack_plugin::utils::ClapId::new(24 + i as u32),
+                values[i] as f64,
+            )
+            .unwrap_or_default();
+            let mut control = button(
+                IDS[i],
+                label,
+                crate::dual_spectral::stepped(i) && values[i] >= 0.5,
+                90.,
+                None,
+            )
+            .h(px(22.));
+            control = control
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    if crate::dual_spectral::stepped(i) {
+                        let value = 1. - view.state.borrow().params().effects()[i];
+                        view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
+                    }
+                }))
+                .on_scroll_wheel(cx.listener(
+                    move |view, event: &ScrollWheelEvent, _window, cx| {
+                        let current = view.state.borrow().params().effects()[i];
+                        let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+                        if delta == 0. {
+                            return;
+                        }
+                        let direction = if delta > 0. { 1. } else { -1. };
+                        let value = if crate::dual_spectral::stepped(i) {
+                            current + direction
+                        } else if i == 1 {
+                            current * 2_f32.powf(direction / 12.)
+                        } else {
+                            current
+                                + direction
+                                    * (crate::dual_spectral::MAX[i] - crate::dual_spectral::MIN[i])
+                                    / 100.
+                        };
+                        view.dispatch(EditorMessage::SetEffect { index: i, value }, cx);
+                    },
+                ));
+            div()
+                .w(px(92.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(px(8.))
+                        .text_color(solid(theme.text_muted))
+                        .child(crate::dual_spectral::NAMES[i]),
+                )
+                .child(control)
+        });
+        let (input, reduction) = self.state.borrow().status().spectral_snapshot();
+        let meter = div().h(px(18.)).flex().items_end().gap(px(2.)).children(
+            (0..crate::dual_spectral::BANDS).map(|i| {
+                div()
+                    .flex_1()
+                    .h(px(2. + 16. * (input[i] * 8.).clamp(0., 1.)))
+                    .bg(solid(if reduction[i] < -0.5 {
+                        theme.accent_copper
+                    } else {
+                        theme.accent_mint
+                    }))
+            }),
+        );
+        let tabs = div()
+            .flex()
+            .gap(px(4.))
+            .child(
+                button(
+                    "effects-dual-tab",
+                    "DUAL BAND".into(),
+                    !self.effects_spectral_view,
+                    90.,
+                    None,
+                )
+                .h(px(20.))
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.effects_spectral_view = false;
+                    cx.notify();
+                })),
+            )
+            .child(
+                button(
+                    "effects-spectral-tab",
+                    "SPECTRAL".into(),
+                    self.effects_spectral_view,
+                    90.,
+                    None,
+                )
+                .h(px(20.))
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.effects_spectral_view = true;
+                    cx.notify();
+                })),
+            )
+            .child(
+                div()
+                    .text_size(px(8.))
+                    .text_color(solid(theme.text_muted))
+                    .child("Shared envelope • Scroll values • Click switches"),
+            );
+        let mut strip = div()
+            .w_full()
+            .flex_shrink_0()
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(PUMP_VISUAL_METRICS.space_4))
+            .gap(px(3.))
+            .child(tabs)
             .child(
                 div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(3.))
+                    .text_size(px(8.))
                     .text_color(solid(theme.text_muted))
-                    .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
-                    .child(label),
-            )
-            .child(div().flex().gap(px(1.7)).children(options))
-            .child(
-                div()
-                    .text_color(solid(theme.text_muted))
-                    .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.meta.0))
-                    .child("dB/oct"),
-            )
+                    .children(controls),
+            );
+        if self.effects_spectral_view {
+            strip = strip.child(meter);
+        }
+        strip
     }
 }
 
@@ -4317,7 +4503,7 @@ impl Render for PumpEditor {
         let params = state.params();
         let active_sound = params.active_sound();
         let bypassed = params.bypassed();
-        let filter_enabled = params.filter_enabled();
+
         let timing_free = params.timing_mode() == TIMING_MODE_FREE;
         let curve_bounds = Rc::clone(&self.curve_bounds);
         let draw_state = Rc::clone(&self.state);
@@ -4377,7 +4563,9 @@ impl Render for PumpEditor {
             .id("curve-editor")
             .relative()
             .flex_1()
-            .min_h(px(CURVE_HEIGHT))
+            // Reserve space for the effect strip at the 640 × 400 minimum.
+            // The curve still expands to fill larger editor windows.
+            .min_h(px(100.0))
             .border_1()
             .border_color(solid(theme.border))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::curve_mouse_down))
@@ -4421,27 +4609,6 @@ impl Render for PumpEditor {
             self.knob_element(NumericEntryTarget::Mix, cx),
             self.knob_element(NumericEntryTarget::OutputGain, cx),
         ]);
-        if filter_enabled {
-            match state.selected_filter_handle() {
-                Some(FilterHandle::HighPass) => {
-                    deck_children.extend([
-                        divider("deck-divider-filter-hp"),
-                        self.knob_element(NumericEntryTarget::FilterHpFrequency, cx),
-                        self.knob_element(NumericEntryTarget::FilterHpQ, cx),
-                        self.filter_slope_element(FilterHandle::HighPass, cx),
-                    ]);
-                }
-                Some(FilterHandle::LowPass) => {
-                    deck_children.extend([
-                        divider("deck-divider-filter-lp"),
-                        self.knob_element(NumericEntryTarget::FilterLpFrequency, cx),
-                        self.knob_element(NumericEntryTarget::FilterLpQ, cx),
-                        self.filter_slope_element(FilterHandle::LowPass, cx),
-                    ]);
-                }
-                Some(FilterHandle::Both) | None => {}
-            }
-        }
         let deck = div()
             .h(px(DECK_HEIGHT))
             .w_full()
@@ -4772,8 +4939,8 @@ impl Render for PumpEditor {
         waveform_button = waveform_button.on_click(cx.listener(Self::toggle_waveform));
         let mut filter_button = button(
             "filter",
-            "FILTER".into(),
-            filter_enabled,
+            "DUAL".into(),
+            params.effects()[0] >= 0.5,
             66.0,
             Some(self.button_focus_handle("filter")),
         )
@@ -4944,6 +5111,7 @@ impl Render for PumpEditor {
             .child(curve_area)
             .child(slots)
             .child(deck)
+            .child(self.effects_strip(cx))
             .child(footer)
             .child(hotkey_help)
     }

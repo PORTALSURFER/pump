@@ -57,6 +57,7 @@ fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
         && float_near_eq(left.filter_lp_q, right.filter_lp_q)
         && left.filter_hp_slope == right.filter_hp_slope
         && left.filter_lp_slope == right.filter_lp_slope
+        && left.effects == right.effects
         && curve_near_eq(&left.editable_curve, &right.editable_curve)
         && left.quick_slots.len() == right.quick_slots.len()
         && left
@@ -67,6 +68,23 @@ fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
 }
 
 impl PumpParams {
+    pub fn effects_for_side(&self, index: usize) -> [f32; crate::dual_spectral::COUNT] {
+        std::array::from_fn(|i| self.realtime_effects[index][i].load(Ordering::Relaxed))
+    }
+    pub fn effects(&self) -> [f32; crate::dual_spectral::COUNT] {
+        self.effects_for_side(self.realtime_index())
+    }
+    pub fn set_effect(&self, index: usize, value: f32) {
+        if index >= crate::dual_spectral::COUNT {
+            return;
+        }
+        self.realtime_effects[self.realtime_index()][index].store(
+            crate::dual_spectral::sanitize(index, value),
+            Ordering::Relaxed,
+        );
+        self.mark_active_sound_dirty();
+    }
+
     #[inline]
     fn realtime_index(&self) -> usize {
         (self.active_sound.load(Ordering::Acquire) as usize).min(1)
@@ -77,6 +95,9 @@ impl PumpParams {
         let editable_curve = default_editable_curve();
         let default_curve = editable_curve_to_table(&editable_curve);
         let params = Self {
+            realtime_effects: std::array::from_fn(|_| {
+                crate::dual_spectral::DEFAULTS.map(AtomicF32::new)
+            }),
             mix: AtomicF32::new(DEFAULT_MIX),
             depth_db: AtomicF32::new(DEFAULT_DEPTH_DB),
             floor_db: AtomicF32::new(DEFAULT_FLOOR_DB),
@@ -825,6 +846,7 @@ impl PumpParams {
             delay_beats: self.delay_beats(),
             filter_hp_slope: self.filter_hp_slope(),
             filter_lp_slope: self.filter_lp_slope(),
+            effects: self.effects(),
             filter_enabled: self.filter_enabled(),
             filter_hp_freq_hz: self.filter_hp_freq_hz(),
             filter_hp_q: self.filter_hp_q(),
@@ -897,6 +919,7 @@ impl PumpParams {
                     as usize,
                 filter_lp_slope: self.realtime_filter_lp_slope[index].load(Ordering::Acquire)
                     as usize,
+                effects: self.effects_for_side(index),
                 editable_curve,
                 quick_slots,
             };
@@ -1072,6 +1095,10 @@ impl PumpParams {
             clamp_filter_slope(state.filter_lp_slope as f32) as u32,
             Ordering::Relaxed,
         );
+        for (i, value) in state.effects.iter().enumerate() {
+            self.realtime_effects[index][i]
+                .store(crate::dual_spectral::sanitize(i, *value), Ordering::Relaxed);
+        }
         let normalized = state.editable_curve.clone().normalized();
         let curve_table = editable_curve_to_table(&normalized);
         for (curve, value) in self.realtime_curve[index]
@@ -1135,6 +1162,7 @@ impl PumpParams {
             filter_lp_q: self.filter_lp_q(),
             filter_hp_slope: self.filter_hp_slope(),
             filter_lp_slope: self.filter_lp_slope(),
+            effects: self.effects(),
             editable_curve: self.editable_curve_snapshot(),
             quick_slots: self.sound_state_snapshot(self.active_sound()).quick_slots,
         }
@@ -1178,6 +1206,9 @@ impl PumpParams {
         }
         for (index, preset) in bank.presets.iter_mut().enumerate() {
             preset.name = sanitize_preset_name(&preset.name, index);
+            for (i, value) in preset.effects.iter_mut().enumerate() {
+                *value = crate::dual_spectral::sanitize(i, *value);
+            }
             // Persist the field for backward-compatible serialization, but keep
             // runtime behavior fully writable across all presets.
             preset.is_read_only = false;
@@ -1255,6 +1286,9 @@ impl PumpParams {
         self.set_filter_hp_q(preset.filter_hp_q);
         self.set_filter_lp_freq_hz(preset.filter_lp_freq_hz);
         self.set_filter_lp_q(preset.filter_lp_q);
+        for (i, value) in preset.effects.iter().enumerate() {
+            self.set_effect(i, *value);
+        }
         self.set_editable_curve_preserving_phase(&preset.editable_curve);
         let _ = self.set_active_sound_quick_slots(preset.quick_slots.clone());
     }
@@ -1573,6 +1607,7 @@ impl PumpParams {
                 existing.filter_hp_q = snapshot.filter_hp_q;
                 existing.filter_lp_freq_hz = snapshot.filter_lp_freq_hz;
                 existing.filter_lp_q = snapshot.filter_lp_q;
+                existing.effects = snapshot.effects;
                 existing.editable_curve = snapshot.editable_curve;
                 existing.quick_slots = snapshot.quick_slots;
             }
@@ -1623,6 +1658,7 @@ impl PumpParams {
             || current.timing_mode != selected.timing_mode
             || !float_near_eq(current.free_rate_hz, selected.free_rate_hz)
             || current.delay_beats != selected.delay_beats
+            || current.effects != selected.effects
             || current.filter_enabled != selected.filter_enabled
             || !float_near_eq(current.filter_hp_freq_hz, selected.filter_hp_freq_hz)
             || !float_near_eq(current.filter_hp_q, selected.filter_hp_q)

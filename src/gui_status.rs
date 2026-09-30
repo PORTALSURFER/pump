@@ -50,6 +50,8 @@ pub(crate) struct GuiDspSnapshot {
 
 /// Shared GUI telemetry values updated by the audio thread.
 pub struct GuiStatus {
+    spectral_input: [AtomicF32; crate::dual_spectral::BANDS],
+    spectral_reduction: [AtomicF32; crate::dual_spectral::BANDS],
     phase: AtomicF32,
     dsp_snapshot: AtomicU64,
     dsp_snapshot_valid: AtomicBool,
@@ -79,6 +81,8 @@ pub(crate) const GAIN_REDUCTION_METER_MAX_DB: f32 = 36.0;
 impl Default for GuiStatus {
     fn default() -> Self {
         Self {
+            spectral_input: std::array::from_fn(|_| AtomicF32::new(0.)),
+            spectral_reduction: std::array::from_fn(|_| AtomicF32::new(0.)),
             phase: AtomicF32::new(0.0),
             dsp_snapshot: AtomicU64::new(0),
             dsp_snapshot_valid: AtomicBool::new(false),
@@ -103,6 +107,29 @@ impl Default for GuiStatus {
 }
 
 impl GuiStatus {
+    pub(crate) fn publish_spectral(
+        &self,
+        input: [f32; crate::dual_spectral::BANDS],
+        reduction: [f32; crate::dual_spectral::BANDS],
+    ) {
+        for i in 0..crate::dual_spectral::BANDS {
+            self.spectral_input[i].store(input[i], Ordering::Relaxed);
+            self.spectral_reduction[i].store(reduction[i], Ordering::Relaxed);
+        }
+    }
+    #[cfg_attr(not(feature = "gpui-gui"), allow(dead_code))]
+    pub(crate) fn spectral_snapshot(
+        &self,
+    ) -> (
+        [f32; crate::dual_spectral::BANDS],
+        [f32; crate::dual_spectral::BANDS],
+    ) {
+        (
+            std::array::from_fn(|i| self.spectral_input[i].load(Ordering::Relaxed)),
+            std::array::from_fn(|i| self.spectral_reduction[i].load(Ordering::Relaxed)),
+        )
+    }
+
     /// Update transport plus linear reduction gain for deterministic UI tests.
     #[cfg(test)]
     pub fn update(&self, phase: f32, reduction_gain: f32, transport: GuiTransportTelemetry) {

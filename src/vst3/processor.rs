@@ -199,7 +199,7 @@ impl IComponentTrait for PumpVst3Processor {
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
         match media_type as MediaTypes {
             MediaTypes_::kAudio => match dir as BusDirections {
-                BusDirections_::kInput => 1,
+                BusDirections_::kInput => 2,
                 BusDirections_::kOutput => 1,
                 _ => 0,
             },
@@ -228,6 +228,7 @@ impl IComponentTrait for PumpVst3Processor {
                 BusTypes_::kMain as BusType,
                 BusInfo_::BusFlags_::kDefaultActive as u32,
             ),
+            BusDirections_::kInput if index == 1 => ("Sidechain", BusTypes_::kAux as BusType, 0),
             BusDirections_::kOutput if index == 0 => (
                 "Output",
                 BusTypes_::kMain as BusType,
@@ -266,7 +267,7 @@ impl IComponentTrait for PumpVst3Processor {
             return kInvalidArgument;
         }
         match dir as BusDirections {
-            BusDirections_::kInput if index == 0 => {}
+            BusDirections_::kInput if index == 0 || index == 1 => {}
             BusDirections_::kOutput if index == 0 => {}
             _ => return kInvalidArgument,
         }
@@ -542,6 +543,8 @@ impl IAudioProcessorTrait for PumpVst3Processor {
                 gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
             );
             self.shared.status.publish_dsp_telemetry(telemetry);
+            let (input, reduction) = runtime.engine.spectral_telemetry();
+            self.shared.status.publish_spectral(input, reduction);
             self.shared
                 .status
                 .publish_gain_reduction(telemetry.reduction_gain, telemetry.input_active);
@@ -581,7 +584,7 @@ impl IAudioPresentationLatencyTrait for PumpVst3Processor {
 /// Validate a VST3 stereo f32 block while retaining raw pointers so exact
 /// in-place input/output channel aliases never become overlapping Rust slices.
 unsafe fn raw_stereo_f32_buffers(data: &ProcessData) -> Option<RawStereoBlock> {
-    if data.numInputs != 1
+    if !(1..=2).contains(&data.numInputs)
         || data.numOutputs != 1
         || data.inputs.is_null()
         || data.outputs.is_null()
@@ -608,12 +611,25 @@ unsafe fn raw_stereo_f32_buffers(data: &ProcessData) -> Option<RawStereoBlock> {
         return None;
     }
 
+    let (sidechain_left, sidechain_right) = if data.numInputs == 2 {
+        let bus = unsafe { &*data.inputs.add(1) };
+        if bus.numChannels == 2 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
+            let channels = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers32, 2) };
+            (channels[0] as *const f32, channels[1] as *const f32)
+        } else {
+            (std::ptr::null(), std::ptr::null())
+        }
+    } else {
+        (std::ptr::null(), std::ptr::null())
+    };
     let main = RawStereoBlock {
         num_samples,
         input_left: input_channels[0],
         input_right: input_channels[1],
         output_left: output_channels[0],
         output_right: output_channels[1],
+        sidechain_left,
+        sidechain_right,
     };
     Some(main)
 }
@@ -797,5 +813,47 @@ mod parameter_automation_tests {
         let mut settings = dsp_settings_from_params(&params);
         schedule.apply_remaining(&params, &mut settings);
         assert_eq!(params.sync_division(), 7);
+    }
+}
+
+#[cfg(test)]
+mod sidechain_tests {
+    use super::*;
+    use std::mem;
+    #[test]
+    fn optional_bus_pointers_are_validated_and_one_input_remains_supported() {
+        let mut left = [0.25; 8];
+        let mut right = [0.; 8];
+        let mut sc_l = [0.5; 8];
+        let mut sc_r = [0.5; 8];
+        let mut main = [left.as_mut_ptr(), right.as_mut_ptr()];
+        let mut sc = [sc_l.as_mut_ptr(), sc_r.as_mut_ptr()];
+        let bus = |channels| AudioBusBuffers {
+            numChannels: 2,
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: channels,
+            },
+        };
+        let mut inputs = [bus(main.as_mut_ptr()), bus(sc.as_mut_ptr())];
+        let mut outputs = [bus(main.as_mut_ptr())];
+        let mut data: ProcessData = unsafe { mem::zeroed() };
+        data.numInputs = 2;
+        data.numOutputs = 1;
+        data.numSamples = 8;
+        data.inputs = inputs.as_mut_ptr();
+        data.outputs = outputs.as_mut_ptr();
+        let raw = unsafe { raw_stereo_f32_buffers(&data) }.unwrap();
+        assert_eq!(raw.sidechain_left, sc_l.as_ptr());
+        unsafe {
+            (*data.inputs.add(1)).numChannels = 1;
+        }
+        let raw = unsafe { raw_stereo_f32_buffers(&data) }.unwrap();
+        assert!(raw.sidechain_left.is_null());
+        data.numInputs = 1;
+        let raw = unsafe { raw_stereo_f32_buffers(&data) }.unwrap();
+        assert!(raw.sidechain_left.is_null());
+        data.numInputs = 3;
+        assert!(unsafe { raw_stereo_f32_buffers(&data) }.is_none());
     }
 }

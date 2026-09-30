@@ -16,6 +16,8 @@ pub struct PumpAudioProcessor<'a> {
     scratch_left: Vec<f32>,
     /// Temporary right-channel storage for non-inplace paths.
     scratch_right: Vec<f32>,
+    sidechain_left: Vec<f32>,
+    sidechain_right: Vec<f32>,
     /// Scratch vector for draining queued automation events.
     automation_drain: Vec<AutomationEvent>,
     /// Reused sample-offset parameter schedule for the current block.
@@ -88,6 +90,25 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
         );
 
+        self.sidechain_left[..frame_count].fill(0.);
+        self.sidechain_right[..frame_count].fill(0.);
+        // Copy optional input before borrowing the main pair. Buffers were allocated at activation.
+        if let Some(mut pair) = audio.port_pair(1) {
+            if let Ok(channels) = pair.channels() {
+                if let Some(mut channels) = channels.into_f32() {
+                    let mut iter = channels.iter_mut();
+                    for target in [&mut self.sidechain_left, &mut self.sidechain_right] {
+                        if let Some(channel) = iter.next() {
+                            let (input, _, _) = split_channel(channel);
+                            if let Some(input) = input {
+                                let n = input.len().min(frame_count);
+                                target[..n].copy_from_slice(&input[..n]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let (source_present, source_processed) = audio
             .port_pair(0)
             .and_then(|mut port_pair| {
@@ -162,6 +183,8 @@ impl<'a> PumpAudioProcessor<'a> {
             last_curve_revision: shared.params.curve_revision(),
             scratch_left,
             scratch_right,
+            sidechain_left: try_zeroed_vec(max_frames)?,
+            sidechain_right: try_zeroed_vec(max_frames)?,
             automation_drain,
             param_schedule,
             waveform_writer: IncomingWaveformWriter::default(),
@@ -301,6 +324,10 @@ impl PumpAudioProcessor<'_> {
             crate::sample_automation::StereoBlockSlices {
                 left: &mut self.scratch_left[..frames],
                 right: &mut self.scratch_right[..frames],
+                sidechain: Some((
+                    &self.sidechain_left[..frames],
+                    &self.sidechain_right[..frames],
+                )),
             },
             self.shared.params.as_ref(),
             &mut self.param_schedule,
@@ -318,6 +345,8 @@ impl PumpAudioProcessor<'_> {
                 gui_transport_telemetry(transport, *settings, self.shared.status.beat_phase()),
             );
             self.shared.status.publish_dsp_telemetry(telemetry);
+            let (input, reduction) = self.engine.spectral_telemetry();
+            self.shared.status.publish_spectral(input, reduction);
             self.shared
                 .status
                 .publish_gain_reduction(telemetry.reduction_gain, telemetry.input_active);
@@ -628,5 +657,39 @@ mod tests {
         let mut settings = dsp_settings_from_params(&params);
         schedule.apply_remaining(&params, &mut settings);
         assert!((params.mix() - 0.2).abs() < f32::EPSILON);
+    }
+    #[test]
+    fn spectral_processing_reads_sidechain_scratch_without_allocating() {
+        const FRAMES: usize = 512;
+        let shared = shared();
+        shared.params.set_mix(0.);
+        shared.params.set_effect(7, 1.);
+        let mut processor = processor(&shared, FRAMES as u32);
+        for n in 0..FRAMES {
+            let x = (n as f32 * 0.15).sin();
+            processor.sidechain_left[n] = x;
+            processor.sidechain_right[n] = x;
+        }
+        let mut left = [0.5; FRAMES];
+        let mut right = [0.; FRAMES];
+        let mut settings = dsp_settings_from_params(shared.params.as_ref());
+        processor.param_schedule.begin_block(FRAMES);
+        let _ = monotonic_micros();
+        assert_no_alloc(|| {
+            assert!(processor.process_stereo_pair(
+                ChannelPair::InPlace(&mut left),
+                ChannelPair::InPlace(&mut right),
+                &mut settings,
+                TransportState::default()
+            ))
+        });
+        assert!(shared
+            .status
+            .spectral_snapshot()
+            .0
+            .into_iter()
+            .any(|v| v > 0.01));
+        assert!(left.into_iter().all(f32::is_finite));
+        assert!(right.into_iter().all(|v| v == 0.));
     }
 }

@@ -166,3 +166,7 @@ Pump has two timing sources:
 
 Timing controls are documented in [docs/swing.md](docs/swing.md), including the
 host-automatable Swing mapping.
+
+## Dual-band and spectral ducking
+
+Pump includes a one-crossover, 12/24 dB Linkwitz–Riley dual-band mode and external-sidechain spectral ducking across 24 bands. See [controls, compatibility and validation](docs/dual-spectral.md). Both bands share the authored envelope.

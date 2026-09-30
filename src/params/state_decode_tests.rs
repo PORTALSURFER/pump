@@ -1,5 +1,6 @@
 use super::{
-    decode_state_payload, encode_state_payload, seeded_quick_shape_slots, PumpParams, SoundSide,
+    decode_state_payload, encode_state_payload as encode_current_state_payload,
+    seeded_quick_shape_slots, PumpParams, SoundSide,
 };
 use crate::curve::{cyclically_offset_editable_curve, sample_editable_curve};
 
@@ -90,6 +91,12 @@ fn skip_encoded_curve(payload: &[u8], mut offset: usize, with_phase_metadata: bo
         offset += 8;
         let source_node_count = read_u32(payload, offset) as usize;
         offset += 4 + source_node_count * 8 + source_node_count.saturating_sub(1) * 4;
+        if payload.get(offset..offset + 4) == Some(b"SORG") {
+            offset += 4;
+        }
+    }
+    if payload.get(offset..offset + 4) == Some(b"ORIG") {
+        offset += 4;
     }
     offset
 }
@@ -511,7 +518,7 @@ fn state_roundtrip_preserves_origin_clip_metadata() {
     bank.presets[0].quick_slots[1].curve.origin_is_clip = true;
     params.set_preset_bank_without_persistence(bank);
 
-    let payload = encode_state_payload(&params);
+    let payload = encode_current_state_payload(&params);
     let restored = PumpParams::new();
     decode_state_payload(&restored, &payload).expect("state should decode");
 
@@ -540,7 +547,7 @@ fn state_roundtrip_preserves_clip_phase_source_sampling() {
         .is_some_and(|source| source.origin_is_clip));
     params.set_editable_curve_preserving_phase(&shifted);
 
-    let payload = encode_state_payload(&params);
+    let payload = encode_current_state_payload(&params);
     let restored = PumpParams::new();
     decode_state_payload(&restored, &payload).expect("state should decode");
 
@@ -971,4 +978,38 @@ fn decode_rejects_nonfinite_v14_ab_scalar_without_mutating_state() {
     let offset = v20_extension_start(&payload) + 4;
     write_f32(&mut payload, offset, f32::NAN);
     assert_decode_error_preserves_state(&params, &payload, "invalid A/B scalar field");
+}
+
+// Existing migration fixtures intentionally start at v20, then remove fields
+// to represent each historical wire format. Keep their byte offsets stable.
+fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
+    let mut payload = encode_current_state_payload(params);
+    let mut offset = skip_encoded_curve(&payload, 32, true) + 8;
+    let count = read_u32(&payload, offset - 4) as usize;
+    let mut remove = Vec::new();
+    for _ in 0..count {
+        let name_len = read_u32(&payload, offset) as usize;
+        offset += 4 + name_len + 6 * 4 + 1;
+        offset = skip_encoded_curve(&payload, offset, true);
+        let slots = read_u32(&payload, offset) as usize;
+        offset += 4;
+        for _ in 0..slots {
+            offset = skip_encoded_curve(&payload, offset, true);
+        }
+        offset += 4 + 4 + 4 + 1 + 4 + 8 + 4 + 19;
+        remove.push(offset);
+        offset += 48;
+    }
+    offset += 20 + 4;
+    for _ in 0..4 {
+        let (_, _, end) = sound_state_offsets(&payload, offset);
+        remove.push(end + 31);
+        offset = end + 31 + 48;
+    }
+    remove.push(payload.len() - 48);
+    for start in remove.into_iter().rev() {
+        payload.drain(start..start + 48);
+    }
+    write_u32(&mut payload, 4, 20);
+    payload
 }

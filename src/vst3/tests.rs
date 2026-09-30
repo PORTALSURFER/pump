@@ -417,7 +417,7 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 21);
+    assert_eq!(count, 33);
 }
 
 #[test]
@@ -725,7 +725,7 @@ fn vst3_ui_sink_commits_accepted_value_when_component_handler_rejects_end() {
 }
 
 #[test]
-fn processor_declares_single_stereo_main_bus() {
+fn processor_declares_main_and_optional_stereo_sidechain_bus() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
 
     assert_eq!(
@@ -735,7 +735,7 @@ fn processor_declares_single_stereo_main_bus() {
                 BusDirections_::kInput as BusDirection,
             )
         },
-        1
+        2
     );
     assert_eq!(
         unsafe {
