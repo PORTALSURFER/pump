@@ -417,7 +417,7 @@ mod macos {
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
                 segment_x,
-                segment_y,
+                segment_y + 24.,
                 0,
             );
             capture(
@@ -434,7 +434,7 @@ mod macos {
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
                 segment_x,
-                segment_y + 10.,
+                segment_y + 24.,
                 COMMAND,
             );
             capture(
@@ -451,7 +451,7 @@ mod macos {
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
                 segment_x,
-                segment_y + 10.,
+                segment_y,
                 0,
             );
             capture(
