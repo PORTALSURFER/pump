@@ -21,3 +21,5 @@ Source: [Frame 5815ef6, Technical Futurist rules](https://github.com/PORTALSURFE
 The continuous rectangular outer frame encloses shallow articulated side shoulders. A clearly offset top graphite inset and exactly centered bottom inset establish quiet depth without obscuring controls. The envelope uses a recessed bed; utility buttons use opaque control surfaces, softened corners and one clipped lower-right corner. Mint outlines mark keyboard focus. Closely grouped A/B and mode controls keep simpler geometry.
 
 Gain reduction is a continuous opaque fill, and LP/HP sliders are opaque. The user-requested mint LP and blue HP remain semantic band colors, with very faint plot fills so the coral envelope stays dominant. The version displays the real package version, without extra build identifiers. Layout, hit targets and control behavior are retained.
+
+Numeric glyphs, caret, selection and IME geometry share a centered origin within compact fields. Hit targets stay unchanged, and pointer-to-character mapping uses the same painted text origin.

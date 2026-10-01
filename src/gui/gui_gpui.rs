@@ -588,6 +588,7 @@ struct NumericTextElement {
 }
 
 struct NumericTextPrepaint {
+    text_bounds: Bounds<Pixels>,
     line: Option<ShapedLine>,
     cursor: Option<gpui::PaintQuad>,
     selection: Option<gpui::PaintQuad>,
@@ -654,6 +655,13 @@ impl Element for NumericTextElement {
             window
                 .text_system()
                 .shape_line(text.into(), px(PUMP_TYPOGRAPHY.value.0), &[run], None);
+        let text_bounds = Bounds::new(
+            point(
+                bounds.left() + ((bounds.size.width - line.width) * 0.5).max(px(0.0)),
+                bounds.top(),
+            ),
+            size(line.width, bounds.size.height),
+        );
         let cursor_position = line.x_for_index(input.cursor_offset());
         let (selection, cursor) = if !input.editing {
             (None, None)
@@ -662,7 +670,7 @@ impl Element for NumericTextElement {
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_position, bounds.top()),
+                        point(text_bounds.left() + cursor_position, bounds.top()),
                         size(px(1.0), bounds.size.height),
                     ),
                     rgba(0xd8d7d3ff),
@@ -673,11 +681,11 @@ impl Element for NumericTextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(input.selected_range.start),
+                            text_bounds.left() + line.x_for_index(input.selected_range.start),
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(input.selected_range.end),
+                            text_bounds.left() + line.x_for_index(input.selected_range.end),
                             bounds.bottom(),
                         ),
                     ),
@@ -687,6 +695,7 @@ impl Element for NumericTextElement {
             )
         };
         NumericTextPrepaint {
+            text_bounds,
             line: Some(line),
             cursor,
             selection,
@@ -707,7 +716,7 @@ impl Element for NumericTextElement {
         if self.input.read(cx).editing {
             window.handle_input(
                 &focus_handle,
-                ElementInputHandler::new(bounds, self.input.clone()),
+                ElementInputHandler::new(prepaint.text_bounds, self.input.clone()),
                 cx,
             );
         }
@@ -716,7 +725,7 @@ impl Element for NumericTextElement {
         }
         let line = prepaint.line.take().expect("numeric text line");
         let _ = line.paint(
-            bounds.origin,
+            prepaint.text_bounds.origin,
             window.line_height(),
             gpui::TextAlign::Center,
             None,
@@ -730,7 +739,7 @@ impl Element for NumericTextElement {
         }
         self.input.update(cx, |input, _| {
             input.last_layout = Some(line);
-            input.last_bounds = Some(bounds);
+            input.last_bounds = Some(prepaint.text_bounds);
             #[cfg(any(
                 feature = "screenshot-test",
                 all(test, target_os = "windows", feature = "vst3")
