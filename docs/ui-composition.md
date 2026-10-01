@@ -23,3 +23,9 @@ The continuous rectangular outer frame encloses shallow articulated side shoulde
 Gain reduction is a continuous opaque fill, and LP/HP sliders are opaque. The user-requested mint LP and blue HP remain semantic band colors, with very faint plot fills so the coral envelope stays dominant. The version displays the real package version, without extra build identifiers. Layout, hit targets and control behavior are retained.
 
 Numeric glyphs, caret, selection and IME geometry share a centered origin within compact fields. Hit targets stay unchanged, and pointer-to-character mapping uses the same painted text origin.
+
+## Side recesses and perimeter
+
+Pump uses edge recesses rather than detached rails. Each dark cavity meets the inner face of the continuous one-pixel perimeter border; no extra gap or second parallel outer line separates it from the frame. Left and right share their height and four-pixel depth, with mirrored chamfers narrowing inward. Only the inner contact edges receive a subdued bevel, matching the top/bottom treatment. The outer window remains a full rectangle and all control targets stay clear.
+
+Frame section 41.14 now distinguishes this edge-connected treatment from an intentionally detached rail, which must have a visibly deliberate, consistent separation. A hairline floating outline should not ambiguously suggest both.

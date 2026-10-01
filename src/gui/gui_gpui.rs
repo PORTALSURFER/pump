@@ -4301,18 +4301,30 @@ fn chassis_artwork() -> impl gpui::IntoElement {
                     window.paint_path(path, solid(PumpColor::rgb(60, 69, 63)));
                 }
             }
-            // Two shallow side shoulders remain clear of every control target.
+            // Edge recesses meet the inner face of the continuous 1 px frame.
+            // Mirror the opening and inner bevel; do not draw a second outer rail.
             for right in [false, true] {
-                let edge = if right { l + w - 2.0 } else { l + 2.0 };
+                let edge = if right { l + w - 1.0 } else { l + 1.0 };
                 let direction = if right { -1.0 } else { 1.0 };
+                let depth = 4.0;
                 let shape = [
                     (edge, t + h * 0.23),
-                    (edge + direction * 5.0, t + h * 0.23 + 5.0),
-                    (edge + direction * 5.0, t + h * 0.47 - 5.0),
+                    (edge + direction * depth, t + h * 0.23 + depth),
+                    (edge + direction * depth, t + h * 0.47 - depth),
                     (edge, t + h * 0.47),
                 ];
                 paint_polygon(window, &shape, theme.display, false);
-                paint_polygon(window, &shape, theme.border, true);
+                let mut bevel = gpui::PathBuilder::stroke(px(0.75));
+                for (index, &(x, y)) in shape.iter().enumerate() {
+                    if index == 0 {
+                        bevel.move_to(point(px(x), px(y)));
+                    } else {
+                        bevel.line_to(point(px(x), px(y)));
+                    }
+                }
+                if let Ok(path) = bevel.build() {
+                    window.paint_path(path, solid(PumpColor::rgb(60, 69, 63)));
+                }
             }
         },
     )
