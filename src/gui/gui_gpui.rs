@@ -4668,6 +4668,12 @@ impl PumpEditor {
         } else {
             ("dual-high", "HP", PumpColor::rgb(128, 158, 198))
         };
+        // Opaque, subdued signal fills keep the internal value legible.
+        let fill_color = if index == 3 {
+            PumpColor::rgb(65, 95, 79)
+        } else {
+            PumpColor::rgb(63, 82, 106)
+        };
         let focus = self.button_focus_handle(id).clone();
         let focus_down = focus.clone();
         let bounds = Rc::new(RefCell::new(None::<Bounds<Pixels>>));
@@ -4710,7 +4716,7 @@ impl PumpEditor {
                                 center + px(6.),
                             ),
                         ),
-                        solid(color),
+                        solid(fill_color),
                     ));
                 }
                 let percentage = text_line(
