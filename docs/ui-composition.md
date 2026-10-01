@@ -18,7 +18,7 @@ The Frame composition is a visual reference; native control behavior belongs to 
 
 Source: [Frame 5815ef6, Technical Futurist rules](https://github.com/PORTALSURFER/frame/blob/5815ef694109310bd08e2ef23eafb6aca73b1d8b/styleguides/technical-futurist.md), sections 41.1–41.14.
 
-The continuous rectangular outer frame encloses shallow articulated side shoulders. A clearly offset top graphite inset and exactly centered bottom inset establish quiet depth without obscuring controls. The envelope uses a recessed bed; utility buttons use opaque control surfaces, softened corners and one clipped lower-right corner. Mint outlines mark keyboard focus. Closely grouped A/B and mode controls keep simpler geometry.
+The continuous rectangular outer frame encloses shallow articulated side shoulders. A shallow top graphite recess attaches directly to the top edge and aligns with the brand rail. The bottom recess attaches to the bottom edge, sits exactly on the device centerline, and mirrors the top taper: both openings widen toward their adjacent outer edge. Four-pixel depth, restrained graphite shading and subdued inner bevels keep the strips subordinate to controls. The envelope uses a recessed bed; utility buttons use opaque control surfaces, softened corners and one clipped lower-right corner. Mint outlines mark keyboard focus. Closely grouped A/B and mode controls keep simpler geometry.
 
 Gain reduction is a continuous opaque fill, and LP/HP sliders are opaque. The user-requested mint LP and blue HP remain semantic band colors, with very faint plot fills so the coral envelope stays dominant. The version displays the real package version, without extra build identifiers. Layout, hit targets and control behavior are retained.
 

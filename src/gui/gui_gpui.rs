@@ -4253,27 +4253,53 @@ fn chassis_artwork() -> impl gpui::IntoElement {
             let t = f32::from(bounds.top());
             let w = f32::from(bounds.size.width);
             let h = f32::from(bounds.size.height);
-            // Deliberately asymmetric top inset; exactly mirrored bottom inset.
-            for (left, right, top, bottom) in [
-                (l + w * 0.43, l + w * 0.78, t + 2.0, t + 9.0),
-                (l + w * 0.30, l + w * 0.70, t + h - 6.0, t + h - 1.5),
+            // Attach both recesses to their own edge. The top aligns with the
+            // brand rail; the bottom is centered and mirrors the top's taper.
+            let bottom_width = (w * 0.36).clamp(200.0, 320.0);
+            for (left, right, edge, inward) in [
+                (
+                    l + SURFACE_PADDING,
+                    l + SURFACE_PADDING + 160.0,
+                    t + 1.0,
+                    1.0,
+                ),
+                (
+                    l + (w - bottom_width) * 0.5,
+                    l + (w + bottom_width) * 0.5,
+                    t + h - 1.0,
+                    -1.0,
+                ),
             ] {
-                let shape = [
-                    (left, top),
-                    (right, top),
-                    (right - 5.0, bottom),
-                    (left + 5.0, bottom),
-                ];
-                paint_polygon(window, &shape, theme.display, false);
-                paint_polygon(window, &shape, theme.border, true);
-                // Cool upper bevel and darker contact edge, without a glossy wash.
-                window.paint_quad(fill(
-                    Bounds::from_corners(
-                        point(px(left + 2.0), px(top + 1.0)),
-                        point(px(right - 2.0), px(top + 2.0)),
-                    ),
-                    solid(theme.border_emphasis),
-                ));
+                let depth = 4.0;
+                let cut = 4.0;
+                // Restrained graphite transition, clipped to the tapered recess.
+                for (row, color) in [
+                    PumpColor::rgb(25, 30, 27),
+                    PumpColor::rgb(31, 37, 33),
+                    PumpColor::rgb(37, 43, 39),
+                    PumpColor::rgb(43, 49, 45),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let outer = row as f32;
+                    let inner = outer + 1.0;
+                    let strip = [
+                        (left + outer * cut / depth, edge + inward * outer),
+                        (right - outer * cut / depth, edge + inward * outer),
+                        (right - inner * cut / depth, edge + inward * inner),
+                        (left + inner * cut / depth, edge + inward * inner),
+                    ];
+                    paint_polygon(window, &strip, color, false);
+                }
+                let mut bevel = gpui::PathBuilder::stroke(px(0.75));
+                bevel.move_to(point(px(left), px(edge)));
+                bevel.line_to(point(px(left + cut), px(edge + inward * depth)));
+                bevel.line_to(point(px(right - cut), px(edge + inward * depth)));
+                bevel.line_to(point(px(right), px(edge)));
+                if let Ok(path) = bevel.build() {
+                    window.paint_path(path, solid(PumpColor::rgb(60, 69, 63)));
+                }
             }
             // Two shallow side shoulders remain clear of every control target.
             for right in [false, true] {
