@@ -39,6 +39,8 @@ impl PumpColor {
 pub(crate) struct PumpTheme {
     /// Canvas and primary surface.
     pub(crate) clear: PumpColor,
+    /// Recessed display bed.
+    pub(crate) display: PumpColor,
     /// Raised/overlay surface.
     pub(crate) surface_overlay: PumpColor,
     /// Standard border.
@@ -68,19 +70,20 @@ pub(crate) struct PumpTheme {
 /// Return Pump's fixed dark-coral theme for every supported viewport tier.
 pub(crate) const fn pump_theme() -> PumpTheme {
     PumpTheme {
-        clear: PumpColor::rgb(27, 30, 30),
-        surface_overlay: PumpColor::rgb(42, 45, 45),
-        border: PumpColor::rgb(58, 61, 61),
-        border_emphasis: PumpColor::rgb(64, 67, 66),
-        grid_strong: PumpColor::rgb(54, 57, 57),
-        grid_soft: PumpColor::rgb(40, 43, 43),
-        accent_mint: PumpColor::rgb(233, 88, 67),
-        accent_copper: PumpColor::rgb(241, 108, 86),
-        accent_warning: PumpColor::rgb(217, 151, 95),
-        accent_danger: PumpColor::rgb(239, 76, 61),
-        text_primary: PumpColor::rgb(216, 215, 211),
-        text_muted: PumpColor::rgb(153, 155, 154),
-        control_disabled_fill: PumpColor::rgb(36, 40, 41),
+        clear: PumpColor::rgb(39, 43, 40),
+        display: PumpColor::rgb(31, 36, 34),
+        surface_overlay: PumpColor::rgb(48, 55, 50),
+        border: PumpColor::rgb(73, 83, 76),
+        border_emphasis: PumpColor::rgb(91, 103, 94),
+        grid_strong: PumpColor::rgb(48, 55, 50),
+        grid_soft: PumpColor::rgb(37, 44, 40),
+        accent_mint: PumpColor::rgb(233, 107, 80),
+        accent_copper: PumpColor::rgb(233, 107, 80),
+        accent_warning: PumpColor::rgb(215, 92, 73),
+        accent_danger: PumpColor::rgb(215, 92, 73),
+        text_primary: PumpColor::rgb(213, 216, 214),
+        text_muted: PumpColor::rgb(162, 171, 164),
+        control_disabled_fill: PumpColor::rgb(31, 36, 34),
     }
 }
 
@@ -135,28 +138,28 @@ pub(crate) struct PumpVisualMetrics {
 
 /// Pump's exact visual dimensions.
 pub(crate) const PUMP_VISUAL_METRICS: PumpVisualMetrics = PumpVisualMetrics {
-    base: 3.4,
-    space_4: 3.4,
-    space_8: 6.8,
-    space_12: 10.2,
-    space_16: 13.6,
-    padding: 10.2,
-    gap: 6.8,
-    radius: 6.8,
+    base: 4.0,
+    space_4: 4.0,
+    space_8: 8.0,
+    space_12: 12.0,
+    space_16: 16.0,
+    padding: 16.0,
+    gap: 8.0,
+    radius: 1.0,
     border: 1.0,
     divider: 1.0,
-    control_height: 27.2,
-    dropdown_min_width: 81.6,
+    control_height: 24.0,
+    dropdown_min_width: 80.0,
     icon_hit: 28.0,
     icon: 13.6,
-    knob: 47.6,
-    knob_column: 74.8,
-    label_line: 13.6,
-    meter_panel: 40.8,
-    meter_track: 27.2,
+    knob: 32.0,
+    knob_column: 64.0,
+    label_line: 12.0,
+    meter_panel: 32.0,
+    meter_track: 12.0,
     meter_segment: 3.4,
     meter_segment_gap: 1.7,
-    deck_height: 81.6,
+    deck_height: 80.0,
 };
 
 /// Typography roles for the target's license-safe text hierarchy.
@@ -176,11 +179,11 @@ pub(crate) struct PumpTypography {
 
 /// Pump's target typography roles.
 pub(crate) const PUMP_TYPOGRAPHY: PumpTypography = PumpTypography {
-    brand: (18.7, 23.8),
-    body: (11.9, 15.3),
-    value: (10.2, 13.6),
-    control_label: (8.5, 13.6),
-    meta: (8.0, 11.9),
+    brand: (17.0, 24.0),
+    body: (11.0, 14.0),
+    value: (11.0, 14.0),
+    control_label: (9.0, 12.0),
+    meta: (8.0, 10.0),
 };
 
 /// Meter-specific semantic colors derived from Pump's theme.
@@ -215,23 +218,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pump_theme_is_fixed_and_uses_canonical_dark_coral_values() {
+    fn pump_theme_is_fixed_and_uses_technical_instrument_values() {
         let theme = pump_theme();
         assert_eq!(theme, pump_theme());
-        assert_eq!(theme.clear, PumpColor::rgb(27, 30, 30));
-        assert_eq!(theme.accent_mint, PumpColor::rgb(233, 88, 67));
-        assert_eq!(theme.accent_copper, PumpColor::rgb(241, 108, 86));
-        assert_eq!(theme.text_primary, PumpColor::rgb(216, 215, 211));
+        assert_eq!(theme.clear, PumpColor::rgb(39, 43, 40));
+        assert_eq!(theme.accent_mint, PumpColor::rgb(233, 107, 80));
+        assert_eq!(theme.accent_copper, PumpColor::rgb(233, 107, 80));
+        assert_eq!(theme.text_primary, PumpColor::rgb(213, 216, 214));
     }
 
     #[test]
     fn metrics_and_typography_match_the_visual_contract() {
-        assert_eq!(PUMP_VISUAL_METRICS.base, 3.4);
-        assert_eq!(PUMP_VISUAL_METRICS.control_height, 27.2);
-        assert_eq!(PUMP_VISUAL_METRICS.knob, 47.6);
-        assert_eq!(PUMP_VISUAL_METRICS.deck_height, 81.6);
-        assert_eq!(PUMP_TYPOGRAPHY.brand, (18.7, 23.8));
-        assert_eq!(PUMP_TYPOGRAPHY.meta, (8.0, 11.9));
+        assert_eq!(PUMP_VISUAL_METRICS.base, 4.0);
+        assert_eq!(PUMP_VISUAL_METRICS.control_height, 24.0);
+        assert_eq!(PUMP_VISUAL_METRICS.knob, 32.0);
+        assert_eq!(PUMP_VISUAL_METRICS.deck_height, 80.0);
+        assert_eq!(PUMP_TYPOGRAPHY.brand, (17.0, 24.0));
+        assert_eq!(PUMP_TYPOGRAPHY.meta, (8.0, 10.0));
     }
 
     #[test]

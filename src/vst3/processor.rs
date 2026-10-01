@@ -321,7 +321,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         outputs: *mut SpeakerArrangement,
         num_outs: i32,
     ) -> tresult {
-        if !(num_ins == 1 || num_ins == 2) || num_outs != 1 {
+        if num_ins != 1 || num_outs != 1 {
             return kResultFalse;
         }
         if inputs.is_null() || outputs.is_null() {
@@ -331,10 +331,6 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         if unsafe { *inputs } != SpeakerArr::kStereo || unsafe { *outputs } != SpeakerArr::kStereo {
             return kResultFalse;
         }
-        if num_ins == 2 && unsafe { *inputs.add(1) } != SpeakerArr::kStereo {
-            return kResultFalse;
-        }
-
         kResultTrue
     }
 
@@ -349,7 +345,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         match dir as BusDirections {
-            BusDirections_::kInput if index == 0 || index == 1 => {
+            BusDirections_::kInput if index == 0 => {
                 unsafe { *arr = SpeakerArr::kStereo };
                 kResultOk
             }

@@ -130,6 +130,11 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: rustfmt, clippy
+      - name: Cache native build dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: native-ui-preflight-v1
+          cache-on-failure: true
       - name: Checkout pinned VST3 SDK
         run: |
           set -euo pipefail

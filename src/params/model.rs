@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 20;
+pub(crate) const STATE_VERSION: u32 = 22;
 
 /// The two independently editable Pump sound sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +81,7 @@ pub struct PumpSoundState {
     pub filter_hp_slope: usize,
     /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
     pub filter_lp_slope: usize,
+    pub effects: [f32; crate::dual_band::COUNT],
     pub editable_curve: EditableCurve,
     pub quick_slots: Vec<QuickShapeSlot>,
 }
@@ -108,6 +109,7 @@ impl PumpSoundState {
             filter_lp_q: DEFAULT_FILTER_LP_Q,
             filter_hp_slope: DEFAULT_FILTER_SLOPE,
             filter_lp_slope: DEFAULT_FILTER_SLOPE,
+            effects: crate::dual_band::DEFAULTS,
             editable_curve: default_editable_curve(),
             quick_slots: seeded_quick_shape_slots(),
         }
@@ -538,6 +540,7 @@ pub struct PumpPreset {
     pub filter_hp_slope: usize,
     /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
     pub filter_lp_slope: usize,
+    pub effects: [f32; crate::dual_band::COUNT],
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
     /// Overwriteable quick-slot curves shown below the editor for this preset.
@@ -616,6 +619,7 @@ impl PumpPresetBank {
                 filter_lp_q: DEFAULT_FILTER_LP_Q,
                 filter_hp_slope: DEFAULT_FILTER_SLOPE,
                 filter_lp_slope: DEFAULT_FILTER_SLOPE,
+                effects: crate::dual_band::DEFAULTS,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -674,6 +678,7 @@ pub(crate) fn curve_near_eq(left: &EditableCurve, right: &EditableCurve) -> bool
 
 /// Shared atomic parameter/state storage across threads.
 pub struct PumpParams {
+    pub(super) realtime_effects: [[AtomicF32; crate::dual_band::COUNT]; 2],
     pub(super) mix: AtomicF32,
     pub(super) depth_db: AtomicF32,
     pub(super) floor_db: AtomicF32,

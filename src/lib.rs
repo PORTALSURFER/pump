@@ -38,6 +38,7 @@ mod automation_queue;
 mod curve;
 mod curve_presets;
 mod dsp;
+mod dual_band;
 mod gui;
 #[cfg(all(
     any(target_os = "macos", target_os = "windows"),

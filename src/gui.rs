@@ -252,11 +252,7 @@ pub(crate) fn curve_gain_reference_text(reference: CurveGainReference, bitmap: b
 }
 
 pub(crate) fn build_version_label() -> String {
-    format!(
-        "{}+{}",
-        env!("CARGO_PKG_VERSION"),
-        option_env!("PUMP_BUILD_GIT_SHA_SHORT").unwrap_or("unknown")
-    )
+    format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
 #[cfg(test)]
@@ -264,26 +260,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_version_label_includes_current_git_sha() {
-        let output = std::process::Command::new("git")
-            .args(["rev-parse", "--short=7", "HEAD"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .expect("git should be available in repository tests");
-        if !output.status.success() {
-            return;
-        }
-
-        let expected_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        assert!(!expected_sha.is_empty());
-        assert_eq!(
-            option_env!("PUMP_BUILD_GIT_SHA_SHORT"),
-            Some(expected_sha.as_str()),
-            "build.rs must export the current short Git SHA"
-        );
+    fn build_version_label_uses_package_version() {
         assert_eq!(
             build_version_label(),
-            format!("{}+{expected_sha}", env!("CARGO_PKG_VERSION"))
+            format!("v{}", env!("CARGO_PKG_VERSION"))
         );
     }
 

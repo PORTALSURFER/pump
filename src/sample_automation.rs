@@ -155,6 +155,7 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         filter_lp_q: params.filter_lp_q(),
         filter_hp_slope: params.filter_hp_slope(),
         filter_lp_slope: params.filter_lp_slope(),
+        effects: params.effects(),
     }
 }
 
@@ -869,5 +870,22 @@ mod tests {
             status.incoming_waveform_snapshot().is_some(),
             "full bypass must continue waveform capture"
         );
+    }
+    #[test]
+    fn crossover_automation_applies_at_sample_offsets() {
+        let params = PumpParams::new();
+        let mut settings = dsp_settings_from_params(&params);
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(16);
+        schedule.push(3, ClapId::new(25), 1200.);
+        schedule.push(7, ClapId::new(26), 0.);
+        schedule.prepare();
+        schedule.apply_through(2, &params, &mut settings);
+        assert_eq!(settings.effects[1], 200.);
+        schedule.apply_through(3, &params, &mut settings);
+        assert_eq!(settings.effects[1], 1200.);
+        assert_eq!(settings.effects[2], 1.);
+        schedule.apply_through(7, &params, &mut settings);
+        assert_eq!(settings.effects[2], 0.);
     }
 }

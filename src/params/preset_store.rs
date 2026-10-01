@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 14;
+const PRESET_STORE_VERSION: u32 = 16;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
@@ -289,6 +289,9 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.filter_lp_q.to_le_bytes());
     payload.push(preset.filter_hp_slope.min(MAX_FILTER_SLOPE) as u8);
     payload.push(preset.filter_lp_slope.min(MAX_FILTER_SLOPE) as u8);
+    for (i, value) in preset.effects.iter().enumerate() {
+        payload.extend_from_slice(&crate::dual_band::sanitize(i, *value).to_le_bytes());
+    }
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -500,6 +503,23 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         } else {
             (DEFAULT_FILTER_SLOPE, DEFAULT_FILTER_SLOPE)
         };
+        let mut effects = crate::dual_band::DEFAULTS;
+        if version >= 15 {
+            let count = if version == 15 {
+                12
+            } else {
+                crate::dual_band::COUNT
+            };
+            for i in 0..count {
+                let raw = read_f32(&mut cursor).ok_or("truncated effects")?;
+                if !raw.is_finite() {
+                    return Err("invalid effects".to_string());
+                }
+                if let Some(value) = effects.get_mut(i) {
+                    *value = crate::dual_band::sanitize(i, raw);
+                }
+            }
+        }
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -525,6 +545,7 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             filter_lp_q,
             filter_hp_slope,
             filter_lp_slope,
+            effects,
             editable_curve,
             quick_slots,
         });
@@ -727,6 +748,7 @@ mod tests {
                 filter_lp_q: DEFAULT_FILTER_LP_Q,
                 filter_hp_slope: 0,
                 filter_lp_slope: 0,
+                effects: crate::dual_band::DEFAULTS,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -738,7 +760,7 @@ mod tests {
         // Filter metadata was added in v13; delay was added in v11, timing
         // metadata in v10, and Swing in v9. All four trailing fields are
         // absent from a v3 store.
-        payload.truncate(payload.len().saturating_sub(19 + 16));
+        payload.truncate(payload.len().saturating_sub(28 + 19 + 16));
         // Favorite metadata was added in v6, Smooth in v7, and trigger mode
         // in v5; processing mode was added in v8. Remove all four before
         // emulating v3.
@@ -795,6 +817,7 @@ mod tests {
                     filter_lp_q: DEFAULT_FILTER_LP_Q,
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
+                    effects: crate::dual_band::DEFAULTS,
                     editable_curve: default_editable_curve(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -823,6 +846,7 @@ mod tests {
                     filter_lp_q: DEFAULT_FILTER_LP_Q,
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
+                    effects: crate::dual_band::DEFAULTS,
                     editable_curve: EditableCurve {
                         nodes: vec![
                             CurveNode { x: 0.0, y: 1.0 },
@@ -894,7 +918,7 @@ mod tests {
         let mut payload = encoded_single_preset_bank();
         // Filter metadata was added in v13; remove it before emulating v11
         // so the compatibility fixture has no newer trailing fields.
-        payload.truncate(payload.len().saturating_sub(19));
+        payload.truncate(payload.len().saturating_sub(28 + 19));
         write_payload_u32(&mut payload, 4, 11);
 
         let bank = decode_preset_bank_payload(&payload).expect("v11 preset store should decode");
@@ -913,7 +937,7 @@ mod tests {
         // Filter metadata was appended in v13. Remove it to exercise the
         // decoder's v12 compatibility path while keeping the v12 curve
         // origin metadata intact.
-        payload.truncate(payload.len().saturating_sub(19));
+        payload.truncate(payload.len().saturating_sub(28 + 19));
         write_payload_u32(&mut payload, 4, 12);
 
         let bank = decode_preset_bank_payload(&payload).expect("v12 preset store should decode");
@@ -1022,5 +1046,32 @@ mod tests {
         let decoded =
             decode_preset_bank_payload(&payload).expect("fixed quick-slot count should decode");
         assert_eq!(decoded.presets[0].quick_slots.len(), QUICK_SLOT_COUNT);
+    }
+    #[test]
+    fn dual_settings_survive_disk_codec_and_v14_defaults() {
+        let mut bank = PumpPresetBank::default_init();
+        bank.presets[0].effects = [1., 1200., 1., 0.2, 0.6, 0., 1.];
+        let mut bytes = encode_preset_bank_payload(&bank);
+        assert_eq!(decode_preset_bank_payload(&bytes).unwrap(), bank);
+        bytes.truncate(bytes.len() - 28);
+        write_payload_u32(&mut bytes, 4, 14);
+        let old = decode_preset_bank_payload(&bytes).unwrap();
+        assert_eq!(old.presets[0].effects, crate::dual_band::DEFAULTS);
+    }
+    #[test]
+    fn v15_spectral_presets_migrate_to_dual_only_and_reject_malformed_records() {
+        let mut bank = PumpPresetBank::default_init();
+        bank.presets[0].effects = [1., 1500., 0., 0.4, 0.8, 1., 0.];
+        let mut old = encode_preset_bank_payload(&bank);
+        write_payload_u32(&mut old, 4, 15);
+        for value in [1_f32, 24., 10., 500., 1.] {
+            old.extend_from_slice(&value.to_le_bytes());
+        }
+        assert_eq!(decode_preset_bank_payload(&old).unwrap(), bank);
+        let last = old.len() - 4;
+        old[last..].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(decode_preset_bank_payload(&old).is_err());
+        old.truncate(last);
+        assert!(decode_preset_bank_payload(&old).is_err());
     }
 }

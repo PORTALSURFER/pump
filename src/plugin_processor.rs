@@ -629,4 +629,27 @@ mod tests {
         schedule.apply_remaining(&params, &mut settings);
         assert!((params.mix() - 0.2).abs() < f32::EPSILON);
     }
+    #[test]
+    fn dual_processing_is_stereo_independent_and_allocation_free() {
+        const FRAMES: usize = 512;
+        let shared = shared();
+        shared.params.set_mix(0.);
+        shared.params.set_effect(0, 1.);
+        let mut processor = processor(&shared, FRAMES as u32);
+        let mut left = [0.5; FRAMES];
+        let mut right = [0.; FRAMES];
+        let mut settings = dsp_settings_from_params(shared.params.as_ref());
+        processor.param_schedule.begin_block(FRAMES);
+        let _ = monotonic_micros();
+        assert_no_alloc(|| {
+            assert!(processor.process_stereo_pair(
+                ChannelPair::InPlace(&mut left),
+                ChannelPair::InPlace(&mut right),
+                &mut settings,
+                TransportState::default()
+            ))
+        });
+        assert!(left.into_iter().all(f32::is_finite));
+        assert!(right.into_iter().all(|v| v == 0.));
+    }
 }

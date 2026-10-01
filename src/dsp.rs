@@ -47,6 +47,7 @@ pub struct DspSettings {
     pub filter_hp_slope: usize,
     /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
     pub filter_lp_slope: usize,
+    pub effects: [f32; crate::dual_band::COUNT],
 }
 
 /// Host-bypass crossfade duration in seconds.
@@ -197,6 +198,7 @@ impl ClickSafeBypass {
 
 /// Stateful real-time gain engine.
 pub struct PumpEngine {
+    dual_band: crate::dual_band::DualBand,
     clock: TransportClock,
     sample_rate: f32,
     mix: OnePole,
@@ -235,6 +237,7 @@ impl PumpEngine {
         bypassed: bool,
     ) -> Self {
         let mut engine = Self {
+            dual_band: crate::dual_band::DualBand::new(sample_rate),
             clock: TransportClock::new(sample_rate),
             sample_rate: sample_rate.max(1.0),
             mix: OnePole::new(1.0, sample_rate, 0.01),
@@ -295,6 +298,7 @@ impl PumpEngine {
     pub fn reset_with_bypass(&mut self, bypassed: bool) {
         self.wet_gain_smoother.reset(1.0);
         self.filter.reset();
+        self.dual_band.reset();
         self.bypass.reset(bypassed);
         self.free_phase = 0.0;
         self.free_phase_active = false;
@@ -399,18 +403,21 @@ impl PumpEngine {
             .next(wet_gain, smooth, self.sample_rate);
         let blend_gain = (mix * wet_gain) + (1.0 - mix);
         let output_gain = db_to_linear(output_gain_db);
-        let gain = (blend_gain * output_gain).clamp(0.0, 4.0);
+        self.dual_band.prepare(settings.effects);
+        let [source_left, source_right] = [dry_left, dry_right];
+        let volume_envelope = blend_gain;
+        let gain = (volume_envelope * output_gain).clamp(0.0, 4.0);
 
         // The filter selects the part of the input affected by Pump. Keeping
         // the residual in the form `(gain - 1) * band` makes gain=1 an exact
         // unity null even while the filters are settling or changing phase.
         let (pumped_left, pumped_right) = if filter_mix <= f32::EPSILON {
             self.filter.reset();
-            (dry_left * gain, dry_right * gain)
+            (source_left * gain, source_right * gain)
         } else {
             let (band_left, band_right) = self.filter.process(
-                dry_left,
-                dry_right,
+                source_left,
+                source_right,
                 self.sample_rate,
                 filter_hp_freq_hz,
                 filter_hp_q,
@@ -419,13 +426,20 @@ impl PumpEngine {
                 settings.filter_hp_slope,
                 settings.filter_lp_slope,
             );
-            let selective_left = (dry_left + band_left * (blend_gain - 1.0)) * output_gain;
-            let selective_right = (dry_right + band_right * (blend_gain - 1.0)) * output_gain;
+            let selective_left = (source_left + band_left * (volume_envelope - 1.0)) * output_gain;
+            let selective_right =
+                (source_right + band_right * (volume_envelope - 1.0)) * output_gain;
             (
-                lerp(dry_left * gain, selective_left, filter_mix),
-                lerp(dry_right * gain, selective_right, filter_mix),
+                lerp(source_left * gain, selective_left, filter_mix),
+                lerp(source_right * gain, selective_right, filter_mix),
             )
         };
+        let [pumped_left, pumped_right] = self.dual_band.split_mix(
+            [source_left, source_right],
+            volume_envelope,
+            [pumped_left, pumped_right],
+            output_gain,
+        );
         let bypass_blend = self.bypass.next(settings.bypassed);
         if bypass_blend == 1.0 {
             *left = dry_left;
@@ -1323,6 +1337,40 @@ mod tests {
     use toybox::dsp::TransportState;
 
     #[test]
+    fn host_bypass_returns_dry_with_dual_enabled() {
+        let params = crate::params::PumpParams::new();
+        params.set_effect(0, 1.);
+        params.set_effect(5, 1.);
+        params.set_output_gain_db(6.);
+        let mut settings = crate::sample_automation::dsp_settings_from_params(&params);
+        let mut engine = PumpEngine::new(48000., params.curve_snapshot());
+        let mut active_difference = 0.;
+        crate::test_alloc::assert_no_alloc(|| {
+            for n in 0..8192 {
+                let dry = (std::f32::consts::TAU * 1000. * n as f32 / 48000.).sin();
+                settings.bypassed = n >= 4096;
+                let mut left = dry;
+                let mut right = -dry;
+                let telemetry = engine.process_sample(
+                    &mut left,
+                    &mut right,
+                    settings,
+                    TransportState::default(),
+                );
+                if (2048..4096).contains(&n) {
+                    active_difference += (left - dry).abs();
+                }
+                if n >= 6144 {
+                    assert!(telemetry.bypassed);
+                    assert_eq!(left.to_bits(), dry.to_bits());
+                    assert_eq!(right.to_bits(), (-dry).to_bits());
+                }
+            }
+        });
+        assert!(active_difference > 100.);
+    }
+
+    #[test]
     fn gain_mapping_stays_finite_for_extremes() {
         let curve = editable_curve_to_table(&default_editable_curve());
         let mut engine = PumpEngine::new(48_000.0, curve);
@@ -1347,6 +1395,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         };
 
         let mut left = 1.0;
@@ -1396,6 +1445,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         };
         let mut engine = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
         let mut left = 1.0;
@@ -1431,6 +1481,7 @@ mod tests {
             filter_lp_q: 0.707,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         }
     }
 
@@ -1798,6 +1849,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         }
     }
 
@@ -1927,6 +1979,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -1970,6 +2023,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         };
 
         let mut min_gain = 1.0_f32;
@@ -2016,6 +2070,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         };
         let mut first = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         let mut second = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
@@ -2077,6 +2132,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         };
         let mut engine = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         for _ in 0..1_000 {
@@ -2110,6 +2166,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         };
         let sync = DspSettings {
             timing_mode: crate::params::TIMING_MODE_SYNC,
@@ -2167,6 +2224,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         }
     }
 
@@ -2442,6 +2500,7 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            effects: crate::dual_band::DEFAULTS,
         }
     }
 

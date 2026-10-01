@@ -21,13 +21,16 @@ use crate::params::{
     parse_plain_value_text, plain_from_normalized_value, PumpParams, PumpSoundState, SoundSide,
     BYPASS_ACTIVE_VALUE, BYPASS_BYPASSED_VALUE, DEFAULT_DELAY_BEATS, DEFAULT_FREE_RATE_HZ,
     DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, DEFAULT_SWING, FILTER_MIN_SEPARATION_HZ,
-    MAX_DELAY_BEATS, MAX_FILTER_FREQ_HZ, MAX_FILTER_Q, MAX_FILTER_SLOPE, MAX_OUTPUT_GAIN_DB,
-    MAX_SYNC_DIVISION, MIN_DELAY_BEATS, MIN_FILTER_FREQ_HZ, MIN_FILTER_Q, MIN_OUTPUT_GAIN_DB,
-    PARAM_BYPASS_ID, PARAM_DELAY_ID, PARAM_FILTER_ENABLED_ID, PARAM_FILTER_HP_FREQ_ID,
-    PARAM_FILTER_HP_Q_ID, PARAM_FILTER_HP_SLOPE_ID, PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID,
-    PARAM_FILTER_LP_SLOPE_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
+    MAX_DELAY_BEATS, MAX_FILTER_FREQ_HZ, MAX_FILTER_Q, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
+    MIN_DELAY_BEATS, MIN_FILTER_FREQ_HZ, MIN_FILTER_Q, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID,
+    PARAM_DELAY_ID, PARAM_FILTER_HP_FREQ_ID, PARAM_FILTER_HP_Q_ID, PARAM_FILTER_LP_FREQ_ID,
+    PARAM_FILTER_LP_Q_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
     PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID,
     PARAM_TIMING_MODE_ID, TIMING_MODE_FREE, TIMING_MODE_SYNC,
+};
+#[cfg(test)]
+use crate::params::{
+    MAX_FILTER_SLOPE, PARAM_FILTER_ENABLED_ID, PARAM_FILTER_HP_SLOPE_ID, PARAM_FILTER_LP_SLOPE_ID,
 };
 use crate::GuiStatus;
 
@@ -953,6 +956,7 @@ pub(crate) struct PumpEditorState {
     loaded_global_curve_slot: Option<usize>,
     numeric_entry: Option<NumericEntryState>,
     active_knob_gesture: Option<NumericEntryTarget>,
+    active_effect_gesture: Option<usize>,
     timing_dropdown_open: bool,
     hotkey_help_open: bool,
     free_rate_unit: FreeRateUnit,
@@ -982,6 +986,7 @@ pub(crate) struct HistorySnapshot {
     filter_lp_q: f32,
     filter_hp_slope: usize,
     filter_lp_slope: usize,
+    effects: [f32; crate::dual_band::COUNT],
     curve: EditableCurve,
     active_sound: SoundSide,
     sound_states: [PumpSoundState; 2],
@@ -1008,7 +1013,17 @@ pub(crate) enum EditorMessage {
     },
     CopyAndSelectSound(SoundSide),
     ToggleBypass,
+    #[cfg(test)]
     ToggleFilter,
+    EffectGesture {
+        index: usize,
+        message: KnobMessage,
+    },
+    SetEffect {
+        index: usize,
+        value: f32,
+    },
+    #[cfg(test)]
     SetFilterSlope {
         handle: FilterHandle,
         index: usize,
@@ -1077,6 +1092,7 @@ impl PumpEditorState {
             loaded_global_curve_slot: None,
             numeric_entry: None,
             active_knob_gesture: None,
+            active_effect_gesture: None,
             timing_dropdown_open: false,
             hotkey_help_open: false,
             free_rate_unit: FreeRateUnit::Hertz,
@@ -1107,6 +1123,7 @@ impl PumpEditorState {
             filter_lp_q: self.params.filter_lp_q(),
             filter_hp_slope: self.params.filter_hp_slope(),
             filter_lp_slope: self.params.filter_lp_slope(),
+            effects: self.params.effects(),
             curve: self.params.editable_curve_snapshot(),
             active_sound: self.params.active_sound(),
             sound_states: [
@@ -1118,6 +1135,22 @@ impl PumpEditorState {
                 self.params.stored_sound_state_snapshot(SoundSide::B),
             ],
         }
+    }
+
+    // The compact UI has no separate Dual switch. Preserve the host default
+    // and legacy project state, but make an intentional band edit audible.
+    fn activate_bands_for_edit(&mut self, index: usize) -> bool {
+        if !(2..=6).contains(&index) || self.params.effects()[0] >= 0.5 {
+            return true;
+        }
+        if !self
+            .host_param_edit_sink
+            .edit(&self.automation_config, ClapId::new(24), 1.)
+        {
+            return false;
+        }
+        self.params.set_effect(0, 1.);
+        true
     }
 
     fn push_history(&mut self) {
@@ -1158,6 +1191,9 @@ impl PumpEditorState {
             .set_filter_hp_slope(snapshot.filter_hp_slope as f32);
         self.params
             .set_filter_lp_slope(snapshot.filter_lp_slope as f32);
+        for (i, value) in snapshot.effects.iter().enumerate() {
+            self.params.set_effect(i, *value);
+        }
         self.params
             .set_editable_curve_preserving_phase(&snapshot.curve);
         self.params
@@ -1406,6 +1442,7 @@ impl PumpEditorState {
             || self.active_curve_marquee.is_some()
             || self.active_filter_drag.is_some()
             || self.active_knob_gesture.is_some()
+            || self.active_effect_gesture.is_some()
     }
 
     /// End every host gesture before the native child view is torn down.
@@ -1415,6 +1452,11 @@ impl PumpEditorState {
     /// end because their lifetime is owned by the automation queue/component
     /// handler rather than the curve reducer.
     pub(crate) fn cancel_active_gestures(&mut self) {
+        if let Some(index) = self.active_effect_gesture.take() {
+            let _ = self
+                .host_param_edit_sink
+                .gesture_ended(&self.automation_config, ClapId::new(24 + index as u32));
+        }
         if let Some(target) = self.active_knob_gesture.take() {
             let _ = self
                 .host_param_edit_sink
@@ -1436,6 +1478,11 @@ impl PumpEditorState {
     /// audible state and must be ended at that value rather than restored as
     /// it would be for an explicit Escape/cancel gesture.
     pub(crate) fn finish_for_teardown(&mut self) {
+        if let Some(index) = self.active_effect_gesture.take() {
+            let _ = self
+                .host_param_edit_sink
+                .gesture_ended(&self.automation_config, ClapId::new(24 + index as u32));
+        }
         if let Some(target) = self.active_knob_gesture.take() {
             let _ = self
                 .host_param_edit_sink
@@ -1731,6 +1778,93 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 }
             }
         }
+        EditorMessage::EffectGesture { index, message } => {
+            if !matches!(index, 3 | 4) {
+                return;
+            }
+            let id = ClapId::new(24 + index as u32);
+            match message {
+                KnobMessage::GestureStarted => {
+                    if !state.has_active_gesture()
+                        && state
+                            .host_param_edit_sink
+                            .gesture_started(&state.automation_config, id)
+                    {
+                        let before = state.snapshot();
+                        if !state.activate_bands_for_edit(index) {
+                            let _ = state
+                                .host_param_edit_sink
+                                .gesture_ended(&state.automation_config, id);
+                            return;
+                        }
+                        state.push_history_snapshot(before);
+                        state.active_effect_gesture = Some(index);
+                    }
+                }
+                KnobMessage::ValueChanged { value } => {
+                    if state.active_effect_gesture == Some(index) {
+                        let value = crate::dual_band::sanitize(index, value);
+                        if state.host_param_edit_sink.gesture_value(
+                            &state.automation_config,
+                            id,
+                            value as f64,
+                        ) {
+                            state.params.set_effect(index, value);
+                        }
+                    }
+                }
+                KnobMessage::GestureEnded => {
+                    if state.active_effect_gesture == Some(index) {
+                        let _ = state
+                            .host_param_edit_sink
+                            .gesture_ended(&state.automation_config, id);
+                        state.active_effect_gesture = None;
+                    }
+                }
+                KnobMessage::Reset { value } | KnobMessage::Discrete { value } => {
+                    reduce_editor_message(state, EditorMessage::SetEffect { index, value });
+                }
+            }
+        }
+        EditorMessage::SetEffect { index, value } => {
+            if index >= crate::dual_band::COUNT {
+                return;
+            }
+            let value = crate::dual_band::sanitize(index, value);
+            if state.params.effects()[index] == value {
+                return;
+            }
+            // Wheel or keyboard input during a drag belongs to that gesture.
+            if state.active_effect_gesture == Some(index) {
+                if state.host_param_edit_sink.gesture_value(
+                    &state.automation_config,
+                    ClapId::new(24 + index as u32),
+                    value as f64,
+                ) {
+                    state.params.set_effect(index, value);
+                }
+                return;
+            }
+            let before = state.snapshot();
+            let was_enabled = state.params.effects()[0] >= 0.5;
+            if !state.activate_bands_for_edit(index) {
+                return;
+            }
+            let accepted = state.host_param_edit_sink.edit(
+                &state.automation_config,
+                ClapId::new(24 + index as u32),
+                value as f64,
+            );
+            if accepted {
+                state.push_history_snapshot(before);
+                state.params.set_effect(index, value);
+            } else if !was_enabled && state.params.effects()[0] >= 0.5 {
+                // The host may accept activation and reject the band value.
+                // Keep that accepted edit visible and undoable.
+                state.push_history_snapshot(before);
+            }
+        }
+        #[cfg(test)]
         EditorMessage::ToggleFilter => {
             let enabled = !state.params.filter_enabled();
             if state.host_param_edit_sink.edit(
@@ -1747,6 +1881,7 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 }
             }
         }
+        #[cfg(test)]
         EditorMessage::SetFilterSlope { handle, index } => {
             if !state.params.filter_enabled() {
                 return;
@@ -4319,6 +4454,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<SinkEvent>>,
+        reject_edit: Option<ClapId>,
     }
 
     impl RecordingSink {
@@ -4333,7 +4469,7 @@ mod tests {
                 .lock()
                 .expect("recording sink lock")
                 .push(SinkEvent::Edit(param_id, value));
-            true
+            self.reject_edit != Some(param_id)
         }
 
         fn gesture_started(&self, _: &AutomationConfig, param_id: ClapId) -> bool {
@@ -4661,6 +4797,178 @@ mod tests {
         assert_eq!(params.editable_curve_snapshot(), curve_b);
         assert!(state.selected_curve_nodes.is_empty());
         assert!(!state.refresh_host_projection());
+    }
+    #[test]
+    fn band_mix_slider_drag_is_one_undo_step_and_closes_on_teardown() {
+        for index in [3, 4] {
+            let sink = Arc::new(RecordingSink::default());
+            let mut state = editor(Arc::clone(&sink));
+            let id = ClapId::new(24 + index as u32);
+            state.dispatch(EditorMessage::EffectGesture {
+                index,
+                message: KnobMessage::GestureStarted,
+            });
+            for value in [0.8, 0.5, -0.2] {
+                state.dispatch(EditorMessage::EffectGesture {
+                    index,
+                    message: KnobMessage::ValueChanged { value },
+                });
+            }
+            state.dispatch(EditorMessage::SetEffect { index, value: 0.25 });
+            assert_eq!(state.params.effects()[index], 0.25);
+            assert_eq!(state.params.effects()[0], 1.);
+            assert_eq!(state.undo_history.len(), 1);
+            assert!(state.has_active_gesture());
+            state.dispatch(EditorMessage::EffectGesture {
+                index,
+                message: KnobMessage::GestureEnded,
+            });
+            assert!(!state.has_active_gesture());
+            assert_eq!(
+                sink.events(),
+                vec![
+                    SinkEvent::Begin(id),
+                    SinkEvent::Edit(ClapId::new(24), 1.),
+                    SinkEvent::Value(id, 0.8_f32 as f64),
+                    SinkEvent::Value(id, 0.5),
+                    SinkEvent::Value(id, 0.),
+                    SinkEvent::Value(id, 0.25),
+                    SinkEvent::End(id)
+                ]
+            );
+            state.dispatch(EditorMessage::Undo);
+            assert_eq!(state.params.effects()[index], 1.);
+            assert_eq!(state.params.effects()[0], 0.);
+            state.dispatch(EditorMessage::Redo);
+            assert_eq!(state.params.effects()[index], 0.25);
+            assert_eq!(state.params.effects()[0], 1.);
+            state.dispatch(EditorMessage::EffectGesture {
+                index,
+                message: KnobMessage::GestureStarted,
+            });
+            state.finish_for_teardown();
+            assert!(!state.has_active_gesture());
+            assert_eq!(sink.events().last(), Some(&SinkEvent::End(id)));
+            let count = sink.events().len();
+            state.cancel_active_gestures();
+            assert_eq!(sink.events().len(), count);
+            state.dispatch(EditorMessage::EffectGesture {
+                index,
+                message: KnobMessage::GestureStarted,
+            });
+            state.cancel_active_gestures();
+            assert!(!state.has_active_gesture());
+            assert_eq!(sink.events().last(), Some(&SinkEvent::End(id)));
+        }
+    }
+
+    #[test]
+    fn discrete_band_controls_activate_audio_in_one_undo_step() {
+        for (index, value) in [(2, 0.), (3, 0.5), (4, 0.25), (5, 1.), (6, 1.)] {
+            let sink = Arc::new(RecordingSink::default());
+            let mut state = editor(Arc::clone(&sink));
+            state.dispatch(EditorMessage::SetEffect { index, value });
+            assert_eq!(state.params.effects()[0], 1.);
+            assert_eq!(state.params.effects()[index], value);
+            assert_eq!(state.undo_history.len(), 1);
+            assert_eq!(
+                sink.events(),
+                vec![
+                    SinkEvent::Edit(ClapId::new(24), 1.),
+                    SinkEvent::Edit(ClapId::new(24 + index as u32), value as f64)
+                ]
+            );
+            state.dispatch(EditorMessage::Undo);
+            assert_eq!(state.params.effects(), crate::dual_band::DEFAULTS);
+            state.dispatch(EditorMessage::Redo);
+            assert_eq!(state.params.effects()[0], 1.);
+            assert_eq!(state.params.effects()[index], value);
+        }
+    }
+
+    #[test]
+    fn rejected_activation_does_not_change_band_values_or_leave_a_gesture_open() {
+        let sink = Arc::new(RecordingSink {
+            reject_edit: Some(ClapId::new(24)),
+            ..Default::default()
+        });
+        let mut state = editor(Arc::clone(&sink));
+        state.dispatch(EditorMessage::SetEffect {
+            index: 5,
+            value: 1.,
+        });
+        state.dispatch(EditorMessage::EffectGesture {
+            index: 3,
+            message: KnobMessage::GestureStarted,
+        });
+        state.dispatch(EditorMessage::EffectGesture {
+            index: 3,
+            message: KnobMessage::ValueChanged { value: 0.5 },
+        });
+        assert_eq!(state.params.effects(), crate::dual_band::DEFAULTS);
+        assert!(state.undo_history.is_empty());
+        assert!(!state.has_active_gesture());
+        assert_eq!(
+            sink.events(),
+            vec![
+                SinkEvent::Edit(ClapId::new(24), 1.),
+                SinkEvent::Begin(ClapId::new(27)),
+                SinkEvent::Edit(ClapId::new(24), 1.),
+                SinkEvent::End(ClapId::new(27))
+            ]
+        );
+    }
+
+    #[test]
+    fn accepted_activation_remains_undoable_when_host_rejects_band_value() {
+        let sink = Arc::new(RecordingSink {
+            reject_edit: Some(ClapId::new(27)),
+            ..Default::default()
+        });
+        let mut state = editor(Arc::clone(&sink));
+        state.dispatch(EditorMessage::SetEffect {
+            index: 3,
+            value: 0.5,
+        });
+        assert_eq!(state.params.effects()[0], 1.);
+        assert_eq!(state.params.effects()[3], 1.);
+        assert_eq!(state.undo_history.len(), 1);
+        state.dispatch(EditorMessage::Undo);
+        assert_eq!(state.params.effects(), crate::dual_band::DEFAULTS);
+    }
+
+    #[test]
+    fn no_op_band_edit_preserves_legacy_mode_and_enabled_edits_do_not_repeat_activation() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(Arc::clone(&sink));
+        state.dispatch(EditorMessage::SetEffect {
+            index: 3,
+            value: 1.,
+        });
+        assert_eq!(state.params.effects()[0], 0.);
+        assert!(sink.events().is_empty());
+        state.params.set_effect(0, 1.);
+        state.dispatch(EditorMessage::SetEffect {
+            index: 3,
+            value: 0.5,
+        });
+        assert_eq!(sink.events(), vec![SinkEvent::Edit(ClapId::new(27), 0.5)]);
+    }
+
+    #[test]
+    fn dual_band_edits_use_host_sink_and_undo() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(Arc::clone(&sink));
+        state.dispatch(EditorMessage::SetEffect {
+            index: 1,
+            value: 1200.,
+        });
+        assert_eq!(state.params.effects()[1], 1200.);
+        assert_eq!(state.undo_history.len(), 1);
+        state.dispatch(EditorMessage::Undo);
+        assert_eq!(state.params.effects()[1], 200.);
+        state.dispatch(EditorMessage::Redo);
+        assert_eq!(state.params.effects()[1], 1200.);
     }
 }
 

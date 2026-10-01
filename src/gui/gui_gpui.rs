@@ -56,15 +56,15 @@ pub const MAX_WINDOW_HEIGHT: u32 = super::MAX_WINDOW_HEIGHT;
 
 const CURVE_HEIGHT: f32 = 153.0;
 const SURFACE_PADDING: f32 = PUMP_VISUAL_METRICS.padding;
-const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.divider;
+const SURFACE_SPACING: f32 = PUMP_VISUAL_METRICS.space_4;
 const CURVE_GUTTER: f32 = 40.8;
-const CURVE_METER_GAP: f32 = 2.72;
+const CURVE_METER_GAP: f32 = PUMP_VISUAL_METRICS.space_8;
 const CURVE_METER_WIDTH: f32 = PUMP_VISUAL_METRICS.meter_panel;
-const SLOT_HEIGHT: f32 = 40.8;
-const SLOT_GAP: f32 = 2.72;
+const SLOT_HEIGHT: f32 = 28.0;
+const SLOT_GAP: f32 = 4.0;
 const DECK_HEIGHT: f32 = PUMP_VISUAL_METRICS.deck_height;
-const HEADER_HEIGHT: f32 = 45.9;
-const HEADER_CONTROL_HEIGHT: f32 = 34.0;
+const HEADER_HEIGHT: f32 = 24.0;
+const HEADER_CONTROL_HEIGHT: f32 = PUMP_VISUAL_METRICS.control_height;
 const FOOTER_HEIGHT: f32 = PUMP_VISUAL_METRICS.label_line;
 const CURVE_OFFSET_BAR_HEIGHT: f32 = 10.2;
 const CURVE_OFFSET_INSET: f32 = PUMP_VISUAL_METRICS.space_8;
@@ -113,16 +113,6 @@ const TIMING_SYNC_IDS: [&str; 10] = [
     "timing-sync-7",
     "timing-sync-8",
     "timing-sync-9",
-];
-const FILTER_HP_SLOPE_IDS: [&str; 3] = [
-    "filter-hp-slope-12",
-    "filter-hp-slope-24",
-    "filter-hp-slope-48",
-];
-const FILTER_LP_SLOPE_IDS: [&str; 3] = [
-    "filter-lp-slope-12",
-    "filter-lp-slope-24",
-    "filter-lp-slope-48",
 ];
 
 /// Events emitted by the native numeric field. Keeping these separate from
@@ -598,6 +588,7 @@ struct NumericTextElement {
 }
 
 struct NumericTextPrepaint {
+    text_bounds: Bounds<Pixels>,
     line: Option<ShapedLine>,
     cursor: Option<gpui::PaintQuad>,
     selection: Option<gpui::PaintQuad>,
@@ -664,6 +655,13 @@ impl Element for NumericTextElement {
             window
                 .text_system()
                 .shape_line(text.into(), px(PUMP_TYPOGRAPHY.value.0), &[run], None);
+        let text_bounds = Bounds::new(
+            point(
+                bounds.left() + ((bounds.size.width - line.width) * 0.5).max(px(0.0)),
+                bounds.top(),
+            ),
+            size(line.width, bounds.size.height),
+        );
         let cursor_position = line.x_for_index(input.cursor_offset());
         let (selection, cursor) = if !input.editing {
             (None, None)
@@ -672,7 +670,7 @@ impl Element for NumericTextElement {
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_position, bounds.top()),
+                        point(text_bounds.left() + cursor_position, bounds.top()),
                         size(px(1.0), bounds.size.height),
                     ),
                     rgba(0xd8d7d3ff),
@@ -683,11 +681,11 @@ impl Element for NumericTextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(input.selected_range.start),
+                            text_bounds.left() + line.x_for_index(input.selected_range.start),
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(input.selected_range.end),
+                            text_bounds.left() + line.x_for_index(input.selected_range.end),
                             bounds.bottom(),
                         ),
                     ),
@@ -697,6 +695,7 @@ impl Element for NumericTextElement {
             )
         };
         NumericTextPrepaint {
+            text_bounds,
             line: Some(line),
             cursor,
             selection,
@@ -707,7 +706,7 @@ impl Element for NumericTextElement {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
         window: &mut Window,
@@ -717,7 +716,7 @@ impl Element for NumericTextElement {
         if self.input.read(cx).editing {
             window.handle_input(
                 &focus_handle,
-                ElementInputHandler::new(bounds, self.input.clone()),
+                ElementInputHandler::new(prepaint.text_bounds, self.input.clone()),
                 cx,
             );
         }
@@ -726,7 +725,7 @@ impl Element for NumericTextElement {
         }
         let line = prepaint.line.take().expect("numeric text line");
         let _ = line.paint(
-            bounds.origin,
+            prepaint.text_bounds.origin,
             window.line_height(),
             gpui::TextAlign::Center,
             None,
@@ -740,7 +739,17 @@ impl Element for NumericTextElement {
         }
         self.input.update(cx, |input, _| {
             input.last_layout = Some(line);
-            input.last_bounds = Some(bounds);
+            input.last_bounds = Some(prepaint.text_bounds);
+            #[cfg(any(
+                feature = "screenshot-test",
+                all(test, target_os = "windows", feature = "vst3")
+            ))]
+            {
+                record_screenshot_bounds(format!("value-{:?}", input.target), _bounds);
+                if input.target == NumericEntryTarget::Delay {
+                    record_screenshot_bounds("delay-value", _bounds);
+                }
+            }
         });
     }
 }
@@ -892,6 +901,76 @@ fn new_hosted_gui(
     })
 }
 
+// Test-only geometry comes from painted controls, so native fixtures keep
+// exercising real hit targets when the composition changes.
+#[cfg(any(
+    feature = "screenshot-test",
+    all(test, target_os = "windows", feature = "vst3")
+))]
+static SCREENSHOT_BOUNDS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, [f32; 4]>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(any(
+    feature = "screenshot-test",
+    all(test, target_os = "windows", feature = "vst3")
+))]
+fn record_screenshot_bounds(key: impl Into<String>, bounds: Bounds<Pixels>) {
+    SCREENSHOT_BOUNDS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("screenshot bounds lock")
+        .insert(
+            key.into(),
+            [
+                f32::from(bounds.left()),
+                f32::from(bounds.top()),
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height),
+            ],
+        );
+}
+
+/// Painted logical bounds used by the native input and screenshot runners.
+#[cfg(any(
+    feature = "screenshot-test",
+    all(test, target_os = "windows", feature = "vst3")
+))]
+#[doc(hidden)]
+pub fn screenshot_bounds(key: &str) -> [f32; 4] {
+    screenshot_bounds_if_painted(key).unwrap_or_else(|| panic!("control {key} has not painted"))
+}
+
+/// Query a control without assuming its first native frame has completed.
+#[cfg(any(
+    feature = "screenshot-test",
+    all(test, target_os = "windows", feature = "vst3")
+))]
+#[doc(hidden)]
+pub fn screenshot_bounds_if_painted(key: &str) -> Option<[f32; 4]> {
+    SCREENSHOT_BOUNDS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("screenshot bounds lock")
+        .get(key)
+        .copied()
+}
+
+/// Exact envelope sample in logical plot coordinates for native fixtures.
+#[cfg(feature = "screenshot-test")]
+#[doc(hidden)]
+pub fn screenshot_curve_point(params: &PumpParams, phase: f32) -> (f64, f64) {
+    let [left, top, width, height] = screenshot_bounds("curve-plot");
+    let gain = crate::curve::sample_editable_curve(
+        &params.editable_curve_snapshot(),
+        phase + params.phase_offset(),
+    );
+    (
+        f64::from(left + phase * (width - 1.)),
+        f64::from(top + (1. - gain) * (height - 1.)),
+    )
+}
+
 /// Native fixture factory used by the release screenshot runner.
 #[cfg(feature = "screenshot-test")]
 #[doc(hidden)]
@@ -979,6 +1058,8 @@ struct PumpEditor {
     pending_empty_node: Option<(Point<Pixels>, CurveNode)>,
     pending_seam: Option<(Point<Pixels>, bool)>,
     active_knob: Option<NumericEntryTarget>,
+    knob_slider_track: Option<(f32, f32)>,
+    active_mix_slider: Option<(usize, f32, f32)>,
     last_pointer: Option<Point<Pixels>>,
     button_focus_handles: HashMap<&'static str, FocusHandle>,
     button_activation_keys: HashSet<String>,
@@ -1101,11 +1182,12 @@ impl PumpEditor {
             "undo",
             "redo",
             "sound-a",
+            "dual-low",
+            "dual-high",
             "sound-switch",
             "sound-b",
             "hotkey-help",
             "waveform-mode",
-            "filter",
             "bypass",
         ]
         .into_iter()
@@ -1133,6 +1215,8 @@ impl PumpEditor {
             pending_empty_node: None,
             pending_seam: None,
             active_knob: None,
+            knob_slider_track: None,
+            active_mix_slider: None,
             last_pointer: None,
             button_focus_handles,
             button_activation_keys: HashSet::new(),
@@ -1303,6 +1387,8 @@ impl PumpEditor {
         self.pending_empty_node = None;
         self.pending_seam = None;
         self.active_knob = None;
+        self.knob_slider_track = None;
+        self.active_mix_slider = None;
         self.last_pointer = None;
     }
 
@@ -1425,7 +1511,10 @@ impl PumpEditor {
     }
 
     fn hit_filter_handle(&self, position: Point<Pixels>) -> Option<FilterHandle> {
-        if !self.state.borrow().filter_enabled() || !self.curve_plot_contains(position) {
+        if self.state.borrow().params().effects()[0] >= 0.5
+            || !self.state.borrow().filter_enabled()
+            || !self.curve_plot_contains(position)
+        {
             return None;
         }
         let radius_squared = FILTER_HANDLE_HIT_RADIUS * FILTER_HANDLE_HIT_RADIUS;
@@ -2344,6 +2433,17 @@ impl PumpEditor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.consume_pointer_cancel(cx);
+        if let Some((index, left, width)) = self.active_mix_slider {
+            let value = ((f32::from(event.position.x) - left) / width).clamp(0., 1.);
+            self.dispatch(
+                EditorMessage::EffectGesture {
+                    index,
+                    message: KnobMessage::ValueChanged { value },
+                },
+                cx,
+            );
+            return true;
+        }
         if self.active_knob.is_some() {
             self.knob_move(event, window, cx);
             return true;
@@ -2371,7 +2471,9 @@ impl PumpEditor {
 
     fn captured_mouse_down(&mut self, cx: &mut Context<Self>) -> bool {
         self.consume_pointer_cancel(cx);
-        self.active_knob.is_some() || self.curve_active_button.is_some()
+        self.active_mix_slider.is_some()
+            || self.active_knob.is_some()
+            || self.curve_active_button.is_some()
     }
 
     fn captured_mouse_up(
@@ -2381,6 +2483,27 @@ impl PumpEditor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.consume_pointer_cancel(cx);
+        if let Some((index, left, width)) = self.active_mix_slider {
+            if event.button == MouseButton::Left {
+                let value = ((f32::from(event.position.x) - left) / width).clamp(0., 1.);
+                self.dispatch(
+                    EditorMessage::EffectGesture {
+                        index,
+                        message: KnobMessage::ValueChanged { value },
+                    },
+                    cx,
+                );
+                self.dispatch(
+                    EditorMessage::EffectGesture {
+                        index,
+                        message: KnobMessage::GestureEnded,
+                    },
+                    cx,
+                );
+                self.active_mix_slider = None;
+            }
+            return true;
+        }
         if self.active_knob.is_some() {
             if event.button == MouseButton::Left {
                 self.knob_up(event, window, cx);
@@ -2395,7 +2518,10 @@ impl PumpEditor {
     }
 
     fn captured_mouse_exit(&mut self, cx: &mut Context<Self>) {
-        if self.active_knob.is_none() && self.curve_active_button.is_none() {
+        if self.active_mix_slider.is_none()
+            && self.active_knob.is_none()
+            && self.curve_active_button.is_none()
+        {
             self.clear_curve_hover(cx);
             self.last_pointer = None;
         }
@@ -2408,6 +2534,7 @@ impl PumpEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.knob_slider_track = None;
         let input = self.numeric_inputs[Self::numeric_input_index(target)].clone();
         let focus_handle = input.read(cx).focus_handle.clone();
         window.focus(&focus_handle, cx);
@@ -2442,6 +2569,19 @@ impl PumpEditor {
             self.last_pointer = Some(event.position);
             return;
         };
+        if let Some((left, width)) = self.knob_slider_track {
+            self.last_pointer = Some(event.position);
+            self.dispatch(
+                EditorMessage::Knob {
+                    target,
+                    message: KnobMessage::ValueChanged {
+                        value: ((f32::from(event.position.x) - left) / width).clamp(0.0, 1.0),
+                    },
+                },
+                cx,
+            );
+            return;
+        }
         let delta = (f32::from(previous.y) - f32::from(event.position.y)) * 0.004;
         self.last_pointer = Some(event.position);
         let current = self.state.borrow().params().clone();
@@ -2554,6 +2694,7 @@ impl PumpEditor {
             );
         }
         self.last_pointer = None;
+        self.knob_slider_track = None;
     }
 
     fn dismiss_timing_dropdown(&mut self, cx: &mut Context<Self>) {
@@ -2717,22 +2858,6 @@ impl PumpEditor {
         cx.stop_propagation();
     }
 
-    fn select_filter_slope(
-        &mut self,
-        handle: FilterHandle,
-        index: usize,
-        event: &gpui::ClickEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.is_keyboard() {
-            return;
-        }
-        self.dismiss_timing_dropdown(cx);
-        self.dispatch(EditorMessage::SetFilterSlope { handle, index }, cx);
-        cx.stop_propagation();
-    }
-
     fn toggle_hotkey_help(
         &mut self,
         event: &gpui::ClickEvent,
@@ -2756,21 +2881,6 @@ impl PumpEditor {
         }
         self.dismiss_timing_dropdown(cx);
         self.dispatch(EditorMessage::ToggleWaveformMode, cx);
-    }
-
-    fn toggle_filter(
-        &mut self,
-        event: &gpui::ClickEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let focus_handle = self.button_focus_handle("filter").clone();
-        window.focus(&focus_handle, cx);
-        if event.is_keyboard() {
-            return;
-        }
-        self.dismiss_timing_dropdown(cx);
-        self.dispatch(EditorMessage::ToggleFilter, cx);
     }
 
     fn slot_click(
@@ -2829,7 +2939,6 @@ impl PumpEditor {
             "sound-b",
             "hotkey-help",
             "waveform-mode",
-            "filter",
             "bypass",
         ]
         .into_iter()
@@ -2890,10 +2999,6 @@ impl PumpEditor {
                 self.dismiss_timing_dropdown(cx);
                 self.dispatch(EditorMessage::ToggleWaveformMode, cx);
             }
-            "filter" => {
-                self.dismiss_timing_dropdown(cx);
-                self.dispatch(EditorMessage::ToggleFilter, cx);
-            }
             "bypass" => {
                 self.dismiss_timing_dropdown(cx);
                 self.dispatch(EditorMessage::ToggleBypass, cx);
@@ -2913,6 +3018,30 @@ impl PumpEditor {
             .iter()
             .any(|input| input.read(cx).focus_handle.is_focused(window));
         if self.state.borrow().numeric_entry_active() || numeric_input_focused {
+            return;
+        }
+        let modifiers = &event.keystroke.modifiers;
+        let history_command = match event.keystroke.key.as_str() {
+            "z" if (modifiers.platform || modifiers.control) && !modifiers.alt => {
+                Some(if modifiers.shift {
+                    EditorMessage::Redo
+                } else {
+                    EditorMessage::Undo
+                })
+            }
+            "u" if !modifiers.platform && !modifiers.control && !modifiers.alt => {
+                Some(if modifiers.shift {
+                    EditorMessage::Redo
+                } else {
+                    EditorMessage::Undo
+                })
+            }
+            _ => None,
+        };
+        if let Some(command) = history_command {
+            self.dispatch(command, cx);
+            window.prevent_default();
+            cx.stop_propagation();
             return;
         }
         if matches!(event.keystroke.key.as_str(), "space" | "enter")
@@ -3147,7 +3276,7 @@ fn draw_curve(
     let theme = pump_theme();
     // The plot shares the primary dark surface with the baseline editor;
     // raised panels are reserved for controls and the slot row.
-    window.paint_quad(fill(bounds, solid(theme.clear)));
+    window.paint_quad(fill(bounds, solid(theme.display)));
     let left = f32::from(bounds.left()) + CURVE_GUTTER;
     let top = f32::from(bounds.top());
     let width = (f32::from(bounds.size.width) - CURVE_GUTTER - CURVE_METER_GAP - CURVE_METER_WIDTH)
@@ -3158,6 +3287,11 @@ fn draw_curve(
         point(px(left), px(top)),
         point(px(left + width), px(top + height)),
     );
+    #[cfg(any(
+        feature = "screenshot-test",
+        all(test, target_os = "windows", feature = "vst3")
+    ))]
+    record_screenshot_bounds("curve-plot", curve_bounds);
     let grid = super::curve_beat_grid(state.params().sync_division(), width);
     for (positions, color) in [
         (&grid.minor, theme.grid_soft),
@@ -3272,26 +3406,10 @@ fn draw_curve(
     area.line_to(point(px(left), px(top + height)));
     area.close();
     if let Ok(area) = area.build() {
-        window.paint_path(area, solid(theme.accent_mint.with_alpha(50)));
+        window.paint_path(area, solid(theme.accent_mint.with_alpha(17)));
     }
-    // The authored fill fades into the editor surface toward the lower edge,
-    // matching the legacy visualization without introducing a renderer-owned
-    // gradient abstraction.
-    const FILL_FADE_STRIPES: usize = 12;
-    for index in 0..FILL_FADE_STRIPES {
-        let start = index as f32 / FILL_FADE_STRIPES as f32;
-        let end = (index + 1) as f32 / FILL_FADE_STRIPES as f32;
-        let alpha = (start * start * 100.0).round() as u8;
-        if alpha == 0 {
-            continue;
-        }
-        window.paint_quad(fill(
-            Bounds::from_corners(
-                point(px(left), px(top + height * start)),
-                point(px(left + width), px(top + height * end)),
-            ),
-            solid(theme.clear.with_alpha(alpha)),
-        ));
+    if state.params().effects()[0] >= 0.5 || !state.filter_enabled() {
+        draw_crossover_preview(curve_bounds, state, window, cx);
     }
     let curve_color = if active_offset {
         CURVE_OFFSET_MOVE_COLOR
@@ -3503,7 +3621,9 @@ fn draw_curve(
             window.paint_path(path, solid(stroke_color));
         }
     }
-    draw_filter_overlay(bounds, state, window, cx);
+    if state.params().effects()[0] < 0.5 {
+        draw_filter_overlay(bounds, state, window, cx);
+    }
     if let Some((start, current)) = state.active_curve_marquee() {
         let start = curve_point_pixels(left, top, width, height, phase, start);
         let current = curve_point_pixels(left, top, width, height, phase, current);
@@ -3576,10 +3696,11 @@ fn draw_curve(
         point(px(meter_left), px(top + 10.0)),
         point(px(meter_left + CURVE_METER_WIDTH), px(top + height - 10.0)),
     );
+    let meter_inset = (CURVE_METER_WIDTH - PUMP_VISUAL_METRICS.meter_track) * 0.5;
     let meter = Bounds::from_corners(
-        point(meter_panel.left() + px(8.2), meter_panel.top()),
+        point(meter_panel.left() + px(meter_inset), meter_panel.top()),
         point(
-            meter_panel.left() + px(8.2 + PUMP_VISUAL_METRICS.meter_track),
+            meter_panel.left() + px(meter_inset + PUMP_VISUAL_METRICS.meter_track),
             meter_panel.bottom(),
         ),
     );
@@ -3600,24 +3721,24 @@ fn draw_curve(
     ));
     let reduction = state.status().gain_reduction_db();
     let fraction = crate::gui_status::gain_reduction_meter_fraction(reduction);
-    let segments = 24usize;
-    let segment_step = (f32::from(meter.size.height) - 2.0) / segments as f32;
-    for index in 0..segments {
-        let y = f32::from(meter.bottom()) - 1.0 - (index + 1) as f32 * segment_step;
-        let active = index < (fraction * segments as f32).round() as usize;
+    let meter_inner = Bounds::from_corners(
+        point(meter.left() + px(1.0), meter.top() + px(1.0)),
+        point(meter.right() - px(1.0), meter.bottom() - px(1.0)),
+    );
+    window.paint_quad(fill(meter_inner, solid(pump_meter_colors().track)));
+    if fraction > 0.0 {
         window.paint_quad(fill(
             Bounds::from_corners(
-                point(meter.left() + px(1.0), px(y)),
-                point(meter.right() - px(1.0), px(y + segment_step - 1.0)),
+                point(
+                    meter_inner.left(),
+                    meter_inner.bottom() - meter_inner.size.height * fraction,
+                ),
+                meter_inner.bottom_right(),
             ),
-            solid(if active {
-                if fraction > 0.75 {
-                    pump_meter_colors().hot
-                } else {
-                    pump_meter_colors().nominal
-                }
+            solid(if fraction > 0.75 {
+                pump_meter_colors().hot
             } else {
-                pump_meter_colors().track
+                pump_meter_colors().nominal
             }),
         ));
     }
@@ -3631,6 +3752,17 @@ fn draw_curve(
         cx,
     );
     let offset_y = top + height + CURVE_OFFSET_INSET;
+    #[cfg(any(
+        feature = "screenshot-test",
+        all(test, target_os = "windows", feature = "vst3")
+    ))]
+    record_screenshot_bounds(
+        "curve-offset",
+        Bounds::new(
+            point(px(left), px(offset_y)),
+            gpui::size(px(width), px(CURVE_OFFSET_BAR_HEIGHT)),
+        ),
+    );
     let gr_value = text_line(
         window,
         format!("{reduction:.1}"),
@@ -3683,6 +3815,106 @@ fn draw_curve(
     ));
     let _ = curve_bounds;
     let _ = cx;
+}
+
+fn draw_crossover_preview(
+    bounds: Bounds<Pixels>,
+    state: &PumpEditorState,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let left = f32::from(bounds.left());
+    let top = f32::from(bounds.top());
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    let theme = pump_theme();
+    let controls = state.params().effects();
+    let plot_left = left;
+    let plot_top = top + 12.;
+    let plot_width = (width - 1.).max(1.);
+    let plot_height = (height - 24.).max(1.);
+    let low_color = PumpColor::rgb(143, 197, 170);
+    let high_color = PumpColor::rgb(128, 158, 198);
+    for (band, color) in [(0, low_color), (1, high_color)] {
+        let mut area = gpui::PathBuilder::fill();
+        let mut line = gpui::PathBuilder::stroke(px(1.25));
+        area.move_to(point(px(plot_left), px(plot_top + plot_height)));
+        for step in 0..=96 {
+            let phase = step as f32 / 96.;
+            let hz = 20. * 1000_f32.powf(phase);
+            let magnitude = crate::dual_band::crossover_magnitudes(
+                hz,
+                48000.,
+                controls[1],
+                controls[2] as usize,
+            )[band];
+            let sample = point(
+                px(plot_left + phase * plot_width),
+                px(plot_top + (1. - magnitude) * plot_height),
+            );
+            area.line_to(sample);
+            if step == 0 {
+                line.move_to(sample);
+            } else {
+                line.line_to(sample);
+            }
+        }
+        area.line_to(point(
+            px(plot_left + plot_width),
+            px(plot_top + plot_height),
+        ));
+        area.close();
+        if let Ok(path) = area.build() {
+            window.paint_path(path, solid(color.with_alpha(8)));
+        }
+        if let Ok(path) = line.build() {
+            window.paint_path(path, solid(color.with_alpha(140)));
+        }
+    }
+    let crossover_x = plot_left + (controls[1] / 20.).ln() / 1000_f32.ln() * plot_width;
+    window.paint_quad(fill(
+        Bounds::from_corners(
+            point(px(crossover_x), px(plot_top)),
+            point(px(crossover_x + 1.), px(plot_top + plot_height)),
+        ),
+        solid(theme.text_muted.with_alpha(96)),
+    ));
+    let frequency = crate::params::format_plain_value_text(
+        toybox::clack_plugin::utils::ClapId::new(25),
+        controls[1] as f64,
+    )
+    .unwrap_or_default();
+    for (label, lx, ly, color) in [
+        ("LP".to_string(), left + 8., top + 22., low_color),
+        ("HP".to_string(), left + width - 24., top + 22., high_color),
+        (
+            "20 Hz".to_string(),
+            left + 8.,
+            top + height - 13.,
+            theme.text_muted,
+        ),
+        (
+            frequency,
+            (crossover_x + 7.).clamp(left + 48., left + width - 90.),
+            top + height - 13.,
+            theme.text_primary,
+        ),
+        (
+            "20 kHz".to_string(),
+            left + width - 40.,
+            top + height - 13.,
+            theme.text_muted,
+        ),
+    ] {
+        let _ = text_line(window, label, 8., color).paint(
+            point(px(lx), px(ly)),
+            px(11.),
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
 }
 
 fn draw_filter_overlay(
@@ -3988,6 +4220,120 @@ fn knob_value(state: &PumpEditorState, target: NumericEntryTarget) -> (f32, Stri
     (normalized, text)
 }
 
+fn paint_polygon(
+    window: &mut Window,
+    vertices: &[(f32, f32)],
+    color: super::visual_system::PumpColor,
+    outline: bool,
+) {
+    let mut path = if outline {
+        gpui::PathBuilder::stroke(px(1.0))
+    } else {
+        gpui::PathBuilder::fill()
+    };
+    for (index, &(x, y)) in vertices.iter().enumerate() {
+        if index == 0 {
+            path.move_to(point(px(x), px(y)));
+        } else {
+            path.line_to(point(px(x), px(y)));
+        }
+    }
+    path.close();
+    if let Ok(path) = path.build() {
+        window.paint_path(path, solid(color));
+    }
+}
+
+fn chassis_artwork() -> impl gpui::IntoElement {
+    canvas(
+        |_, _, _| {},
+        |bounds, _, window, _| {
+            let theme = pump_theme();
+            let l = f32::from(bounds.left());
+            let t = f32::from(bounds.top());
+            let w = f32::from(bounds.size.width);
+            let h = f32::from(bounds.size.height);
+            // Attach both recesses to their own edge. The top aligns with the
+            // brand rail; the bottom is centered and mirrors the top's taper.
+            let bottom_width = (w * 0.36).clamp(200.0, 320.0);
+            for (left, right, edge, inward) in [
+                (
+                    l + SURFACE_PADDING,
+                    l + SURFACE_PADDING + 160.0,
+                    t + 1.0,
+                    1.0,
+                ),
+                (
+                    l + (w - bottom_width) * 0.5,
+                    l + (w + bottom_width) * 0.5,
+                    t + h - 1.0,
+                    -1.0,
+                ),
+            ] {
+                let depth = 4.0;
+                let cut = 4.0;
+                // Restrained graphite transition, clipped to the tapered recess.
+                for (row, color) in [
+                    PumpColor::rgb(25, 30, 27),
+                    PumpColor::rgb(31, 37, 33),
+                    PumpColor::rgb(37, 43, 39),
+                    PumpColor::rgb(43, 49, 45),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let outer = row as f32;
+                    let inner = outer + 1.0;
+                    let strip = [
+                        (left + outer * cut / depth, edge + inward * outer),
+                        (right - outer * cut / depth, edge + inward * outer),
+                        (right - inner * cut / depth, edge + inward * inner),
+                        (left + inner * cut / depth, edge + inward * inner),
+                    ];
+                    paint_polygon(window, &strip, color, false);
+                }
+                let mut bevel = gpui::PathBuilder::stroke(px(0.75));
+                bevel.move_to(point(px(left), px(edge)));
+                bevel.line_to(point(px(left + cut), px(edge + inward * depth)));
+                bevel.line_to(point(px(right - cut), px(edge + inward * depth)));
+                bevel.line_to(point(px(right), px(edge)));
+                if let Ok(path) = bevel.build() {
+                    window.paint_path(path, solid(PumpColor::rgb(60, 69, 63)));
+                }
+            }
+            // Edge recesses meet the inner face of the continuous 1 px frame.
+            // Mirror the opening and inner bevel; do not draw a second outer rail.
+            for right in [false, true] {
+                let edge = if right { l + w - 1.0 } else { l + 1.0 };
+                let direction = if right { -1.0 } else { 1.0 };
+                let depth = 4.0;
+                let shape = [
+                    (edge, t + h * 0.23),
+                    (edge + direction * depth, t + h * 0.23 + depth),
+                    (edge + direction * depth, t + h * 0.47 - depth),
+                    (edge, t + h * 0.47),
+                ];
+                paint_polygon(window, &shape, theme.display, false);
+                let mut bevel = gpui::PathBuilder::stroke(px(0.75));
+                for (index, &(x, y)) in shape.iter().enumerate() {
+                    if index == 0 {
+                        bevel.move_to(point(px(x), px(y)));
+                    } else {
+                        bevel.line_to(point(px(x), px(y)));
+                    }
+                }
+                if let Ok(path) = bevel.build() {
+                    window.paint_path(path, solid(PumpColor::rgb(60, 69, 63)));
+                }
+            }
+        },
+    )
+    .absolute()
+    .top(px(0.0))
+    .left(px(0.0))
+    .size_full()
+}
+
 fn button(
     id: &'static str,
     label: String,
@@ -4003,7 +4349,7 @@ fn button(
         .flex()
         .items_center()
         .justify_center()
-        .border_1()
+        .border_b_1()
         .border_color(solid(if active {
             theme.accent_mint
         } else {
@@ -4012,12 +4358,71 @@ fn button(
         .bg(solid(if active {
             theme.accent_mint.with_alpha(48)
         } else {
-            theme.clear
+            theme.surface_overlay
         }))
         .text_color(solid(theme.text_primary))
         .font(font("Ioskeley Mono"))
         .text_size(px(PUMP_TYPOGRAPHY.body.0))
-        .line_height(px(PUMP_TYPOGRAPHY.body.1));
+        .line_height(px(PUMP_TYPOGRAPHY.body.1))
+        .focus(|style| style.border_1().border_color(gpui::rgb(0x8cddd0)));
+    if matches!(id, "undo" | "redo" | "hotkey-help" | "bypass") {
+        button = button
+            .relative()
+            .border_b_0()
+            .bg(gpui::transparent_black())
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        let l = f32::from(bounds.left()) + 0.5;
+                        let t = f32::from(bounds.top()) + 0.5;
+                        let r = f32::from(bounds.right()) - 0.5;
+                        let b = f32::from(bounds.bottom()) - 0.5;
+                        let vertices = [
+                            (l + 2.0, t),
+                            (r - 2.0, t),
+                            (r, t + 2.0),
+                            (r, b - 5.0),
+                            (r - 5.0, b),
+                            (l + 2.0, b),
+                            (l, b - 2.0),
+                            (l, t + 2.0),
+                        ];
+                        paint_polygon(window, &vertices, theme.surface_overlay, false);
+                        paint_polygon(
+                            window,
+                            &vertices,
+                            if active {
+                                theme.accent_mint
+                            } else {
+                                theme.border
+                            },
+                            true,
+                        );
+                    },
+                )
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .size_full(),
+            );
+    }
+    #[cfg(any(
+        feature = "screenshot-test",
+        all(test, target_os = "windows", feature = "vst3")
+    ))]
+    {
+        button = button.relative().child(
+            canvas(
+                move |bounds, _, _| record_screenshot_bounds(id, bounds),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .size_full(),
+        );
+    }
     if let Some(focus_handle) = focus_handle {
         let focus_handle_for_mouse = focus_handle.clone();
         button = button.track_focus(focus_handle).on_mouse_down(
@@ -4083,6 +4488,113 @@ fn icon_button(
 }
 
 impl PumpEditor {
+    fn slider_element(
+        &self,
+        target: NumericEntryTarget,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = pump_theme();
+        let label = if target == NumericEntryTarget::Smooth {
+            "SMOOTH"
+        } else {
+            "SWING"
+        };
+        let input = self.numeric_inputs[Self::numeric_input_index(target)].clone();
+        let normalized = knob_value(&self.state.borrow(), target).0;
+        let bounds = Rc::new(RefCell::new(None::<Bounds<Pixels>>));
+        let paint_bounds = Rc::clone(&bounds);
+        let track = canvas(
+            move |bounds, _, _| {
+                *paint_bounds.borrow_mut() = Some(bounds);
+                #[cfg(any(
+                    feature = "screenshot-test",
+                    all(test, target_os = "windows", feature = "vst3")
+                ))]
+                record_screenshot_bounds(format!("slider-{target:?}"), bounds);
+            },
+            move |bounds, _, window, _| {
+                let left = bounds.left() + px(5.);
+                let right = bounds.right() - px(5.);
+                let center = bounds.top() + bounds.size.height * 0.5;
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(left, center - px(1.5)),
+                        point(right, center + px(1.5)),
+                    ),
+                    solid(theme.border_emphasis),
+                ));
+                if normalized > 0. {
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(left, center - px(1.5)),
+                            point(left + (right - left) * normalized, center + px(1.5)),
+                        ),
+                        solid(theme.accent_mint),
+                    ));
+                }
+            },
+        )
+        .w_full()
+        .h(px(14.));
+        let interactive_track = div()
+            .flex_1()
+            .min_w(px(40.))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    let Some(bounds) = *bounds.borrow() else {
+                        return;
+                    };
+                    view.knob_down(target, event, window, cx);
+                    if event.click_count < 2 {
+                        let left = f32::from(bounds.left()) + 5.;
+                        let width = (f32::from(bounds.size.width) - 10.).max(1.);
+                        view.knob_slider_track = Some((left, width));
+                        view.dispatch(
+                            EditorMessage::Knob {
+                                target,
+                                message: KnobMessage::ValueChanged {
+                                    value: ((f32::from(event.position.x) - left) / width)
+                                        .clamp(0., 1.),
+                                },
+                            },
+                            cx,
+                        );
+                    }
+                }),
+            )
+            .child(track);
+        div()
+            .id(target.widget_key())
+            .w_full()
+            .h(px(14.))
+            .px(px(2.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(3.))
+            .on_scroll_wheel(cx.listener(move |view, event, window, cx| {
+                view.knob_wheel(target, event, window, cx);
+            }))
+            .child(
+                div()
+                    .w(px(44.))
+                    .flex_shrink_0()
+                    .text_color(solid(theme.text_muted))
+                    .font(font("Ioskeley Mono"))
+                    .text_size(px(9.))
+                    .child(label),
+            )
+            .child(interactive_track)
+            .child(
+                div()
+                    .h(px(PUMP_TYPOGRAPHY.value.1 + 4.))
+                    .w(px(32.))
+                    .flex_shrink_0()
+                    .child(input),
+            )
+    }
+
     fn knob_element(
         &self,
         target: NumericEntryTarget,
@@ -4110,6 +4622,11 @@ impl PumpEditor {
         let knob_canvas = canvas(
             move |_bounds, _, _| {},
             move |bounds, _, window, _cx| {
+                #[cfg(any(
+                    feature = "screenshot-test",
+                    all(test, target_os = "windows", feature = "vst3")
+                ))]
+                record_screenshot_bounds(format!("knob-{target:?}"), bounds);
                 let center = point(
                     bounds.left() + bounds.size.width * 0.5,
                     bounds.top() + bounds.size.height * 0.5,
@@ -4166,7 +4683,7 @@ impl PumpEditor {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(PUMP_VISUAL_METRICS.space_4))
+            .gap(px(0.))
             .on_mouse_down(MouseButton::Left, state_down)
             .on_scroll_wheel(cx.listener(move |view, event, window, cx| {
                 view.knob_wheel(target, event, window, cx)
@@ -4175,13 +4692,14 @@ impl PumpEditor {
                 div()
                     .text_color(solid(theme.text_muted))
                     .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
+                    .text_size(px(9.))
+                    .line_height(px(12.))
                     .child(label),
             )
             .child(knob_canvas)
             .child(
                 div()
-                    .h(px(PUMP_TYPOGRAPHY.value.1 + 4.0))
+                    .h(px(PUMP_TYPOGRAPHY.value.1 + 2.0))
                     .w(px(PUMP_VISUAL_METRICS.knob_column))
                     .text_color(solid(theme.text_primary))
                     .font(font("Ioskeley Mono"))
@@ -4190,65 +4708,272 @@ impl PumpEditor {
             )
     }
 
-    fn filter_slope_element(
-        &self,
-        handle: FilterHandle,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let (label, current, ids) = match handle {
-            FilterHandle::HighPass => (
-                "FILTER HP",
-                self.state.borrow().params().filter_hp_slope(),
-                FILTER_HP_SLOPE_IDS,
-            ),
-            FilterHandle::LowPass => (
-                "FILTER LP",
-                self.state.borrow().params().filter_lp_slope(),
-                FILTER_LP_SLOPE_IDS,
-            ),
-            FilterHandle::Both => unreachable!("side slope controls cannot target both handles"),
-        };
-        let options = [12usize, 24, 48]
-            .into_iter()
-            .enumerate()
-            .map(|(index, slope)| {
-                let mut option =
-                    button(ids[index], slope.to_string(), index == current, 30.0, None).h(px(24.0));
-                option = option.on_click(cx.listener(move |view, event, window, cx| {
-                    view.select_filter_slope(handle, index, event, window, cx)
-                }));
-                option
-            });
+    fn effect_mix_slider(&self, index: usize, value: f32, cx: &Context<Self>) -> gpui::Div {
         let theme = pump_theme();
+        let (id, label, color) = if index == 3 {
+            ("dual-low", "LP", PumpColor::rgb(143, 197, 170))
+        } else {
+            ("dual-high", "HP", PumpColor::rgb(128, 158, 198))
+        };
+        // Opaque, subdued signal fills keep the internal value legible.
+        let fill_color = if index == 3 {
+            PumpColor::rgb(65, 95, 79)
+        } else {
+            PumpColor::rgb(63, 82, 106)
+        };
+        let focus = self.button_focus_handle(id).clone();
+        let focus_down = focus.clone();
+        let bounds = Rc::new(RefCell::new(None::<Bounds<Pixels>>));
+        let paint_bounds = Rc::clone(&bounds);
+        let slider = canvas(
+            move |bounds, _, _| {
+                *paint_bounds.borrow_mut() = Some(bounds);
+                #[cfg(any(
+                    feature = "screenshot-test",
+                    all(test, target_os = "windows", feature = "vst3")
+                ))]
+                record_screenshot_bounds(format!("band-{index}"), bounds);
+            },
+            move |bounds, _, window, cx| {
+                let left = bounds.left() + px(5.);
+                let right = bounds.right() - px(5.);
+                let center = bounds.top() + bounds.size.height * 0.5;
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(left, center - px(7.)),
+                        point(right, center + px(7.)),
+                    ),
+                    solid(theme.border_emphasis),
+                ));
+                let inner_left = left + px(1.);
+                let inner_right = right - px(1.);
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(inner_left, center - px(6.)),
+                        point(inner_right, center + px(6.)),
+                    ),
+                    solid(theme.grid_soft),
+                ));
+                if value > 0. {
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(inner_left, center - px(6.)),
+                            point(
+                                inner_left + (inner_right - inner_left) * value,
+                                center + px(6.),
+                            ),
+                        ),
+                        solid(fill_color),
+                    ));
+                }
+                let percentage = text_line(
+                    window,
+                    format!("{:.0}%", value * 100.),
+                    9.,
+                    theme.text_primary,
+                );
+                let _ = percentage.paint(
+                    point(left, center - px(6.)),
+                    px(12.),
+                    gpui::TextAlign::Center,
+                    Some(right - left),
+                    window,
+                    cx,
+                );
+            },
+        )
+        .flex_1()
+        .min_w(px(40.))
+        .h(px(24.));
+        div().flex_1().h(px(24.)).child(
+            div()
+                .id(id)
+                .track_focus(&focus)
+                .w_full()
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                        window.focus(&focus_down, cx);
+                        let Some(bounds) = *bounds.borrow() else {
+                            return;
+                        };
+                        if event.click_count >= 2 {
+                            view.dispatch(EditorMessage::SetEffect { index, value: 1. }, cx);
+                            return;
+                        }
+                        let left = f32::from(bounds.left()) + 5.;
+                        let width = (f32::from(bounds.size.width) - 10.).max(1.);
+                        view.active_mix_slider = Some((index, left, width));
+                        view.dispatch(
+                            EditorMessage::EffectGesture {
+                                index,
+                                message: KnobMessage::GestureStarted,
+                            },
+                            cx,
+                        );
+                        let value = ((f32::from(event.position.x) - left) / width).clamp(0., 1.);
+                        view.dispatch(
+                            EditorMessage::EffectGesture {
+                                index,
+                                message: KnobMessage::ValueChanged { value },
+                            },
+                            cx,
+                        );
+                    }),
+                )
+                .on_scroll_wheel(cx.listener(move |view, event: &ScrollWheelEvent, _, cx| {
+                    let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+                    if delta == 0. {
+                        return;
+                    }
+                    let value =
+                        view.state.borrow().params().effects()[index] + delta.signum() * 0.01;
+                    view.dispatch(EditorMessage::SetEffect { index, value }, cx);
+                }))
+                .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
+                    let current = view.state.borrow().params().effects()[index];
+                    let step = if event.keystroke.modifiers.shift {
+                        0.1
+                    } else {
+                        0.01
+                    };
+                    let value = match event.keystroke.key.as_str() {
+                        "left" | "down" => current - step,
+                        "right" | "up" => current + step,
+                        "home" => 0.,
+                        "end" => 1.,
+                        _ => return,
+                    };
+                    view.dispatch(EditorMessage::SetEffect { index, value }, cx);
+                    cx.stop_propagation();
+                }))
+                .child(
+                    div()
+                        .w(px(18.))
+                        .text_size(px(8.))
+                        .text_color(solid(color))
+                        .child(label),
+                )
+                .child(slider),
+        )
+    }
+
+    fn band_mix_group(&self, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let values = self.state.borrow().params().effects();
+        let slope = self.state.borrow().params().effects()[2];
+        let slope_button = button(
+            "dual-slope",
+            if slope >= 0.5 {
+                "24 dB/oct"
+            } else {
+                "12 dB/oct"
+            }
+            .into(),
+            false,
+            76.,
+            None,
+        )
+        .h(px(16.))
+        .on_click(cx.listener(|view, _, _, cx| {
+            let value = 1. - view.state.borrow().params().effects()[2];
+            view.dispatch(EditorMessage::SetEffect { index: 2, value }, cx);
+        }))
+        .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
+            let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+            if delta != 0. {
+                let value = view.state.borrow().params().effects()[2] + delta.signum();
+                view.dispatch(EditorMessage::SetEffect { index: 2, value }, cx);
+            }
+        }));
         div()
-            .id(match handle {
-                FilterHandle::HighPass => "filter-hp-slope",
-                FilterHandle::LowPass => "filter-lp-slope",
-                FilterHandle::Both => "filter-both-slope",
-            })
-            .flex_1()
+            .id("band-mix-controls")
+            .w(px(176.))
+            .flex_shrink_0()
             .h(px(DECK_HEIGHT))
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(PUMP_VISUAL_METRICS.space_4))
+            .gap(px(4.))
             .child(
                 div()
-                    .text_color(solid(theme.text_muted))
-                    .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
-                    .child(label),
+                    .h(px(20.))
+                    .border_b_1()
+                    .border_color(solid(pump_theme().border))
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(group_heading("BANDS"))
+                    .child(slope_button),
             )
-            .child(div().flex().gap(px(1.7)).children(options))
+            .children((3..=4).map(|mix_index| {
+                let solo_index = mix_index + 2;
+                let solo = button(
+                    if solo_index == 5 {
+                        "dual-solo-low"
+                    } else {
+                        "dual-solo-high"
+                    },
+                    "SOLO".into(),
+                    values[solo_index] >= 0.5,
+                    38.,
+                    None,
+                )
+                .h(px(14.))
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    let value = 1. - view.state.borrow().params().effects()[solo_index];
+                    view.dispatch(
+                        EditorMessage::SetEffect {
+                            index: solo_index,
+                            value,
+                        },
+                        cx,
+                    );
+                }));
+                div()
+                    .h(px(24.))
+                    .w(px(154.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(self.effect_mix_slider(mix_index, values[mix_index], cx))
+                    .child(solo)
+            }))
+    }
+
+    fn shape_group(&self, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .w(px(176.))
+            .flex_shrink_0()
+            .h(px(DECK_HEIGHT))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
             .child(
                 div()
-                    .text_color(solid(theme.text_muted))
-                    .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.meta.0))
-                    .child("dB/oct"),
+                    .h(px(20.))
+                    .border_b_1()
+                    .border_color(solid(pump_theme().border))
+                    .child(group_heading("SHAPE")),
+            )
+            .child(
+                self.slider_element(NumericEntryTarget::Smooth, cx)
+                    .h(px(24.)),
+            )
+            .child(
+                self.slider_element(NumericEntryTarget::Swing, cx)
+                    .h(px(24.)),
             )
     }
+}
+
+fn group_heading(label: &'static str) -> gpui::Div {
+    div()
+        .text_size(px(9.))
+        .text_color(solid(pump_theme().text_muted))
+        .child(label)
 }
 
 fn curve_slot_element(
@@ -4298,7 +5023,7 @@ fn curve_slot_element(
     button(id, String::new(), loaded || deviated, 1.0, None)
         .flex_1()
         .h(px(SLOT_HEIGHT))
-        .rounded(px(PUMP_VISUAL_METRICS.radius))
+        .rounded(px(2.0))
         .child(preview)
 }
 
@@ -4317,7 +5042,7 @@ impl Render for PumpEditor {
         let params = state.params();
         let active_sound = params.active_sound();
         let bypassed = params.bypassed();
-        let filter_enabled = params.filter_enabled();
+
         let timing_free = params.timing_mode() == TIMING_MODE_FREE;
         let curve_bounds = Rc::clone(&self.curve_bounds);
         let draw_state = Rc::clone(&self.state);
@@ -4377,7 +5102,9 @@ impl Render for PumpEditor {
             .id("curve-editor")
             .relative()
             .flex_1()
-            .min_h(px(CURVE_HEIGHT))
+            // Reserve space for the grouped parameter deck at the 640 × 400 minimum.
+            // The curve still expands to fill larger editor windows.
+            .min_h(px(140.))
             .border_1()
             .border_color(solid(theme.border))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::curve_mouse_down))
@@ -4400,55 +5127,40 @@ impl Render for PumpEditor {
                 }));
                 slot
             }));
-        let divider = |id: &'static str| {
-            div()
-                .id(id)
-                .w(px(PUMP_VISUAL_METRICS.divider))
-                .h(px(DECK_HEIGHT - 13.6))
-                .bg(solid(theme.grid_strong))
-        };
-        let mut deck_children = vec![
-            self.knob_element(NumericEntryTarget::Smooth, cx),
-            divider("deck-divider-smooth"),
-            self.knob_element(NumericEntryTarget::Swing, cx),
-        ];
+        let mut level_controls = vec![];
         if timing_free {
-            deck_children.push(divider("deck-divider-free-rate"));
-            deck_children.push(self.knob_element(NumericEntryTarget::FreeRate, cx));
+            level_controls.push(
+                self.knob_element(NumericEntryTarget::FreeRate, cx)
+                    .h(px(60.)),
+            );
         }
-        deck_children.extend([
-            divider("deck-divider-mix"),
-            self.knob_element(NumericEntryTarget::Mix, cx),
-            self.knob_element(NumericEntryTarget::OutputGain, cx),
+        level_controls.extend([
+            self.knob_element(NumericEntryTarget::Mix, cx).h(px(60.)),
+            self.knob_element(NumericEntryTarget::OutputGain, cx)
+                .h(px(60.)),
         ]);
-        if filter_enabled {
-            match state.selected_filter_handle() {
-                Some(FilterHandle::HighPass) => {
-                    deck_children.extend([
-                        divider("deck-divider-filter-hp"),
-                        self.knob_element(NumericEntryTarget::FilterHpFrequency, cx),
-                        self.knob_element(NumericEntryTarget::FilterHpQ, cx),
-                        self.filter_slope_element(FilterHandle::HighPass, cx),
-                    ]);
-                }
-                Some(FilterHandle::LowPass) => {
-                    deck_children.extend([
-                        divider("deck-divider-filter-lp"),
-                        self.knob_element(NumericEntryTarget::FilterLpFrequency, cx),
-                        self.knob_element(NumericEntryTarget::FilterLpQ, cx),
-                        self.filter_slope_element(FilterHandle::LowPass, cx),
-                    ]);
-                }
-                Some(FilterHandle::Both) | None => {}
-            }
-        }
         let deck = div()
             .h(px(DECK_HEIGHT))
             .w_full()
             .flex()
-            .items_center()
-            .justify_between()
-            .children(deck_children);
+            .gap(px(16.))
+            .child(self.shape_group(cx))
+            .child(self.band_mix_group(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(DECK_HEIGHT))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(20.))
+                            .border_b_1()
+                            .border_color(solid(theme.border))
+                            .child(group_heading("LEVEL")),
+                    )
+                    .child(div().flex().items_center().children(level_controls)),
+            );
         let mut timing_button = button(
             "timing-mode",
             if timing_free {
@@ -4575,7 +5287,7 @@ impl Render for PumpEditor {
             },
         )
         .w(px(66.3))
-        .h(px(10.0));
+        .h(px(2.0));
         let delay_input =
             self.numeric_inputs[Self::numeric_input_index(NumericEntryTarget::Delay)].clone();
         let delay_value = div()
@@ -4603,7 +5315,7 @@ impl Render for PumpEditor {
             .child(
                 div()
                     .h(px(HEADER_CONTROL_HEIGHT
-                        - 10.0
+                        - 2.0
                         - PUMP_VISUAL_METRICS.space_4))
                     .w_full()
                     .flex()
@@ -4701,62 +5413,57 @@ impl Render for PumpEditor {
             .child(sound_a_button)
             .child(sound_switch)
             .child(sound_b_button);
-        let header_left = div()
+        let header_toolbar = div()
             .flex()
             .items_center()
             .gap(px(PUMP_VISUAL_METRICS.gap))
             .child(timing_controls)
             .child(history)
-            .child(ab);
-        let brand_meta = if params.preset_persistence_warning().is_some() {
-            super::PRESET_WARNING_STORAGE.to_owned()
-        } else {
-            crate::gui::build_version_label()
-        };
+            .child(ab)
+            .child(help_button);
+        let storage_warning = params.preset_persistence_warning().map(|_| {
+            div()
+                .text_color(solid(theme.accent_warning))
+                .text_size(px(PUMP_TYPOGRAPHY.meta.0))
+                .child(super::PRESET_WARNING_STORAGE)
+        });
+        let version_label = div()
+            .id("build-version")
+            .absolute()
+            .top(px(2.0))
+            .right(px(3.0))
+            .text_color(solid(super::visual_system::PumpColor::rgb(76, 82, 80)))
+            .text_size(px(6.0))
+            .line_height(px(8.0))
+            .child(crate::gui::build_version_label());
         let brand = div()
             .flex()
             .flex_col()
-            .items_end()
             .justify_center()
-            .gap(px(0.0))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .text_color(solid(theme.text_muted))
-                    .font(font("Ioskeley Mono"))
                     .text_size(px(PUMP_TYPOGRAPHY.body.0))
-                    .child("PORTALSURFER / ")
+                    .text_color(solid(theme.text_muted))
+                    .child("PORTALSURFER")
                     .child(
                         div()
-                            .text_color(solid(theme.accent_copper))
-                            .font(font("Ioskeley Mono"))
-                            .text_size(px(PUMP_TYPOGRAPHY.body.0))
-                            .child("PUMP"),
-                    ),
+                            .px(px(5.0))
+                            .text_color(solid(theme.border_emphasis))
+                            .child("/"),
+                    )
+                    .child(div().text_color(solid(theme.accent_copper)).child("PUMP")),
             )
-            .child(
-                div()
-                    .text_color(solid(theme.text_muted))
-                    .font(font("Ioskeley Mono"))
-                    .text_size(px(PUMP_TYPOGRAPHY.meta.0))
-                    .child(brand_meta),
-            );
+            .children(storage_warning);
         let header = div()
             .h(px(HEADER_HEIGHT))
             .w_full()
             .flex()
             .items_center()
             .justify_between()
-            .child(header_left)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(PUMP_VISUAL_METRICS.gap))
-                    .child(brand)
-                    .child(help_button),
-            );
+            .child(brand)
+            .child(header_toolbar);
         let mut waveform_button = button(
             "waveform-mode",
             if state.status().waveform_live_mode() {
@@ -4770,15 +5477,6 @@ impl Render for PumpEditor {
         )
         .h(px(FOOTER_HEIGHT));
         waveform_button = waveform_button.on_click(cx.listener(Self::toggle_waveform));
-        let mut filter_button = button(
-            "filter",
-            "FILTER".into(),
-            filter_enabled,
-            66.0,
-            Some(self.button_focus_handle("filter")),
-        )
-        .h(px(FOOTER_HEIGHT));
-        filter_button = filter_button.on_click(cx.listener(Self::toggle_filter));
         let mut bypass_button = button(
             "bypass",
             String::new(),
@@ -4828,7 +5526,7 @@ impl Render for PumpEditor {
                 },
             )
             .w(px(PUMP_VISUAL_METRICS.icon_hit))
-            .h(px(PUMP_VISUAL_METRICS.icon_hit)),
+            .h(px(FOOTER_HEIGHT)),
         );
         bypass_button =
             bypass_button.child(div().child(if bypassed { "BYPASSED" } else { "ACTIVE" }));
@@ -4844,14 +5542,14 @@ impl Render for PumpEditor {
                     .flex()
                     .items_center()
                     .gap(px(PUMP_VISUAL_METRICS.space_4))
-                    .child(waveform_button)
-                    .child(filter_button),
+                    .child(group_heading("WAVEFORM"))
+                    .child(waveform_button),
             )
             .child(bypass_button);
         let hotkey_help = if state.hotkey_help_open() {
             const ROWS: [(&str, &str); 10] = [
-                ("u", "Undo"),
-                ("U", "Redo"),
+                ("Cmd/Ctrl + Z / u", "Undo"),
+                ("Cmd/Ctrl + Shift + Z / U", "Redo"),
                 ("Shift + drag node", "Lock gain"),
                 ("Shift + Option + drag node", "Lock time"),
                 ("Cmd + drag node", "Snap to beat grid"),
@@ -4903,7 +5601,7 @@ impl Render for PumpEditor {
                 .bg(solid(theme.surface_overlay))
                 .border_1()
                 .border_color(solid(theme.border_emphasis))
-                .rounded(px(6.8))
+                .rounded(px(1.0))
                 .child(
                     div()
                         .h(px(25.5))
@@ -4928,10 +5626,10 @@ impl Render for PumpEditor {
             .flex_col()
             .gap(px(SURFACE_SPACING))
             .p(px(SURFACE_PADDING))
+            .pb(px(PUMP_VISUAL_METRICS.space_8))
             .bg(solid(theme.clear))
             .border_1()
             .border_color(solid(theme.border))
-            .rounded(px(PUMP_VISUAL_METRICS.radius))
             .text_color(solid(theme.text_primary))
             .font(font("Ioskeley Mono"))
             .text_size(px(PUMP_TYPOGRAPHY.body.0))
@@ -4939,12 +5637,21 @@ impl Render for PumpEditor {
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_key_up(cx.listener(Self::handle_key_up))
             .on_modifiers_changed(cx.listener(Self::handle_modifiers))
+            .child(chassis_artwork())
             .child(header)
-            .child(div().h(px(PUMP_VISUAL_METRICS.space_4)))
+            .child(
+                div()
+                    .h(px(24.))
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(solid(theme.border))
+                    .child(group_heading("ENVELOPE")),
+            )
             .child(curve_area)
             .child(slots)
             .child(deck)
             .child(footer)
+            .child(version_label)
             .child(hotkey_help)
     }
 }
