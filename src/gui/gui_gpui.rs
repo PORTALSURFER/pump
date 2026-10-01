@@ -3267,7 +3267,7 @@ fn draw_curve(
     let theme = pump_theme();
     // The plot shares the primary dark surface with the baseline editor;
     // raised panels are reserved for controls and the slot row.
-    window.paint_quad(fill(bounds, solid(theme.clear)));
+    window.paint_quad(fill(bounds, solid(theme.display)));
     let left = f32::from(bounds.left()) + CURVE_GUTTER;
     let top = f32::from(bounds.top());
     let width = (f32::from(bounds.size.width) - CURVE_GUTTER - CURVE_METER_GAP - CURVE_METER_WIDTH)
@@ -3712,24 +3712,24 @@ fn draw_curve(
     ));
     let reduction = state.status().gain_reduction_db();
     let fraction = crate::gui_status::gain_reduction_meter_fraction(reduction);
-    let segments = 24usize;
-    let segment_step = (f32::from(meter.size.height) - 2.0) / segments as f32;
-    for index in 0..segments {
-        let y = f32::from(meter.bottom()) - 1.0 - (index + 1) as f32 * segment_step;
-        let active = index < (fraction * segments as f32).round() as usize;
+    let meter_inner = Bounds::from_corners(
+        point(meter.left() + px(1.0), meter.top() + px(1.0)),
+        point(meter.right() - px(1.0), meter.bottom() - px(1.0)),
+    );
+    window.paint_quad(fill(meter_inner, solid(pump_meter_colors().track)));
+    if fraction > 0.0 {
         window.paint_quad(fill(
             Bounds::from_corners(
-                point(meter.left() + px(1.0), px(y)),
-                point(meter.right() - px(1.0), px(y + segment_step - 1.0)),
+                point(
+                    meter_inner.left(),
+                    meter_inner.bottom() - meter_inner.size.height * fraction,
+                ),
+                meter_inner.bottom_right(),
             ),
-            solid(if active {
-                if fraction > 0.75 {
-                    pump_meter_colors().hot
-                } else {
-                    pump_meter_colors().nominal
-                }
+            solid(if fraction > 0.75 {
+                pump_meter_colors().hot
             } else {
-                pump_meter_colors().track
+                pump_meter_colors().nominal
             }),
         ));
     }
@@ -3856,7 +3856,7 @@ fn draw_crossover_preview(
         ));
         area.close();
         if let Ok(path) = area.build() {
-            window.paint_path(path, solid(color.with_alpha(20)));
+            window.paint_path(path, solid(color.with_alpha(8)));
         }
         if let Ok(path) = line.build() {
             window.paint_path(path, solid(color.with_alpha(140)));
@@ -4211,6 +4211,82 @@ fn knob_value(state: &PumpEditorState, target: NumericEntryTarget) -> (f32, Stri
     (normalized, text)
 }
 
+fn paint_polygon(
+    window: &mut Window,
+    vertices: &[(f32, f32)],
+    color: super::visual_system::PumpColor,
+    outline: bool,
+) {
+    let mut path = if outline {
+        gpui::PathBuilder::stroke(px(1.0))
+    } else {
+        gpui::PathBuilder::fill()
+    };
+    for (index, &(x, y)) in vertices.iter().enumerate() {
+        if index == 0 {
+            path.move_to(point(px(x), px(y)));
+        } else {
+            path.line_to(point(px(x), px(y)));
+        }
+    }
+    path.close();
+    if let Ok(path) = path.build() {
+        window.paint_path(path, solid(color));
+    }
+}
+
+fn chassis_artwork() -> impl gpui::IntoElement {
+    canvas(
+        |_, _, _| {},
+        |bounds, _, window, _| {
+            let theme = pump_theme();
+            let l = f32::from(bounds.left());
+            let t = f32::from(bounds.top());
+            let w = f32::from(bounds.size.width);
+            let h = f32::from(bounds.size.height);
+            // Deliberately asymmetric top inset; exactly mirrored bottom inset.
+            for (left, right, top, bottom) in [
+                (l + w * 0.43, l + w * 0.78, t + 2.0, t + 9.0),
+                (l + w * 0.30, l + w * 0.70, t + h - 6.0, t + h - 1.5),
+            ] {
+                let shape = [
+                    (left, top),
+                    (right, top),
+                    (right - 5.0, bottom),
+                    (left + 5.0, bottom),
+                ];
+                paint_polygon(window, &shape, theme.display, false);
+                paint_polygon(window, &shape, theme.border, true);
+                // Cool upper bevel and darker contact edge, without a glossy wash.
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(px(left + 2.0), px(top + 1.0)),
+                        point(px(right - 2.0), px(top + 2.0)),
+                    ),
+                    solid(theme.border_emphasis),
+                ));
+            }
+            // Two shallow side shoulders remain clear of every control target.
+            for right in [false, true] {
+                let edge = if right { l + w - 2.0 } else { l + 2.0 };
+                let direction = if right { -1.0 } else { 1.0 };
+                let shape = [
+                    (edge, t + h * 0.23),
+                    (edge + direction * 5.0, t + h * 0.23 + 5.0),
+                    (edge + direction * 5.0, t + h * 0.47 - 5.0),
+                    (edge, t + h * 0.47),
+                ];
+                paint_polygon(window, &shape, theme.display, false);
+                paint_polygon(window, &shape, theme.border, true);
+            }
+        },
+    )
+    .absolute()
+    .top(px(0.0))
+    .left(px(0.0))
+    .size_full()
+}
+
 fn button(
     id: &'static str,
     label: String,
@@ -4235,12 +4311,55 @@ fn button(
         .bg(solid(if active {
             theme.accent_mint.with_alpha(48)
         } else {
-            theme.clear
+            theme.surface_overlay
         }))
         .text_color(solid(theme.text_primary))
         .font(font("Ioskeley Mono"))
         .text_size(px(PUMP_TYPOGRAPHY.body.0))
-        .line_height(px(PUMP_TYPOGRAPHY.body.1));
+        .line_height(px(PUMP_TYPOGRAPHY.body.1))
+        .focus(|style| style.border_1().border_color(gpui::rgb(0x8cddd0)));
+    if matches!(id, "undo" | "redo" | "hotkey-help" | "bypass") {
+        button = button
+            .relative()
+            .border_b_0()
+            .bg(gpui::transparent_black())
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        let l = f32::from(bounds.left()) + 0.5;
+                        let t = f32::from(bounds.top()) + 0.5;
+                        let r = f32::from(bounds.right()) - 0.5;
+                        let b = f32::from(bounds.bottom()) - 0.5;
+                        let vertices = [
+                            (l + 2.0, t),
+                            (r - 2.0, t),
+                            (r, t + 2.0),
+                            (r, b - 5.0),
+                            (r - 5.0, b),
+                            (l + 2.0, b),
+                            (l, b - 2.0),
+                            (l, t + 2.0),
+                        ];
+                        paint_polygon(window, &vertices, theme.surface_overlay, false);
+                        paint_polygon(
+                            window,
+                            &vertices,
+                            if active {
+                                theme.accent_mint
+                            } else {
+                                theme.border
+                            },
+                            true,
+                        );
+                    },
+                )
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .size_full(),
+            );
+    }
     #[cfg(any(
         feature = "screenshot-test",
         all(test, target_os = "windows", feature = "vst3")
@@ -4591,7 +4710,7 @@ impl PumpEditor {
                                 center + px(6.),
                             ),
                         ),
-                        solid(color.with_alpha(90)),
+                        solid(color),
                     ));
                 }
                 let percentage = text_line(
@@ -5259,8 +5378,8 @@ impl Render for PumpEditor {
             .id("build-version")
             .absolute()
             .top(px(2.0))
-            .right(px(SURFACE_PADDING))
-            .text_color(solid(theme.text_muted.with_alpha(128)))
+            .right(px(3.0))
+            .text_color(solid(super::visual_system::PumpColor::rgb(76, 82, 80)))
             .text_size(px(6.0))
             .line_height(px(8.0))
             .child(crate::gui::build_version_label());
@@ -5274,7 +5393,13 @@ impl Render for PumpEditor {
                     .items_center()
                     .text_size(px(PUMP_TYPOGRAPHY.body.0))
                     .text_color(solid(theme.text_muted))
-                    .child("PORTALSURFER / ")
+                    .child("PORTALSURFER")
+                    .child(
+                        div()
+                            .px(px(5.0))
+                            .text_color(solid(theme.border_emphasis))
+                            .child("/"),
+                    )
                     .child(div().text_color(solid(theme.accent_copper)).child("PUMP")),
             )
             .children(storage_warning);
@@ -5452,7 +5577,6 @@ impl Render for PumpEditor {
             .bg(solid(theme.clear))
             .border_1()
             .border_color(solid(theme.border))
-            .rounded(px(PUMP_VISUAL_METRICS.radius))
             .text_color(solid(theme.text_primary))
             .font(font("Ioskeley Mono"))
             .text_size(px(PUMP_TYPOGRAPHY.body.0))
@@ -5460,6 +5584,7 @@ impl Render for PumpEditor {
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_key_up(cx.listener(Self::handle_key_up))
             .on_modifiers_changed(cx.listener(Self::handle_modifiers))
+            .child(chassis_artwork())
             .child(header)
             .child(
                 div()

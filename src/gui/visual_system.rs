@@ -39,6 +39,8 @@ impl PumpColor {
 pub(crate) struct PumpTheme {
     /// Canvas and primary surface.
     pub(crate) clear: PumpColor,
+    /// Recessed display bed.
+    pub(crate) display: PumpColor,
     /// Raised/overlay surface.
     pub(crate) surface_overlay: PumpColor,
     /// Standard border.
@@ -68,19 +70,20 @@ pub(crate) struct PumpTheme {
 /// Return Pump's fixed dark-coral theme for every supported viewport tier.
 pub(crate) const fn pump_theme() -> PumpTheme {
     PumpTheme {
-        clear: PumpColor::rgb(13, 15, 16),
-        surface_overlay: PumpColor::rgb(18, 21, 22),
-        border: PumpColor::rgb(38, 44, 43),
-        border_emphasis: PumpColor::rgb(67, 74, 72),
-        grid_strong: PumpColor::rgb(38, 44, 43),
-        grid_soft: PumpColor::rgb(28, 34, 33),
-        accent_mint: PumpColor::rgb(232, 105, 56),
-        accent_copper: PumpColor::rgb(255, 120, 69),
-        accent_warning: PumpColor::rgb(217, 151, 95),
-        accent_danger: PumpColor::rgb(239, 76, 61),
+        clear: PumpColor::rgb(39, 43, 40),
+        display: PumpColor::rgb(31, 36, 34),
+        surface_overlay: PumpColor::rgb(48, 55, 50),
+        border: PumpColor::rgb(73, 83, 76),
+        border_emphasis: PumpColor::rgb(91, 103, 94),
+        grid_strong: PumpColor::rgb(48, 55, 50),
+        grid_soft: PumpColor::rgb(37, 44, 40),
+        accent_mint: PumpColor::rgb(233, 107, 80),
+        accent_copper: PumpColor::rgb(233, 107, 80),
+        accent_warning: PumpColor::rgb(215, 92, 73),
+        accent_danger: PumpColor::rgb(215, 92, 73),
         text_primary: PumpColor::rgb(213, 216, 214),
-        text_muted: PumpColor::rgb(134, 140, 138),
-        control_disabled_fill: PumpColor::rgb(24, 28, 29),
+        text_muted: PumpColor::rgb(162, 171, 164),
+        control_disabled_fill: PumpColor::rgb(31, 36, 34),
     }
 }
 
@@ -218,9 +221,9 @@ mod tests {
     fn pump_theme_is_fixed_and_uses_technical_instrument_values() {
         let theme = pump_theme();
         assert_eq!(theme, pump_theme());
-        assert_eq!(theme.clear, PumpColor::rgb(13, 15, 16));
-        assert_eq!(theme.accent_mint, PumpColor::rgb(232, 105, 56));
-        assert_eq!(theme.accent_copper, PumpColor::rgb(255, 120, 69));
+        assert_eq!(theme.clear, PumpColor::rgb(39, 43, 40));
+        assert_eq!(theme.accent_mint, PumpColor::rgb(233, 107, 80));
+        assert_eq!(theme.accent_copper, PumpColor::rgb(233, 107, 80));
         assert_eq!(theme.text_primary, PumpColor::rgb(213, 216, 214));
     }
 
