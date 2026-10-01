@@ -706,7 +706,7 @@ impl Element for NumericTextElement {
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
         window: &mut Window,
@@ -745,9 +745,9 @@ impl Element for NumericTextElement {
                 all(test, target_os = "windows", feature = "vst3")
             ))]
             {
-                record_screenshot_bounds(format!("value-{:?}", input.target), bounds);
+                record_screenshot_bounds(format!("value-{:?}", input.target), _bounds);
                 if input.target == NumericEntryTarget::Delay {
-                    record_screenshot_bounds("delay-value", bounds);
+                    record_screenshot_bounds("delay-value", _bounds);
                 }
             }
         });
