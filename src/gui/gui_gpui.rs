@@ -27,8 +27,9 @@ use crate::params::{
     format_plain_value_text, normalized_from_plain_value, sync_division_label, PumpParams,
     SoundSide, GLOBAL_CURVE_SLOT_COUNT, MAX_FILTER_FREQ_HZ, MAX_FILTER_Q, MIN_FILTER_FREQ_HZ,
     MIN_FILTER_Q, PARAM_DELAY_ID, PARAM_FILTER_HP_FREQ_ID, PARAM_FILTER_HP_Q_ID,
-    PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID,
-    PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID, PARAM_SWING_ID, SYNC_DIVISIONS, TIMING_MODE_FREE,
+    PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID, PARAM_FREE_RATE_ID, PARAM_HIGH_MIX_ID,
+    PARAM_LOW_MIX_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID, PARAM_SWING_ID,
+    SYNC_DIVISIONS, TIMING_MODE_FREE,
 };
 
 pub(crate) use super::model::HostParamFlushRequester;
@@ -868,6 +869,7 @@ fn new_hosted_gui(
         (WINDOW_WIDTH, WINDOW_HEIGHT),
         (MAX_WINDOW_WIDTH, MAX_WINDOW_HEIGHT),
     )
+    .with_host_key_passthrough(&["space"], &["s"])
     .with_fixed_aspect_ratio()
     .with_pointer_cancel_callback(move || {
         pointer_cancel_pending.set(true);
@@ -1015,6 +1017,8 @@ impl PumpEditor {
             NumericEntryTarget::FilterHpQ,
             NumericEntryTarget::FilterLpFrequency,
             NumericEntryTarget::FilterLpQ,
+            NumericEntryTarget::LowMix,
+            NumericEntryTarget::HighMix,
         ];
         let numeric_inputs: Vec<_> = {
             let state_ref = state.borrow();
@@ -1157,6 +1161,8 @@ impl PumpEditor {
             NumericEntryTarget::FilterHpQ => 7,
             NumericEntryTarget::FilterLpFrequency => 8,
             NumericEntryTarget::FilterLpQ => 9,
+            NumericEntryTarget::LowMix => 10,
+            NumericEntryTarget::HighMix => 11,
         }
     }
 
@@ -1188,6 +1194,8 @@ impl PumpEditor {
             NumericEntryTarget::FilterHpQ,
             NumericEntryTarget::FilterLpFrequency,
             NumericEntryTarget::FilterLpQ,
+            NumericEntryTarget::LowMix,
+            NumericEntryTarget::HighMix,
         ];
         let texts = {
             let state = self.state.borrow();
@@ -1425,8 +1433,34 @@ impl PumpEditor {
     }
 
     fn hit_filter_handle(&self, position: Point<Pixels>) -> Option<FilterHandle> {
-        if !self.state.borrow().filter_enabled() || !self.curve_plot_contains(position) {
+        let state = self.state.borrow();
+        let params = state.params();
+        let active = if state.legacy_filter_mode() {
+            state.filter_enabled()
+        } else {
+            params.low_mix() > 0.0 || params.high_mix() > 0.0
+        };
+        if !active || !self.curve_plot_contains(position) {
             return None;
+        }
+        if !state.legacy_filter_mode() {
+            let (left, top, width, height) = self.filter_plot_geometry()?;
+            let minimum = MIN_FILTER_FREQ_HZ.ln();
+            let phase = ((params
+                .crossover_hz()
+                .clamp(MIN_FILTER_FREQ_HZ, MAX_FILTER_FREQ_HZ)
+                .ln()
+                - minimum)
+                / (MAX_FILTER_FREQ_HZ.ln() - minimum))
+                .clamp(0.0, 1.0);
+            let center = point(
+                px(left + phase * (width - 1.0).max(1.0)),
+                px(top + height * 0.5),
+            );
+            let dx = f32::from(center.x) - f32::from(position.x);
+            let dy = f32::from(center.y) - f32::from(position.y);
+            return (dx * dx + dy * dy <= FILTER_HANDLE_HIT_RADIUS * FILTER_HANDLE_HIT_RADIUS)
+                .then_some(FilterHandle::Both);
         }
         let radius_squared = FILTER_HANDLE_HIT_RADIUS * FILTER_HANDLE_HIT_RADIUS;
         self.filter_handle_points()?
@@ -2442,7 +2476,14 @@ impl PumpEditor {
             self.last_pointer = Some(event.position);
             return;
         };
-        let delta = (f32::from(previous.y) - f32::from(event.position.y)) * 0.004;
+        let delta = if matches!(
+            target,
+            NumericEntryTarget::LowMix | NumericEntryTarget::HighMix
+        ) {
+            (f32::from(event.position.x) - f32::from(previous.x)) * 0.004
+        } else {
+            (f32::from(previous.y) - f32::from(event.position.y)) * 0.004
+        };
         self.last_pointer = Some(event.position);
         let current = self.state.borrow().params().clone();
         let normalized = match target {
@@ -2479,6 +2520,8 @@ impl PumpEditor {
                 normalized_from_plain_value(PARAM_FILTER_LP_Q_ID, current.filter_lp_q() as f64)
                     .unwrap_or(0.0) as f32
             }
+            NumericEntryTarget::LowMix => current.low_mix(),
+            NumericEntryTarget::HighMix => current.high_mix(),
         };
         self.dispatch(
             EditorMessage::Knob {
@@ -2573,7 +2616,7 @@ impl PumpEditor {
     ) {
         // A numeric field may still own focus when the pointer leaves it. The
         // focus transition cancels its draft; claim the button handle here as
-        // well as on mouse-down so the following Space/Enter is routed to the
+        // well as on mouse-down so the following Enter is routed to the
         // focused bypass control even when the click lands on a child icon.
         let focus_handle = self.button_focus_handle("bypass").clone();
         window.focus(&focus_handle, cx);
@@ -2915,9 +2958,7 @@ impl PumpEditor {
         if self.state.borrow().numeric_entry_active() || numeric_input_focused {
             return;
         }
-        if matches!(event.keystroke.key.as_str(), "space" | "enter")
-            && !event.keystroke.modifiers.modified()
-        {
+        if event.keystroke.key.as_str() == "enter" && !event.keystroke.modifiers.modified() {
             if let Some(button) = self.focused_button(window) {
                 // Native embedded GPUI input currently loses AppKit's
                 // `isARepeat` flag: every repeated key-down arrives with
@@ -3691,9 +3732,6 @@ fn draw_filter_overlay(
     window: &mut Window,
     cx: &mut App,
 ) {
-    if !state.filter_enabled() {
-        return;
-    }
     let left = f32::from(bounds.left()) + CURVE_GUTTER;
     let top = f32::from(bounds.top());
     let width = (f32::from(bounds.size.width) - CURVE_GUTTER - CURVE_METER_GAP - CURVE_METER_WIDTH)
@@ -3703,6 +3741,38 @@ fn draw_filter_overlay(
     let plot_width = (width - 1.0).max(1.0);
     let plot_height = (height - 1.0).max(1.0);
     let params = state.params();
+    if !state.legacy_filter_mode() {
+        if params.low_mix() <= 0.0 && params.high_mix() <= 0.0 {
+            return;
+        }
+        let phase = ((params
+            .crossover_hz()
+            .clamp(MIN_FILTER_FREQ_HZ, MAX_FILTER_FREQ_HZ)
+            .ln()
+            - MIN_FILTER_FREQ_HZ.ln())
+            / (MAX_FILTER_FREQ_HZ.ln() - MIN_FILTER_FREQ_HZ.ln()))
+        .clamp(0.0, 1.0);
+        let x = left + phase * plot_width;
+        let center_y = top + plot_height * 0.5;
+        let theme = pump_theme();
+        let mut line = gpui::PathBuilder::stroke(px(1.0));
+        line.move_to(point(px(x), px(top)));
+        line.line_to(point(px(x), px(top + plot_height)));
+        if let Ok(line) = line.build() {
+            window.paint_path(line, solid(theme.accent_mint));
+        }
+        window.paint_quad(fill(
+            Bounds::from_corners(
+                point(px(x - 4.5), px(center_y - 4.5)),
+                point(px(x + 4.5), px(center_y + 4.5)),
+            ),
+            solid(theme.accent_mint),
+        ));
+        return;
+    }
+    if !state.filter_enabled() {
+        return;
+    }
     let hp_freq = params.filter_hp_freq_hz();
     let hp_q = params.filter_hp_q();
     let lp_freq = params.filter_lp_freq_hz();
@@ -3979,6 +4049,8 @@ fn knob_value(state: &PumpEditorState, target: NumericEntryTarget) -> (f32, Stri
             params.filter_lp_q(),
             PARAM_FILTER_LP_Q_ID,
         ),
+        NumericEntryTarget::LowMix => (params.low_mix(), params.low_mix(), PARAM_LOW_MIX_ID),
+        NumericEntryTarget::HighMix => (params.high_mix(), params.high_mix(), PARAM_HIGH_MIX_ID),
     };
     let text = if target == NumericEntryTarget::FreeRate {
         state.format_free_rate(plain)
@@ -4083,6 +4155,80 @@ fn icon_button(
 }
 
 impl PumpEditor {
+    fn impact_mix_element(
+        &self,
+        target: NumericEntryTarget,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let label = if target == NumericEntryTarget::LowMix {
+            "LOW MIX"
+        } else {
+            "HIGH MIX"
+        };
+        let id = target.widget_key();
+        let theme = pump_theme();
+        let input = self.numeric_inputs[Self::numeric_input_index(target)].clone();
+        let normalized = knob_value(&self.state.borrow(), target).0.clamp(0.0, 1.0);
+        let down = cx.listener(move |view: &mut Self, event: &MouseDownEvent, window, cx| {
+            view.knob_down(target, event, window, cx)
+        });
+        let bar = canvas(
+            |_bounds, _, _| {},
+            move |bounds, _, window, _cx| {
+                let inset = 1.0;
+                let top = f32::from(bounds.top()) + f32::from(bounds.size.height) * 0.5 - 3.0;
+                let left = f32::from(bounds.left()) + inset;
+                let right = f32::from(bounds.right()) - inset;
+                window.paint_quad(fill(
+                    Bounds::from_corners(point(px(left), px(top)), point(px(right), px(top + 6.0))),
+                    solid(theme.border_emphasis),
+                ));
+                if normalized > 0.0 {
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(px(left), px(top)),
+                            point(px(left + (right - left) * normalized), px(top + 6.0)),
+                        ),
+                        solid(theme.accent_mint),
+                    ));
+                }
+            },
+        )
+        .w(px(76.0))
+        .h(px(14.0));
+        div()
+            .id(id)
+            .flex_1()
+            .h(px(DECK_HEIGHT))
+            .max_w(px(96.0))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(PUMP_VISUAL_METRICS.space_4))
+            .on_mouse_down(MouseButton::Left, down)
+            .on_scroll_wheel(cx.listener(move |view, event, window, cx| {
+                view.knob_wheel(target, event, window, cx)
+            }))
+            .child(
+                div()
+                    .text_color(solid(theme.text_muted))
+                    .font(font("Ioskeley Mono"))
+                    .text_size(px(PUMP_TYPOGRAPHY.body.0))
+                    .child(label),
+            )
+            .child(bar)
+            .child(
+                div()
+                    .h(px(PUMP_TYPOGRAPHY.value.1 + 4.0))
+                    .w(px(64.0))
+                    .text_color(solid(theme.text_primary))
+                    .font(font("Ioskeley Mono"))
+                    .text_size(px(PUMP_TYPOGRAPHY.value.0))
+                    .child(input),
+            )
+    }
+
     fn knob_element(
         &self,
         target: NumericEntryTarget,
@@ -4099,6 +4245,8 @@ impl PumpEditor {
             NumericEntryTarget::FilterHpQ => "HP Q",
             NumericEntryTarget::FilterLpFrequency => "LP FREQ",
             NumericEntryTarget::FilterLpQ => "LP Q",
+            NumericEntryTarget::LowMix => "LOW MIX",
+            NumericEntryTarget::HighMix => "HIGH MIX",
         };
         let id = target.widget_key();
         let theme = pump_theme();
@@ -4382,7 +4530,30 @@ impl Render for PumpEditor {
             .border_color(solid(theme.border))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::curve_mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::curve_mouse_down))
-            .child(curve);
+            .child(curve)
+            .children(
+                (!state.legacy_filter_mode()
+                    && (params.low_mix() > 0.0 || params.high_mix() > 0.0))
+                    .then(|| {
+                        let hz = params.crossover_hz();
+                        let value = if hz >= 1_000.0 {
+                            format!("{:.2} kHz", hz / 1_000.0)
+                        } else {
+                            format!("{hz:.0} Hz")
+                        };
+                        div()
+                            .absolute()
+                            .top(px(5.0))
+                            .left(px(CURVE_GUTTER + 5.0))
+                            .px(px(PUMP_VISUAL_METRICS.space_4))
+                            .py(px(1.0))
+                            .bg(solid(theme.surface_overlay))
+                            .text_color(solid(theme.accent_mint))
+                            .font(font("Ioskeley Mono"))
+                            .text_size(px(PUMP_TYPOGRAPHY.meta.0))
+                            .child(format!("XOVER {value}"))
+                    }),
+            );
         let loaded_slot = state.loaded_slot();
         let slots = div()
             .h(px(SLOT_HEIGHT))
@@ -4420,8 +4591,11 @@ impl Render for PumpEditor {
             divider("deck-divider-mix"),
             self.knob_element(NumericEntryTarget::Mix, cx),
             self.knob_element(NumericEntryTarget::OutputGain, cx),
+            divider("deck-divider-low-mix"),
+            self.impact_mix_element(NumericEntryTarget::LowMix, cx),
+            self.impact_mix_element(NumericEntryTarget::HighMix, cx),
         ]);
-        if filter_enabled {
+        if filter_enabled && state.legacy_filter_mode() {
             match state.selected_filter_handle() {
                 Some(FilterHandle::HighPass) => {
                     deck_children.extend([
@@ -4845,7 +5019,7 @@ impl Render for PumpEditor {
                     .items_center()
                     .gap(px(PUMP_VISUAL_METRICS.space_4))
                     .child(waveform_button)
-                    .child(filter_button),
+                    .children(state.legacy_filter_mode().then_some(filter_button)),
             )
             .child(bypass_button);
         let hotkey_help = if state.hotkey_help_open() {

@@ -415,45 +415,53 @@ mod macos {
             let default_capture =
                 capture(app, &fixture, &gui, &root, "pump-default-640x400", 640, 400);
 
-            params.set_filter_enabled(1.0);
-            params.set_filter_hp_freq_hz(320.0);
-            params.set_filter_hp_q(1.25);
-            params.set_filter_lp_freq_hz(7_500.0);
-            params.set_filter_lp_q(1.75);
-            params.set_filter_hp_slope(1.0);
-            params.set_filter_lp_slope(2.0);
-            let filter_capture = capture(
+            params.set_crossover_hz(320.0);
+            params.set_low_mix(1.0);
+            params.set_high_mix(0.0);
+            let crossover_capture = capture(
                 app,
                 &fixture,
                 &gui,
                 &root,
-                "pump-filter-enabled-640x400",
+                "pump-crossover-low-only-640x400",
                 640,
                 400,
             );
-            let (filter_hp_x, filter_hp_y) = filter_handle_position(
-                &filter_capture,
+            let (handle_x, handle_y) = filter_handle_position(
+                &crossover_capture,
                 265.0,
-                135.0,
-                "pump-filter-enabled-640x400",
+                147.0,
+                "pump-crossover-low-only-640x400",
             );
             send_click(
                 fixture.window,
                 CAPTURE_WIDTH,
                 CAPTURE_HEIGHT,
-                filter_hp_x,
-                filter_hp_y,
+                handle_x,
+                handle_y,
             );
             capture(
                 app,
                 &fixture,
                 &gui,
                 &root,
-                "pump-filter-selected-hp-640x400",
+                "pump-crossover-selected-640x400",
                 640,
                 400,
             );
-            params.set_filter_enabled(0.0);
+            params.set_low_mix(0.0);
+            params.set_high_mix(0.0);
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-crossover-unpumped-640x400",
+                640,
+                400,
+            );
+            params.set_low_mix(1.0);
+            params.set_high_mix(1.0);
 
             let curve_before_seam = params.editable_curve_snapshot();
             let phase_before_seam = params.phase_offset();
@@ -918,10 +926,10 @@ mod macos {
             );
 
             for (name, center_x) in [
-                ("Smooth", 87),
-                ("Swing", 241),
-                ("Mix", 397),
-                ("Output", 551),
+                ("Smooth", 64),
+                ("Swing", 171),
+                ("Mix", 277),
+                ("Output", 383),
             ] {
                 assert_ne!(
                     numeric_label_pixels(&default_capture, center_x),

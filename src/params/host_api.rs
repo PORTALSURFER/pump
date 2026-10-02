@@ -83,7 +83,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 20] = [
+const PARAM_DEFS: [ParamDef; 24] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -384,6 +384,66 @@ const PARAM_DEFS: [ParamDef; 20] = [
         default_value: DEFAULT_FILTER_SLOPE as f64,
         flags: AUTO_STEPPED,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_WAVEFORM_MODE_NUM,
+        id: PARAM_WAVEFORM_MODE_ID,
+        name: "Waveform Live/Sync",
+        #[cfg(feature = "vst3")]
+        short_name: "Live/Sync",
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Pump",
+        min_value: 0.0,
+        max_value: 1.0,
+        default_value: 0.0,
+        flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_CROSSOVER_NUM,
+        id: PARAM_CROSSOVER_ID,
+        name: "Crossover",
+        #[cfg(feature = "vst3")]
+        short_name: "Xover",
+        #[cfg(feature = "vst3")]
+        units: "Hz",
+        module: "Pump",
+        min_value: MIN_CROSSOVER_HZ as f64,
+        max_value: MAX_CROSSOVER_HZ as f64,
+        default_value: DEFAULT_CROSSOVER_HZ as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_LOW_MIX_NUM,
+        id: PARAM_LOW_MIX_ID,
+        name: "Low Mix",
+        #[cfg(feature = "vst3")]
+        short_name: "Low Mix",
+        #[cfg(feature = "vst3")]
+        units: "%",
+        module: "Pump",
+        min_value: 0.0,
+        max_value: 1.0,
+        default_value: 1.0,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: PARAM_HIGH_MIX_NUM,
+        id: PARAM_HIGH_MIX_ID,
+        name: "High Mix",
+        #[cfg(feature = "vst3")]
+        short_name: "High Mix",
+        #[cfg(feature = "vst3")]
+        units: "%",
+        module: "Pump",
+        min_value: 0.0,
+        max_value: 1.0,
+        default_value: 1.0,
+        flags: AUTO,
+    },
 ];
 
 fn param_def_for_id(param_id: ClapId) -> Option<ParamDef> {
@@ -510,6 +570,7 @@ pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<
             | PARAM_TIMING_MODE_ID
             | PARAM_DELAY_ID
             | PARAM_FILTER_ENABLED_ID
+            | PARAM_WAVEFORM_MODE_ID
             | PARAM_FILTER_HP_SLOPE_ID
             | PARAM_FILTER_LP_SLOPE_ID
     ) {
@@ -555,7 +616,9 @@ fn vst3_sync_division_max(param_id: u32) -> Option<f64> {
 #[cfg(feature = "vst3")]
 pub fn vst3_param_info_for_index(index: i32) -> Option<Vst3ParamInfo> {
     let index = usize::try_from(index).ok()?;
-    if index == PARAM_DEFS.len() {
+    // Division Extended was already exposed at index 20. Keep that index
+    // stable and append new definitions after it.
+    if index == 20 {
         return Some(Vst3ParamInfo {
             id: PARAM_SYNC_DIVISION_VST3_V2_NUM,
             title: "Division Extended",
@@ -567,7 +630,8 @@ pub fn vst3_param_info_for_index(index: i32) -> Option<Vst3ParamInfo> {
             is_bypass: false,
         });
     }
-    let def = PARAM_DEFS.get(index).copied()?;
+    let definition_index = if index > 20 { index - 1 } else { index };
+    let def = PARAM_DEFS.get(definition_index).copied()?;
     Some(Vst3ParamInfo {
         id: def.vst3_id,
         title: def.name,
@@ -623,12 +687,20 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
         PARAM_FREE_RATE_ID => Some(params.free_rate_hz() as f64),
         PARAM_DELAY_ID => Some(params.delay_beats() as f64),
         PARAM_FILTER_ENABLED_ID => Some(if params.filter_enabled() { 1.0 } else { 0.0 }),
+        PARAM_WAVEFORM_MODE_ID => Some(if params.waveform_live_mode() {
+            1.0
+        } else {
+            0.0
+        }),
         PARAM_FILTER_HP_FREQ_ID => Some(params.filter_hp_freq_hz() as f64),
         PARAM_FILTER_HP_Q_ID => Some(params.filter_hp_q() as f64),
         PARAM_FILTER_LP_FREQ_ID => Some(params.filter_lp_freq_hz() as f64),
         PARAM_FILTER_LP_Q_ID => Some(params.filter_lp_q() as f64),
         PARAM_FILTER_HP_SLOPE_ID => Some(params.filter_hp_slope() as f64),
         PARAM_FILTER_LP_SLOPE_ID => Some(params.filter_lp_slope() as f64),
+        PARAM_CROSSOVER_ID => Some(params.crossover_hz() as f64),
+        PARAM_LOW_MIX_ID => Some(params.low_mix() as f64),
+        PARAM_HIGH_MIX_ID => Some(params.high_mix() as f64),
         _ => None,
     }
 }
@@ -662,12 +734,20 @@ fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) ->
         PARAM_FREE_RATE_ID => params.set_free_rate_hz(value as f32),
         PARAM_DELAY_ID => params.set_delay_beats(value as f32),
         PARAM_FILTER_ENABLED_ID => params.set_filter_enabled(value as f32),
+        PARAM_WAVEFORM_MODE_ID => {
+            if value.is_finite() {
+                params.set_waveform_live_mode(value >= 0.5);
+            }
+        }
         PARAM_FILTER_HP_FREQ_ID => params.set_filter_hp_freq_hz(value as f32),
         PARAM_FILTER_HP_Q_ID => params.set_filter_hp_q(value as f32),
         PARAM_FILTER_LP_FREQ_ID => params.set_filter_lp_freq_hz(value as f32),
         PARAM_FILTER_LP_Q_ID => params.set_filter_lp_q(value as f32),
         PARAM_FILTER_HP_SLOPE_ID => params.set_filter_hp_slope(value as f32),
         PARAM_FILTER_LP_SLOPE_ID => params.set_filter_lp_slope(value as f32),
+        PARAM_CROSSOVER_ID => params.set_crossover_hz(value as f32),
+        PARAM_LOW_MIX_ID => params.set_low_mix(value as f32),
+        PARAM_HIGH_MIX_ID => params.set_high_mix(value as f32),
         _ => return false,
     }
     true
@@ -806,10 +886,15 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
             .map(|label| (*label).to_string()),
         PARAM_FREE_RATE_ID => Some(format_free_rate(value as f32)),
         PARAM_DELAY_ID => Some(format_delay_beats(value)),
+        PARAM_WAVEFORM_MODE_ID => {
+            Some(if value.round() >= 1.0 { "Live" } else { "Sync" }.to_string())
+        }
         PARAM_FILTER_ENABLED_ID => {
             Some(if value.round() >= 1.0 { "ON" } else { "OFF" }.to_string())
         }
         PARAM_FILTER_HP_FREQ_ID | PARAM_FILTER_LP_FREQ_ID => Some(format_frequency(value as f32)),
+        PARAM_CROSSOVER_ID => Some(format_frequency(value as f32)),
+        PARAM_LOW_MIX_ID | PARAM_HIGH_MIX_ID => Some(format!("{:.0}%", value * 100.0)),
         PARAM_FILTER_HP_Q_ID | PARAM_FILTER_LP_Q_ID => Some(format!("{:.2} Q", value)),
         PARAM_FILTER_HP_SLOPE_ID | PARAM_FILTER_LP_SLOPE_ID => Some(format!(
             "{} dB/oct",
@@ -895,6 +980,11 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
             }),
         PARAM_FREE_RATE_ID => parse_free_rate(raw).map(|value| value as f64),
         PARAM_DELAY_ID => parse_delay_beats(raw),
+        PARAM_WAVEFORM_MODE_ID => match raw.trim().to_ascii_lowercase().as_str() {
+            "sync" | "0" => Some(0.0),
+            "live" | "1" => Some(1.0),
+            _ => None,
+        },
         PARAM_FILTER_ENABLED_ID => {
             let normalized = raw.trim().to_ascii_lowercase();
             match normalized.as_str() {
@@ -908,6 +998,11 @@ fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
         }
         PARAM_FILTER_HP_FREQ_ID | PARAM_FILTER_LP_FREQ_ID => {
             parse_frequency(raw).map(|value| value as f64)
+        }
+        PARAM_CROSSOVER_ID => parse_frequency(raw).map(|value| value as f64),
+        PARAM_LOW_MIX_ID | PARAM_HIGH_MIX_ID => {
+            let value = raw.trim_end_matches('%').trim().parse::<f64>().ok()?;
+            Some((value / 100.0).clamp(0.0, 1.0))
         }
         PARAM_FILTER_HP_Q_ID | PARAM_FILTER_LP_Q_ID => {
             let stripped = raw.trim_end_matches('Q').trim();

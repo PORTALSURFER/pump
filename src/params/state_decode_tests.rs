@@ -187,6 +187,25 @@ fn v20_extension_start(payload: &[u8]) -> usize {
     offset + 20
 }
 
+fn current_extension_start(payload: &[u8]) -> usize {
+    let mut offset = first_preset_start(payload);
+    let count = read_u32(payload, offset - 4) as usize;
+    for _ in 0..count {
+        let name_len = read_u32(payload, offset) as usize;
+        offset += 4 + name_len + 6 * 4 + 1;
+        offset = skip_encoded_curve(payload, offset, true);
+        let quick_count = read_u32(payload, offset) as usize;
+        offset += 4;
+        for _ in 0..quick_count {
+            offset = skip_encoded_curve(payload, offset, true);
+        }
+        // trigger/smooth/mode/favorite/swing, timing/free-rate/delay, legacy
+        // filter fields and slopes, then the v22 crossover fields.
+        offset += 17 + 12 + 17 + 2 + 13;
+    }
+    offset + 20
+}
+
 fn v19_extension_start(payload: &[u8]) -> usize {
     let mut offset = first_preset_start(payload);
     let preset_count = read_u32(payload, offset - 4) as usize;
@@ -371,8 +390,46 @@ fn sound_state_offsets(payload: &[u8], start: usize) -> (usize, usize, usize) {
     (trigger, mode, offset)
 }
 
+fn remove_v22_crossover_fields(payload: &mut Vec<u8>) {
+    let mut offsets = Vec::new();
+    // Crossover Hz, LOW MIX, HIGH MIX and the compatibility marker.
+    let mut preset = first_preset_start(payload);
+    let preset_count = read_u32(payload, preset - 4) as usize;
+    for _ in 0..preset_count {
+        let name_len = read_u32(payload, preset) as usize;
+        preset += 4 + name_len + 6 * 4 + 1;
+        preset = skip_encoded_curve(payload, preset, true);
+        let quick_count = read_u32(payload, preset) as usize;
+        preset += 4;
+        for _ in 0..quick_count {
+            preset = skip_encoded_curve(payload, preset, true);
+        }
+        preset += 4 + 4 + 4 + 1 + 4 + 4 + 4 + 4 + 1 + 16 + 2;
+        offsets.push(preset);
+        preset += 13;
+    }
+    let mut state_start = preset + 20 + 4;
+    for _ in 0..4 {
+        let (_, _, variable_end) = sound_state_offsets(payload, state_start);
+        let record_end = variable_end + 12 + 19 + 13;
+        offsets.push(record_end - 13);
+        state_start = record_end;
+    }
+    offsets.push(payload.len() - 13);
+    offsets.sort_unstable();
+    for offset in offsets.into_iter().rev() {
+        payload.drain(offset..offset + 13);
+    }
+}
+
 pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Vec<u8> {
     let mut payload = encode_state_payload(params);
+    if version < 22 {
+        remove_v22_crossover_fields(&mut payload);
+    }
+    if version < 21 {
+        payload.pop();
+    }
     if version < 20 {
         remove_v20_filter_slope_fields(&mut payload);
     }
@@ -476,7 +533,7 @@ pub(crate) fn payload_for_state_version(params: &PumpParams, version: u32) -> Ve
             let quick_slot_offset = first_preset_quick_slot_count_offset(&payload);
             payload.truncate(quick_slot_offset);
         }
-        5..=19 => {}
+        5..=21 => {}
         _ => panic!("unsupported test state version"),
     }
     payload
@@ -663,7 +720,7 @@ fn decode_v7_state_defaults_trigger_mode_to_host() {
 fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
     let source = sample_params();
     let mut payload = encode_state_payload(&source);
-    let extension_start = v20_extension_start(&payload);
+    let extension_start = current_extension_start(&payload);
     write_f32(
         &mut payload,
         extension_start - 20,
@@ -686,13 +743,13 @@ fn current_state_maps_legacy_sidechain_and_punch_values_to_supported_modes() {
         super::PROCESSING_MODE_PUNCH as u32,
     );
     let (a_trigger, a_mode, a_end) = sound_state_offsets(&payload, extension_start + 4);
-    let b_start = a_end + 31;
+    let b_start = a_end + 44;
     let (b_trigger, b_mode, b_end) = sound_state_offsets(&payload, b_start);
-    assert_eq!(a_end + 31, b_start);
-    let (stored_a_trigger, stored_a_mode, stored_a_end) = sound_state_offsets(&payload, b_end + 31);
+    assert_eq!(a_end + 44, b_start);
+    let (stored_a_trigger, stored_a_mode, stored_a_end) = sound_state_offsets(&payload, b_end + 44);
     let (stored_b_trigger, stored_b_mode, stored_b_end) =
-        sound_state_offsets(&payload, stored_a_end + 31);
-    assert_eq!(stored_b_end + 62, payload.len());
+        sound_state_offsets(&payload, stored_a_end + 44);
+    assert_eq!(stored_b_end + 89, payload.len());
     write_u32(
         &mut payload,
         a_trigger,
@@ -968,7 +1025,64 @@ fn decode_rejects_trailing_bytes_without_mutating_state() {
 fn decode_rejects_nonfinite_v14_ab_scalar_without_mutating_state() {
     let params = sample_params();
     let mut payload = encode_state_payload(&params);
-    let offset = v20_extension_start(&payload) + 4;
+    let offset = current_extension_start(&payload) + 4;
     write_f32(&mut payload, offset, f32::NAN);
     assert_decode_error_preserves_state(&params, &payload, "invalid A/B scalar field");
+}
+
+#[test]
+fn decode_rejects_malformed_ab_crossover_without_mutating_state() {
+    let params = sample_params();
+    let original = encode_state_payload(&params);
+    let start = current_extension_start(&original) + 4;
+    let (_, _, variable_end) = sound_state_offsets(&original, start);
+    let crossover_start = variable_end + 31;
+    for offset in [0, 4, 8] {
+        let mut payload = original.clone();
+        write_f32(&mut payload, crossover_start + offset, f32::NAN);
+        assert_decode_error_preserves_state(&params, &payload, "invalid A/B scalar field");
+    }
+    let mut payload = original;
+    payload[crossover_start + 12] = 2;
+    assert_decode_error_preserves_state(&params, &payload, "invalid A/B legacy filter mode");
+}
+
+#[test]
+fn waveform_redraw_mode_roundtrips_both_choices() {
+    for live in [false, true] {
+        let source = PumpParams::new();
+        source.set_waveform_live_mode(live);
+        let restored = PumpParams::new();
+        restored.set_waveform_live_mode(!live);
+        decode_state_payload(&restored, &encode_state_payload(&source)).unwrap();
+        assert_eq!(restored.waveform_live_mode(), live);
+    }
+}
+
+#[test]
+fn old_state_defaults_waveform_to_sync() {
+    let restored = PumpParams::new();
+    restored.set_waveform_live_mode(true);
+    decode_state_payload(
+        &restored,
+        &payload_for_state_version(&PumpParams::new(), 20),
+    )
+    .unwrap();
+    assert!(!restored.waveform_live_mode());
+}
+
+#[test]
+fn invalid_waveform_mode_does_not_partially_restore_state() {
+    let source = PumpParams::new();
+    source.set_mix(0.25);
+    let mut payload = encode_state_payload(&source);
+    let restored = PumpParams::new();
+    restored.set_waveform_live_mode(true);
+    let before = encode_state_payload(&restored);
+    *payload.last_mut().unwrap() = 2;
+    assert!(decode_state_payload(&restored, &payload).is_err());
+    assert_eq!(encode_state_payload(&restored), before);
+    payload.pop();
+    assert!(decode_state_payload(&restored, &payload).is_err());
+    assert_eq!(encode_state_payload(&restored), before);
 }

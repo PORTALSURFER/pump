@@ -42,6 +42,9 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        self.shared
+            .status
+            .set_waveform_live_mode(self.shared.params.waveform_live_mode());
         let frame_count = audio.frames_count() as usize;
         if frame_count > self.scratch_left.len() {
             self.shared.status.mark_gain_reduction_inactive();

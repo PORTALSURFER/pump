@@ -155,6 +155,10 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         filter_lp_q: params.filter_lp_q(),
         filter_hp_slope: params.filter_hp_slope(),
         filter_lp_slope: params.filter_lp_slope(),
+        legacy_filter_mode: params.legacy_filter_mode(),
+        crossover_hz: params.crossover_hz(),
+        low_mix: params.low_mix(),
+        high_mix: params.high_mix(),
     }
 }
 

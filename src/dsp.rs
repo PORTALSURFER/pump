@@ -47,6 +47,14 @@ pub struct DspSettings {
     pub filter_hp_slope: usize,
     /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
     pub filter_lp_slope: usize,
+    /// Preserve prior band-pass processing for migrated states.
+    pub legacy_filter_mode: bool,
+    /// Complementary split frequency in hertz.
+    pub crossover_hz: f32,
+    /// Low-band curve-impact amount.
+    pub low_mix: f32,
+    /// High-band curve-impact amount.
+    pub high_mix: f32,
 }
 
 /// Host-bypass crossfade duration in seconds.
@@ -206,11 +214,16 @@ pub struct PumpEngine {
     swing: OnePole,
     output_gain_db: OnePole,
     filter_enabled: OnePole,
+    legacy_mode_mix: OnePole,
     filter_hp_freq_hz: OnePole,
     filter_hp_q: OnePole,
     filter_lp_freq_hz: OnePole,
     filter_lp_q: OnePole,
     filter: StereoBandPass,
+    crossover: StereoCrossover,
+    crossover_hz: OnePole,
+    low_mix: OnePole,
+    high_mix: OnePole,
     wet_gain_smoother: GainSmoother,
     curve_current: [f32; CURVE_TABLE_LEN],
     curve_pending: [f32; CURVE_TABLE_LEN],
@@ -244,6 +257,7 @@ impl PumpEngine {
             swing: OnePole::new(0.0, sample_rate, 0.01),
             output_gain_db: OnePole::new(0.0, sample_rate, 0.01),
             filter_enabled: OnePole::new(0.0, sample_rate, FILTER_PARAMETER_RAMP_SECONDS),
+            legacy_mode_mix: OnePole::new(0.0, sample_rate, FILTER_PARAMETER_RAMP_SECONDS),
             filter_hp_freq_hz: OnePole::new(
                 DEFAULT_FILTER_HP_FREQ_HZ,
                 sample_rate,
@@ -265,6 +279,14 @@ impl PumpEngine {
                 FILTER_PARAMETER_RAMP_SECONDS,
             ),
             filter: StereoBandPass::default(),
+            crossover: StereoCrossover::default(),
+            crossover_hz: OnePole::new(
+                crate::params::DEFAULT_CROSSOVER_HZ,
+                sample_rate,
+                FILTER_PARAMETER_RAMP_SECONDS,
+            ),
+            low_mix: OnePole::new(1.0, sample_rate, FILTER_PARAMETER_RAMP_SECONDS),
+            high_mix: OnePole::new(1.0, sample_rate, FILTER_PARAMETER_RAMP_SECONDS),
             wet_gain_smoother: GainSmoother::new(1.0),
             curve_current: curve,
             curve_pending: curve,
@@ -295,6 +317,7 @@ impl PumpEngine {
     pub fn reset_with_bypass(&mut self, bypassed: bool) {
         self.wet_gain_smoother.reset(1.0);
         self.filter.reset();
+        self.crossover.reset();
         self.bypass.reset(bypassed);
         self.free_phase = 0.0;
         self.free_phase_active = false;
@@ -350,6 +373,32 @@ impl PumpEngine {
             .output_gain_db
             .next(settings.output_gain_db.clamp(-60.0, 24.0));
 
+        let legacy_mode_mix = self
+            .legacy_mode_mix
+            .next(if settings.legacy_filter_mode {
+                1.0
+            } else {
+                0.0
+            })
+            .clamp(0.0, 1.0);
+        let crossover_hz = self
+            .crossover_hz
+            .next(if settings.crossover_hz.is_finite() {
+                settings.crossover_hz.clamp(20.0, 20_000.0)
+            } else {
+                crate::params::DEFAULT_CROSSOVER_HZ
+            });
+        let low_mix = self.low_mix.next(if settings.low_mix.is_finite() {
+            settings.low_mix.clamp(0.0, 1.0)
+        } else {
+            1.0
+        });
+        let high_mix = self.high_mix.next(if settings.high_mix.is_finite() {
+            settings.high_mix.clamp(0.0, 1.0)
+        } else {
+            1.0
+        });
+
         let filter_mix = self
             .filter_enabled
             .next(if settings.filter_enabled { 1.0 } else { 0.0 })
@@ -404,7 +453,7 @@ impl PumpEngine {
         // The filter selects the part of the input affected by Pump. Keeping
         // the residual in the form `(gain - 1) * band` makes gain=1 an exact
         // unity null even while the filters are settling or changing phase.
-        let (pumped_left, pumped_right) = if filter_mix <= f32::EPSILON {
+        let (legacy_left, legacy_right) = if filter_mix <= f32::EPSILON {
             self.filter.reset();
             (dry_left * gain, dry_right * gain)
         } else {
@@ -426,6 +475,15 @@ impl PumpEngine {
                 lerp(dry_right * gain, selective_right, filter_mix),
             )
         };
+        let (low_left, low_right) =
+            self.crossover
+                .process(dry_left, dry_right, self.sample_rate, crossover_hz);
+        let impact_left = crossover_impact(low_left, dry_left, low_mix, high_mix);
+        let impact_right = crossover_impact(low_right, dry_right, low_mix, high_mix);
+        let crossover_left = (dry_left + impact_left * (blend_gain - 1.0)) * output_gain;
+        let crossover_right = (dry_right + impact_right * (blend_gain - 1.0)) * output_gain;
+        let pumped_left = lerp(crossover_left, legacy_left, legacy_mode_mix);
+        let pumped_right = lerp(crossover_right, legacy_right, legacy_mode_mix);
         let bypass_blend = self.bypass.next(settings.bypassed);
         if bypass_blend == 1.0 {
             *left = dry_left;
@@ -468,6 +526,13 @@ impl PumpEngine {
 
         morphed
     }
+}
+
+#[inline]
+fn crossover_impact(low: f32, dry: f32, low_mix: f32, high_mix: f32) -> f32 {
+    // Since high = dry - low, this form reconstructs dry exactly when both
+    // bands have equal impact and avoids cancellation between two products.
+    high_mix * dry + (low_mix - high_mix) * low
 }
 
 fn resolve_effective_transport(transport: TransportState) -> TransportState {
@@ -738,6 +803,39 @@ fn slope_to_stage_count(slope: usize) -> usize {
         0 => 1,
         1 => 2,
         _ => 4,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StereoCrossover {
+    low_left: f32,
+    low_right: f32,
+}
+
+impl StereoCrossover {
+    fn reset(&mut self) {
+        self.low_left = 0.0;
+        self.low_right = 0.0;
+    }
+
+    fn process(&mut self, left: f32, right: f32, sample_rate: f32, cutoff_hz: f32) -> (f32, f32) {
+        // Bilinear one-pole low-pass in TPT form. High is the input residual,
+        // making the bands complementary without buffering or algorithmic delay.
+        let nyquist_limit = (sample_rate * 0.49).max(1.0);
+        let cutoff = if cutoff_hz.is_finite() {
+            cutoff_hz.clamp(1.0, nyquist_limit)
+        } else {
+            1_000.0f32.min(nyquist_limit)
+        };
+        let g = (std::f32::consts::PI * cutoff / sample_rate.max(1.0)).tan();
+        let a = (g / (1.0 + g)).clamp(0.0, 1.0);
+        let v_left = a * (left - self.low_left);
+        let v_right = a * (right - self.low_right);
+        let low_left = v_left + self.low_left;
+        let low_right = v_right + self.low_right;
+        self.low_left = (low_left + v_left).clamp(-1.0e12, 1.0e12);
+        self.low_right = (low_right + v_right).clamp(-1.0e12, 1.0e12);
+        (low_left, low_right)
     }
 }
 
@@ -1315,12 +1413,91 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        curve_value_to_gain, db_to_linear, filter_response_db, smooth_time_constant_seconds,
-        swing_warp_phase, sync_phase_from_beats, DspSettings, PumpEngine, MAX_SMOOTH_TIME_SECONDS,
-        SMOOTH_COMPATIBILITY_KNEE,
+        crossover_impact, curve_value_to_gain, db_to_linear, filter_response_db,
+        smooth_time_constant_seconds, swing_warp_phase, sync_phase_from_beats, DspSettings,
+        PumpEngine, StereoCrossover, MAX_SMOOTH_TIME_SECONDS, SMOOTH_COMPATIBILITY_KNEE,
     };
     use crate::curve::{default_editable_curve, editable_curve_to_table, sample_curve};
     use toybox::dsp::TransportState;
+
+    #[test]
+    fn complementary_crossover_has_no_buffered_latency_and_expected_first_order_response() {
+        const RATE: f32 = 48_000.0;
+        const CUTOFF: f32 = 1_000.0;
+        let mut impulse = StereoCrossover::default();
+        let first_low = impulse.process(1.0, 0.0, RATE, CUTOFF);
+        assert!(
+            first_low.0 > 0.0 && first_low.0 < 1.0,
+            "both bands must respond on the first impulse sample"
+        );
+        assert_eq!(first_low.1, 0.0, "stereo channels must remain independent");
+        let mut crossover = StereoCrossover::default();
+        let mut dc = 0.0;
+        for _ in 0..48_000 {
+            dc = crossover.process(1.0, 1.0, RATE, CUTOFF).0;
+        }
+        assert!((dc - 1.0).abs() < 1.0e-5, "DC low-pass output {dc}");
+
+        let mut crossover = StereoCrossover::default();
+        let mut measured = 0.0;
+        let mut low_power = 0.0;
+        let mut high_power = 0.0;
+        for index in 0..48_000 {
+            let input = if index % 2 == 0 { 1.0 } else { -1.0 };
+            let (low, _) = crossover.process(input, input, RATE, CUTOFF);
+            measured = low;
+            if index >= 24_000 {
+                low_power += (low * low) as f64;
+                let high = input - low;
+                high_power += (high * high) as f64;
+            }
+        }
+        assert!(
+            measured.abs() < 1.0e-5,
+            "Nyquist low-pass output {measured}"
+        );
+        assert!(
+            low_power.sqrt() < 1.0e-3,
+            "Nyquist low-band RMS {}",
+            low_power.sqrt()
+        );
+        assert!(
+            high_power.sqrt() > 100.0,
+            "Nyquist high band should pass input"
+        );
+
+        let mut crossover = StereoCrossover::default();
+        let mut low_power = 0.0;
+        let mut high_power = 0.0;
+        for index in 0..96_000 {
+            let input = (std::f32::consts::TAU * CUTOFF * index as f32 / RATE).sin();
+            let (low, _) = crossover.process(input, input, RATE, CUTOFF);
+            if index >= 48_000 {
+                low_power += (low * low) as f64;
+                let high = input - low;
+                high_power += (high * high) as f64;
+            }
+        }
+        let low_rms = (low_power / 48_000.0).sqrt();
+        let high_rms = (high_power / 48_000.0).sqrt();
+        assert!((low_rms - 0.5).abs() < 0.01, "-3 dB low-pass RMS {low_rms}");
+        assert!(
+            (high_rms - 0.5).abs() < 0.01,
+            "-3 dB high-pass RMS {high_rms}"
+        );
+    }
+
+    #[test]
+    fn crossover_mix_zero_is_dry_and_equal_mixes_reconstruct_dry_exactly() {
+        let dry = [0.0, -1.0, 0.125, 0.75, -0.333_333_34];
+        let low = [0.5, -0.8, 0.0625, 0.2, -0.25];
+        for (dry, low) in dry.into_iter().zip(low) {
+            assert_eq!(crossover_impact(low, dry, 0.0, 0.0), 0.0);
+            assert_eq!(crossover_impact(low, dry, 0.37, 0.37), 0.37 * dry);
+            assert_eq!(crossover_impact(low, dry, 0.0, 1.0), dry - low);
+            assert_eq!(crossover_impact(low, dry, 1.0, 0.0), low);
+        }
+    }
 
     #[test]
     fn gain_mapping_stays_finite_for_extremes() {
@@ -1347,6 +1524,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         };
 
         let mut left = 1.0;
@@ -1396,6 +1577,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         };
         let mut engine = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
         let mut left = 1.0;
@@ -1431,6 +1616,10 @@ mod tests {
             filter_lp_q: 0.707,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: true,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         }
     }
 
@@ -1515,6 +1704,40 @@ mod tests {
         );
         assert!(below_band > inside_band * 2.0);
         assert!(above_band > inside_band * 2.0);
+    }
+
+    #[test]
+    fn crossover_band_mix_controls_curve_impact_while_leaving_the_other_band_dry() {
+        let mut low_only = filter_test_settings(false);
+        low_only.legacy_filter_mode = false;
+        low_only.crossover_hz = 1_000.0;
+        low_only.low_mix = 1.0;
+        low_only.high_mix = 0.0;
+        let low_attenuated = sine_rms_after_settling(100.0, low_only);
+        let high_dry = sine_rms_after_settling(8_000.0, low_only);
+
+        let mut high_only = low_only;
+        high_only.low_mix = 0.0;
+        high_only.high_mix = 1.0;
+        let low_dry = sine_rms_after_settling(100.0, high_only);
+        let high_attenuated = sine_rms_after_settling(8_000.0, high_only);
+
+        assert!(
+            low_attenuated < 0.4,
+            "LOW MIX should pump low band: {low_attenuated}"
+        );
+        assert!(
+            high_dry > 0.55,
+            "LOW MIX 0 should pass high band dry: {high_dry}"
+        );
+        assert!(
+            low_dry > 0.55,
+            "HIGH MIX 0 should pass low band dry: {low_dry}"
+        );
+        assert!(
+            high_attenuated < 0.4,
+            "HIGH MIX should pump high band: {high_attenuated}"
+        );
     }
 
     #[test]
@@ -1798,6 +2021,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         }
     }
 
@@ -1927,6 +2154,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -1970,6 +2201,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         };
 
         let mut min_gain = 1.0_f32;
@@ -2016,6 +2251,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         };
         let mut first = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         let mut second = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
@@ -2077,6 +2316,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         };
         let mut engine = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         for _ in 0..1_000 {
@@ -2110,6 +2353,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         };
         let sync = DspSettings {
             timing_mode: crate::params::TIMING_MODE_SYNC,
@@ -2167,6 +2414,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         }
     }
 
@@ -2442,6 +2693,10 @@ mod tests {
             filter_lp_q: crate::params::DEFAULT_FILTER_LP_Q,
             filter_hp_slope: 0,
             filter_lp_slope: 0,
+            legacy_filter_mode: false,
+            crossover_hz: crate::params::DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
         }
     }
 

@@ -199,14 +199,17 @@ fn native_editor_types_delay_toggles_bypass_and_preserves_audio_on_hide() {
 
     click(570.0, 383.0);
     assert!(shared.params.bypassed());
-    assert_eq!(key(' ' as u16, 7, 0), kResultOk);
-    assert!(!shared.params.bypassed(), "focused bypass supports Space");
+    assert_eq!(key(' ' as u16, 7, 0), kResultFalse);
+    assert!(
+        shared.params.bypassed(),
+        "focused Space belongs to the host"
+    );
     unsafe {
         SendMessageW(child, WM_CHAR, Some(WPARAM(32)), Some(LPARAM(0)));
     }
     assert!(
-        !shared.params.bypassed(),
-        "text commits must not double-activate buttons"
+        shared.params.bypassed(),
+        "native text commits must not activate buttons"
     );
 
     shared.params.set_mix(0.37);

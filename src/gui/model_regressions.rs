@@ -5828,3 +5828,22 @@ fn radiant_delay_numeric_entry_accepts_integer_beats_and_formats_units() {
         "invalid Delay commits must not add history"
     );
 }
+
+#[test]
+fn waveform_mode_toggle_is_saved_and_restored_into_new_and_open_editors() {
+    let params = Arc::new(PumpParams::new());
+    let mut state = editor_state(Arc::clone(&params));
+    reduce_editor_message(&mut state, EditorMessage::ToggleWaveformMode);
+    assert!(params.waveform_live_mode());
+    assert!(state.status.waveform_live_mode());
+    let saved = crate::params::encode_state_payload(&params);
+    let restored = Arc::new(PumpParams::new());
+    crate::params::decode_state_payload(&restored, &saved).unwrap();
+    let mut reopened = editor_state(Arc::clone(&restored));
+    assert!(reopened.status.waveform_live_mode());
+    reduce_editor_message(&mut reopened, EditorMessage::ToggleWaveformMode);
+    let sync = crate::params::encode_state_payload(&restored);
+    crate::params::decode_state_payload(&params, &sync).unwrap();
+    state.refresh_host_projection();
+    assert!(!state.status.waveform_live_mode());
+}

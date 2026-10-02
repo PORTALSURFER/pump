@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 20;
+pub(crate) const STATE_VERSION: u32 = 22;
 
 /// The two independently editable Pump sound sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +81,14 @@ pub struct PumpSoundState {
     pub filter_hp_slope: usize,
     /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
     pub filter_lp_slope: usize,
+    /// Crossover frequency used by the complementary low/high split.
+    pub crossover_hz: f32,
+    /// Amount of the Pump curve applied to the low band.
+    pub low_mix: f32,
+    /// Amount of the Pump curve applied to the high band.
+    pub high_mix: f32,
+    /// Preserve the prior band-pass behavior for migrated states.
+    pub legacy_filter_mode: bool,
     pub editable_curve: EditableCurve,
     pub quick_slots: Vec<QuickShapeSlot>,
 }
@@ -108,6 +116,10 @@ impl PumpSoundState {
             filter_lp_q: DEFAULT_FILTER_LP_Q,
             filter_hp_slope: DEFAULT_FILTER_SLOPE,
             filter_lp_slope: DEFAULT_FILTER_SLOPE,
+            crossover_hz: DEFAULT_CROSSOVER_HZ,
+            low_mix: 1.0,
+            high_mix: 1.0,
+            legacy_filter_mode: false,
             editable_curve: default_editable_curve(),
             quick_slots: seeded_quick_shape_slots(),
         }
@@ -163,6 +175,14 @@ pub const PARAM_FILTER_LP_Q_NUM: u32 = 21;
 pub const PARAM_FILTER_HP_SLOPE_NUM: u32 = 22;
 /// Host-visible numeric parameter id for selective filter low-pass slope.
 pub const PARAM_FILTER_LP_SLOPE_NUM: u32 = 23;
+/// Host-visible numeric parameter id for waveform redraw (Sync=0, Live=1).
+pub const PARAM_WAVEFORM_MODE_NUM: u32 = 24;
+/// Host-visible numeric parameter id for crossover frequency.
+pub const PARAM_CROSSOVER_NUM: u32 = 25;
+/// Host-visible numeric parameter id for low-band curve impact.
+pub const PARAM_LOW_MIX_NUM: u32 = 26;
+/// Host-visible numeric parameter id for high-band curve impact.
+pub const PARAM_HIGH_MIX_NUM: u32 = 27;
 
 /// Parameter id for dry/wet blend.
 pub const PARAM_MIX_ID: ClapId = ClapId::new(PARAM_MIX_NUM);
@@ -210,6 +230,14 @@ pub const PARAM_FILTER_LP_Q_ID: ClapId = ClapId::new(PARAM_FILTER_LP_Q_NUM);
 pub const PARAM_FILTER_HP_SLOPE_ID: ClapId = ClapId::new(PARAM_FILTER_HP_SLOPE_NUM);
 /// Parameter id for selective filter low-pass slope.
 pub const PARAM_FILTER_LP_SLOPE_ID: ClapId = ClapId::new(PARAM_FILTER_LP_SLOPE_NUM);
+/// Parameter id for the waveform redraw mode.
+pub const PARAM_WAVEFORM_MODE_ID: ClapId = ClapId::new(PARAM_WAVEFORM_MODE_NUM);
+/// Parameter id for crossover frequency.
+pub const PARAM_CROSSOVER_ID: ClapId = ClapId::new(PARAM_CROSSOVER_NUM);
+/// Parameter id for low-band curve impact.
+pub const PARAM_LOW_MIX_ID: ClapId = ClapId::new(PARAM_LOW_MIX_NUM);
+/// Parameter id for high-band curve impact.
+pub const PARAM_HIGH_MIX_ID: ClapId = ClapId::new(PARAM_HIGH_MIX_NUM);
 
 /// Plain host value for active processing.
 pub const BYPASS_ACTIVE_VALUE: f32 = 0.0;
@@ -299,6 +327,12 @@ pub const DEFAULT_FILTER_LP_FREQ_HZ: f32 = 16_000.0;
 pub const DEFAULT_FILTER_LP_Q: f32 = 0.707;
 /// Default filter slope index, corresponding to 12 dB/oct.
 pub const DEFAULT_FILTER_SLOPE: usize = 0;
+/// Default center frequency for the complementary low/high crossover.
+pub const DEFAULT_CROSSOVER_HZ: f32 = 1_000.0;
+/// Lowest supported crossover frequency in hertz.
+pub const MIN_CROSSOVER_HZ: f32 = 20.0;
+/// Highest supported crossover frequency in hertz.
+pub const MAX_CROSSOVER_HZ: f32 = 20_000.0;
 /// Highest selectable filter slope index.
 pub const MAX_FILTER_SLOPE: usize = 2;
 /// Default sync division index (`1/4`).
@@ -538,6 +572,14 @@ pub struct PumpPreset {
     pub filter_hp_slope: usize,
     /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
     pub filter_lp_slope: usize,
+    /// Crossover frequency used by the complementary low/high split.
+    pub crossover_hz: f32,
+    /// Amount of the Pump curve applied to the low band.
+    pub low_mix: f32,
+    /// Amount of the Pump curve applied to the high band.
+    pub high_mix: f32,
+    /// Preserve the prior band-pass behavior for migrated states.
+    pub legacy_filter_mode: bool,
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
     /// Overwriteable quick-slot curves shown below the editor for this preset.
@@ -616,6 +658,10 @@ impl PumpPresetBank {
                 filter_lp_q: DEFAULT_FILTER_LP_Q,
                 filter_hp_slope: DEFAULT_FILTER_SLOPE,
                 filter_lp_slope: DEFAULT_FILTER_SLOPE,
+                crossover_hz: DEFAULT_CROSSOVER_HZ,
+                low_mix: 1.0,
+                high_mix: 1.0,
+                legacy_filter_mode: false,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -674,6 +720,8 @@ pub(crate) fn curve_near_eq(left: &EditableCurve, right: &EditableCurve) -> bool
 
 /// Shared atomic parameter/state storage across threads.
 pub struct PumpParams {
+    /// Per-instance display preference, persisted with host state.
+    pub(super) waveform_live_mode: AtomicBool,
     pub(super) mix: AtomicF32,
     pub(super) depth_db: AtomicF32,
     pub(super) floor_db: AtomicF32,
@@ -694,6 +742,10 @@ pub struct PumpParams {
     pub(super) filter_lp_q: AtomicF32,
     pub(super) filter_hp_slope: AtomicU32,
     pub(super) filter_lp_slope: AtomicU32,
+    pub(super) crossover_hz: AtomicF32,
+    pub(super) low_mix: AtomicF32,
+    pub(super) high_mix: AtomicF32,
+    pub(super) legacy_filter_mode: AtomicBool,
     pub(super) bypass: AtomicBool,
     pub(super) bypass_revision: AtomicU32,
     pub(super) bypass_last_automation_micros: AtomicU64,
@@ -725,6 +777,10 @@ pub struct PumpParams {
     pub(super) realtime_filter_lp_q: [AtomicF32; 2],
     pub(super) realtime_filter_hp_slope: [AtomicU32; 2],
     pub(super) realtime_filter_lp_slope: [AtomicU32; 2],
+    pub(super) realtime_crossover_hz: [AtomicF32; 2],
+    pub(super) realtime_low_mix: [AtomicF32; 2],
+    pub(super) realtime_high_mix: [AtomicF32; 2],
+    pub(super) realtime_legacy_filter_mode: [AtomicBool; 2],
     pub(super) realtime_curve: [[AtomicF32; CURVE_TABLE_LEN]; 2],
     pub(super) sound_states: RwLock<[PumpSoundState; 2]>,
     /// Durable per-side reference states used for A/B dirty indicators.

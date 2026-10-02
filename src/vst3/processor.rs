@@ -79,6 +79,9 @@ impl PumpVst3Processor {
     }
 
     fn apply_pending_runtime_changes(&self, runtime: &mut PumpVst3Runtime) {
+        self.shared
+            .status
+            .set_waveform_live_mode(self.shared.params.waveform_live_mode());
         let pending = self.runtime_handoff.take_pending();
         if let Some(sample_rate) = pending.sample_rate {
             runtime.set_sample_rate(sample_rate.into(), self.shared.params.as_ref());

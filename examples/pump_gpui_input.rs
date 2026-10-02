@@ -2,16 +2,18 @@
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use cocoa::appkit::{NSApp, NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask};
+    use cocoa::appkit::{NSApp, NSBackingStoreType, NSWindow, NSWindowStyleMask};
     use cocoa::base::{id, nil};
     use cocoa::foundation::{NSAutoreleasePool, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize};
-    use objc::runtime::{Object, BOOL, NO, YES};
+    use objc::declare::ClassDecl;
+    use objc::runtime::{Object, Sel, BOOL, NO, YES};
     use objc::{class, msg_send, sel, sel_impl};
     use pump::gui_gpui::{new_screenshot_gui_with_params, WINDOW_HEIGHT, WINDOW_WIDTH};
     use raw_window_handle::{AppKitWindowHandle, RawWindowHandle};
     use std::ffi::{c_void, CStr, CString, OsString};
     use std::path::PathBuf;
     use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -28,7 +30,7 @@ mod macos {
     const TIMING_VALUE_Y: f64 = 27.0;
     const TIMING_OPTION_FIRST_CENTER_Y: f64 = 66.0;
     const TIMING_OPTION_STEP_Y: f64 = 25.0;
-    const SMOOTH_X: f64 = 87.0;
+    const SMOOTH_X: f64 = 64.0;
     const SMOOTH_KNOB_Y: f64 = 332.0;
     const SMOOTH_VALUE_Y: f64 = 365.0;
     const BYPASS_X: f64 = 570.0;
@@ -41,18 +43,12 @@ mod macos {
     const CURVE_SEGMENT_Y: f64 = 185.0;
     const CURVE_PLOT_X: f64 = 300.0;
     const CURVE_PLOT_Y: f64 = 90.0;
-    // At the fixed 640x400 contract, the filter plot maps 320 Hz to roughly
-    // this x coordinate. The y coordinate is discovered from the rendered
-    // marker below because the native capture may use a different backing
-    // scale or a slightly different curve layout.
-    const FILTER_HP_HANDLE_X_APPROX: f64 = 265.0;
-    const FILTER_HP_HANDLE_Y_APPROX: f64 = 221.0;
-    // When an HP node is selected, the compact filter controls are appended
-    // to the existing lower deck. These are logical-point positions for the
-    // fixed 640-point fixture; the marker itself is located from the frame.
-    const FILTER_HP_FREQ_KNOB_X: f64 = 408.0;
-    const FILTER_CONTROL_KNOB_Y: f64 = 333.0;
-    const FILTER_HP_SLOPE_48_X: f64 = 618.0;
+    // Locate the crossover marker from the native frame before dragging it.
+    const CROSSOVER_HANDLE_X_APPROX: f64 = 265.0;
+    const CROSSOVER_HANDLE_Y_APPROX: f64 = 147.0;
+    const LOW_MIX_X: f64 = 475.0;
+    const HIGH_MIX_X: f64 = 574.0;
+    const IMPACT_MIX_BAR_Y: f64 = 336.0;
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
@@ -70,6 +66,37 @@ mod macos {
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
         fn CFRelease(value: *const c_void);
+    }
+
+    static HOST_SPACE_DOWN: AtomicUsize = AtomicUsize::new(0);
+    static HOST_SPACE_UP: AtomicUsize = AtomicUsize::new(0);
+    static HOST_S_DOWN: AtomicUsize = AtomicUsize::new(0);
+    static HOST_S_UP: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn host_key_down(this: &Object, _: Sel, event: id) {
+        unsafe {
+            let code: u16 = msg_send![event, keyCode];
+            if code == 49 {
+                HOST_SPACE_DOWN.fetch_add(1, Ordering::Relaxed);
+            } else if code == 1 {
+                HOST_S_DOWN.fetch_add(1, Ordering::Relaxed);
+            } else {
+                let _: () = msg_send![super(this, class!(NSView)), keyDown: event];
+            }
+        }
+    }
+
+    extern "C" fn host_key_up(this: &Object, _: Sel, event: id) {
+        unsafe {
+            let code: u16 = msg_send![event, keyCode];
+            if code == 49 {
+                HOST_SPACE_UP.fetch_add(1, Ordering::Relaxed);
+            } else if code == 1 {
+                HOST_S_UP.fetch_add(1, Ordering::Relaxed);
+            } else {
+                let _: () = msg_send![super(this, class!(NSView)), keyUp: event];
+            }
+        }
     }
 
     struct NativeFixture {
@@ -90,7 +117,16 @@ mod macos {
                 NSBackingStoreType::NSBackingStoreBuffered,
                 false,
             );
-            let view = NSView::alloc(nil).initWithFrame_(frame);
+            let mut declaration = ClassDecl::new("PumpInputHostResponder", class!(NSView))
+                .expect("fixture host responder class");
+            declaration.add_method(
+                sel!(keyDown:),
+                host_key_down as extern "C" fn(&Object, Sel, id),
+            );
+            declaration.add_method(sel!(keyUp:), host_key_up as extern "C" fn(&Object, Sel, id));
+            let host_class = declaration.register();
+            let view: id = msg_send![host_class, alloc];
+            let view: id = msg_send![view, initWithFrame: frame];
             window.setContentView_(view);
             window.makeKeyAndOrderFront_(nil);
             Self { window, view }
@@ -410,11 +446,11 @@ mod macos {
         let (score, _, x, y) = best.unwrap_or((0, 0.0, 0, 0));
         assert!(
             score >= 5,
-            "{context}: rendered HP filter marker not found near ({approximate_x:.1}, {approximate_y:.1}) in {width}x{height} capture (best orange ring score {score})"
+            "{context}: rendered crossover marker not found near ({approximate_x:.1}, {approximate_y:.1}) in {width}x{height} capture (best orange ring score {score})"
         );
         let logical = (f64::from(x) / scale_x, f64::from(y) / scale_y);
         eprintln!(
-            "{context}: rendered HP filter marker at ({:.2}, {:.2}) from {width}x{height} capture (orange ring score {score})",
+            "{context}: rendered crossover marker at ({:.2}, {:.2}) from {width}x{height} capture (orange ring score {score})",
             logical.0, logical.1
         );
         logical
@@ -677,6 +713,29 @@ mod macos {
     ) {
         send_click(fixture.window, DELAY_X, DELAY_Y, 0);
         pump_appkit(app, gui, 0.03);
+        let down_before = HOST_SPACE_DOWN.load(Ordering::Relaxed);
+        let up_before = HOST_SPACE_UP.load(Ordering::Relaxed);
+        assert!(
+            !gui.on_key_down(32, 7, 0),
+            "focused numeric input must yield Space"
+        );
+        assert!(
+            !gui.on_key_up(32, 7, 0),
+            "focused numeric input must yield Space release"
+        );
+        send_key(app, fixture.window, gui, " ", 49, 0);
+        assert_eq!(HOST_SPACE_DOWN.load(Ordering::Relaxed), down_before + 1);
+        assert_eq!(HOST_SPACE_UP.load(Ordering::Relaxed), up_before + 1);
+        let s_down_before = HOST_S_DOWN.load(Ordering::Relaxed);
+        let s_up_before = HOST_S_UP.load(Ordering::Relaxed);
+        assert!(
+            gui.on_key_down(b's' as u16, 0, 0),
+            "text entry keeps S for units"
+        );
+        let _ = gui.on_key_up(b's' as u16, 0, 0);
+        send_key(app, fixture.window, gui, "s", 1, 0);
+        assert_eq!(HOST_S_DOWN.load(Ordering::Relaxed), s_down_before);
+        assert_eq!(HOST_S_UP.load(Ordering::Relaxed), s_up_before);
         send_key(app, fixture.window, gui, "a", 0, COMMAND);
         send_text(app, fixture.window, gui, text);
         send_key(app, fixture.window, gui, "\r", 36, 0);
@@ -749,91 +808,66 @@ mod macos {
             "native timing dropdown should select a sync subdivision"
         );
 
-        // Filter handles are drawn above the curve canvas and must capture a
-        // real native drag before the curve's own gesture admission runs.
-        // Locate the rendered marker so the native event lands at its center
-        // across backing-scale and layout differences.
-        params.set_filter_enabled(1.0);
-        params.set_filter_hp_freq_hz(320.0);
-        params.set_filter_hp_q(0.25);
-        params.set_filter_lp_freq_hz(4_800.0);
-        params.set_filter_lp_q(0.25);
-        // Parameter setters update the shared state directly and do not by
-        // themselves request a GPUI repaint. Capture the next rendered frame
-        // before deriving native input from the fixed plot geometry so the
-        // filter overlay and its hit target are committed on slower runners.
-        let filter_capture = capture_pixels(&gui, "filter handles ready");
-        let (filter_hp_x, filter_hp_y) = filter_handle_position(
-            &filter_capture,
-            FILTER_HP_HANDLE_X_APPROX,
-            FILTER_HP_HANDLE_Y_APPROX,
-            "filter handles ready",
+        // Crossover input must take precedence over curve editing.
+        params.set_crossover_hz(320.0);
+        params.set_low_mix(1.0);
+        params.set_high_mix(1.0);
+        let crossover_capture = capture_pixels(&gui, "crossover ready");
+        let (handle_x, handle_y) = filter_handle_position(
+            &crossover_capture,
+            CROSSOVER_HANDLE_X_APPROX,
+            CROSSOVER_HANDLE_Y_APPROX,
+            "crossover ready",
         );
-        let filter_curve_before = params.editable_curve_snapshot();
-        let filter_hp_before = params.filter_hp_freq_hz();
-        send_mouse_move(fixture.window, filter_hp_x, filter_hp_y);
+        let curve_before = params.editable_curve_snapshot();
+        let frequency_before = params.crossover_hz();
+        send_mouse_move(fixture.window, handle_x, handle_y);
         pump_appkit(app, &gui, 0.04);
-        send_mouse_down(fixture.window, filter_hp_x, filter_hp_y, 0);
-        send_mouse_dragged(fixture.window, filter_hp_x + 42.0, filter_hp_y - 10.0, 0);
-        send_mouse_up(fixture.window, filter_hp_x + 42.0, filter_hp_y - 10.0, 0);
+        send_mouse_down(fixture.window, handle_x, handle_y, 0);
+        send_mouse_dragged(fixture.window, handle_x + 42.0, handle_y - 10.0, 0);
+        send_mouse_up(fixture.window, handle_x + 42.0, handle_y - 10.0, 0);
         pump_appkit(app, &gui, 0.05);
         assert!(
-            params.filter_hp_freq_hz() > filter_hp_before,
-            "native HP handle drag should update its cutoff"
-        );
-        assert_eq!(
-            params.filter_lp_freq_hz(),
-            4_800.0,
-            "native HP handle drag must leave LP cutoff unchanged"
+            params.crossover_hz() > frequency_before,
+            "native crossover drag should update the shared frequency"
         );
         assert_eq!(
             params.editable_curve_snapshot(),
-            filter_curve_before,
-            "native filter handle drag must not mutate the pump curve"
+            curve_before,
+            "native crossover drag must not mutate the pump curve"
         );
 
-        // Releasing the node retains its selection and exposes the compact
-        // HP Frequency/Q knobs. Exercise the real native knob and slope
-        // selector while the curve remains unchanged.
-        capture_frame(&gui, "selected HP filter controls");
-        let filter_hp_knob_before = params.filter_hp_freq_hz();
-        send_mouse_move(fixture.window, FILTER_HP_FREQ_KNOB_X, FILTER_CONTROL_KNOB_Y);
-        send_mouse_down(
-            fixture.window,
-            FILTER_HP_FREQ_KNOB_X,
-            FILTER_CONTROL_KNOB_Y,
-            0,
-        );
-        send_mouse_dragged(
-            fixture.window,
-            FILTER_HP_FREQ_KNOB_X,
-            FILTER_CONTROL_KNOB_Y - 30.0,
-            0,
-        );
-        send_mouse_up(
-            fixture.window,
-            FILTER_HP_FREQ_KNOB_X,
-            FILTER_CONTROL_KNOB_Y - 30.0,
-            0,
-        );
-        pump_appkit(app, &gui, 0.05);
-        assert!(
-            params.filter_hp_freq_hz() > filter_hp_knob_before,
-            "native selected HP Frequency knob should update its cutoff"
-        );
-        send_click(
-            fixture.window,
-            FILTER_HP_SLOPE_48_X,
-            FILTER_CONTROL_KNOB_Y,
-            0,
-        );
-        pump_appkit(app, &gui, 0.04);
-        assert_eq!(
-            params.filter_hp_slope(),
-            2,
-            "native selected HP slope control should select 48 dB/oct"
-        );
-        params.set_filter_enabled(0.0);
+        // Both bars adjust curve impact independently, without editing the curve.
+        for (x, low_band) in [(LOW_MIX_X, true), (HIGH_MIX_X, false)] {
+            let other_before = if low_band {
+                params.high_mix()
+            } else {
+                params.low_mix()
+            };
+            send_mouse_down(fixture.window, x, IMPACT_MIX_BAR_Y, 0);
+            send_mouse_dragged(fixture.window, x - 30.0, IMPACT_MIX_BAR_Y, 0);
+            send_mouse_up(fixture.window, x - 30.0, IMPACT_MIX_BAR_Y, 0);
+            pump_appkit(app, &gui, 0.05);
+            let value = if low_band {
+                params.low_mix()
+            } else {
+                params.high_mix()
+            };
+            assert!(value < 1.0, "native impact bar drag should reduce its mix");
+            assert_eq!(
+                if low_band {
+                    params.high_mix()
+                } else {
+                    params.low_mix()
+                },
+                other_before,
+                "native impact bar drag must leave the other band unchanged"
+            );
+        }
+        assert_eq!(params.editable_curve_snapshot(), curve_before);
+        params.set_low_mix(0.0);
+        params.set_high_mix(0.0);
+        capture_frame(&gui, "crossover hidden with both bands unpumped");
 
         // Exercise the curve's retained visual feedback through real native
         // hover/modifier/drag events before mutating its authored points.
@@ -1373,7 +1407,7 @@ mod macos {
         // edit changes the parameter rather than merely observing its setup.
         params.set_free_rate_hz(4.0);
         pump_appkit(app, &gui, 0.04);
-        send_click(fixture.window, 320.0, SMOOTH_VALUE_Y, COMMAND);
+        send_click(fixture.window, 232.0, SMOOTH_VALUE_Y, COMMAND);
         pump_appkit(app, &gui, 0.03);
         send_key(app, fixture.window, &gui, "a", 0, COMMAND);
         send_text(app, fixture.window, &gui, "500 ms");
@@ -1412,8 +1446,8 @@ mod macos {
         send_key(app, fixture.window, &gui, "\u{1b}", 53, 0);
         drop(idle_pasteboard_restore);
 
-        // Focus the native bypass button, then verify repeated Space and
-        // Enter each produce one activation.
+        // Focus the native bypass button: Space belongs to the host,
+        // while Enter still activates the control.
         send_click(fixture.window, BYPASS_X, BYPASS_Y, 0);
         pump_appkit(app, &gui, 0.03);
         assert!(
@@ -1422,16 +1456,57 @@ mod macos {
         );
         assert!(params.bypassed(), "native bypass click should toggle once");
         let bypass_after_click = params.bypassed();
+        for character in [b's' as u16, b'S' as u16] {
+            assert!(!gui.on_key_down(character, 0, 0));
+            assert!(!gui.on_key_up(character, 0, 0));
+        }
+        HOST_S_DOWN.store(0, Ordering::Relaxed);
+        HOST_S_UP.store(0, Ordering::Relaxed);
+        send_repeated_key(app, fixture.window, &gui, "s", 1, 0);
+        assert_eq!(
+            HOST_S_DOWN.load(Ordering::Relaxed),
+            2,
+            "native S and repeat reach host responder"
+        );
+        assert_eq!(
+            HOST_S_UP.load(Ordering::Relaxed),
+            1,
+            "native S release reaches host responder"
+        );
+        assert_eq!(params.bypassed(), bypass_after_click);
+
+        for (character, code) in [(32, 0), (0, 7), (32, 7)] {
+            assert!(
+                !gui.on_key_down(character, code, 0),
+                "VST3 Space must be unhandled"
+            );
+            assert!(
+                !gui.on_key_up(character, code, 0),
+                "VST3 Space release must be unhandled"
+            );
+        }
+        HOST_SPACE_DOWN.store(0, Ordering::Relaxed);
+        HOST_SPACE_UP.store(0, Ordering::Relaxed);
         send_repeated_key(app, fixture.window, &gui, " ", 49, 0);
         assert_eq!(
+            HOST_SPACE_DOWN.load(Ordering::Relaxed),
+            2,
+            "native Space and repeat reach host responder"
+        );
+        assert_eq!(
+            HOST_SPACE_UP.load(Ordering::Relaxed),
+            1,
+            "native Space release reaches host responder"
+        );
+        assert_eq!(
             params.bypassed(),
-            !bypass_after_click,
-            "repeated Space should toggle bypass exactly once"
+            bypass_after_click,
+            "repeated Space must leave the focused bypass unchanged"
         );
         send_key(app, fixture.window, &gui, "\r", 36, 0);
         assert_eq!(
             params.bypassed(),
-            bypass_after_click,
+            !bypass_after_click,
             "Enter should toggle bypass exactly once"
         );
 
@@ -1453,7 +1528,7 @@ mod macos {
         );
         gui.close();
         eprintln!(
-            "PASS native Pump GPUI filter handle selection/drag, filter knobs/slope, delay typing/arrows/Backspace, marquee deletion, cyclic node drags, seam handles, insertion, offset direction, timing dropdown, clipboard, Smooth controls, host projection, transport, and reopen input"
+            "PASS native Pump GPUI crossover handle drag and independent band impact bars, delay typing/arrows/Backspace, marquee deletion, cyclic node drags, seam handles, insertion, offset direction, timing dropdown, clipboard, Smooth controls, host projection, transport, and reopen input"
         );
     }
 

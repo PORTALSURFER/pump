@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 14;
+const PRESET_STORE_VERSION: u32 = 15;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
@@ -289,6 +289,10 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.extend_from_slice(&preset.filter_lp_q.to_le_bytes());
     payload.push(preset.filter_hp_slope.min(MAX_FILTER_SLOPE) as u8);
     payload.push(preset.filter_lp_slope.min(MAX_FILTER_SLOPE) as u8);
+    payload.extend_from_slice(&preset.crossover_hz.to_le_bytes());
+    payload.extend_from_slice(&preset.low_mix.to_le_bytes());
+    payload.extend_from_slice(&preset.high_mix.to_le_bytes());
+    payload.push(u8::from(preset.legacy_filter_mode));
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -500,6 +504,28 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         } else {
             (DEFAULT_FILTER_SLOPE, DEFAULT_FILTER_SLOPE)
         };
+        let (crossover_hz, low_mix, high_mix, legacy_filter_mode) = if version >= 15 {
+            let crossover_hz = read_f32(&mut cursor)
+                .ok_or_else(|| "invalid preset crossover frequency".to_string())?;
+            let low_mix =
+                read_f32(&mut cursor).ok_or_else(|| "invalid preset low mix".to_string())?;
+            let high_mix =
+                read_f32(&mut cursor).ok_or_else(|| "invalid preset high mix".to_string())?;
+            let legacy_filter_mode = match read_u8(&mut cursor) {
+                Some(0) => false,
+                Some(1) => true,
+                _ => return Err("invalid preset legacy filter mode".to_string()),
+            };
+            if ![crossover_hz, low_mix, high_mix]
+                .into_iter()
+                .all(f32::is_finite)
+            {
+                return Err("invalid preset crossover field".to_string());
+            }
+            (crossover_hz, low_mix, high_mix, legacy_filter_mode)
+        } else {
+            (DEFAULT_CROSSOVER_HZ, 1.0, 1.0, true)
+        };
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -525,6 +551,10 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             filter_lp_q,
             filter_hp_slope,
             filter_lp_slope,
+            crossover_hz,
+            low_mix,
+            high_mix,
+            legacy_filter_mode,
             editable_curve,
             quick_slots,
         });
@@ -727,6 +757,10 @@ mod tests {
                 filter_lp_q: DEFAULT_FILTER_LP_Q,
                 filter_hp_slope: 0,
                 filter_lp_slope: 0,
+                crossover_hz: DEFAULT_CROSSOVER_HZ,
+                low_mix: 1.0,
+                high_mix: 1.0,
+                legacy_filter_mode: false,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -735,6 +769,7 @@ mod tests {
 
     fn encoded_v3_preset_bank() -> Vec<u8> {
         let mut payload = encoded_single_preset_bank();
+        payload.truncate(payload.len().saturating_sub(13));
         // Filter metadata was added in v13; delay was added in v11, timing
         // metadata in v10, and Swing in v9. All four trailing fields are
         // absent from a v3 store.
@@ -795,6 +830,10 @@ mod tests {
                     filter_lp_q: DEFAULT_FILTER_LP_Q,
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
+                    crossover_hz: DEFAULT_CROSSOVER_HZ,
+                    low_mix: 1.0,
+                    high_mix: 1.0,
+                    legacy_filter_mode: false,
                     editable_curve: default_editable_curve(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -823,6 +862,10 @@ mod tests {
                     filter_lp_q: DEFAULT_FILTER_LP_Q,
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
+                    crossover_hz: DEFAULT_CROSSOVER_HZ,
+                    low_mix: 1.0,
+                    high_mix: 1.0,
+                    legacy_filter_mode: false,
                     editable_curve: EditableCurve {
                         nodes: vec![
                             CurveNode { x: 0.0, y: 1.0 },
@@ -892,6 +935,7 @@ mod tests {
     #[test]
     fn preset_store_v11_defaults_origin_clip_metadata_to_false() {
         let mut payload = encoded_single_preset_bank();
+        payload.truncate(payload.len().saturating_sub(13));
         // Filter metadata was added in v13; remove it before emulating v11
         // so the compatibility fixture has no newer trailing fields.
         payload.truncate(payload.len().saturating_sub(19));
@@ -910,6 +954,7 @@ mod tests {
     #[test]
     fn preset_store_v12_defaults_filter_controls() {
         let mut payload = encoded_single_preset_bank();
+        payload.truncate(payload.len().saturating_sub(13));
         // Filter metadata was appended in v13. Remove it to exercise the
         // decoder's v12 compatibility path while keeping the v12 curve
         // origin metadata intact.

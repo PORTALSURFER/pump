@@ -92,7 +92,7 @@ impl PluginStateImpl for PumpMainThread<'_> {
     }
 
     fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
-        let payload = read_versioned_payload(input, STATE_MAGIC, &[STATE_VERSION])?;
+        let payload = read_versioned_payload(input, STATE_MAGIC, &[20, 21, STATE_VERSION])?;
         decode_state_payload(self.shared.params.as_ref(), &payload.payload)
             .map_err(PluginError::Message)
     }

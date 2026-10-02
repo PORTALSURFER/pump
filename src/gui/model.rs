@@ -23,11 +23,12 @@ use crate::params::{
     DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, DEFAULT_SWING, FILTER_MIN_SEPARATION_HZ,
     MAX_DELAY_BEATS, MAX_FILTER_FREQ_HZ, MAX_FILTER_Q, MAX_FILTER_SLOPE, MAX_OUTPUT_GAIN_DB,
     MAX_SYNC_DIVISION, MIN_DELAY_BEATS, MIN_FILTER_FREQ_HZ, MIN_FILTER_Q, MIN_OUTPUT_GAIN_DB,
-    PARAM_BYPASS_ID, PARAM_DELAY_ID, PARAM_FILTER_ENABLED_ID, PARAM_FILTER_HP_FREQ_ID,
-    PARAM_FILTER_HP_Q_ID, PARAM_FILTER_HP_SLOPE_ID, PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID,
-    PARAM_FILTER_LP_SLOPE_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
-    PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID,
-    PARAM_TIMING_MODE_ID, TIMING_MODE_FREE, TIMING_MODE_SYNC,
+    PARAM_BYPASS_ID, PARAM_CROSSOVER_ID, PARAM_DELAY_ID, PARAM_FILTER_ENABLED_ID,
+    PARAM_FILTER_HP_FREQ_ID, PARAM_FILTER_HP_Q_ID, PARAM_FILTER_HP_SLOPE_ID,
+    PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID, PARAM_FILTER_LP_SLOPE_ID, PARAM_FREE_RATE_ID,
+    PARAM_HIGH_MIX_ID, PARAM_LOW_MIX_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID,
+    PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID,
+    PARAM_WAVEFORM_MODE_ID, TIMING_MODE_FREE, TIMING_MODE_SYNC,
 };
 use crate::GuiStatus;
 
@@ -782,6 +783,8 @@ pub(crate) struct ActiveFilterDrag {
     pub(crate) start_hp_q: f32,
     pub(crate) start_lp_freq_hz: f32,
     pub(crate) start_lp_q: f32,
+    pub(crate) legacy_mode: bool,
+    pub(crate) start_crossover_hz: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -809,6 +812,8 @@ pub(crate) enum NumericEntryTarget {
     FilterHpQ,
     FilterLpFrequency,
     FilterLpQ,
+    LowMix,
+    HighMix,
 }
 
 impl NumericEntryTarget {
@@ -824,6 +829,8 @@ impl NumericEntryTarget {
             Self::FilterHpQ => PARAM_FILTER_HP_Q_ID,
             Self::FilterLpFrequency => PARAM_FILTER_LP_FREQ_ID,
             Self::FilterLpQ => PARAM_FILTER_LP_Q_ID,
+            Self::LowMix => PARAM_LOW_MIX_ID,
+            Self::HighMix => PARAM_HIGH_MIX_ID,
         }
     }
 
@@ -839,6 +846,8 @@ impl NumericEntryTarget {
             Self::FilterHpQ => "numeric-entry-filter-hp-q",
             Self::FilterLpFrequency => "numeric-entry-filter-lp-frequency",
             Self::FilterLpQ => "numeric-entry-filter-lp-q",
+            Self::LowMix => "numeric-entry-low-mix",
+            Self::HighMix => "numeric-entry-high-mix",
         }
     }
 
@@ -854,6 +863,8 @@ impl NumericEntryTarget {
             Self::FilterHpQ => params.filter_hp_q() as f64,
             Self::FilterLpFrequency => params.filter_lp_freq_hz() as f64,
             Self::FilterLpQ => params.filter_lp_q() as f64,
+            Self::LowMix => params.low_mix() as f64,
+            Self::HighMix => params.high_mix() as f64,
         }
     }
 }
@@ -982,6 +993,10 @@ pub(crate) struct HistorySnapshot {
     filter_lp_q: f32,
     filter_hp_slope: usize,
     filter_lp_slope: usize,
+    crossover_hz: f32,
+    low_mix: f32,
+    high_mix: f32,
+    legacy_filter_mode: bool,
     curve: EditableCurve,
     active_sound: SoundSide,
     sound_states: [PumpSoundState; 2],
@@ -1049,6 +1064,7 @@ impl PumpEditorState {
         status: Arc<GuiStatus>,
         host_param_edit_sink: Arc<dyn HostParamEditSink>,
     ) -> Self {
+        status.set_waveform_live_mode(params.waveform_live_mode());
         Self {
             params,
             status,
@@ -1107,6 +1123,10 @@ impl PumpEditorState {
             filter_lp_q: self.params.filter_lp_q(),
             filter_hp_slope: self.params.filter_hp_slope(),
             filter_lp_slope: self.params.filter_lp_slope(),
+            crossover_hz: self.params.crossover_hz(),
+            low_mix: self.params.low_mix(),
+            high_mix: self.params.high_mix(),
+            legacy_filter_mode: self.params.legacy_filter_mode(),
             curve: self.params.editable_curve_snapshot(),
             active_sound: self.params.active_sound(),
             sound_states: [
@@ -1158,6 +1178,11 @@ impl PumpEditorState {
             .set_filter_hp_slope(snapshot.filter_hp_slope as f32);
         self.params
             .set_filter_lp_slope(snapshot.filter_lp_slope as f32);
+        self.params.set_crossover_hz(snapshot.crossover_hz);
+        self.params.set_low_mix(snapshot.low_mix);
+        self.params.set_high_mix(snapshot.high_mix);
+        self.params
+            .set_legacy_filter_mode(snapshot.legacy_filter_mode);
         self.params
             .set_editable_curve_preserving_phase(&snapshot.curve);
         self.params
@@ -1215,6 +1240,8 @@ impl PumpEditorState {
     /// frame. The parameter model also reconciles the selected side's curve;
     /// clearing transient selection keeps node indices from crossing sides.
     pub(crate) fn refresh_host_projection(&mut self) -> bool {
+        self.status
+            .set_waveform_live_mode(self.params.waveform_live_mode());
         if self.params.consume_pending_active_sound().is_some() {
             self.clear_curve_selection();
             true
@@ -1273,6 +1300,7 @@ impl PumpEditorState {
                 crate::params::DEFAULT_FILTER_LP_Q as f64,
             )
             .unwrap_or(0.0) as f32,
+            NumericEntryTarget::LowMix | NumericEntryTarget::HighMix => 1.0,
         }
     }
 
@@ -1352,6 +1380,10 @@ impl PumpEditorState {
 
     pub(crate) fn filter_enabled(&self) -> bool {
         self.params.filter_enabled()
+    }
+
+    pub(crate) fn legacy_filter_mode(&self) -> bool {
+        self.params.legacy_filter_mode()
     }
 
     pub(crate) fn active_filter_handle(&self) -> Option<FilterHandle> {
@@ -1583,6 +1615,8 @@ fn knob_plain_value(target: NumericEntryTarget, value: f32) -> (ClapId, f32) {
             plain_from_normalized_value(PARAM_FILTER_LP_Q_ID, value as f64)
                 .unwrap_or(crate::params::DEFAULT_FILTER_LP_Q as f64) as f32,
         ),
+        NumericEntryTarget::LowMix => (PARAM_LOW_MIX_ID, value),
+        NumericEntryTarget::HighMix => (PARAM_HIGH_MIX_ID, value),
     }
 }
 
@@ -1599,6 +1633,8 @@ fn set_knob_param(params: &PumpParams, target: NumericEntryTarget, value: f32) -
         NumericEntryTarget::FilterHpQ => params.set_filter_hp_q(plain_value),
         NumericEntryTarget::FilterLpFrequency => params.set_filter_lp_freq_hz(plain_value),
         NumericEntryTarget::FilterLpQ => params.set_filter_lp_q(plain_value),
+        NumericEntryTarget::LowMix => params.set_low_mix(value),
+        NumericEntryTarget::HighMix => params.set_high_mix(value),
     }
     (param_id, plain_value)
 }
@@ -1646,9 +1682,10 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
             state.timing_dropdown_open = !state.timing_dropdown_open;
         }
         EditorMessage::ToggleWaveformMode => {
-            state
-                .status
-                .set_waveform_live_mode(!state.status.waveform_live_mode());
+            let live = !state.params.waveform_live_mode();
+            state.params.set_waveform_live_mode(live);
+            state.status.set_waveform_live_mode(live);
+            push_param_update(state, PARAM_WAVEFORM_MODE_ID, if live { 1.0 } else { 0.0 });
         }
         EditorMessage::ToggleHotkeyHelp => {
             state.hotkey_help_open = !state.hotkey_help_open;
@@ -1935,6 +1972,8 @@ fn apply_numeric_entry_value(state: &mut PumpEditorState, target: NumericEntryTa
         NumericEntryTarget::FilterHpQ => state.params.set_filter_hp_q(value as f32),
         NumericEntryTarget::FilterLpFrequency => state.params.set_filter_lp_freq_hz(value as f32),
         NumericEntryTarget::FilterLpQ => state.params.set_filter_lp_q(value as f32),
+        NumericEntryTarget::LowMix => state.params.set_low_mix(value as f32),
+        NumericEntryTarget::HighMix => state.params.set_high_mix(value as f32),
     }
 
     push_param_update(state, target.param_id(), value);
@@ -2064,9 +2103,14 @@ fn reduce_curve_message(state: &mut PumpEditorState, message: CurvePreviewMessag
             frequency_hz: _,
             q: _,
         } => {
-            if !state.params.filter_enabled() {
+            if (state.params.legacy_filter_mode() && !state.params.filter_enabled())
+                || (!state.params.legacy_filter_mode()
+                    && state.params.low_mix() <= 0.0
+                    && state.params.high_mix() <= 0.0)
+            {
                 return;
             }
+            state.push_history();
             state.clear_curve_selection();
             state.active_filter_drag = Some(ActiveFilterDrag {
                 handle,
@@ -2074,6 +2118,8 @@ fn reduce_curve_message(state: &mut PumpEditorState, message: CurvePreviewMessag
                 start_hp_q: state.params.filter_hp_q(),
                 start_lp_freq_hz: state.params.filter_lp_freq_hz(),
                 start_lp_q: state.params.filter_lp_q(),
+                legacy_mode: state.params.legacy_filter_mode(),
+                start_crossover_hz: state.params.crossover_hz(),
             });
             state.selected_filter_handle = Some(handle);
             state.active_curve_node = None;
@@ -2104,8 +2150,17 @@ fn reduce_curve_message(state: &mut PumpEditorState, message: CurvePreviewMessag
             if drag.handle != handle {
                 return;
             }
-            let (hp_freq_hz, hp_q, lp_freq_hz, lp_q) = filter_drag_values(drag, frequency_hz, q);
-            apply_filter_values(state, hp_freq_hz, hp_q, lp_freq_hz, lp_q);
+            if drag.legacy_mode {
+                let (hp_freq_hz, hp_q, lp_freq_hz, lp_q) =
+                    filter_drag_values(drag, frequency_hz, q);
+                apply_filter_values(state, hp_freq_hz, hp_q, lp_freq_hz, lp_q);
+            } else if state.host_param_edit_sink.edit(
+                &state.automation_config,
+                PARAM_CROSSOVER_ID,
+                frequency_hz as f64,
+            ) {
+                state.params.set_crossover_hz(frequency_hz);
+            }
             if matches!(message, CurvePreviewMessage::ReleaseFilter { .. }) {
                 state.active_filter_drag = None;
             }
@@ -2752,13 +2807,21 @@ fn reduce_curve_message(state: &mut PumpEditorState, message: CurvePreviewMessag
         CurvePreviewMessage::Cancel => {
             state.active_curve_paint = None;
             if let Some(drag) = state.active_filter_drag.take() {
-                apply_filter_values(
-                    state,
-                    drag.start_hp_freq_hz,
-                    drag.start_hp_q,
-                    drag.start_lp_freq_hz,
-                    drag.start_lp_q,
-                );
+                if drag.legacy_mode {
+                    apply_filter_values(
+                        state,
+                        drag.start_hp_freq_hz,
+                        drag.start_hp_q,
+                        drag.start_lp_freq_hz,
+                        drag.start_lp_q,
+                    );
+                } else if state.host_param_edit_sink.edit(
+                    &state.automation_config,
+                    PARAM_CROSSOVER_ID,
+                    drag.start_crossover_hz as f64,
+                ) {
+                    state.params.set_crossover_hz(drag.start_crossover_hz);
+                }
             }
             if let Some(drag) = state.active_curve_offset.take() {
                 if state.params.phase_offset() != drag.origin_phase_offset
@@ -4370,6 +4433,27 @@ mod tests {
     }
 
     #[test]
+    fn waveform_toggle_reports_host_edits_and_projects_host_parameter_restore() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(Arc::clone(&sink));
+        state.dispatch(EditorMessage::ToggleWaveformMode);
+        state.dispatch(EditorMessage::ToggleWaveformMode);
+        assert_eq!(
+            sink.events(),
+            vec![
+                SinkEvent::Edit(PARAM_WAVEFORM_MODE_ID, 1.0),
+                SinkEvent::Edit(PARAM_WAVEFORM_MODE_ID, 0.0),
+            ]
+        );
+        crate::params::apply_clap_param_event(state.params(), PARAM_WAVEFORM_MODE_ID, 1.0);
+        state.refresh_host_projection();
+        assert!(state.status.waveform_live_mode());
+        crate::params::apply_clap_param_event(state.params(), PARAM_WAVEFORM_MODE_ID, 0.0);
+        state.refresh_host_projection();
+        assert!(!state.status.waveform_live_mode());
+    }
+
+    #[test]
     fn teardown_ends_knob_gesture_and_admits_following_gesture() {
         let sink = Arc::new(RecordingSink::default());
         let mut state = editor(Arc::clone(&sink));
@@ -4460,13 +4544,45 @@ mod tests {
     }
 
     #[test]
+    fn crossover_drag_reports_host_edits_and_cancel_restores_its_frequency() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(Arc::clone(&sink));
+        state.params().set_crossover_hz(750.0);
+        state.dispatch(EditorMessage::Curve(
+            CurvePreviewMessage::PressFilterHandle {
+                handle: FilterHandle::Both,
+                frequency_hz: 750.0,
+                q: 1.0,
+            },
+        ));
+        state.dispatch(EditorMessage::Curve(CurvePreviewMessage::DragFilter {
+            handle: FilterHandle::Both,
+            frequency_hz: 1500.0,
+            q: 1.0,
+        }));
+        assert_eq!(state.params().crossover_hz(), 1500.0);
+        state.dispatch(EditorMessage::Curve(CurvePreviewMessage::Cancel));
+        assert_eq!(state.params().crossover_hz(), 750.0);
+        assert_eq!(
+            sink.events(),
+            vec![
+                SinkEvent::Edit(PARAM_CROSSOVER_ID, 1500.0),
+                SinkEvent::Edit(PARAM_CROSSOVER_ID, 750.0),
+            ]
+        );
+        assert!(state.active_filter_drag.is_none());
+    }
+
+    #[test]
     fn filter_toggle_and_handle_drag_are_undoable_and_keep_cutoffs_ordered() {
         let sink = Arc::new(RecordingSink::default());
         let mut state = editor(Arc::clone(&sink));
-
         state.dispatch(EditorMessage::ToggleFilter);
         assert!(state.params().filter_enabled());
         assert_eq!(state.undo_history.len(), 1);
+        // These assertions cover the compatibility editor for pre-crossover
+        // states; new default-mode controls intentionally use another path.
+        state.params().set_legacy_filter_mode(true);
 
         let original_lp = state.params().filter_lp_freq_hz();
         state.dispatch(EditorMessage::Curve(
@@ -4499,6 +4615,7 @@ mod tests {
             crate::params::DEFAULT_FILTER_HP_FREQ_HZ
         );
         state.dispatch(EditorMessage::Undo);
+        state.dispatch(EditorMessage::Undo);
         assert!(!state.params().filter_enabled());
     }
 
@@ -4506,6 +4623,7 @@ mod tests {
     fn filter_both_handle_moves_cutoffs_in_log_space_and_cancel_restores() {
         let sink = Arc::new(RecordingSink::default());
         let mut state = editor(sink);
+        state.params().set_legacy_filter_mode(true);
         state.dispatch(EditorMessage::ToggleFilter);
         let hp = state.params().filter_hp_freq_hz();
         let lp = state.params().filter_lp_freq_hz();

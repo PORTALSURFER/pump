@@ -8,7 +8,7 @@ use super::{
     vst3_param_info_for_index, PARAM_FREE_RATE_NUM, PARAM_MIX_NUM, PARAM_OUTPUT_GAIN_NUM,
     PARAM_PHASE_OFFSET_ID, PARAM_PHASE_OFFSET_NUM, PARAM_SMOOTH_NUM, PARAM_SOUND_ID,
     PARAM_SOUND_NUM, PARAM_SWING_NUM, PARAM_SYNC_DIVISION_NUM, PARAM_SYNC_DIVISION_VST3_V2_NUM,
-    PARAM_TIMING_MODE_ID, PARAM_TIMING_MODE_NUM,
+    PARAM_TIMING_MODE_ID, PARAM_TIMING_MODE_NUM, PARAM_WAVEFORM_MODE_NUM,
 };
 use super::{
     clamp_sync_division, decode_state_payload, encode_state_payload, seeded_quick_shape_slots,
@@ -16,8 +16,8 @@ use super::{
     PumpParams, PumpPreset, PumpPresetBank, SavePresetOutcome, DEFAULT_FLOOR_DB,
     MAX_PRESET_NAME_CHARS, MAX_SYNC_DIVISION, PARAM_DELAY_ID, PARAM_DEPTH_ID, PARAM_FLOOR_ID,
     PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_MODE_ID, PARAM_OUTPUT_GAIN_ID, PARAM_SMOOTH_ID,
-    PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PROCESSING_MODE_CLASSIC, PROCESSING_MODE_PUNCH,
-    SYNC_DIVISIONS, TRIGGER_MODE_HOST, TRIGGER_MODE_SIDECHAIN,
+    PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_WAVEFORM_MODE_ID, PROCESSING_MODE_CLASSIC,
+    PROCESSING_MODE_PUNCH, SYNC_DIVISIONS, TRIGGER_MODE_HOST, TRIGGER_MODE_SIDECHAIN,
 };
 use crate::curve::{
     cyclically_offset_editable_curve, editable_curve_to_table, sample_editable_curve, CurveNode,
@@ -91,7 +91,7 @@ fn sync_division_options_append_long_cycle_choices() {
 
 #[test]
 fn sync_division_host_text_and_normalized_max_include_eight_bars() {
-    assert_eq!(super::param_count(), 20);
+    assert_eq!(super::param_count(), 24);
     assert_eq!(MAX_SYNC_DIVISION, 9.0);
     let flags = super::param_flags_for_index(3).expect("CLAP division metadata");
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -118,7 +118,7 @@ fn sync_division_host_text_and_normalized_max_include_eight_bars() {
 #[test]
 fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 20);
+    assert_eq!(super::param_count(), 24);
     assert_eq!(super::get_param_value(&params, PARAM_DEPTH_ID), Some(120.0));
     assert_eq!(super::get_param_value(&params, PARAM_FLOOR_ID), Some(-60.0));
 
@@ -198,7 +198,7 @@ fn depth_and_floor_are_stable_host_parameters_with_text_rules() {
 #[test]
 fn filter_host_parameters_have_stable_ranges_and_text_rules() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 20);
+    assert_eq!(super::param_count(), 24);
     let filter_flags = super::param_flags_for_index(13).expect("filter metadata should exist");
     assert!(filter_flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(filter_flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -280,7 +280,7 @@ fn free_rate_clap_and_vst3_normalized_mapping_agree() {
 #[test]
 fn free_timing_parameters_use_stable_ids_and_lossless_units() {
     let params = PumpParams::new();
-    assert_eq!(super::param_count(), 20);
+    assert_eq!(super::param_count(), 24);
     assert_eq!(
         super::get_param_value(&params, super::PARAM_TIMING_MODE_ID),
         Some(0.0)
@@ -560,7 +560,7 @@ fn editor_closed_host_switch_preserves_active_side_curve_during_scalar_save() {
 
 #[test]
 fn bypass_metadata_is_appended_and_has_the_host_bypass_contract() {
-    assert_eq!(super::param_count(), 20);
+    assert_eq!(super::param_count(), 24);
     let flags = super::param_flags_for_index(7).expect("bypass metadata should exist");
     assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
     assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
@@ -1245,6 +1245,10 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     filter_lp_q: super::DEFAULT_FILTER_LP_Q,
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
+                    crossover_hz: super::DEFAULT_CROSSOVER_HZ,
+                    low_mix: 1.0,
+                    high_mix: 1.0,
+                    legacy_filter_mode: false,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1273,6 +1277,10 @@ fn set_preset_bank_preserves_user_presets_without_inserting_init() {
                     filter_lp_q: super::DEFAULT_FILTER_LP_Q,
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
+                    crossover_hz: super::DEFAULT_CROSSOVER_HZ,
+                    low_mix: 1.0,
+                    high_mix: 1.0,
+                    legacy_filter_mode: false,
                     editable_curve: params.editable_curve_snapshot(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -1549,7 +1557,7 @@ fn vst3_gui_parameter_ids_follow_the_declared_vst3_parameter_table() {
 #[cfg(feature = "vst3")]
 #[test]
 fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
-    assert_eq!(vst3_param_count(), 21);
+    assert_eq!(vst3_param_count(), 25);
     let ids = (0..vst3_param_count() as i32)
         .map(|index| {
             vst3_param_info_for_index(index)
@@ -1559,7 +1567,10 @@ fn vst3_metadata_appends_extended_division_without_shifting_existing_ids() {
         .collect::<Vec<_>>();
     assert_eq!(
         ids,
-        vec![1, 3, 4, 5, 2, 6, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 15,]
+        vec![
+            1, 3, 4, 5, 2, 6, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 15, 24, 25,
+            26, 27,
+        ]
     );
     let mut sorted_ids = ids.clone();
     sorted_ids.sort_unstable();
@@ -1677,4 +1688,133 @@ fn save_by_name_blocks_when_preset_bank_is_full() {
         params.save_current_state_by_name("BrandNew"),
         Err(PresetMutationError::CapacityReached)
     );
+}
+
+#[test]
+fn waveform_mode_is_a_stepped_host_parameter_with_live_sync_text_and_state() {
+    let params = PumpParams::new();
+    let flags = super::param_flags_for_index(20).unwrap();
+    assert!(flags.contains(ParamInfoFlags::IS_AUTOMATABLE));
+    assert!(flags.contains(ParamInfoFlags::IS_STEPPED));
+    assert_eq!(
+        super::get_param_value(&params, PARAM_WAVEFORM_MODE_ID),
+        Some(0.0)
+    );
+    for (value, label) in [(1.0, "Live"), (0.0, "Sync")] {
+        super::apply_clap_param_event(&params, PARAM_WAVEFORM_MODE_ID, value as f32);
+        assert_eq!(
+            super::get_param_value(&params, PARAM_WAVEFORM_MODE_ID),
+            Some(value)
+        );
+        assert_eq!(
+            super::format_plain_value_text(PARAM_WAVEFORM_MODE_ID, value).as_deref(),
+            Some(label)
+        );
+        assert_eq!(
+            super::parse_plain_value_text(PARAM_WAVEFORM_MODE_ID, label),
+            Some(value)
+        );
+        let restored = PumpParams::new();
+        decode_state_payload(&restored, &encode_state_payload(&params)).unwrap();
+        assert_eq!(
+            super::get_param_value(&restored, PARAM_WAVEFORM_MODE_ID),
+            Some(value)
+        );
+    }
+}
+
+#[test]
+fn crossover_controls_have_stable_host_ids_text_and_legacy_echo_safety() {
+    let params = PumpParams::new();
+    assert_eq!(
+        super::PARAM_CROSSOVER_NUM,
+        25,
+        "crossover host ID is appended after existing parameters"
+    );
+    assert_eq!(super::PARAM_LOW_MIX_NUM, 26);
+    assert_eq!(super::PARAM_HIGH_MIX_NUM, 27);
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_CROSSOVER_ID),
+        Some(1_000.0)
+    );
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_LOW_MIX_ID),
+        Some(1.0)
+    );
+    assert_eq!(
+        super::get_param_value(&params, super::PARAM_HIGH_MIX_ID),
+        Some(1.0)
+    );
+    assert_eq!(
+        super::format_plain_value_text(super::PARAM_CROSSOVER_ID, 1_250.0).as_deref(),
+        Some("1.25 kHz")
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_CROSSOVER_ID, "1.25 kHz"),
+        Some(1_250.0)
+    );
+    assert_eq!(
+        super::parse_plain_value_text(super::PARAM_LOW_MIX_ID, "0%"),
+        Some(0.0)
+    );
+
+    params.set_legacy_filter_mode(true);
+    super::apply_clap_param_event(&params, super::PARAM_CROSSOVER_ID, params.crossover_hz());
+    super::apply_clap_param_event(&params, super::PARAM_LOW_MIX_ID, params.low_mix());
+    super::apply_clap_param_event(&params, super::PARAM_HIGH_MIX_ID, params.high_mix());
+    assert!(
+        params.legacy_filter_mode(),
+        "unchanged host replay must preserve old state mode"
+    );
+    super::apply_clap_param_event(&params, super::PARAM_LOW_MIX_ID, 0.5);
+    assert!(
+        !params.legacy_filter_mode(),
+        "editing a crossover control enters the new mode"
+    );
+}
+
+#[test]
+fn crossover_parameters_and_legacy_state_roundtrip() {
+    let params = PumpParams::new();
+    params.set_crossover_hz(725.0);
+    params.set_low_mix(0.0);
+    params.set_high_mix(0.42);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &encode_state_payload(&params)).unwrap();
+    assert_eq!(restored.crossover_hz(), 725.0);
+    assert_eq!(restored.low_mix(), 0.0);
+    assert!((restored.high_mix() - 0.42).abs() < 1.0e-6);
+    assert!(!restored.legacy_filter_mode());
+
+    let legacy = PumpParams::new();
+    legacy.set_filter_enabled(1.0);
+    legacy.set_legacy_filter_mode(true);
+    let legacy_restored = PumpParams::new();
+    decode_state_payload(&legacy_restored, &encode_state_payload(&legacy)).unwrap();
+    assert!(legacy_restored.filter_enabled());
+    assert!(legacy_restored.legacy_filter_mode());
+}
+
+#[cfg(feature = "vst3")]
+#[test]
+fn vst3_waveform_mode_is_appended_and_normalized_restore_updates_saved_state() {
+    let info = vst3_param_info_for_index(21).unwrap();
+    assert_eq!(info.id, PARAM_WAVEFORM_MODE_NUM);
+    assert_eq!(info.title, "Waveform Live/Sync");
+    assert_eq!(info.step_count, 1);
+    assert_eq!(info.default_normalized, 0.0);
+    let params = PumpParams::new();
+    for value in [1.0, 0.0] {
+        assert!(apply_vst3_normalized_param_value(&params, info.id, value));
+        assert_eq!(
+            super::get_param_value(&params, PARAM_WAVEFORM_MODE_ID),
+            Some(value)
+        );
+        let restored = PumpParams::new();
+        decode_state_payload(&restored, &encode_state_payload(&params)).unwrap();
+        assert_eq!(
+            super::get_param_value(&restored, PARAM_WAVEFORM_MODE_ID),
+            Some(value)
+        );
+    }
 }

@@ -32,6 +32,10 @@ const MAX_FIT_SAMPLES_PER_SEGMENT: usize = 64;
 // visibly meaningful vertical turns as hard anchors; smooth curvature is
 // represented by fitted segment tension instead of consuming node capacity.
 const PAINT_TURN_TOLERANCE: f32 = 0.01;
+// Smooth only a short, low-amplitude wobble. A pronounced single-sample peak
+// remains an intentional feature, and distant samples must not blur a corner.
+const PAINT_JITTER_RADIUS_X: f32 = 0.03;
+const PAINT_JITTER_MAX_CORRECTION: f32 = 0.02;
 // A 0.004 normalized horizontal movement is about 1.6 px in the active
 // curve viewport. Smaller backsteps are pointer jitter, not display turns.
 const DISPLAY_HORIZONTAL_REVERSAL_TOLERANCE: f32 = 0.004;
@@ -362,6 +366,7 @@ impl StrokeRecorder {
         if before <= MAX_CAPTURED_POINTS_PER_RUN {
             return true;
         }
+        quiet_vertical_jitter(&mut run.points);
         let protected_count = protected_point_indices(&run.points)
             .into_iter()
             .filter(|is_protected| *is_protected)
@@ -557,6 +562,36 @@ fn meaningful_horizontal_reversal(
         1 if sample_x < monotonic_extreme_x - DISPLAY_HORIZONTAL_REVERSAL_TOLERANCE => Some(-1),
         -1 if sample_x > monotonic_extreme_x + DISPLAY_HORIZONTAL_REVERSAL_TOLERANCE => Some(1),
         _ => None,
+    }
+}
+
+fn quiet_vertical_jitter(points: &mut [PaintPoint]) {
+    let original = points
+        .iter()
+        .map(|point| point.position)
+        .collect::<Vec<_>>();
+    for index in 2..points.len().saturating_sub(2) {
+        if !matches!(points[index].contact, BoundaryContact::Interior) {
+            continue;
+        }
+        let center = original[index];
+        let mut sum = 0.0;
+        let mut weight_sum = 0.0;
+        for (offset, weight) in [(0, 1.0), (1, 2.0), (2, 3.0), (3, 2.0), (4, 1.0)] {
+            let neighbor_index = index + offset - 2;
+            if matches!(points[neighbor_index].contact, BoundaryContact::Interior)
+                && (original[neighbor_index].x - center.x).abs() <= PAINT_JITTER_RADIUS_X
+            {
+                sum += original[neighbor_index].y * weight;
+                weight_sum += weight;
+            }
+        }
+        if weight_sum > 3.0 {
+            let smoothed = sum / weight_sum;
+            if (center.y - smoothed).abs() <= PAINT_JITTER_MAX_CORRECTION {
+                points[index].position.y = smoothed;
+            }
+        }
     }
 }
 
@@ -1209,10 +1244,12 @@ fn collect_display_geometry(runs: &[PaintRun]) -> (Vec<DisplayFragment>, Vec<Dis
     let mut chronology = 0usize;
 
     for run in runs {
+        let mut clean_points = run.points().to_vec();
+        quiet_vertical_jitter(&mut clean_points);
         let mut current = Vec::new();
         let mut direction = 0i8;
         let mut monotonic_extreme_x = None;
-        for point in run.points().iter().copied() {
+        for point in clean_points {
             if !valid_paint_point(point) {
                 continue;
             }
@@ -3525,6 +3562,73 @@ mod tests {
         let candidate = outcome.candidate();
         assert!(candidate_is_valid(candidate));
         assert!(candidate.nodes.len() < 16);
+    }
+
+    #[test]
+    fn dense_hand_jitter_fits_a_clean_line_without_wobble_nodes() {
+        let origin = flat_curve(0.5);
+        let run = interior_run((0..101).map(|index| {
+            let progress = index as f32 / 100.0;
+            let jitter = if index == 0 || index == 100 {
+                0.0
+            } else if index % 2 == 0 {
+                0.012
+            } else {
+                -0.012
+            };
+            (0.1 + progress * 0.8, 0.2 + progress * 0.6 + jitter)
+        }));
+        let outcome = reconstruct_paint(&origin, 0.0, &[run]);
+        let candidate = outcome.candidate();
+        assert!(matches!(outcome, PaintCommitOutcome::Applied { .. }));
+        assert!(candidate.nodes.len() <= 6, "candidate: {candidate:?}");
+        for step in 1..10 {
+            let x = step as f32 / 10.0;
+            let expected = 0.2 + (x - 0.1) * 0.75;
+            assert!((sample_editable_curve(candidate, x) - expected).abs() < 0.02);
+        }
+    }
+
+    #[test]
+    fn quieting_jitter_keeps_a_deliberate_sharp_peak() {
+        let origin = flat_curve(0.5);
+        let run = interior_run([
+            (0.47, 0.5),
+            (0.485, 0.5),
+            (0.50, 0.56),
+            (0.515, 0.5),
+            (0.53, 0.5),
+        ]);
+        let outcome = reconstruct_paint(&origin, 0.0, &[run]);
+        assert!(matches!(outcome, PaintCommitOutcome::Applied { .. }));
+        let candidate = outcome.candidate();
+        assert!((sample_editable_curve(candidate, 0.5) - 0.56).abs() < 0.01);
+        assert!(candidate
+            .nodes
+            .iter()
+            .any(|node| (node.x - 0.5).abs() < 0.001));
+    }
+
+    #[test]
+    fn bounded_capture_keeps_a_noisy_stroke_simple() {
+        let mut recorder = StrokeRecorder::new(bounds());
+        for index in 0..1_001 {
+            let progress = index as f32 / 1_000.0;
+            let jitter = if index == 0 || index == 1_000 {
+                0.0
+            } else if index % 2 == 0 {
+                0.012
+            } else {
+                -0.012
+            };
+            recorder.observe(point(0.1 + progress * 0.8, 0.2 + progress * 0.6 + jitter));
+        }
+        assert!(!recorder.is_truncated());
+        assert!(paint_runs_within_capture_budget(recorder.runs()));
+        let outcome = reconstruct_paint(&flat_curve(0.5), 0.0, recorder.runs());
+        let candidate = outcome.candidate();
+        assert!(matches!(outcome, PaintCommitOutcome::Applied { .. }));
+        assert!(candidate.nodes.len() <= 6, "candidate: {candidate:?}");
     }
 
     #[test]
