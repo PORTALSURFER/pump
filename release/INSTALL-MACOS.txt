@@ -1,0 +1,9 @@
+Pump VST3 for macOS
+
+Quit your DAW before installing. Copy the complete Pump.vst3 bundle into:
+~/Library/Audio/Plug-Ins/VST3/
+
+For a development build, copy the complete pump-<build-label>.vst3 bundle.
+Remove an older Pump bundle from this folder to avoid duplicate plugin IDs.
+Restart your DAW and rescan VST3 plugins if needed.
+Development builds are ad-hoc signed and are not notarized.

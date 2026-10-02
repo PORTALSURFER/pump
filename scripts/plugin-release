@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Copy this launcher into a plugin's scripts/ directory. Pin release/toolkit-revision.
+set -euo pipefail
+plugin_root="$(cd "$(dirname "$0")/.." && pwd)"
+revision="$(cat "$plugin_root/release/toolkit-revision")"
+if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+  echo 'release/toolkit-revision must contain a full Git commit hash' >&2
+  exit 1
+fi
+cache="$plugin_root/dist/toolkit/$revision"
+if [[ ! -d "$cache/.git" ]]; then
+  mkdir -p "$(dirname "$cache")"
+  git clone --quiet https://github.com/PORTALSURFER/plugin-release.git "$cache"
+  git -C "$cache" checkout --quiet --detach "$revision"
+fi
+if [[ "$(git -C "$cache" rev-parse HEAD)" != "$revision" || -n "$(git -C "$cache" status --porcelain)" ]]; then
+  echo 'Cached release toolkit differs from its pinned commit; remove the cache and retry' >&2
+  exit 1
+fi
+exec cargo run --quiet --locked --manifest-path "$cache/Cargo.toml" --target-dir "$cache/target" -- --config "$plugin_root/.plugin-release.toml" "$@"

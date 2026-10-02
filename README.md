@@ -23,18 +23,24 @@ VST3_SDK_DIR=/mnt/e/lib/vst3sdk cargo test --features vst3
 
 ## Local VST3 testing
 
-Build the host-installable bundle for local testing with the audiodev producer
-(this is separate from the signed/notarized production release workflow below):
+Build a macOS development VST3 from this checkout with the pinned shared toolkit:
 
 ```bash
-bash /Users/portalsurfer/dev/audiodev/scripts/build-vst3-release.sh pump
+./scripts/plugin-release status
+./scripts/plugin-release dev
 ```
 
-When run from `/Users/portalsurfer/dev/audiodev`, the equivalent command is
-`bash scripts/build-vst3-release.sh pump`. The resulting bundle is
-`/Users/portalsurfer/dev/audiodev/dist/pump-v<version>-macos.vst3`. Do not copy
-`pump/target/release/*.vst3`: Cargo refreshes the binary but not that bundle.
-Restart the DAW or fully unload the previous plugin before testing a replacement.
+The launcher uses the revision in `release/toolkit-revision`. It requires Git
+access to PORTALSURFER/plugin-release, Rust, and a VST3 SDK at `VST3_SDK_DIR`
+or `~/lib/vst3sdk`. Output is `dist/pump-<version>-<commit>-bN.vst3`; edited
+source adds `-dirty-` before the build number. The editor displays this label.
+Mac development bundles are ad-hoc signed. Install instructions are in
+`release/INSTALL-MACOS.txt`. Restart or fully unload the plugin before testing.
+
+The toolkit also supports Windows through `scripts/plugin-release.ps1`.
+Its `deploy` command builds a signed/notarized macOS VST3 using the configured
+Keychain identity and profile. Publishing requires a configured Gumroad product.
+The existing CLAP/VST3 production workflow below remains available.
 
 ## Production releases
 

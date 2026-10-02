@@ -1,0 +1,31 @@
+schema = 1
+name = "Pump"
+package = "pump"
+library = "pump"
+version_env = "PUMP_DEV_BUILD_VERSION"
+
+[[variants]]
+name = "Pump"
+slug = "pump"
+archive_slug = "Pump"
+bundle_id = "com.portalsurfer.pump.vst3"
+features = ["vst3"]
+
+[variants.instructions]
+macos-arm64 = "release/INSTALL-MACOS.txt"
+macos-x64 = "release/INSTALL-MACOS.txt"
+windows-x64 = "release/INSTALL-WINDOWS.txt"
+
+[signing]
+identity = "Developer ID Application: Wanja Svasek (DKTKQ8U5T8)"
+profile = "capture-release"
+identity_env = "APPLE_CODESIGN_IDENTITY"
+profile_env = "APPLE_NOTARY_KEYCHAIN_PROFILE"
+
+[[hooks.checks]]
+argv = ["bash", "scripts/ci.sh", "--vst3"]
+platforms = ["macos-arm64", "macos-x64"]
+
+[[hooks.checks]]
+argv = ["cargo", "test", "--locked", "--features", "vst3"]
+platforms = ["windows-x64"]

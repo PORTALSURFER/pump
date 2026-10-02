@@ -1,0 +1,7 @@
+Pump VST3 for Windows x64
+
+Quit your DAW before installing. Copy the complete Pump.vst3 folder into:
+C:\Program Files\Common Files\VST3\
+
+Restart your DAW and rescan VST3 plugins if needed.
+Windows bundles are unsigned.

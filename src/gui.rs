@@ -252,6 +252,9 @@ pub(crate) fn curve_gain_reference_text(reference: CurveGainReference, bitmap: b
 }
 
 pub(crate) fn build_version_label() -> String {
+    if let Some(version) = option_env!("PUMP_DEV_BUILD_VERSION") {
+        return version.to_string();
+    }
     format!(
         "{}+{}",
         env!("CARGO_PKG_VERSION"),
@@ -283,7 +286,9 @@ mod tests {
         );
         assert_eq!(
             build_version_label(),
-            format!("{}+{expected_sha}", env!("CARGO_PKG_VERSION"))
+            option_env!("PUMP_DEV_BUILD_VERSION")
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{}+{expected_sha}", env!("CARGO_PKG_VERSION")))
         );
     }
 
