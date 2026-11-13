@@ -83,7 +83,7 @@ pub struct Vst3ParamInfo {
     pub is_bypass: bool,
 }
 
-const PARAM_DEFS: [ParamDef; 27] = [
+const PARAM_DEFS: [ParamDef; 46] = [
     ParamDef {
         #[cfg(feature = "vst3")]
         vst3_id: PARAM_MIX_NUM,
@@ -489,6 +489,291 @@ const PARAM_DEFS: [ParamDef; 27] = [
         default_value: crate::dual_band::DEFAULTS[6] as f64,
         flags: AUTO_ENUM,
     },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 36,
+        id: ClapId::new(36),
+        name: crate::compressor_controls::NAMES[0],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[0],
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[0] as f64,
+        max_value: crate::compressor_controls::MAX[0] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[0] as f64,
+        flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 37,
+        id: ClapId::new(37),
+        name: crate::compressor_controls::NAMES[1],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[1],
+        #[cfg(feature = "vst3")]
+        units: "dB",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[1] as f64,
+        max_value: crate::compressor_controls::MAX[1] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[1] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 38,
+        id: ClapId::new(38),
+        name: crate::compressor_controls::NAMES[2],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[2],
+        #[cfg(feature = "vst3")]
+        units: "ms",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[2] as f64,
+        max_value: crate::compressor_controls::MAX[2] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[2] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 39,
+        id: ClapId::new(39),
+        name: crate::compressor_controls::NAMES[3],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[3],
+        #[cfg(feature = "vst3")]
+        units: "ms",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[3] as f64,
+        max_value: crate::compressor_controls::MAX[3] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[3] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 40,
+        id: ClapId::new(40),
+        name: crate::compressor_controls::NAMES[4],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[4],
+        #[cfg(feature = "vst3")]
+        units: ":1",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[4] as f64,
+        max_value: crate::compressor_controls::MAX[4] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[4] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 41,
+        id: ClapId::new(41),
+        name: crate::compressor_controls::NAMES[5],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[5],
+        #[cfg(feature = "vst3")]
+        units: "dB",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[5] as f64,
+        max_value: crate::compressor_controls::MAX[5] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[5] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 42,
+        id: ClapId::new(42),
+        name: crate::compressor_controls::NAMES[6],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[6],
+        #[cfg(feature = "vst3")]
+        units: "dB",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[6] as f64,
+        max_value: crate::compressor_controls::MAX[6] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[6] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 43,
+        id: ClapId::new(43),
+        name: crate::compressor_controls::NAMES[7],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[7],
+        #[cfg(feature = "vst3")]
+        units: "%",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[7] as f64,
+        max_value: crate::compressor_controls::MAX[7] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[7] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 44,
+        id: ClapId::new(44),
+        name: crate::compressor_controls::NAMES[8],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[8],
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[8] as f64,
+        max_value: crate::compressor_controls::MAX[8] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[8] as f64,
+        flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 45,
+        id: ClapId::new(45),
+        name: crate::compressor_controls::NAMES[9],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[9],
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[9] as f64,
+        max_value: crate::compressor_controls::MAX[9] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[9] as f64,
+        flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 46,
+        id: ClapId::new(46),
+        name: crate::compressor_controls::NAMES[10],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[10],
+        #[cfg(feature = "vst3")]
+        units: "dB",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[10] as f64,
+        max_value: crate::compressor_controls::MAX[10] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[10] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 47,
+        id: ClapId::new(47),
+        name: crate::compressor_controls::NAMES[11],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[11],
+        #[cfg(feature = "vst3")]
+        units: "%",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[11] as f64,
+        max_value: crate::compressor_controls::MAX[11] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[11] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 48,
+        id: ClapId::new(48),
+        name: crate::compressor_controls::NAMES[12],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[12],
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[12] as f64,
+        max_value: crate::compressor_controls::MAX[12] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[12] as f64,
+        flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 49,
+        id: ClapId::new(49),
+        name: crate::compressor_controls::NAMES[13],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[13],
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[13] as f64,
+        max_value: crate::compressor_controls::MAX[13] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[13] as f64,
+        flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 50,
+        id: ClapId::new(50),
+        name: crate::compressor_controls::NAMES[14],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[14],
+        #[cfg(feature = "vst3")]
+        units: "Hz",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[14] as f64,
+        max_value: crate::compressor_controls::MAX[14] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[14] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 51,
+        id: ClapId::new(51),
+        name: crate::compressor_controls::NAMES[15],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[15],
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[15] as f64,
+        max_value: crate::compressor_controls::MAX[15] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[15] as f64,
+        flags: AUTO,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 52,
+        id: ClapId::new(52),
+        name: crate::compressor_controls::NAMES[16],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[16],
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[16] as f64,
+        max_value: crate::compressor_controls::MAX[16] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[16] as f64,
+        flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 53,
+        id: ClapId::new(53),
+        name: crate::compressor_controls::NAMES[17],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[17],
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[17] as f64,
+        max_value: crate::compressor_controls::MAX[17] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[17] as f64,
+        flags: AUTO_ENUM,
+    },
+    ParamDef {
+        #[cfg(feature = "vst3")]
+        vst3_id: 54,
+        id: ClapId::new(54),
+        name: crate::compressor_controls::NAMES[18],
+        #[cfg(feature = "vst3")]
+        short_name: crate::compressor_controls::NAMES[18],
+        #[cfg(feature = "vst3")]
+        units: "",
+        module: "Compressor",
+        min_value: crate::compressor_controls::MIN[18] as f64,
+        max_value: crate::compressor_controls::MAX[18] as f64,
+        default_value: crate::compressor_controls::DEFAULTS[18] as f64,
+        flags: AUTO_ENUM,
+    },
 ];
 
 fn param_def_for_id(param_id: ClapId) -> Option<ParamDef> {
@@ -593,6 +878,13 @@ pub fn parse_vst3_plain_value_text(param_id: u32, raw: &str) -> Option<f64> {
 /// Convert a parameter plain value to normalized host value.
 pub fn normalized_from_plain_value(param_id: ClapId, plain: f64) -> Option<f64> {
     let def = param_def_for_id(param_id)?;
+    if compressor_index(param_id).is_some_and(|i| matches!(i, 2 | 3 | 14)) {
+        let min = def.min_value.ln();
+        let max = def.max_value.ln();
+        return Some(
+            ((plain.clamp(def.min_value, def.max_value).ln() - min) / (max - min)).clamp(0.0, 1.0),
+        );
+    }
     if param_id == PARAM_FREE_RATE_ID {
         return Some(free_rate_to_normalized(plain));
     }
@@ -602,6 +894,16 @@ pub fn normalized_from_plain_value(param_id: ClapId, plain: f64) -> Option<f64> 
 /// Convert a parameter normalized host value to plain value.
 pub fn plain_from_normalized_value(param_id: ClapId, normalized: f64) -> Option<f64> {
     let def = param_def_for_id(param_id)?;
+    if let Some(i) = compressor_index(param_id) {
+        let plain = if matches!(i, 2 | 3 | 14) {
+            let min = def.min_value.ln();
+            let max = def.max_value.ln();
+            (min + normalized.clamp(0.0, 1.0) * (max - min)).exp()
+        } else {
+            normalized_to_plain(normalized, def.min_value, def.max_value)
+        };
+        return Some(crate::compressor_controls::sanitize(i, plain as f32) as f64);
+    }
     if let Some(i) = effect_index(param_id) {
         return Some(crate::dual_band::sanitize(
             i,
@@ -721,6 +1023,9 @@ pub fn write_param_info(index: u32, info: &mut ParamInfoWriter) {
 
 /// Return a parameter's current value when it is host-visible.
 pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
+    if let Some(i) = compressor_index(param_id) {
+        return Some(params.compressor()[i] as f64);
+    }
     if let Some(i) = effect_index(param_id) {
         return Some(params.effects()[i] as f64);
     }
@@ -753,6 +1058,10 @@ pub fn get_param_value(params: &PumpParams, param_id: ClapId) -> Option<f64> {
 ///
 /// Returns `true` when `param_id` is recognized.
 fn apply_plain_param_value(params: &PumpParams, param_id: ClapId, value: f64) -> bool {
+    if let Some(i) = compressor_index(param_id) {
+        params.set_compressor_control(i, value as f32);
+        return true;
+    }
     if let Some(i) = effect_index(param_id) {
         params.set_effect(i, value as f32);
         return true;
@@ -888,6 +1197,25 @@ pub fn parse_plain_value_text(param_id: ClapId, raw: &str) -> Option<f64> {
 }
 
 fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> {
+    if let Some(i) = compressor_index(param_id) {
+        if !value.is_finite() {
+            return None;
+        }
+        let value = crate::compressor_controls::sanitize(i, value as f32);
+        return Some(match i {
+            0 | 8 | 9 | 12 | 16 | 17 | 18 => if value >= 0.5 { "On" } else { "Off" }.to_owned(),
+            1 | 5 | 6 | 10 => format!("{value:.1} dB"),
+            2 | 3 => format!("{value:.2} ms"),
+            4 => format!("{value:.1}:1"),
+            7 | 11 => format!("{:.1}%", value * 100.0),
+            13 => {
+                ["Low Pass", "High Pass", "Band Pass", "Notch", "Bell"][value as usize].to_owned()
+            }
+            14 => format_frequency(value),
+            15 => format!("{value:.2}"),
+            _ => return None,
+        });
+    }
     if let Some(i) = effect_index(param_id) {
         if !value.is_finite() {
             return None;
@@ -957,6 +1285,36 @@ fn format_plain_value_text_impl(param_id: ClapId, value: f64) -> Option<String> 
 }
 
 fn parse_plain_value_text_impl(param_id: ClapId, raw: &str) -> Option<f64> {
+    if let Some(i) = compressor_index(param_id) {
+        let text = raw.trim().to_ascii_lowercase();
+        let value = match i {
+            0 | 8 | 9 | 12 | 16 | 17 | 18 => match text.as_str() {
+                "on" => 1.0,
+                "off" => 0.0,
+                _ => text.parse::<f32>().ok()?,
+            },
+            7 | 11 => text.trim_end_matches('%').trim().parse::<f32>().ok()? / 100.0,
+            13 => match text.as_str() {
+                "low pass" => 0.0,
+                "high pass" => 1.0,
+                "band pass" => 2.0,
+                "notch" => 3.0,
+                "bell" => 4.0,
+                _ => text.parse::<f32>().ok()?,
+            },
+            14 => parse_frequency(raw)?,
+            _ => text
+                .trim_end_matches(":1")
+                .trim_end_matches("db")
+                .trim_end_matches("ms")
+                .trim()
+                .parse::<f32>()
+                .ok()?,
+        };
+        return value
+            .is_finite()
+            .then(|| crate::compressor_controls::sanitize(i, value) as f64);
+    }
     if let Some(i) = effect_index(param_id) {
         let text = raw.trim().to_ascii_lowercase();
         let v = match i {
@@ -1207,4 +1565,8 @@ pub fn apply_param_event(params: &PumpParams, param_id: ClapId, value: f32) {
 
 fn effect_index(id: ClapId) -> Option<usize> {
     (0..crate::dual_band::COUNT).find(|i| id == ClapId::new(24 + *i as u32))
+}
+
+fn compressor_index(id: ClapId) -> Option<usize> {
+    (0..crate::compressor_controls::COUNT).find(|i| id == ClapId::new(36 + *i as u32))
 }

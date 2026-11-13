@@ -23,10 +23,11 @@ use crate::params::{
     DEFAULT_MIX, DEFAULT_OUTPUT_GAIN_DB, DEFAULT_SMOOTH, DEFAULT_SWING, FILTER_MIN_SEPARATION_HZ,
     MAX_DELAY_BEATS, MAX_FILTER_FREQ_HZ, MAX_FILTER_Q, MAX_OUTPUT_GAIN_DB, MAX_SYNC_DIVISION,
     MIN_DELAY_BEATS, MIN_FILTER_FREQ_HZ, MIN_FILTER_Q, MIN_OUTPUT_GAIN_DB, PARAM_BYPASS_ID,
-    PARAM_DELAY_ID, PARAM_FILTER_HP_FREQ_ID, PARAM_FILTER_HP_Q_ID, PARAM_FILTER_LP_FREQ_ID,
-    PARAM_FILTER_LP_Q_ID, PARAM_FREE_RATE_ID, PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID,
-    PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID, PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID,
-    PARAM_TIMING_MODE_ID, TIMING_MODE_FREE, TIMING_MODE_SYNC,
+    PARAM_DELAY_ID, PARAM_DEPTH_ID, PARAM_FILTER_HP_FREQ_ID, PARAM_FILTER_HP_Q_ID,
+    PARAM_FILTER_LP_FREQ_ID, PARAM_FILTER_LP_Q_ID, PARAM_FLOOR_ID, PARAM_FREE_RATE_ID,
+    PARAM_MIX_ID, PARAM_OUTPUT_GAIN_ID, PARAM_PHASE_OFFSET_ID, PARAM_SMOOTH_ID, PARAM_SOUND_ID,
+    PARAM_SWING_ID, PARAM_SYNC_DIVISION_ID, PARAM_TIMING_MODE_ID, TIMING_MODE_FREE,
+    TIMING_MODE_SYNC,
 };
 #[cfg(test)]
 use crate::params::{
@@ -957,12 +958,15 @@ pub(crate) struct PumpEditorState {
     numeric_entry: Option<NumericEntryState>,
     active_knob_gesture: Option<NumericEntryTarget>,
     active_effect_gesture: Option<usize>,
+    active_compressor_gesture: Option<usize>,
     timing_dropdown_open: bool,
     hotkey_help_open: bool,
     free_rate_unit: FreeRateUnit,
     ab_confirmation: Option<String>,
     undo_history: Vec<HistorySnapshot>,
     redo_history: Vec<HistorySnapshot>,
+    pending_capture: Option<(u64, SoundSide, u32)>,
+    capture_message: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1001,6 +1005,8 @@ pub(crate) enum EditorMessage {
     ToggleTimingDropdown,
     ToggleWaveformMode,
     ToggleHotkeyHelp,
+    CaptureCompressor,
+    CancelCompressorCapture,
     Knob {
         target: NumericEntryTarget,
         message: KnobMessage,
@@ -1020,6 +1026,14 @@ pub(crate) enum EditorMessage {
         message: KnobMessage,
     },
     SetEffect {
+        index: usize,
+        value: f32,
+    },
+    CompressorGesture {
+        index: usize,
+        message: KnobMessage,
+    },
+    SetCompressor {
         index: usize,
         value: f32,
     },
@@ -1093,12 +1107,15 @@ impl PumpEditorState {
             numeric_entry: None,
             active_knob_gesture: None,
             active_effect_gesture: None,
+            active_compressor_gesture: None,
             timing_dropdown_open: false,
             hotkey_help_open: false,
             free_rate_unit: FreeRateUnit::Hertz,
             ab_confirmation: None,
             undo_history: Vec::new(),
             redo_history: Vec::new(),
+            pending_capture: None,
+            capture_message: None,
         }
     }
 
@@ -1167,6 +1184,60 @@ impl PumpEditorState {
     }
 
     fn restore(&self, snapshot: &HistorySnapshot) {
+        // Undoing a capture also changes automatable controls. Keep rejected
+        // edits at their current values so the host and editor cannot diverge.
+        let mut snapshot = snapshot.clone();
+        for (id, target, current) in [
+            (
+                PARAM_DEPTH_ID,
+                &mut snapshot.depth_db,
+                self.params.depth_db(),
+            ),
+            (
+                PARAM_FLOOR_ID,
+                &mut snapshot.floor_db,
+                self.params.floor_db(),
+            ),
+            (PARAM_SMOOTH_ID, &mut snapshot.smooth, self.params.smooth()),
+            (PARAM_MIX_ID, &mut snapshot.mix, self.params.mix()),
+            (
+                PARAM_OUTPUT_GAIN_ID,
+                &mut snapshot.output_gain_db,
+                self.params.output_gain_db(),
+            ),
+        ] {
+            if *target != current
+                && !self
+                    .host_param_edit_sink
+                    .edit(&self.automation_config, id, f64::from(*target))
+            {
+                *target = current;
+            }
+        }
+        let active = &mut snapshot.sound_states[snapshot.active_sound.index()];
+        active.depth_db = snapshot.depth_db;
+        active.floor_db = snapshot.floor_db;
+        active.smooth = snapshot.smooth;
+        active.mix = snapshot.mix;
+        active.output_gain_db = snapshot.output_gain_db;
+        if snapshot.active_sound == self.params.active_sound() {
+            let current = self.params.compressor();
+            for (index, target) in snapshot.sound_states[snapshot.active_sound.index()]
+                .compressor
+                .iter_mut()
+                .enumerate()
+            {
+                if *target != current[index]
+                    && !self.host_param_edit_sink.edit(
+                        &self.automation_config,
+                        ClapId::new(36 + index as u32),
+                        f64::from(*target),
+                    )
+                {
+                    *target = current[index];
+                }
+            }
+        }
         self.params.set_mix(snapshot.mix);
         self.params.set_smooth(snapshot.smooth);
         self.params.set_swing(snapshot.swing);
@@ -1251,12 +1322,124 @@ impl PumpEditorState {
     /// frame. The parameter model also reconciles the selected side's curve;
     /// clearing transient selection keeps node indices from crossing sides.
     pub(crate) fn refresh_host_projection(&mut self) -> bool {
-        if self.params.consume_pending_active_sound().is_some() {
+        let changed = self.params.consume_pending_active_sound().is_some();
+        if changed {
             self.clear_curve_selection();
-            true
-        } else {
-            false
         }
+        self.finish_compressor_capture() || changed
+    }
+
+    pub(crate) fn capture_pending(&self) -> bool {
+        self.pending_capture.is_some()
+    }
+
+    pub(crate) fn capture_message(&self) -> Option<&str> {
+        self.capture_message.as_deref()
+    }
+
+    fn cancel_compressor_capture(&mut self, message: &str) {
+        self.status.compressor_capture_exchange().cancel();
+        self.pending_capture = None;
+        self.capture_message = Some(message.to_owned());
+    }
+
+    fn finish_compressor_capture(&mut self) -> bool {
+        let Some((request, side, revision)) = self.pending_capture else {
+            return false;
+        };
+        if self.params.active_sound() != side
+            || self.params.curve_revision() != revision
+            || self.params.compressor()[0] < 0.5
+            || self.params.compressor()[16] >= 0.5
+            || self.params.delay_beats() != 0
+            || self.params.timing_mode() != TIMING_MODE_SYNC
+            || self.params.bypassed()
+        {
+            self.cancel_compressor_capture("Capture cancelled: sound or curve changed");
+            return true;
+        }
+        let exchange = self.status.compressor_capture_exchange();
+        if exchange.current_request() != request {
+            self.cancel_compressor_capture("Capture cancelled");
+            return true;
+        }
+        let Some(mut points) = exchange.snapshot() else {
+            return false;
+        };
+        let scale = points.iter().copied().fold(1.0_f32, f32::max);
+        let target_output = self.params.output_gain_db() + 20.0 * scale.log10();
+        if scale > 1.000_001 && (self.params.filter_enabled() || self.params.effects()[0] >= 0.5) {
+            self.cancel_compressor_capture("Reduce makeup before capturing band processing");
+            return true;
+        }
+        if target_output > MAX_OUTPUT_GAIN_DB {
+            self.cancel_compressor_capture("Reduce makeup or output before capture");
+            return true;
+        }
+        for point in &mut points {
+            *point /= scale;
+        }
+        let curve = crate::compressor_capture::editable_curve_from_capture(&points);
+        let before = self.snapshot();
+        let mut changed = false;
+        for (id, target, current) in [
+            (PARAM_DEPTH_ID, 120.0_f32, self.params.depth_db()),
+            (PARAM_FLOOR_ID, -60.0_f32, self.params.floor_db()),
+            (PARAM_SMOOTH_ID, 0.0_f32, self.params.smooth()),
+            (PARAM_MIX_ID, 1.0_f32, self.params.mix()),
+            (
+                PARAM_OUTPUT_GAIN_ID,
+                target_output,
+                self.params.output_gain_db(),
+            ),
+        ] {
+            if current == target {
+                continue;
+            }
+            if !self
+                .host_param_edit_sink
+                .edit(&self.automation_config, id, f64::from(target))
+            {
+                if changed {
+                    self.push_history_snapshot(before);
+                }
+                self.cancel_compressor_capture("Capture could not update host parameters");
+                return true;
+            }
+            if id == PARAM_DEPTH_ID {
+                self.params.set_depth_db(target);
+            } else if id == PARAM_FLOOR_ID {
+                self.params.set_floor_db(target);
+            } else if id == PARAM_SMOOTH_ID {
+                self.params.set_smooth(target);
+            } else if id == PARAM_MIX_ID {
+                self.params.set_mix(target);
+            } else {
+                self.params.set_output_gain_db(target);
+            }
+            changed = true;
+        }
+        if !self
+            .host_param_edit_sink
+            .edit(&self.automation_config, ClapId::new(36), 0.0)
+        {
+            if changed {
+                self.push_history_snapshot(before);
+            }
+            self.cancel_compressor_capture("Capture could not turn off compression");
+            return true;
+        }
+        self.push_history_snapshot(before);
+        self.params.set_editable_curve(&curve);
+        self.params.set_compressor_control(0, 0.0);
+        self.clear_curve_selection();
+        let clipped = self.params.compressor()[8] >= 0.5;
+        self.cancel_compressor_capture(if clipped {
+            "Curve captured; clipping is not captured"
+        } else {
+            "Captured curve is ready to edit"
+        });
+        true
     }
 
     pub(crate) fn free_rate_unit(&self) -> FreeRateUnit {
@@ -1443,6 +1626,7 @@ impl PumpEditorState {
             || self.active_filter_drag.is_some()
             || self.active_knob_gesture.is_some()
             || self.active_effect_gesture.is_some()
+            || self.active_compressor_gesture.is_some()
     }
 
     /// End every host gesture before the native child view is torn down.
@@ -1456,6 +1640,11 @@ impl PumpEditorState {
             let _ = self
                 .host_param_edit_sink
                 .gesture_ended(&self.automation_config, ClapId::new(24 + index as u32));
+        }
+        if let Some(index) = self.active_compressor_gesture.take() {
+            let _ = self
+                .host_param_edit_sink
+                .gesture_ended(&self.automation_config, ClapId::new(36 + index as u32));
         }
         if let Some(target) = self.active_knob_gesture.take() {
             let _ = self
@@ -1482,6 +1671,11 @@ impl PumpEditorState {
             let _ = self
                 .host_param_edit_sink
                 .gesture_ended(&self.automation_config, ClapId::new(24 + index as u32));
+        }
+        if let Some(index) = self.active_compressor_gesture.take() {
+            let _ = self
+                .host_param_edit_sink
+                .gesture_ended(&self.automation_config, ClapId::new(36 + index as u32));
         }
         if let Some(target) = self.active_knob_gesture.take() {
             let _ = self
@@ -1697,6 +1891,30 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 .status
                 .set_waveform_live_mode(!state.status.waveform_live_mode());
         }
+        EditorMessage::CaptureCompressor => {
+            if state.params.compressor()[0] < 0.5 {
+                state.capture_message = Some("Enable compression to capture".to_owned());
+            } else if state.params.timing_mode() != TIMING_MODE_SYNC {
+                state.capture_message = Some("Select Sync to capture one cycle".to_owned());
+            } else if state.params.bypassed() {
+                state.capture_message = Some("Turn off bypass to capture".to_owned());
+            } else if state.params.compressor()[16] >= 0.5 {
+                state.capture_message = Some("Turn off sidechain listen to capture".to_owned());
+            } else if state.params.delay_beats() != 0 {
+                state.capture_message = Some("Set Delay to zero to capture".to_owned());
+            } else {
+                let request = state.status.compressor_capture_exchange().request();
+                state.pending_capture = Some((
+                    request,
+                    state.params.active_sound(),
+                    state.params.curve_revision(),
+                ));
+                state.capture_message = Some("Waiting for one complete cycle".to_owned());
+            }
+        }
+        EditorMessage::CancelCompressorCapture => {
+            state.cancel_compressor_capture("Capture cancelled")
+        }
         EditorMessage::ToggleHotkeyHelp => {
             state.hotkey_help_open = !state.hotkey_help_open;
             if state.hotkey_help_open {
@@ -1824,6 +2042,73 @@ fn reduce_editor_message(state: &mut PumpEditorState, message: EditorMessage) {
                 KnobMessage::Reset { value } | KnobMessage::Discrete { value } => {
                     reduce_editor_message(state, EditorMessage::SetEffect { index, value });
                 }
+            }
+        }
+        EditorMessage::CompressorGesture { index, message } => {
+            if index >= crate::compressor_controls::COUNT {
+                return;
+            }
+            let id = ClapId::new(36 + index as u32);
+            match message {
+                KnobMessage::GestureStarted => {
+                    if state.active_compressor_gesture.is_none()
+                        && state
+                            .host_param_edit_sink
+                            .gesture_started(&state.automation_config, id)
+                    {
+                        state.push_history();
+                        state.active_compressor_gesture = Some(index);
+                    }
+                }
+                KnobMessage::ValueChanged { value } => {
+                    if state.active_compressor_gesture == Some(index) {
+                        let value = crate::compressor_controls::sanitize(index, value);
+                        if state.host_param_edit_sink.gesture_value(
+                            &state.automation_config,
+                            id,
+                            f64::from(value),
+                        ) {
+                            state.params.set_compressor_control(index, value);
+                        }
+                    }
+                }
+                KnobMessage::GestureEnded => {
+                    if state.active_compressor_gesture == Some(index) {
+                        let _ = state
+                            .host_param_edit_sink
+                            .gesture_ended(&state.automation_config, id);
+                        state.active_compressor_gesture = None;
+                    }
+                }
+                KnobMessage::Reset { value } | KnobMessage::Discrete { value } => {
+                    reduce_editor_message(state, EditorMessage::SetCompressor { index, value });
+                }
+            }
+        }
+        EditorMessage::SetCompressor { index, value } => {
+            if index >= crate::compressor_controls::COUNT {
+                return;
+            }
+            let value = crate::compressor_controls::sanitize(index, value);
+            if state.params.compressor()[index] == value {
+                return;
+            }
+            let id = ClapId::new(36 + index as u32);
+            if state.active_compressor_gesture == Some(index) {
+                if state.host_param_edit_sink.gesture_value(
+                    &state.automation_config,
+                    id,
+                    f64::from(value),
+                ) {
+                    state.params.set_compressor_control(index, value);
+                }
+            } else if state.host_param_edit_sink.edit(
+                &state.automation_config,
+                id,
+                f64::from(value),
+            ) {
+                state.push_history();
+                state.params.set_compressor_control(index, value);
             }
         }
         EditorMessage::SetEffect { index, value } => {
@@ -4503,6 +4788,240 @@ mod tests {
             Arc::new(GuiStatus::default()),
             sink,
         )
+    }
+
+    #[test]
+    fn compressor_control_edits_are_host_admitted_and_undoable() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(Arc::clone(&sink));
+        state.dispatch(EditorMessage::SetCompressor {
+            index: 1,
+            value: -30.0,
+        });
+        assert_eq!(state.params().compressor()[1], -30.0);
+        assert!(sink
+            .events()
+            .contains(&SinkEvent::Edit(ClapId::new(37), -30.0)));
+        state.dispatch(EditorMessage::Undo);
+        assert_eq!(state.params().compressor()[1], -20.0);
+        assert!(sink
+            .events()
+            .contains(&SinkEvent::Edit(ClapId::new(37), -20.0)));
+        state.dispatch(EditorMessage::Redo);
+        assert!(sink
+            .events()
+            .contains(&SinkEvent::Edit(ClapId::new(37), -30.0)));
+        let rejected = Arc::new(RecordingSink {
+            reject_edit: Some(ClapId::new(37)),
+            ..Default::default()
+        });
+        let mut state = editor(rejected);
+        state.dispatch(EditorMessage::SetCompressor {
+            index: 1,
+            value: -30.0,
+        });
+        assert_eq!(state.params().compressor()[1], -20.0);
+        state.push_history();
+        state.params().set_compressor_control(1, -30.0);
+        state.dispatch(EditorMessage::Undo);
+        assert_eq!(state.params().compressor()[1], -30.0);
+    }
+
+    #[test]
+    fn capture_undo_keeps_a_host_rejected_mix_value() {
+        let sink = Arc::new(RecordingSink {
+            reject_edit: Some(PARAM_MIX_ID),
+            ..Default::default()
+        });
+        let mut state = editor(sink);
+        state.params().set_mix(0.4);
+        state.push_history();
+        state.params().set_mix(1.0);
+        state.dispatch(EditorMessage::Undo);
+        assert_eq!(state.params().mix(), 1.0);
+    }
+
+    #[test]
+    fn completed_compressor_capture_becomes_an_undoable_editable_curve() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut state = editor(Arc::clone(&sink));
+        state.params().set_compressor_control(0, 1.0);
+        state.params().set_depth_db(60.0);
+        state.params().set_floor_db(-18.0);
+        state.params().set_smooth(0.3);
+        let before = state.params().editable_curve_snapshot();
+        state.dispatch(EditorMessage::CaptureCompressor);
+        let request = state.pending_capture.unwrap().0;
+        assert!(state
+            .status()
+            .compressor_capture_exchange()
+            .publish(request, &[0.5; crate::compressor_capture::CAPTURE_POINTS]));
+        assert!(state.refresh_host_projection());
+        assert!(!state.capture_pending());
+        assert_eq!(state.params().compressor()[0], 0.0);
+        assert_eq!(state.params().depth_db(), 120.0);
+        assert_eq!(state.params().floor_db(), -60.0);
+        assert_eq!(state.params().smooth(), 0.0);
+        assert!(
+            (crate::curve::sample_editable_curve(&state.params().editable_curve_snapshot(), 0.5)
+                - 0.5)
+                .abs()
+                < 1e-6
+        );
+        assert!(sink
+            .events()
+            .contains(&SinkEvent::Edit(ClapId::new(36), 0.0)));
+        state.dispatch(EditorMessage::Undo);
+        assert_eq!(state.params().editable_curve_snapshot(), before);
+        assert_eq!(state.params().compressor()[0], 1.0);
+        assert_eq!(state.params().depth_db(), 60.0);
+    }
+
+    #[test]
+    fn captured_compression_replays_as_the_same_editable_envelope() {
+        for (phase, swing) in [(0.0, 0.0), (0.2, 0.35)] {
+            check_captured_compression_replay(phase, swing);
+        }
+    }
+
+    fn check_captured_compression_replay(phase: f32, swing: f32) {
+        use crate::dsp::PumpEngine;
+        use crate::sample_automation::{
+            dsp_settings_from_params, process_stereo_block, ParamEventSchedule, StereoBlockSlices,
+        };
+        use toybox::dsp::TransportState;
+        const FRAMES: usize = 1000;
+        let mut state = editor(Arc::new(RecordingSink::default()));
+        let params = Arc::clone(state.params());
+        params.set_compressor_control(0, 1.0);
+        params.set_compressor_control(1, -20.0);
+        params.set_compressor_control(2, 1.0);
+        params.set_compressor_control(3, 100.0);
+        params.set_compressor_control(4, 4.0);
+        params.set_compressor_control(6, 6.0);
+        params.set_compressor_control(9, 1.0);
+        params.set_mix(0.6);
+        params.set_phase_offset(phase);
+        params.set_swing(swing);
+        let mut engine = PumpEngine::new(1000.0, params.curve_snapshot());
+        engine.set_capture_exchange(Arc::clone(state.status().compressor_capture_exchange()));
+        state.dispatch(EditorMessage::CaptureCompressor);
+        let mut schedule = ParamEventSchedule::default();
+        let mut settings = dsp_settings_from_params(&params);
+        let mut revision = params.curve_revision();
+        let mut left = vec![1.0; FRAMES];
+        let mut right = vec![1.0; FRAMES];
+        let side: Vec<f32> = (0..FRAMES)
+            .map(|i| if i < 100 { 1.0 } else { 0.0 })
+            .collect();
+        let mut live = Vec::new();
+        for block in 0..3 {
+            left.fill(1.0);
+            right.fill(1.0);
+            schedule.begin_block(FRAMES);
+            process_stereo_block(
+                &mut engine,
+                StereoBlockSlices {
+                    left: &mut left,
+                    right: &mut right,
+                    sidechain: Some((&side, &side)),
+                },
+                &params,
+                &mut schedule,
+                &mut settings,
+                &mut revision,
+                TransportState {
+                    is_playing: true,
+                    song_pos_beats: Some(block as f64),
+                    tempo_bpm: 60.0,
+                },
+                None,
+            );
+            if block == 1 {
+                live = left.clone();
+            }
+        }
+        assert!(state.refresh_host_projection());
+        assert_eq!(params.compressor()[0], 0.0);
+        let mut frozen_engine = PumpEngine::new(1000.0, params.curve_snapshot());
+        assert!(frozen_engine.initialize_precise_curve(&params, params.curve_revision()));
+        let mut frozen_settings = dsp_settings_from_params(&params);
+        let mut frozen_revision = params.curve_revision();
+        for block in 0..2 {
+            left.fill(1.0);
+            right.fill(1.0);
+            schedule.begin_block(FRAMES);
+            process_stereo_block(
+                &mut frozen_engine,
+                StereoBlockSlices {
+                    left: &mut left,
+                    right: &mut right,
+                    sidechain: None,
+                },
+                &params,
+                &mut schedule,
+                &mut frozen_settings,
+                &mut frozen_revision,
+                TransportState {
+                    is_playing: true,
+                    song_pos_beats: Some(block as f64),
+                    tempo_bpm: 60.0,
+                },
+                None,
+            );
+        }
+        let (worst_index, max_error) = live
+            .iter()
+            .zip(&left)
+            .enumerate()
+            .map(|(i, (a, b))| (i, (a - b).abs()))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        assert!(max_error < 0.03, "phase {phase}, swing {swing}: frozen envelope differs by {max_error} at {worst_index}: live {}, frozen {}, curve {:?}, output {}", live[worst_index], left[worst_index], params.editable_curve_snapshot().nodes, params.output_gain_db());
+    }
+
+    #[test]
+    fn capture_preserves_boost_and_overall_mix_in_frozen_gain() {
+        let mut state = editor(Arc::new(RecordingSink::default()));
+        state.params().set_compressor_control(0, 1.0);
+        state.params().set_mix(0.4);
+        state.params().set_output_gain_db(-6.0);
+        state.dispatch(EditorMessage::CaptureCompressor);
+        let request = state.pending_capture.unwrap().0;
+        assert!(state
+            .status()
+            .compressor_capture_exchange()
+            .publish(request, &[2.0; crate::compressor_capture::CAPTURE_POINTS]));
+        assert!(state.refresh_host_projection());
+        assert_eq!(state.params().mix(), 1.0);
+        assert!((state.params().output_gain_db() - (-6.0 + 20.0 * 2.0_f32.log10())).abs() < 1e-4);
+        assert!(
+            (crate::curve::sample_editable_curve(&state.params().editable_curve_snapshot(), 0.5)
+                - 1.0)
+                .abs()
+                < 1e-6
+        );
+    }
+
+    #[test]
+    fn rejected_capture_does_not_replace_the_curve() {
+        let sink = Arc::new(RecordingSink {
+            reject_edit: Some(ClapId::new(36)),
+            ..Default::default()
+        });
+        let mut state = editor(sink);
+        state.params().set_compressor_control(0, 1.0);
+        let before = state.params().editable_curve_snapshot();
+        state.dispatch(EditorMessage::CaptureCompressor);
+        let request = state.pending_capture.unwrap().0;
+        assert!(state
+            .status()
+            .compressor_capture_exchange()
+            .publish(request, &[0.5; crate::compressor_capture::CAPTURE_POINTS]));
+        assert!(state.refresh_host_projection());
+        assert_eq!(state.params().editable_curve_snapshot(), before);
+        assert_eq!(state.params().compressor()[0], 1.0);
+        assert!(!state.capture_pending());
     }
 
     #[test]

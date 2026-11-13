@@ -983,6 +983,11 @@ fn decode_rejects_nonfinite_v14_ab_scalar_without_mutating_state() {
 // Existing migration fixtures intentionally start at v20, then remove fields
 // to represent each historical wire format. Keep their byte offsets stable.
 fn effect_record_offsets(payload: &[u8]) -> Vec<usize> {
+    let compressor_bytes = if read_u32(payload, 4) >= 23 {
+        crate::compressor_controls::COUNT * 4
+    } else {
+        0
+    };
     let mut offset = skip_encoded_curve(payload, 32, true) + 8;
     let count = read_u32(payload, offset - 4) as usize;
     let mut remove = Vec::new();
@@ -997,20 +1002,29 @@ fn effect_record_offsets(payload: &[u8]) -> Vec<usize> {
         }
         offset += 4 + 4 + 4 + 1 + 4 + 8 + 4 + 19;
         remove.push(offset);
-        offset += 28;
+        offset += 28 + compressor_bytes;
     }
     offset += 20 + 4;
     for _ in 0..4 {
         let (_, _, end) = sound_state_offsets(payload, offset);
         remove.push(end + 31);
-        offset = end + 31 + 28;
+        offset = end + 31 + 28 + compressor_bytes;
     }
-    remove.push(payload.len() - 28);
+    remove.push(payload.len() - 28 - compressor_bytes);
     remove
 }
 
-fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
+fn encode_v22_state_payload(params: &PumpParams) -> Vec<u8> {
     let mut payload = encode_current_state_payload(params);
+    for start in effect_record_offsets(&payload).into_iter().rev() {
+        payload.drain(start + 28..start + 28 + crate::compressor_controls::COUNT * 4);
+    }
+    write_u32(&mut payload, 4, 22);
+    payload
+}
+
+fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
+    let mut payload = encode_v22_state_payload(params);
     for start in effect_record_offsets(&payload).into_iter().rev() {
         payload.drain(start..start + 28);
     }
@@ -1028,7 +1042,7 @@ fn v21_spectral_state_migrates_all_dual_records_and_rejects_invalid_removed_data
     let mut bank = source.preset_bank_snapshot();
     bank.presets[0].effects = [1., 1700., 1., 0.5, 0.3, 0., 1.];
     source.set_preset_bank_without_persistence(bank);
-    let mut old = encode_current_state_payload(&source);
+    let mut old = encode_v22_state_payload(&source);
     let removed = [1_f32, 36., 0.1, 2000., 1.]
         .into_iter()
         .flat_map(f32::to_le_bytes)
@@ -1062,4 +1076,68 @@ fn v21_spectral_state_migrates_all_dual_records_and_rejects_invalid_removed_data
     old.truncate(last);
     assert!(decode_state_payload(&restored, &old).is_err());
     assert_eq!(encode_current_state_payload(&restored), before);
+}
+
+#[test]
+fn v22_state_defaults_compressor_on_both_sounds_and_presets() {
+    let source = PumpParams::new();
+    source.set_compressor_control(0, 1.0);
+    let old = encode_v22_state_payload(&source);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &old).unwrap();
+    assert_eq!(restored.compressor(), crate::compressor_controls::DEFAULTS);
+    for side in [super::SoundSide::A, super::SoundSide::B] {
+        assert_eq!(
+            restored.sound_state_snapshot(side).compressor,
+            crate::compressor_controls::DEFAULTS
+        );
+        assert_eq!(
+            restored.stored_sound_state_snapshot(side).compressor,
+            crate::compressor_controls::DEFAULTS
+        );
+    }
+    assert!(restored
+        .preset_bank_snapshot()
+        .presets
+        .iter()
+        .all(|preset| preset.compressor == crate::compressor_controls::DEFAULTS));
+}
+
+#[test]
+fn captured_curve_precision_survives_project_and_sound_snapshots() {
+    let source = PumpParams::new();
+    let mut curve = source.editable_curve_snapshot();
+    curve.high_resolution = true;
+    source.set_editable_curve(&curve);
+    assert!(source.store_active_sound_state());
+    let mut bank = source.preset_bank_snapshot();
+    bank.presets[0].editable_curve = curve.clone();
+    bank.presets[0].quick_slots[0].curve = curve.clone();
+    source.set_preset_bank_without_persistence(bank);
+    let payload = encode_current_state_payload(&source);
+    let restored = PumpParams::new();
+    decode_state_payload(&restored, &payload).unwrap();
+    assert!(restored.editable_curve_snapshot().high_resolution);
+    assert!(
+        restored
+            .sound_state_snapshot(SoundSide::A)
+            .editable_curve
+            .high_resolution
+    );
+    assert!(
+        restored
+            .stored_sound_state_snapshot(SoundSide::A)
+            .editable_curve
+            .high_resolution
+    );
+    assert!(
+        restored.preset_bank_snapshot().presets[0]
+            .editable_curve
+            .high_resolution
+    );
+    assert!(
+        restored.preset_bank_snapshot().presets[0].quick_slots[0]
+            .curve
+            .high_resolution
+    );
 }

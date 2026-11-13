@@ -58,6 +58,8 @@ pub struct EditableCurve {
     /// Legacy curves leave this disabled so their endpoint semantics remain
     /// unchanged.
     pub origin_is_clip: bool,
+    /// Preserve additional playback detail for curves generated from audio captures.
+    pub high_resolution: bool,
 }
 
 impl Default for EditableCurve {
@@ -68,6 +70,7 @@ impl Default for EditableCurve {
             phase_source: None,
             phase_offset: 0.0,
             origin_is_clip: false,
+            high_resolution: false,
         }
     }
 }
@@ -81,7 +84,8 @@ impl EditableCurve {
 
     /// Clamp and repair this curve in-place so it is valid for sampling.
     pub fn normalize_in_place(&mut self) {
-        let (nodes, segment_sources) = normalize_nodes(&self.nodes, self.origin_is_clip);
+        let (nodes, segment_sources) =
+            normalize_nodes(&self.nodes, self.origin_is_clip, self.high_resolution);
         self.nodes = nodes;
         self.segments = normalize_segments(
             &self.segments,
@@ -180,6 +184,7 @@ pub fn cyclically_offset_editable_curve(curve: &EditableCurve, delta: f32) -> Ed
         phase_source: Some(Box::new(exact_phase_source(&origin))),
         phase_offset: exact_phase_offset(&origin, delta),
         origin_is_clip: origin.origin_is_clip,
+        high_resolution: origin.high_resolution,
     };
     for window in offset.nodes.windows(2) {
         let left = window[0].x;
@@ -474,7 +479,13 @@ fn shape_with_tension(value: f32, tension: f32) -> f32 {
 fn normalize_nodes(
     nodes: &[CurveNode],
     preserve_clip_edge_interior: bool,
+    high_resolution: bool,
 ) -> (Vec<CurveNode>, Vec<usize>) {
+    let node_spacing = if high_resolution {
+        1.0e-6
+    } else {
+        NODE_X_EPSILON
+    };
     let mut normalized: Vec<(CurveNode, usize)> = nodes
         .iter()
         .copied()
@@ -487,7 +498,7 @@ fn normalize_nodes(
                     // the ordering pass; the first/last entries are forced to
                     // exact anchors below. Legacy curves retain the historic
                     // edge snap so ordinary endpoint editing is unchanged.
-                    x: if preserve_clip_edge_interior {
+                    x: if preserve_clip_edge_interior || high_resolution {
                         node.x.clamp(0.0, 1.0)
                     } else {
                         match node.x.clamp(0.0, 1.0) {
@@ -520,9 +531,9 @@ fn normalize_nodes(
             // it is being dragged; merging it into the anchor would erase the
             // point (and its outgoing segment) before the gesture reaches an
             // intentional exact endpoint.
-            let is_clip_edge_pair = preserve_clip_edge_interior
+            let is_clip_edge_pair = (preserve_clip_edge_interior || high_resolution)
                 && ((last.0.x == 0.0 && node.x > 0.0) || (last.0.x < 1.0 && node.x == 1.0));
-            if (node.x - last.0.x).abs() < NODE_X_EPSILON && !is_clip_edge_pair {
+            if (node.x - last.0.x).abs() < node_spacing && !is_clip_edge_pair {
                 last.0 = node;
                 last.1 = source_index;
                 continue;
@@ -553,14 +564,24 @@ fn normalize_nodes(
     deduped[last].0.x = 1.0;
 
     for index in 1..=last {
-        let min_x = deduped[index - 1].0.x + NODE_X_EPSILON;
+        let spacing = if preserve_clip_edge_interior && high_resolution && index == 1 {
+            f32::EPSILON
+        } else {
+            node_spacing
+        };
+        let min_x = deduped[index - 1].0.x + spacing;
         if deduped[index].0.x < min_x {
             deduped[index].0.x = min_x;
         }
     }
     deduped[last].0.x = 1.0;
     for index in (0..last).rev() {
-        let max_x = deduped[index + 1].0.x - NODE_X_EPSILON;
+        let spacing = if preserve_clip_edge_interior && high_resolution && index + 1 == last {
+            f32::EPSILON
+        } else {
+            node_spacing
+        };
+        let max_x = deduped[index + 1].0.x - spacing;
         if deduped[index].0.x > max_x {
             deduped[index].0.x = max_x;
         }
@@ -884,6 +905,29 @@ mod tests {
         }
         .normalized();
         assert!(curve.nodes.len() <= MAX_EDITABLE_NODES);
+    }
+
+    #[test]
+    fn clipped_curve_preserves_authored_points_close_to_the_seam() {
+        let curve = EditableCurve {
+            nodes: vec![
+                CurveNode { x: 0.0, y: 0.5 },
+                CurveNode {
+                    x: 0.000001,
+                    y: 0.2,
+                },
+                CurveNode { x: 0.99999, y: 1.0 },
+                CurveNode { x: 1.0, y: 0.5 },
+            ],
+            segments: vec![CurveSegment { tension: -1.0 }; 3],
+            origin_is_clip: true,
+            high_resolution: true,
+            ..EditableCurve::default()
+        }
+        .normalized();
+        assert!((curve.nodes[1].x - 0.000001).abs() < 1e-8);
+        assert!((curve.nodes[2].x - 0.99999).abs() < 1e-7);
+        assert!((sample_editable_curve(&curve, 0.0) - 0.2).abs() < 0.01);
     }
 
     #[test]

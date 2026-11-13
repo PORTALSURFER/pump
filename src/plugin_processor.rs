@@ -16,6 +16,10 @@ pub struct PumpAudioProcessor<'a> {
     scratch_left: Vec<f32>,
     /// Temporary right-channel storage for non-inplace paths.
     scratch_right: Vec<f32>,
+    /// Preallocated copy prevents sidechain/output aliases from overlapping.
+    scratch_side_left: Vec<f32>,
+    scratch_side_right: Vec<f32>,
+    sidechain_present: bool,
     /// Scratch vector for draining queued automation events.
     automation_drain: Vec<AutomationEvent>,
     /// Reused sample-offset parameter schedule for the current block.
@@ -64,9 +68,11 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
         collect_clap_param_points(events.input, frame_count, &mut self.param_schedule);
 
         let revision = self.shared.params.curve_revision();
-        if revision != self.last_curve_revision {
-            self.engine
-                .set_target_curve(self.shared.params.curve_snapshot());
+        if revision != self.last_curve_revision
+            && self
+                .engine
+                .try_set_target_curve_from_params(self.shared.params.as_ref(), revision)
+        {
             self.last_curve_revision = revision;
         }
 
@@ -88,6 +94,7 @@ impl<'a> PluginAudioProcessor<'a, PumpShared, PumpMainThread<'a>> for PumpAudioP
             gui_transport_telemetry(transport, settings, self.shared.status.beat_phase()),
         );
 
+        self.copy_sidechain(&audio, frame_count);
         let (source_present, source_processed) = audio
             .port_pair(0)
             .and_then(|mut port_pair| {
@@ -144,6 +151,8 @@ impl<'a> PumpAudioProcessor<'a> {
         let max_frames = audio_config.max_frames_count as usize;
         let scratch_left = try_zeroed_vec(max_frames)?;
         let scratch_right = try_zeroed_vec(max_frames)?;
+        let scratch_side_left = try_zeroed_vec(max_frames)?;
+        let scratch_side_right = try_zeroed_vec(max_frames)?;
         let mut automation_drain = Vec::new();
         automation_drain
             .try_reserve_exact(shared.automation_queue.config().max_events)
@@ -152,16 +161,27 @@ impl<'a> PumpAudioProcessor<'a> {
         let param_schedule = ParamEventSchedule::try_with_capacity(param_capacity)
             .map_err(|_| PluginError::Message(CLAP_BUFFER_ALLOCATION_ERROR))?;
 
+        let mut engine = PumpEngine::new_with_bypass(
+            audio_config.sample_rate as f32,
+            curve,
+            shared.params.bypassed(),
+        );
+        engine.set_capture_exchange(Arc::clone(shared.status.compressor_capture_exchange()));
+        let revision = shared.params.curve_revision();
+        let initialized = engine.initialize_precise_curve(shared.params.as_ref(), revision);
         Ok(Self {
             shared,
-            engine: PumpEngine::new_with_bypass(
-                audio_config.sample_rate as f32,
-                curve,
-                shared.params.bypassed(),
-            ),
-            last_curve_revision: shared.params.curve_revision(),
+            engine,
+            last_curve_revision: if initialized {
+                revision
+            } else {
+                revision.wrapping_sub(1)
+            },
             scratch_left,
             scratch_right,
+            scratch_side_left,
+            scratch_side_right,
+            sidechain_present: false,
             automation_drain,
             param_schedule,
             waveform_writer: IncomingWaveformWriter::default(),
@@ -240,6 +260,26 @@ impl PluginAudioProcessorParams for PumpAudioProcessor<'_> {
 }
 
 impl PumpAudioProcessor<'_> {
+    fn copy_sidechain(&mut self, audio: &Audio<'_>, frames: usize) {
+        self.sidechain_present = false;
+        let Some(channels) = audio
+            .input_port(1)
+            .and_then(|port| port.channels().ok())
+            .and_then(|channels| channels.into_f32())
+        else {
+            return;
+        };
+        let (Some(left), Some(right)) = (channels.channel(0), channels.channel(1)) else {
+            return;
+        };
+        if frames > self.scratch_side_left.len() || left.len() < frames || right.len() < frames {
+            return;
+        }
+        self.scratch_side_left[..frames].copy_from_slice(&left[..frames]);
+        self.scratch_side_right[..frames].copy_from_slice(&right[..frames]);
+        self.sidechain_present = true;
+    }
+
     fn process_stereo_pair(
         &mut self,
         left_pair: ChannelPair<'_, f32>,
@@ -301,6 +341,10 @@ impl PumpAudioProcessor<'_> {
             crate::sample_automation::StereoBlockSlices {
                 left: &mut self.scratch_left[..frames],
                 right: &mut self.scratch_right[..frames],
+                sidechain: self.sidechain_present.then_some((
+                    &self.scratch_side_left[..frames],
+                    &self.scratch_side_right[..frames],
+                )),
             },
             self.shared.params.as_ref(),
             &mut self.param_schedule,
@@ -377,6 +421,81 @@ mod tests {
             self.count += 1;
             Ok(())
         }
+    }
+
+    #[test]
+    fn clap_sidechain_port_drives_compressor_and_missing_input_clears_previous_audio() {
+        #[repr(C)]
+        struct TestAudioBuffer {
+            data32: *mut *mut f32,
+            data64: *mut *mut f64,
+            channel_count: u32,
+            latency: u32,
+            constant_mask: u64,
+        }
+        const FRAMES: usize = 8192;
+        let shared = shared();
+        shared.params.set_compressor_control(0, 1.0);
+        shared.params.set_compressor_control(1, -20.0);
+        shared.params.set_compressor_control(2, 0.01);
+        shared.params.set_compressor_control(3, 10.0);
+        shared.params.set_compressor_control(4, 4.0);
+        shared.params.set_compressor_control(9, 1.0);
+        let mut processor = processor(&shared, FRAMES as u32);
+        let mut side_left = vec![1.0_f32; FRAMES];
+        let mut side_right = vec![0.0_f32; FRAMES];
+        let mut side_channels = [side_left.as_mut_ptr(), side_right.as_mut_ptr()];
+        let inactive = TestAudioBuffer {
+            data32: std::ptr::null_mut(),
+            data64: std::ptr::null_mut(),
+            channel_count: 0,
+            latency: 0,
+            constant_mask: 0,
+        };
+        let side = TestAudioBuffer {
+            data32: side_channels.as_mut_ptr(),
+            data64: std::ptr::null_mut(),
+            channel_count: 2,
+            latency: 0,
+            constant_mask: 0,
+        };
+        let inputs = [inactive, side];
+        let mut outputs = [];
+        // SAFETY: TestAudioBuffer has the CLAP audio-buffer C layout; the side
+        // channels are valid for the full block and there are no output buffers.
+        let raw_inputs =
+            unsafe { std::slice::from_raw_parts(inputs.as_ptr().cast(), inputs.len()) };
+        let audio = unsafe { Audio::from_raw_buffers(raw_inputs, &mut outputs, FRAMES as u32) };
+        crate::test_alloc::assert_no_alloc(|| processor.copy_sidechain(&audio, FRAMES));
+        assert!(processor.sidechain_present);
+        processor.param_schedule.begin_block(FRAMES);
+        let mut settings = dsp_settings_from_params(shared.params.as_ref());
+        let mut left = vec![1.0_f32; FRAMES];
+        let mut right = vec![1.0_f32; FRAMES];
+        crate::test_alloc::assert_no_alloc(|| {
+            assert!(processor.process_stereo_pair(
+                ChannelPair::InPlace(&mut left),
+                ChannelPair::InPlace(&mut right),
+                &mut settings,
+                TransportState::default()
+            ));
+        });
+        assert!((left[FRAMES - 1] - 10.0_f32.powf(-15.0 / 20.0)).abs() < 0.001);
+        let mut empty_outputs = [];
+        // SAFETY: the empty input and output lists contain no audio pointers.
+        let missing = unsafe { Audio::from_raw_buffers(&[], &mut empty_outputs, FRAMES as u32) };
+        processor.copy_sidechain(&missing, FRAMES);
+        assert!(!processor.sidechain_present);
+        left.fill(1.0);
+        right.fill(1.0);
+        processor.param_schedule.begin_block(FRAMES);
+        assert!(processor.process_stereo_pair(
+            ChannelPair::InPlace(&mut left),
+            ChannelPair::InPlace(&mut right),
+            &mut settings,
+            TransportState::default()
+        ));
+        assert!((left[FRAMES - 1] - 1.0).abs() < 0.001);
     }
 
     #[test]

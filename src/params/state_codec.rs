@@ -5,6 +5,7 @@ const MIN_ENCODED_CURVE_BYTES: usize = 4 + MIN_CURVE_BYTES;
 const PHASE_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"PHAS");
 const PHASE_SOURCE_ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"SORG");
 const ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"ORIG");
+const HIGH_RESOLUTION_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"HRES");
 /// Encode all parameter state including curve table into bytes.
 pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     let editable = params
@@ -62,6 +63,7 @@ pub fn encode_state_payload(params: &PumpParams) -> Vec<u8> {
     payload.push(params.filter_hp_slope() as u8);
     payload.push(params.filter_lp_slope() as u8);
     encode_effects(&mut payload, params.effects());
+    encode_compressor(&mut payload, params.compressor());
 
     payload
 }
@@ -117,7 +119,13 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     let Some(node_count) = read_u32(&mut cursor).map(|count| count as usize) else {
         return Err("invalid node count");
     };
-    let editable_curve = decode_curve(&mut cursor, node_count, version >= 6, version >= 18)?;
+    let editable_curve = decode_curve(
+        &mut cursor,
+        node_count,
+        version >= 6,
+        version >= 18,
+        version >= 23,
+    )?;
 
     let preset_bank = if version >= 3 {
         decode_preset_bank(&mut cursor, version)?
@@ -150,6 +158,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
                 filter_hp_slope: DEFAULT_FILTER_SLOPE,
                 filter_lp_slope: DEFAULT_FILTER_SLOPE,
                 effects: crate::dual_band::DEFAULTS,
+                compressor: crate::compressor_controls::DEFAULTS,
                 editable_curve: editable_curve.clone(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -262,6 +271,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
             filter_hp_slope: DEFAULT_FILTER_SLOPE,
             filter_lp_slope: DEFAULT_FILTER_SLOPE,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
             editable_curve: editable_curve.clone(),
             quick_slots: preset_bank
                 .presets
@@ -344,6 +354,7 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
         (DEFAULT_FILTER_SLOPE, DEFAULT_FILTER_SLOPE)
     };
     let effects = decode_effects(&mut cursor, version)?;
+    let compressor = decode_compressor(&mut cursor, version)?;
     if cursor.position() != payload.len() as u64 {
         return Err("unexpected trailing state bytes");
     }
@@ -371,6 +382,9 @@ pub fn decode_state_payload(params: &PumpParams, payload: &[u8]) -> Result<(), &
     params.set_filter_lp_slope(filter_lp_slope as f32);
     for (i, value) in effects.iter().enumerate() {
         params.set_effect(i, *value);
+    }
+    for (i, value) in compressor.iter().enumerate() {
+        params.set_compressor_control(i, *value);
     }
     params.set_editable_curve_preserving_phase(&editable_curve);
     params.set_preset_bank_without_persistence(preset_bank);
@@ -410,6 +424,7 @@ fn encode_sound_state(payload: &mut Vec<u8>, state: &PumpSoundState) {
     payload.push(state.filter_hp_slope.min(MAX_FILTER_SLOPE) as u8);
     payload.push(state.filter_lp_slope.min(MAX_FILTER_SLOPE) as u8);
     encode_effects(payload, state.effects);
+    encode_compressor(payload, state.compressor);
 }
 
 fn decode_sound_state(
@@ -449,7 +464,13 @@ fn decode_sound_state(
     let Some(node_count) = read_u32(cursor).map(|count| count as usize) else {
         return Err("invalid A/B node count");
     };
-    let editable_curve = decode_curve(cursor, node_count, version >= 6, version >= 18)?;
+    let editable_curve = decode_curve(
+        cursor,
+        node_count,
+        version >= 6,
+        version >= 18,
+        version >= 23,
+    )?;
     let Some(quick_count) = read_u32(cursor).map(|count| count as usize) else {
         return Err("invalid A/B quick slot count");
     };
@@ -462,7 +483,13 @@ fn decode_sound_state(
             return Err("invalid A/B quick slot node count");
         };
         quick_slots.push(QuickShapeSlot {
-            curve: decode_curve(cursor, node_count, version >= 6, version >= 18)?,
+            curve: decode_curve(
+                cursor,
+                node_count,
+                version >= 6,
+                version >= 18,
+                version >= 23,
+            )?,
         });
     }
     let (timing_mode, free_rate_hz) = if version >= 15 {
@@ -526,6 +553,7 @@ fn decode_sound_state(
         (DEFAULT_FILTER_SLOPE, DEFAULT_FILTER_SLOPE)
     };
     let effects = decode_effects(cursor, version)?;
+    let compressor = decode_compressor(cursor, version)?;
     if ![
         mix,
         depth_db,
@@ -566,6 +594,7 @@ fn decode_sound_state(
         filter_hp_slope,
         filter_lp_slope,
         effects,
+        compressor,
         editable_curve: editable_curve.normalized(),
         quick_slots,
     })
@@ -603,6 +632,7 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     payload.push(preset.filter_hp_slope.min(MAX_FILTER_SLOPE) as u8);
     payload.push(preset.filter_lp_slope.min(MAX_FILTER_SLOPE) as u8);
     encode_effects(payload, preset.effects);
+    encode_compressor(payload, preset.compressor);
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -644,6 +674,9 @@ fn encode_phase_metadata(payload: &mut Vec<u8>, curve: &EditableCurve) {
     if curve.origin_is_clip {
         payload.extend_from_slice(&ORIGIN_METADATA_MAGIC.to_le_bytes());
     }
+    if curve.high_resolution {
+        payload.extend_from_slice(&HIGH_RESOLUTION_METADATA_MAGIC.to_le_bytes());
+    }
 }
 
 fn decode_curve(
@@ -651,6 +684,7 @@ fn decode_curve(
     node_count: usize,
     with_phase_metadata: bool,
     with_origin_metadata: bool,
+    with_high_resolution_metadata: bool,
 ) -> Result<EditableCurve, &'static str> {
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds");
@@ -699,7 +733,7 @@ fn decode_curve(
                     else {
                         return Err("invalid curve phase source node count");
                     };
-                    let mut source = decode_curve(cursor, source_node_count, false, false)?;
+                    let mut source = decode_curve(cursor, source_node_count, false, false, false)?;
                     if with_origin_metadata && remaining_bytes(cursor) >= 4 {
                         let marker_position = cursor.position();
                         if read_u32(cursor) == Some(PHASE_SOURCE_ORIGIN_METADATA_MAGIC) {
@@ -713,6 +747,9 @@ fn decode_curve(
                 }
                 ORIGIN_METADATA_MAGIC if with_origin_metadata => {
                     curve.origin_is_clip = true;
+                }
+                HIGH_RESOLUTION_METADATA_MAGIC if with_high_resolution_metadata => {
+                    curve.high_resolution = true;
                 }
                 _ => {
                     cursor.set_position(marker_position);
@@ -786,9 +823,15 @@ fn decode_preset_bank(
         let Some(node_count) = read_u32(cursor).map(|value| value as usize) else {
             return Err("invalid preset node count");
         };
-        let editable_curve = decode_curve(cursor, node_count, version >= 6, version >= 18)?;
+        let editable_curve = decode_curve(
+            cursor,
+            node_count,
+            version >= 6,
+            version >= 18,
+            version >= 23,
+        )?;
         let quick_slots = if version >= 5 {
-            decode_quick_slots(cursor, version >= 6, version >= 18)?
+            decode_quick_slots(cursor, version >= 6, version >= 18, version >= 23)?
         } else {
             seeded_quick_shape_slots()
         };
@@ -889,6 +932,7 @@ fn decode_preset_bank(
             (DEFAULT_FILTER_SLOPE, DEFAULT_FILTER_SLOPE)
         };
         let effects = decode_effects(cursor, version)?;
+        let compressor = decode_compressor(cursor, version)?;
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -915,6 +959,7 @@ fn decode_preset_bank(
             filter_hp_slope,
             filter_lp_slope,
             effects,
+            compressor,
             editable_curve: editable_curve.normalized(),
             quick_slots,
         });
@@ -929,6 +974,7 @@ fn decode_quick_slots(
     cursor: &mut Cursor<&[u8]>,
     with_phase_metadata: bool,
     with_origin_metadata: bool,
+    with_high_resolution_metadata: bool,
 ) -> Result<Vec<QuickShapeSlot>, &'static str> {
     let Some(count) = read_u32(cursor).map(|value| value as usize) else {
         return Err("invalid preset quick slot count");
@@ -949,6 +995,7 @@ fn decode_quick_slots(
             node_count,
             with_phase_metadata,
             with_origin_metadata,
+            with_high_resolution_metadata,
         )?;
         slots.push(QuickShapeSlot { curve });
     }
@@ -1022,6 +1069,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
         filter_hp_slope: DEFAULT_FILTER_SLOPE,
         filter_lp_slope: DEFAULT_FILTER_SLOPE,
         effects: crate::dual_band::DEFAULTS,
+        compressor: crate::compressor_controls::DEFAULTS,
         editable_curve: params.editable_curve_snapshot(),
         quick_slots: seeded_quick_shape_slots(),
     };
@@ -1053,6 +1101,7 @@ fn decode_legacy_state_payload(params: &PumpParams, payload: &[u8]) -> Result<()
             filter_hp_slope: DEFAULT_FILTER_SLOPE,
             filter_lp_slope: DEFAULT_FILTER_SLOPE,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
             editable_curve: params.editable_curve_snapshot(),
             quick_slots: seeded_quick_shape_slots(),
         }],
@@ -1111,6 +1160,30 @@ fn decode_effects(
             if let Some(value) = values.get_mut(i) {
                 *value = crate::dual_band::sanitize(i, raw);
             }
+        }
+    }
+    Ok(values)
+}
+
+fn encode_compressor(payload: &mut Vec<u8>, values: [f32; crate::compressor_controls::COUNT]) {
+    for (index, value) in values.iter().enumerate() {
+        payload
+            .extend_from_slice(&crate::compressor_controls::sanitize(index, *value).to_le_bytes());
+    }
+}
+
+fn decode_compressor(
+    cursor: &mut Cursor<&[u8]>,
+    version: u32,
+) -> Result<[f32; crate::compressor_controls::COUNT], &'static str> {
+    let mut values = crate::compressor_controls::DEFAULTS;
+    if version >= 23 {
+        for (index, value) in values.iter_mut().enumerate() {
+            let raw = read_f32(cursor).ok_or("truncated compressor settings")?;
+            if !raw.is_finite() {
+                return Err("invalid compressor settings");
+            }
+            *value = crate::compressor_controls::sanitize(index, raw);
         }
     }
     Ok(values)

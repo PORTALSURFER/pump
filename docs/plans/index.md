@@ -4,7 +4,7 @@ Use this index to find active work and keep handoffs deterministic.
 
 ## Active
 
-- No active plan files are tracked.
+- [Sidechain compression and capture](sidechain-capture.md) — implemented; DAW and Windows acceptance remain.
 
 ## Notes
 

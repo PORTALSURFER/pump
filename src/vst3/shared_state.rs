@@ -179,29 +179,46 @@ pub(super) struct PumpVst3Runtime {
 }
 
 impl PumpVst3Runtime {
-    pub(super) fn new(params: &PumpParams) -> Self {
+    pub(super) fn new(params: &PumpParams, status: &GuiStatus) -> Self {
         let curve = params.curve_snapshot();
+        let mut engine = PumpEngine::new_with_bypass(48_000.0, curve, params.bypassed());
+        engine.set_capture_exchange(Arc::clone(status.compressor_capture_exchange()));
+        let revision = params.curve_revision();
+        let initialized = engine.initialize_precise_curve(params, revision);
         Self {
-            engine: PumpEngine::new_with_bypass(48_000.0, curve, params.bypassed()),
+            engine,
             param_schedule: ParamEventSchedule::with_capacity(16_384),
-            last_curve_revision: params.curve_revision(),
+            last_curve_revision: if initialized {
+                revision
+            } else {
+                revision.wrapping_sub(1)
+            },
             sample_rate: 48_000.0,
             waveform_writer: IncomingWaveformWriter::default(),
         }
     }
 
-    pub(super) fn set_sample_rate(&mut self, sample_rate: f64, params: &PumpParams) {
+    pub(super) fn set_sample_rate(
+        &mut self,
+        sample_rate: f64,
+        params: &PumpParams,
+        status: &GuiStatus,
+    ) {
         let clamped = sample_rate.max(1.0) as f32;
         if (self.sample_rate - clamped).abs() < 1.0e-6 {
             return;
         }
 
         self.sample_rate = clamped;
-        self.engine = PumpEngine::new_with_bypass(
-            self.sample_rate,
-            params.curve_snapshot(),
-            params.bypassed(),
-        );
-        self.last_curve_revision = params.curve_revision();
+        self.engine
+            .reconfigure(self.sample_rate, params.curve_snapshot(), params.bypassed());
+        self.engine
+            .set_capture_exchange(Arc::clone(status.compressor_capture_exchange()));
+        let revision = params.curve_revision();
+        self.last_curve_revision = if self.engine.initialize_precise_curve(params, revision) {
+            revision
+        } else {
+            revision.wrapping_sub(1)
+        };
     }
 }

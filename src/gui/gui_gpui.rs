@@ -96,6 +96,32 @@ const CURVE_SLOT_IDS: [&str; GLOBAL_CURVE_SLOT_COUNT] = [
     "curve-slot-6",
     "curve-slot-7",
 ];
+const COMPRESSOR_CONTROL_IDS: [&str; crate::compressor_controls::COUNT] = [
+    "compressor-0",
+    "compressor-1",
+    "compressor-2",
+    "compressor-3",
+    "compressor-4",
+    "compressor-5",
+    "compressor-6",
+    "compressor-7",
+    "compressor-8",
+    "compressor-9",
+    "compressor-10",
+    "compressor-11",
+    "compressor-12",
+    "compressor-13",
+    "compressor-14",
+    "compressor-15",
+    "compressor-16",
+    "compressor-17",
+    "compressor-18",
+];
+const COMPRESSOR_SHORT_LABELS: [&str; crate::compressor_controls::COUNT] = [
+    "COMP", "THR", "ATT", "REL", "RATIO", "RANGE", "MAKE", "MIX", "CLIP", "EXT", "SC GAIN",
+    "SC MIX", "SC EQ", "FILTER", "FREQ", "Q", "LISTEN", "AUTO", "OS",
+];
+
 const TIMING_FREE_RATE_IDS: [&str; 4] = [
     "timing-unit-ms",
     "timing-unit-s",
@@ -1031,6 +1057,17 @@ pub fn seed_screenshot_waveform(status: &crate::GuiStatus) {
     status.set_waveform_live_mode(false);
 }
 
+/// Publish a deterministic completed take for the native editor input fixture.
+#[cfg(feature = "screenshot-test")]
+#[doc(hidden)]
+pub fn complete_screenshot_compressor_capture(status: &crate::GuiStatus, gain: f32) -> bool {
+    let exchange = status.compressor_capture_exchange();
+    exchange.publish(
+        exchange.current_request(),
+        &[gain; crate::compressor_capture::CAPTURE_POINTS],
+    )
+}
+
 /// Return the initial size used by host GUI negotiation.
 pub(crate) const fn preferred_window_size() -> (u32, u32) {
     (WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -1060,6 +1097,9 @@ struct PumpEditor {
     active_knob: Option<NumericEntryTarget>,
     knob_slider_track: Option<(f32, f32)>,
     active_mix_slider: Option<(usize, f32, f32)>,
+    active_compressor_drag: Option<(usize, f32, f32)>,
+    compressor_panel_open: bool,
+    compressor_hover: Option<usize>,
     last_pointer: Option<Point<Pixels>>,
     button_focus_handles: HashMap<&'static str, FocusHandle>,
     button_activation_keys: HashSet<String>,
@@ -1189,8 +1229,11 @@ impl PumpEditor {
             "hotkey-help",
             "waveform-mode",
             "bypass",
+            "compressor-panel",
+            "compressor-capture",
         ]
         .into_iter()
+        .chain(COMPRESSOR_CONTROL_IDS)
         .map(|id| (id, cx.focus_handle()))
         .collect();
         Self {
@@ -1217,6 +1260,9 @@ impl PumpEditor {
             active_knob: None,
             knob_slider_track: None,
             active_mix_slider: None,
+            active_compressor_drag: None,
+            compressor_panel_open: false,
+            compressor_hover: None,
             last_pointer: None,
             button_focus_handles,
             button_activation_keys: HashSet::new(),
@@ -1389,6 +1435,7 @@ impl PumpEditor {
         self.active_knob = None;
         self.knob_slider_track = None;
         self.active_mix_slider = None;
+        self.active_compressor_drag = None;
         self.last_pointer = None;
     }
 
@@ -2433,6 +2480,25 @@ impl PumpEditor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.consume_pointer_cancel(cx);
+        if let Some((index, start_y, initial)) = self.active_compressor_drag {
+            let normalized =
+                (initial + (start_y - f32::from(event.position.y)) / 120.0).clamp(0.0, 1.0);
+            let id = toybox::clack_plugin::utils::ClapId::new(36 + index as u32);
+            if let Some(value) =
+                crate::params::plain_from_normalized_value(id, f64::from(normalized))
+            {
+                self.dispatch(
+                    EditorMessage::CompressorGesture {
+                        index,
+                        message: KnobMessage::ValueChanged {
+                            value: value as f32,
+                        },
+                    },
+                    cx,
+                );
+            }
+            return true;
+        }
         if let Some((index, left, width)) = self.active_mix_slider {
             let value = ((f32::from(event.position.x) - left) / width).clamp(0., 1.);
             self.dispatch(
@@ -2472,6 +2538,7 @@ impl PumpEditor {
     fn captured_mouse_down(&mut self, cx: &mut Context<Self>) -> bool {
         self.consume_pointer_cancel(cx);
         self.active_mix_slider.is_some()
+            || self.active_compressor_drag.is_some()
             || self.active_knob.is_some()
             || self.curve_active_button.is_some()
     }
@@ -2483,6 +2550,19 @@ impl PumpEditor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.consume_pointer_cancel(cx);
+        if let Some((index, _, _)) = self.active_compressor_drag {
+            if event.button == MouseButton::Left {
+                self.dispatch(
+                    EditorMessage::CompressorGesture {
+                        index,
+                        message: KnobMessage::GestureEnded,
+                    },
+                    cx,
+                );
+                self.active_compressor_drag = None;
+            }
+            return true;
+        }
         if let Some((index, left, width)) = self.active_mix_slider {
             if event.button == MouseButton::Left {
                 let value = ((f32::from(event.position.x) - left) / width).clamp(0., 1.);
@@ -2519,6 +2599,7 @@ impl PumpEditor {
 
     fn captured_mouse_exit(&mut self, cx: &mut Context<Self>) {
         if self.active_mix_slider.is_none()
+            && self.active_compressor_drag.is_none()
             && self.active_knob.is_none()
             && self.curve_active_button.is_none()
         {
@@ -2939,6 +3020,8 @@ impl PumpEditor {
             "sound-b",
             "hotkey-help",
             "waveform-mode",
+            "compressor-panel",
+            "compressor-capture",
             "bypass",
         ]
         .into_iter()
@@ -2998,6 +3081,18 @@ impl PumpEditor {
             "waveform-mode" => {
                 self.dismiss_timing_dropdown(cx);
                 self.dispatch(EditorMessage::ToggleWaveformMode, cx);
+            }
+            "compressor-panel" => {
+                self.compressor_panel_open = !self.compressor_panel_open;
+                cx.notify();
+            }
+            "compressor-capture" => {
+                let message = if self.state.borrow().capture_pending() {
+                    EditorMessage::CancelCompressorCapture
+                } else {
+                    EditorMessage::CaptureCompressor
+                };
+                self.dispatch(message, cx);
             }
             "bypass" => {
                 self.dismiss_timing_dropdown(cx);
@@ -3333,25 +3428,27 @@ fn draw_curve(
             1.0,
             window,
         );
-        let processed = super::projection::processed_waveform(
-            &curve,
-            &waveform,
-            applied_phase,
-            state.params().depth_db(),
-            state.params().floor_db(),
-        );
-        draw_waveform_layer(
-            left,
-            top,
-            width,
-            height,
-            &processed,
-            theme.accent_copper.with_alpha(96),
-            2.0,
-            window,
-        );
+        if state.params().compressor()[0] < 0.5 {
+            let processed = super::projection::processed_waveform(
+                &curve,
+                &waveform,
+                applied_phase,
+                state.params().depth_db(),
+                state.params().floor_db(),
+            );
+            draw_waveform_layer(
+                left,
+                top,
+                width,
+                height,
+                &processed,
+                theme.accent_copper.with_alpha(96),
+                2.0,
+                window,
+            );
+        }
     }
-    if state.params().smooth() > f32::EPSILON {
+    if state.params().compressor()[0] < 0.5 && state.params().smooth() > f32::EPSILON {
         let mut smooth_path = gpui::PathBuilder::stroke(px(1.0));
         let samples = 96;
         for index in 0..=samples {
@@ -3411,7 +3508,9 @@ fn draw_curve(
     if state.params().effects()[0] >= 0.5 || !state.filter_enabled() {
         draw_crossover_preview(curve_bounds, state, window, cx);
     }
-    let curve_color = if active_offset {
+    let curve_color = if state.params().compressor()[0] >= 0.5 {
+        theme.text_muted
+    } else if active_offset {
         CURVE_OFFSET_MOVE_COLOR
     } else if modifier_offset_hover {
         CURVE_OFFSET_HOVER_COLOR
@@ -4943,6 +5042,147 @@ impl PumpEditor {
             }))
     }
 
+    fn compressor_deck(&self, cx: &Context<Self>) -> gpui::Div {
+        let values = self.state.borrow().params().compressor();
+        let rows = (0..3).map(|row| {
+            let start = row * 7;
+            let end = (start + 7).min(crate::compressor_controls::COUNT);
+            div().w_full().h(px(25.0)).flex().gap(px(3.0)).children(
+                (start..end).map(|index| self.compressor_control(index, values[index], cx)),
+            )
+        });
+        div()
+            .w_full()
+            .h(px(DECK_HEIGHT))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(rows)
+    }
+
+    fn compressor_control(
+        &self,
+        index: usize,
+        value: f32,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let id = COMPRESSOR_CONTROL_IDS[index];
+        let parameter = toybox::clack_plugin::utils::ClapId::new(36 + index as u32);
+        let text = format_plain_value_text(parameter, f64::from(value)).unwrap_or_default();
+        let label = format!("{} {}", COMPRESSOR_SHORT_LABELS[index], text);
+        let focus = self.button_focus_handle(id).clone();
+        let focus_down = focus.clone();
+        let active = crate::compressor_controls::stepped(index) && value >= 0.5;
+        button(id, label, active, 1.0, Some(&focus))
+            .flex_1()
+            .h(px(24.0))
+            .text_size(px(9.0))
+            .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                if *hovered {
+                    view.compressor_hover = Some(index);
+                } else if view.compressor_hover == Some(index) {
+                    view.compressor_hover = None;
+                }
+                cx.notify();
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    window.focus(&focus_down, cx);
+                    if event.click_count >= 2 {
+                        view.dispatch(
+                            EditorMessage::SetCompressor {
+                                index,
+                                value: crate::compressor_controls::DEFAULTS[index],
+                            },
+                            cx,
+                        );
+                    } else if crate::compressor_controls::stepped(index) {
+                        let current = view.state.borrow().params().compressor()[index];
+                        let max = crate::compressor_controls::MAX[index];
+                        view.dispatch(
+                            EditorMessage::SetCompressor {
+                                index,
+                                value: if current >= max { 0.0 } else { current + 1.0 },
+                            },
+                            cx,
+                        );
+                    } else {
+                        let current = view.state.borrow().params().compressor()[index];
+                        let normalized = normalized_from_plain_value(parameter, f64::from(current))
+                            .unwrap_or(0.0) as f32;
+                        view.active_compressor_drag =
+                            Some((index, f32::from(event.position.y), normalized));
+                        view.dispatch(
+                            EditorMessage::CompressorGesture {
+                                index,
+                                message: KnobMessage::GestureStarted,
+                            },
+                            cx,
+                        );
+                    }
+                }),
+            )
+            .on_scroll_wheel(cx.listener(move |view, event: &ScrollWheelEvent, _, cx| {
+                let delta = f32::from(event.delta.pixel_delta(px(16.0)).y);
+                if delta == 0.0 {
+                    return;
+                }
+                let current = view.state.borrow().params().compressor()[index];
+                let normalized = normalized_from_plain_value(parameter, f64::from(current))
+                    .unwrap_or(0.0) as f32;
+                let step = if crate::compressor_controls::stepped(index) {
+                    1.0 / crate::compressor_controls::MAX[index]
+                } else {
+                    0.01
+                };
+                if let Some(value) = crate::params::plain_from_normalized_value(
+                    parameter,
+                    f64::from((normalized + delta.signum() * step).clamp(0.0, 1.0)),
+                ) {
+                    view.dispatch(
+                        EditorMessage::SetCompressor {
+                            index,
+                            value: value as f32,
+                        },
+                        cx,
+                    );
+                }
+            }))
+            .on_key_down(cx.listener(move |view, event: &KeyDownEvent, _, cx| {
+                let current = view.state.borrow().params().compressor()[index];
+                let normalized = normalized_from_plain_value(parameter, f64::from(current))
+                    .unwrap_or(0.0) as f32;
+                let step = if crate::compressor_controls::stepped(index) {
+                    1.0 / crate::compressor_controls::MAX[index]
+                } else if event.keystroke.modifiers.shift {
+                    0.1
+                } else {
+                    0.01
+                };
+                let target = match event.keystroke.key.as_str() {
+                    "left" | "down" => normalized - step,
+                    "right" | "up" | "space" | "enter" => normalized + step,
+                    "home" => 0.0,
+                    "end" => 1.0,
+                    _ => return,
+                }
+                .clamp(0.0, 1.0);
+                if let Some(value) =
+                    crate::params::plain_from_normalized_value(parameter, f64::from(target))
+                {
+                    view.dispatch(
+                        EditorMessage::SetCompressor {
+                            index,
+                            value: value as f32,
+                        },
+                        cx,
+                    );
+                }
+                cx.stop_propagation();
+            }))
+    }
+
     fn shape_group(&self, cx: &mut Context<Self>) -> gpui::Div {
         div()
             .w(px(176.))
@@ -5139,7 +5379,7 @@ impl Render for PumpEditor {
             self.knob_element(NumericEntryTarget::OutputGain, cx)
                 .h(px(60.)),
         ]);
-        let deck = div()
+        let standard_deck = div()
             .h(px(DECK_HEIGHT))
             .w_full()
             .flex()
@@ -5161,6 +5401,11 @@ impl Render for PumpEditor {
                     )
                     .child(div().flex().items_center().children(level_controls)),
             );
+        let deck = if self.compressor_panel_open {
+            self.compressor_deck(cx)
+        } else {
+            standard_deck
+        };
         let mut timing_button = button(
             "timing-mode",
             if timing_free {
@@ -5531,6 +5776,66 @@ impl Render for PumpEditor {
         bypass_button =
             bypass_button.child(div().child(if bypassed { "BYPASSED" } else { "ACTIVE" }));
         bypass_button = bypass_button.on_click(cx.listener(Self::toggle_bypass));
+        let compressor_panel = button(
+            "compressor-panel",
+            "COMP".into(),
+            self.compressor_panel_open || params.compressor()[0] >= 0.5,
+            55.0,
+            Some(self.button_focus_handle("compressor-panel")),
+        )
+        .h(px(FOOTER_HEIGHT))
+        .on_click(cx.listener(|view, event: &gpui::ClickEvent, _, cx| {
+            if !event.is_keyboard() {
+                view.compressor_panel_open = !view.compressor_panel_open;
+                cx.notify();
+            }
+        }));
+        let capture_pending = state.capture_pending();
+        let compressor_capture = button(
+            "compressor-capture",
+            if capture_pending { "CANCEL" } else { "CAPTURE" }.into(),
+            capture_pending,
+            72.0,
+            Some(self.button_focus_handle("compressor-capture")),
+        )
+        .h(px(FOOTER_HEIGHT))
+        .on_click(cx.listener(|view, event: &gpui::ClickEvent, _, cx| {
+            if !event.is_keyboard() {
+                let message = if view.state.borrow().capture_pending() {
+                    EditorMessage::CancelCompressorCapture
+                } else {
+                    EditorMessage::CaptureCompressor
+                };
+                view.dispatch(message, cx);
+            }
+        }));
+        let capture_status = if capture_pending {
+            if !state.status().has_host_beats_timeline() {
+                "Waiting for host beat timeline"
+            } else if !state.status().is_playing() {
+                "Start playback to capture"
+            } else {
+                "Capturing one cycle"
+            }
+        } else {
+            state.capture_message().unwrap_or("")
+        }
+        .to_owned();
+        let capture_message = self
+            .compressor_hover
+            .filter(|_| self.compressor_panel_open)
+            .map(|index| {
+                format!(
+                    "{} • {}",
+                    crate::compressor_controls::NAMES[index],
+                    if crate::compressor_controls::stepped(index) {
+                        "click or use arrows"
+                    } else {
+                        "drag or use arrows"
+                    }
+                )
+            })
+            .unwrap_or_default();
         let footer = div()
             .h(px(FOOTER_HEIGHT))
             .w_full()
@@ -5544,6 +5849,20 @@ impl Render for PumpEditor {
                     .gap(px(PUMP_VISUAL_METRICS.space_4))
                     .child(group_heading("WAVEFORM"))
                     .child(waveform_button),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(compressor_panel)
+                    .child(compressor_capture)
+                    .child(
+                        div()
+                            .text_size(px(8.0))
+                            .text_color(solid(theme.text_muted))
+                            .child(capture_message),
+                    ),
             )
             .child(bypass_button);
         let hotkey_help = if state.hotkey_help_open() {
@@ -5645,7 +5964,20 @@ impl Render for PumpEditor {
                     .flex_shrink_0()
                     .border_b_1()
                     .border_color(solid(theme.border))
-                    .child(group_heading("ENVELOPE")),
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(group_heading(if params.compressor()[0] >= 0.5 {
+                        "LIVE COMPRESSION • CAPTURE TO EDIT"
+                    } else {
+                        "ENVELOPE"
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(solid(theme.text_muted))
+                            .child(capture_status),
+                    ),
             )
             .child(curve_area)
             .child(slots)

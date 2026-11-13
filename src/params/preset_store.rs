@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const PRESET_STORE_MAGIC: &[u8; 4] = b"PPBK";
-const PRESET_STORE_VERSION: u32 = 16;
+const PRESET_STORE_VERSION: u32 = 17;
 const PRESET_STORE_PATH_ENV: &str = "PUMP_PRESET_BANK_PATH";
 const PRESET_STORE_FILE_NAME: &str = "preset-bank.bin";
 const MIN_CURVE_BYTES: usize = 2 * 8 + 4;
@@ -15,6 +15,7 @@ const MIN_ENCODED_CURVE_BYTES: usize = 4 + MIN_CURVE_BYTES;
 const PHASE_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"PHAS");
 const PHASE_SOURCE_ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"SORG");
 const ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"ORIG");
+const HIGH_RESOLUTION_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"HRES");
 
 #[cfg(test)]
 thread_local! {
@@ -292,6 +293,9 @@ fn encode_preset(payload: &mut Vec<u8>, preset: &PumpPreset, index: usize) {
     for (i, value) in preset.effects.iter().enumerate() {
         payload.extend_from_slice(&crate::dual_band::sanitize(i, *value).to_le_bytes());
     }
+    for (i, value) in preset.compressor.iter().enumerate() {
+        payload.extend_from_slice(&crate::compressor_controls::sanitize(i, *value).to_le_bytes());
+    }
 }
 
 fn encode_curve(payload: &mut Vec<u8>, curve: &EditableCurve) {
@@ -332,6 +336,9 @@ fn encode_phase_metadata(payload: &mut Vec<u8>, curve: &EditableCurve) {
     }
     if curve.origin_is_clip {
         payload.extend_from_slice(&ORIGIN_METADATA_MAGIC.to_le_bytes());
+    }
+    if curve.high_resolution {
+        payload.extend_from_slice(&HIGH_RESOLUTION_METADATA_MAGIC.to_le_bytes());
     }
 }
 
@@ -394,9 +401,15 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
         let node_count = read_u32(&mut cursor)
             .map(|value| value as usize)
             .ok_or_else(|| "invalid preset node count".to_string())?;
-        let editable_curve = decode_curve(&mut cursor, node_count, version >= 3, version >= 12)?;
+        let editable_curve = decode_curve(
+            &mut cursor,
+            node_count,
+            version >= 3,
+            version >= 12,
+            version >= 17,
+        )?;
         let quick_slots = if version >= 2 {
-            decode_quick_slots(&mut cursor, version >= 3, version >= 12)?
+            decode_quick_slots(&mut cursor, version >= 3, version >= 12, version >= 17)?
         } else {
             seeded_quick_shape_slots()
         };
@@ -520,6 +533,16 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
                 }
             }
         }
+        let mut compressor = crate::compressor_controls::DEFAULTS;
+        if version >= 17 {
+            for (index, value) in compressor.iter_mut().enumerate() {
+                let raw = read_f32(&mut cursor).ok_or("truncated compressor settings")?;
+                if !raw.is_finite() {
+                    return Err("invalid compressor settings".to_string());
+                }
+                *value = crate::compressor_controls::sanitize(index, raw);
+            }
+        }
         presets.push(PumpPreset {
             name: sanitize_preset_name(raw_name, index),
             is_read_only: false,
@@ -546,6 +569,7 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             filter_hp_slope,
             filter_lp_slope,
             effects,
+            compressor,
             editable_curve,
             quick_slots,
         });
@@ -564,6 +588,7 @@ fn decode_curve(
     node_count: usize,
     with_phase_metadata: bool,
     with_origin_metadata: bool,
+    with_high_resolution_metadata: bool,
 ) -> Result<EditableCurve, String> {
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds".to_string());
@@ -604,7 +629,7 @@ fn decode_curve(
                     let source_count = read_u32(cursor)
                         .map(|value| value as usize)
                         .ok_or_else(|| "invalid phase source node count".to_string())?;
-                    let mut source = decode_curve(cursor, source_count, false, false)?;
+                    let mut source = decode_curve(cursor, source_count, false, false, false)?;
                     if with_origin_metadata && remaining_bytes(cursor) >= 4 {
                         let marker_position = cursor.position();
                         if read_u32(cursor) == Some(PHASE_SOURCE_ORIGIN_METADATA_MAGIC) {
@@ -617,6 +642,9 @@ fn decode_curve(
                 }
                 ORIGIN_METADATA_MAGIC if with_origin_metadata => {
                     curve.origin_is_clip = true;
+                }
+                HIGH_RESOLUTION_METADATA_MAGIC if with_high_resolution_metadata => {
+                    curve.high_resolution = true;
                 }
                 _ => {
                     cursor.set_position(marker_position);
@@ -632,6 +660,7 @@ fn decode_quick_slots(
     cursor: &mut Cursor<&[u8]>,
     with_phase_metadata: bool,
     with_origin_metadata: bool,
+    with_high_resolution_metadata: bool,
 ) -> Result<Vec<QuickShapeSlot>, String> {
     let count = read_u32(cursor)
         .map(|value| value as usize)
@@ -652,6 +681,7 @@ fn decode_quick_slots(
             node_count,
             with_phase_metadata,
             with_origin_metadata,
+            with_high_resolution_metadata,
         )?;
         slots.push(QuickShapeSlot { curve });
     }
@@ -721,7 +751,7 @@ mod tests {
     }
 
     fn encoded_single_preset_bank() -> Vec<u8> {
-        encode_preset_bank_payload(&PumpPresetBank {
+        let mut payload = encode_preset_bank_payload(&PumpPresetBank {
             selected: 0,
             presets: vec![PumpPreset {
                 name: "Init".to_string(),
@@ -749,10 +779,14 @@ mod tests {
                 filter_hp_slope: 0,
                 filter_lp_slope: 0,
                 effects: crate::dual_band::DEFAULTS,
+                compressor: crate::compressor_controls::DEFAULTS,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
-        })
+        });
+        payload.truncate(payload.len() - crate::compressor_controls::COUNT * 4);
+        write_payload_u32(&mut payload, 4, 16);
+        payload
     }
 
     fn encoded_v3_preset_bank() -> Vec<u8> {
@@ -818,6 +852,7 @@ mod tests {
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
                     effects: crate::dual_band::DEFAULTS,
+                    compressor: crate::compressor_controls::DEFAULTS,
                     editable_curve: default_editable_curve(),
                     quick_slots: seeded_quick_shape_slots(),
                 },
@@ -847,6 +882,7 @@ mod tests {
                     filter_hp_slope: 0,
                     filter_lp_slope: 0,
                     effects: crate::dual_band::DEFAULTS,
+                    compressor: crate::compressor_controls::DEFAULTS,
                     editable_curve: EditableCurve {
                         nodes: vec![
                             CurveNode { x: 0.0, y: 1.0 },
@@ -1048,12 +1084,36 @@ mod tests {
         assert_eq!(decoded.presets[0].quick_slots.len(), QUICK_SLOT_COUNT);
     }
     #[test]
+    fn captured_curve_precision_survives_preset_store() {
+        let mut bank = PumpPresetBank::default_init();
+        bank.presets[0].editable_curve.high_resolution = true;
+        bank.presets[0].quick_slots[0].curve.high_resolution = true;
+        let payload = encode_preset_bank_payload(&bank);
+        assert_eq!(decode_preset_bank_payload(&payload).unwrap(), bank);
+    }
+
+    #[test]
+    fn compressor_controls_roundtrip_and_v16_defaults() {
+        let mut bank = PumpPresetBank::default_init();
+        bank.presets[0].compressor[0] = 1.0;
+        bank.presets[0].compressor[1] = -27.0;
+        let mut bytes = encode_preset_bank_payload(&bank);
+        assert_eq!(decode_preset_bank_payload(&bytes).unwrap(), bank);
+        bytes.truncate(bytes.len() - crate::compressor_controls::COUNT * 4);
+        write_payload_u32(&mut bytes, 4, 16);
+        assert_eq!(
+            decode_preset_bank_payload(&bytes).unwrap().presets[0].compressor,
+            crate::compressor_controls::DEFAULTS
+        );
+    }
+
+    #[test]
     fn dual_settings_survive_disk_codec_and_v14_defaults() {
         let mut bank = PumpPresetBank::default_init();
         bank.presets[0].effects = [1., 1200., 1., 0.2, 0.6, 0., 1.];
         let mut bytes = encode_preset_bank_payload(&bank);
         assert_eq!(decode_preset_bank_payload(&bytes).unwrap(), bank);
-        bytes.truncate(bytes.len() - 28);
+        bytes.truncate(bytes.len() - 28 - crate::compressor_controls::COUNT * 4);
         write_payload_u32(&mut bytes, 4, 14);
         let old = decode_preset_bank_payload(&bytes).unwrap();
         assert_eq!(old.presets[0].effects, crate::dual_band::DEFAULTS);
@@ -1063,6 +1123,7 @@ mod tests {
         let mut bank = PumpPresetBank::default_init();
         bank.presets[0].effects = [1., 1500., 0., 0.4, 0.8, 1., 0.];
         let mut old = encode_preset_bank_payload(&bank);
+        old.truncate(old.len() - crate::compressor_controls::COUNT * 4);
         write_payload_u32(&mut old, 4, 15);
         for value in [1_f32, 24., 10., 500., 1.] {
             old.extend_from_slice(&value.to_le_bytes());

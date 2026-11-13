@@ -48,6 +48,8 @@ pub struct DspSettings {
     /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
     pub filter_lp_slope: usize,
     pub effects: [f32; crate::dual_band::COUNT],
+    /// Compressor controls for the active sound.
+    pub compressor: [f32; crate::compressor_controls::COUNT],
 }
 
 /// Host-bypass crossfade duration in seconds.
@@ -198,6 +200,17 @@ impl ClickSafeBypass {
 
 /// Stateful real-time gain engine.
 pub struct PumpEngine {
+    compressor: crate::compressor::CompressorDetector,
+    compressor_2x: crate::compressor::CompressorDetector,
+    oversampling_blend: OnePole,
+    oversampling_was_enabled: bool,
+    previous_detector: [f32; 2],
+    previous_clip_input: [f32; 2],
+    detector_filter: crate::compressor::DetectorFilter,
+    compressor_blend: OnePole,
+    detector_listen: OnePole,
+    capture: crate::compressor_capture::CaptureRunner,
+    capture_exchange: Option<std::sync::Arc<crate::compressor_capture::CaptureExchange>>,
     dual_band: crate::dual_band::DualBand,
     clock: TransportClock,
     sample_rate: f32,
@@ -216,6 +229,10 @@ pub struct PumpEngine {
     wet_gain_smoother: GainSmoother,
     curve_current: [f32; CURVE_TABLE_LEN],
     curve_pending: [f32; CURVE_TABLE_LEN],
+    precise_current: Box<[f32]>,
+    precise_pending: Box<[f32]>,
+    precise_current_enabled: bool,
+    precise_pending_enabled: bool,
     morph_remaining: usize,
     morph_total: usize,
     bypass: ClickSafeBypass,
@@ -236,7 +253,36 @@ impl PumpEngine {
         curve: [f32; CURVE_TABLE_LEN],
         bypassed: bool,
     ) -> Self {
+        Self::new_with_buffers(
+            sample_rate,
+            curve,
+            bypassed,
+            vec![1.0; crate::precise_curve::PRECISE_CURVE_LEN].into_boxed_slice(),
+            vec![1.0; crate::precise_curve::PRECISE_CURVE_LEN].into_boxed_slice(),
+            crate::compressor_capture::CaptureRunner::default(),
+        )
+    }
+
+    fn new_with_buffers(
+        sample_rate: f32,
+        curve: [f32; CURVE_TABLE_LEN],
+        bypassed: bool,
+        precise_current: Box<[f32]>,
+        precise_pending: Box<[f32]>,
+        capture: crate::compressor_capture::CaptureRunner,
+    ) -> Self {
         let mut engine = Self {
+            compressor: crate::compressor::CompressorDetector::new(sample_rate),
+            compressor_2x: crate::compressor::CompressorDetector::new(sample_rate * 2.0),
+            oversampling_blend: OnePole::new(0.0, sample_rate, 0.005),
+            oversampling_was_enabled: false,
+            previous_detector: [0.0; 2],
+            previous_clip_input: [0.0; 2],
+            detector_filter: crate::compressor::DetectorFilter::new(sample_rate),
+            compressor_blend: OnePole::new(0.0, sample_rate, 0.005),
+            detector_listen: OnePole::new(0.0, sample_rate, 0.005),
+            capture,
+            capture_exchange: None,
             dual_band: crate::dual_band::DualBand::new(sample_rate),
             clock: TransportClock::new(sample_rate),
             sample_rate: sample_rate.max(1.0),
@@ -271,6 +317,10 @@ impl PumpEngine {
             wet_gain_smoother: GainSmoother::new(1.0),
             curve_current: curve,
             curve_pending: curve,
+            precise_current,
+            precise_pending,
+            precise_current_enabled: false,
+            precise_pending_enabled: false,
             morph_remaining: 0,
             morph_total: 64,
             bypass: ClickSafeBypass::new(sample_rate, bypassed),
@@ -281,10 +331,78 @@ impl PumpEngine {
         engine
     }
 
-    /// Request a smooth morph to a new target curve.
-    pub fn set_target_curve(&mut self, curve: [f32; CURVE_TABLE_LEN]) {
+    /// Change the processing rate while retaining all preallocated buffers.
+    #[cfg(feature = "vst3")]
+    pub(crate) fn reconfigure(
+        &mut self,
+        sample_rate: f32,
+        curve: [f32; CURVE_TABLE_LEN],
+        bypassed: bool,
+    ) {
+        let current = std::mem::take(&mut self.precise_current);
+        let pending = std::mem::take(&mut self.precise_pending);
+        let capture = std::mem::replace(
+            &mut self.capture,
+            crate::compressor_capture::CaptureRunner::empty(),
+        );
+        let exchange = self.capture_exchange.take();
+        *self = Self::new_with_buffers(sample_rate, curve, bypassed, current, pending, capture);
+        self.capture_exchange = exchange;
+    }
+
+    pub(crate) fn set_capture_exchange(
+        &mut self,
+        exchange: std::sync::Arc<crate::compressor_capture::CaptureExchange>,
+    ) {
+        self.capture_exchange = Some(exchange);
+    }
+
+    pub(crate) fn begin_capture_block(
+        &mut self,
+        settings: DspSettings,
+        transport: TransportState,
+        frames: usize,
+    ) {
+        if let Some(exchange) = self.capture_exchange.as_deref() {
+            self.capture
+                .begin_block(exchange, settings, transport, frames, self.sample_rate);
+        }
+    }
+
+    /// Initialize precision for a restored curve before processing starts.
+    pub(crate) fn initialize_precise_curve(
+        &mut self,
+        params: &crate::params::PumpParams,
+        revision: u32,
+    ) -> bool {
+        let Some(enabled) = params.try_copy_precise_curve(&mut self.precise_current) else {
+            return false;
+        };
+        if params.curve_revision() != revision {
+            return false;
+        }
+        self.precise_current_enabled = enabled;
+        true
+    }
+
+    /// Request a new curve without blocking or allocating on the audio thread.
+    /// A concurrent publication is retried by the caller on a subsequent sample.
+    pub(crate) fn try_set_target_curve_from_params(
+        &mut self,
+        params: &crate::params::PumpParams,
+        revision: u32,
+    ) -> bool {
+        let Some(enabled) = params.try_copy_precise_curve(&mut self.precise_pending) else {
+            return false;
+        };
+        let curve = params.curve_snapshot();
+        if params.curve_revision() != revision {
+            return false;
+        }
+        self.precise_pending_enabled = enabled;
         self.curve_pending = curve;
         self.morph_remaining = self.morph_total;
+        true
     }
 
     /// Reset stateful DSP history at a processing-session boundary.
@@ -296,6 +414,16 @@ impl PumpEngine {
 
     /// Reset DSP history and snap bypass to restored activation state.
     pub fn reset_with_bypass(&mut self, bypassed: bool) {
+        self.compressor.reset();
+        self.compressor_2x.reset();
+        self.oversampling_blend.value = 0.0;
+        self.oversampling_was_enabled = false;
+        self.previous_detector = [0.0; 2];
+        self.previous_clip_input = [0.0; 2];
+        self.detector_filter.reset();
+        self.compressor_blend.value = 0.0;
+        self.detector_listen.value = 0.0;
+        self.capture.reset();
         self.wet_gain_smoother.reset(1.0);
         self.filter.reset();
         self.dual_band.reset();
@@ -324,6 +452,18 @@ impl PumpEngine {
         right: &mut f32,
         settings: DspSettings,
         transport: TransportState,
+    ) -> (DspTelemetry, f32) {
+        self.process_sample_with_detector(left, right, settings, transport, None)
+    }
+
+    /// Process one sample using an optional external stereo detector signal.
+    pub(crate) fn process_sample_with_detector(
+        &mut self,
+        left: &mut f32,
+        right: &mut f32,
+        settings: DspSettings,
+        transport: TransportState,
+        sidechain: Option<[f32; 2]>,
     ) -> (DspTelemetry, f32) {
         let dry_left = *left;
         let dry_right = *right;
@@ -398,10 +538,89 @@ impl PumpEngine {
         } else {
             0.0
         };
-        let wet_gain = self
+        let curve_gain = self
             .wet_gain_smoother
             .next(wet_gain, smooth, self.sample_rate);
+        let controls = settings.compressor;
+        let enabled = controls[0] >= 0.5;
+        let compressor_blend = self.compressor_blend.next(if enabled { 1.0 } else { 0.0 });
+        let mut detector_signal = [0.0; 2];
+        let mut detector_reduction = 1.0;
+        let oversampling_enabled = enabled && controls[18] >= 0.5;
+        let oversampling_blend =
+            self.oversampling_blend
+                .next(if oversampling_enabled { 1.0 } else { 0.0 });
+        let compressor_gain = if enabled || compressor_blend > 0.0001 {
+            let detector = if controls[9] >= 0.5 {
+                let side = sidechain.unwrap_or([0.0; 2]);
+                let side_gain = db_to_linear(controls[10]);
+                let side_mix = controls[11].clamp(0.0, 1.0);
+                [
+                    lerp(dry_left, side[0] * side_gain, side_mix),
+                    lerp(dry_right, side[1] * side_gain, side_mix),
+                ]
+            } else {
+                [dry_left, dry_right]
+            };
+            let detector = self.detector_filter.process(
+                detector,
+                controls[12] >= 0.5,
+                controls[13] as usize,
+                controls[14],
+                controls[15],
+            );
+            detector_signal = detector;
+            let compressor_settings = crate::compressor::CompressorSettings {
+                threshold_db: controls[1],
+                attack_ms: controls[2],
+                release_ms: controls[3],
+                ratio: controls[4],
+                range_db: controls[5],
+                auto_release: controls[17] >= 0.5,
+            };
+            let gain = self
+                .compressor
+                .process(detector[0], detector[1], compressor_settings);
+            if oversampling_enabled && !self.oversampling_was_enabled {
+                self.compressor_2x.synchronize_from(&self.compressor);
+                self.previous_detector = detector;
+            }
+            let gain_2x = if oversampling_enabled || oversampling_blend > 0.0001 {
+                let midpoint = [
+                    (self.previous_detector[0] + detector[0]) * 0.5,
+                    (self.previous_detector[1] + detector[1]) * 0.5,
+                ];
+                self.compressor_2x
+                    .process(midpoint[0], midpoint[1], compressor_settings);
+                self.compressor_2x
+                    .process(detector[0], detector[1], compressor_settings)
+            } else {
+                gain
+            };
+            self.previous_detector = detector;
+            self.oversampling_was_enabled = oversampling_enabled;
+            let gain = lerp(gain, gain_2x, oversampling_blend);
+            detector_reduction = gain;
+            let makeup = db_to_linear(controls[6]);
+            lerp(1.0, gain * makeup, controls[7].clamp(0.0, 1.0))
+        } else {
+            self.compressor.reset();
+            self.compressor_2x.reset();
+            self.detector_filter.reset();
+            self.oversampling_was_enabled = false;
+            self.previous_detector = [0.0; 2];
+            1.0
+        };
+        let wet_gain = lerp(curve_gain, compressor_gain, compressor_blend);
         let blend_gain = (mix * wet_gain) + (1.0 - mix);
+        if let Some(exchange) = self.capture_exchange.as_deref() {
+            self.capture.record(
+                exchange,
+                settings,
+                authored_curve_phase(phase, phase_offset),
+                blend_gain,
+            );
+        }
         let output_gain = db_to_linear(output_gain_db);
         self.dual_band.prepare(settings.effects);
         let [source_left, source_right] = [dry_left, dry_right];
@@ -440,6 +659,40 @@ impl PumpEngine {
             [pumped_left, pumped_right],
             output_gain,
         );
+        let clip_blend = if controls[8] >= 0.5 {
+            compressor_blend
+        } else {
+            0.0
+        };
+        let clip_input = [pumped_left, pumped_right];
+        let (pumped_left, pumped_right) = if clip_blend > 0.0 {
+            let clipped_left = lerp(
+                soft_clip(pumped_left),
+                soft_clip_2x(self.previous_clip_input[0], pumped_left),
+                oversampling_blend,
+            );
+            let clipped_right = lerp(
+                soft_clip(pumped_right),
+                soft_clip_2x(self.previous_clip_input[1], pumped_right),
+                oversampling_blend,
+            );
+            (
+                lerp(pumped_left, clipped_left, clip_blend),
+                lerp(pumped_right, clipped_right, clip_blend),
+            )
+        } else {
+            (pumped_left, pumped_right)
+        };
+        self.previous_clip_input = clip_input;
+        let listen = self
+            .detector_listen
+            .next(if enabled && controls[16] >= 0.5 {
+                1.0
+            } else {
+                0.0
+            });
+        let pumped_left = lerp(pumped_left, detector_signal[0], listen);
+        let pumped_right = lerp(pumped_right, detector_signal[1], listen);
         let bypass_blend = self.bypass.next(settings.bypassed);
         if bypass_blend == 1.0 {
             *left = dry_left;
@@ -457,7 +710,12 @@ impl PumpEngine {
                 phase,
                 applied_phase_offset: phase_offset,
                 gain,
-                reduction_gain: blend_gain.clamp(0.0, 1.0),
+                reduction_gain: if enabled {
+                    detector_reduction
+                } else {
+                    blend_gain
+                }
+                .clamp(0.0, 1.0),
                 input_active: false,
                 bypassed: self.bypass.fully_bypassed(),
             },
@@ -466,18 +724,30 @@ impl PumpEngine {
     }
 
     fn sample_active_curve(&mut self, phase: f32) -> f32 {
-        let current = sample_curve(&self.curve_current, phase);
+        let current = if self.precise_current_enabled {
+            crate::precise_curve::sample_precise_curve(&self.precise_current, phase)
+        } else {
+            sample_curve(&self.curve_current, phase)
+        };
         if self.morph_remaining == 0 {
             return current;
         }
 
-        let pending = sample_curve(&self.curve_pending, phase);
+        let pending = if self.precise_pending_enabled {
+            crate::precise_curve::sample_precise_curve(&self.precise_pending, phase)
+        } else {
+            sample_curve(&self.curve_pending, phase)
+        };
         let progress = 1.0 - (self.morph_remaining as f32 / self.morph_total as f32);
         let morphed = lerp(current, pending, progress).clamp(0.0, 1.0);
 
         self.morph_remaining -= 1;
         if self.morph_remaining == 0 {
             self.curve_current = self.curve_pending;
+            self.precise_current_enabled = self.precise_pending_enabled;
+            if self.precise_current_enabled {
+                std::mem::swap(&mut self.precise_current, &mut self.precise_pending);
+            }
         }
 
         morphed
@@ -1322,6 +1592,15 @@ impl OnePole {
     }
 }
 
+fn soft_clip(sample: f32) -> f32 {
+    const CEILING: f32 = 0.944_060_86;
+    CEILING * (sample / CEILING).tanh()
+}
+
+fn soft_clip_2x(previous: f32, current: f32) -> f32 {
+    0.5 * (soft_clip((previous + current) * 0.5) + soft_clip(current))
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -1335,6 +1614,150 @@ mod tests {
     };
     use crate::curve::{default_editable_curve, editable_curve_to_table, sample_curve};
     use toybox::dsp::TransportState;
+
+    #[test]
+    fn two_times_soft_clip_reduces_third_harmonic_alias() {
+        let sample_rate = 48_000.0_f32;
+        let frequency = 11_000.0_f32;
+        let alias = 15_000.0_f32;
+        let mut previous = 0.0;
+        let (mut plain_cos, mut plain_sin, mut doubled_cos, mut doubled_sin) = (0.0, 0.0, 0.0, 0.0);
+        for n in 0..48_000 {
+            let sample = 4.0 * (std::f32::consts::TAU * frequency * n as f32 / sample_rate).sin();
+            let plain = super::soft_clip(sample);
+            let doubled = super::soft_clip_2x(previous, sample);
+            previous = sample;
+            let phase = std::f32::consts::TAU * alias * n as f32 / sample_rate;
+            plain_cos += plain * phase.cos();
+            plain_sin += plain * phase.sin();
+            doubled_cos += doubled * phase.cos();
+            doubled_sin += doubled * phase.sin();
+        }
+        let plain_power = plain_cos * plain_cos + plain_sin * plain_sin;
+        let doubled_power = doubled_cos * doubled_cos + doubled_sin * doubled_sin;
+        assert!(doubled_power < plain_power * 0.35);
+    }
+
+    #[test]
+    fn compressor_meter_shows_reduction_before_makeup() {
+        let params = crate::params::PumpParams::new();
+        params.set_compressor_control(0, 1.0);
+        params.set_compressor_control(1, -20.0);
+        params.set_compressor_control(2, 0.01);
+        params.set_compressor_control(4, 4.0);
+        params.set_compressor_control(6, 20.0);
+        let settings = crate::sample_automation::dsp_settings_from_params(&params);
+        let mut engine = PumpEngine::new(1000.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut reduction = 1.0;
+        for _ in 0..200 {
+            let mut left = 1.0;
+            let mut right = 1.0;
+            reduction = engine
+                .process_sample_with_detector(
+                    &mut left,
+                    &mut right,
+                    settings,
+                    TransportState::default(),
+                    None,
+                )
+                .0
+                .reduction_gain;
+        }
+        assert!((reduction - 10.0_f32.powf(-15.0 / 20.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn compressor_makeup_clip_and_detector_listen_change_output() {
+        let params = crate::params::PumpParams::new();
+        params.set_compressor_control(0, 1.0);
+        params.set_compressor_control(1, 0.0);
+        params.set_compressor_control(6, 6.0);
+        let mut settings = crate::sample_automation::dsp_settings_from_params(&params);
+        let mut engine = PumpEngine::new(1000.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut output = 0.0;
+        for _ in 0..200 {
+            let mut left = 0.25;
+            let mut right = 0.25;
+            engine.process_sample_with_detector(
+                &mut left,
+                &mut right,
+                settings,
+                TransportState::default(),
+                None,
+            );
+            output = left;
+        }
+        assert!((output - 0.25 * db_to_linear(6.0)).abs() < 0.001);
+        settings.compressor[8] = 1.0;
+        let mut left = 4.0;
+        let mut right = 4.0;
+        engine.process_sample_with_detector(
+            &mut left,
+            &mut right,
+            settings,
+            TransportState::default(),
+            None,
+        );
+        assert!(left.abs() < 0.95);
+        settings.compressor[9] = 1.0;
+        settings.compressor[16] = 1.0;
+        for _ in 0..200 {
+            let mut left = 0.9;
+            let mut right = 0.9;
+            engine.process_sample_with_detector(
+                &mut left,
+                &mut right,
+                settings,
+                TransportState::default(),
+                Some([0.2, -0.3]),
+            );
+            output = left;
+        }
+        assert!((output - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn live_compression_replaces_curve_and_uses_external_detector() {
+        let params = crate::params::PumpParams::new();
+        params.set_compressor_control(0, 1.0);
+        params.set_compressor_control(1, -20.0);
+        params.set_compressor_control(2, 0.01);
+        params.set_compressor_control(3, 10.0);
+        params.set_compressor_control(4, 4.0);
+        params.set_compressor_control(9, 1.0);
+        let settings = crate::sample_automation::dsp_settings_from_params(&params);
+        let mut engine = PumpEngine::new(1_000.0, [0.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut result = 0.0;
+        for _ in 0..200 {
+            let mut left = 1.0;
+            let mut right = 1.0;
+            engine.process_sample_with_detector(
+                &mut left,
+                &mut right,
+                settings,
+                TransportState::default(),
+                Some([1.0, 0.0]),
+            );
+            result = left;
+        }
+        assert!((result - 10.0_f32.powf(-15.0 / 20.0)).abs() < 0.001);
+        for _ in 0..200 {
+            let mut left = 1.0;
+            let mut right = 1.0;
+            engine.process_sample_with_detector(
+                &mut left,
+                &mut right,
+                settings,
+                TransportState::default(),
+                None,
+            );
+            result = left;
+        }
+        assert!(
+            (result - 1.0).abs() < 0.001,
+            "missing external input must be silence"
+        );
+    }
 
     #[test]
     fn host_bypass_returns_dry_with_dual_enabled() {
@@ -1396,6 +1819,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         };
 
         let mut left = 1.0;
@@ -1446,6 +1870,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         };
         let mut engine = PumpEngine::new(48_000.0, [0.25; crate::curve::CURVE_TABLE_LEN]);
         let mut left = 1.0;
@@ -1482,6 +1907,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         }
     }
 
@@ -1850,6 +2276,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         }
     }
 
@@ -1980,6 +2407,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -2024,6 +2452,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         };
 
         let mut min_gain = 1.0_f32;
@@ -2071,6 +2500,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         };
         let mut first = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         let mut second = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
@@ -2133,6 +2563,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         };
         let mut engine = PumpEngine::new(1_000.0, [0.5; crate::curve::CURVE_TABLE_LEN]);
         for _ in 0..1_000 {
@@ -2167,6 +2598,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         };
         let sync = DspSettings {
             timing_mode: crate::params::TIMING_MODE_SYNC,
@@ -2225,6 +2657,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         }
     }
 
@@ -2501,6 +2934,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         }
     }
 

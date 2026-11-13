@@ -156,6 +156,7 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
         filter_hp_slope: params.filter_hp_slope(),
         filter_lp_slope: params.filter_lp_slope(),
         effects: params.effects(),
+        compressor: params.compressor(),
     }
 }
 
@@ -163,6 +164,7 @@ pub(crate) fn dsp_settings_from_params(params: &PumpParams) -> DspSettings {
 pub(crate) struct StereoBlockSlices<'a> {
     pub(crate) left: &'a mut [f32],
     pub(crate) right: &'a mut [f32],
+    pub(crate) sidechain: Option<(&'a [f32], &'a [f32])>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -176,8 +178,13 @@ pub(crate) fn process_stereo_block(
     transport: TransportState,
     mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
-    let StereoBlockSlices { left, right } = block;
+    let StereoBlockSlices {
+        left,
+        right,
+        sidechain,
+    } = block;
     let frame_count = left.len().min(right.len());
+    engine.begin_capture_block(*settings, transport, frame_count);
     let mut transport_for_sample = transport;
     let mut last_telemetry = None;
     let mut minimum_reduction_gain = 1.0_f32;
@@ -186,17 +193,21 @@ pub(crate) fn process_stereo_block(
     for sample_offset in 0..frame_count {
         schedule.apply_through(sample_offset, params, settings);
         let revision = params.curve_revision();
-        if revision != *last_curve_revision {
-            engine.set_target_curve(params.curve_snapshot());
+        if revision != *last_curve_revision
+            && engine.try_set_target_curve_from_params(params, revision)
+        {
             *last_curve_revision = revision;
         }
         let input_left = left[sample_offset];
         let input_right = right[sample_offset];
-        let (telemetry, raw_cycle_phase) = engine.process_sample_with_raw_cycle_phase(
+        let (telemetry, raw_cycle_phase) = engine.process_sample_with_detector(
             &mut left[sample_offset],
             &mut right[sample_offset],
             *settings,
             transport_for_sample,
+            sidechain.and_then(|(left, right)| {
+                Some([*left.get(sample_offset)?, *right.get(sample_offset)?])
+            }),
         );
         if !telemetry.bypassed && input_left.abs().max(input_right.abs()) > 1.0e-5 {
             input_active = true;
@@ -257,6 +268,7 @@ pub(crate) struct RawStereoBlock {
     pub(crate) input_right: *const f32,
     pub(crate) output_left: *mut f32,
     pub(crate) output_right: *mut f32,
+    pub(crate) sidechain: Option<(*const f32, *const f32)>,
 }
 
 #[cfg(feature = "vst3")]
@@ -284,6 +296,7 @@ pub(crate) unsafe fn process_stereo_block_raw(
     transport: TransportState,
     mut waveform: Option<IncomingWaveformCapture<'_>>,
 ) -> Option<DspTelemetry> {
+    engine.begin_capture_block(*settings, transport, block.num_samples);
     let mut transport_for_sample = transport;
     let mut last_telemetry = None;
     let mut minimum_reduction_gain = 1.0_f32;
@@ -292,8 +305,9 @@ pub(crate) unsafe fn process_stereo_block_raw(
     for sample_offset in 0..block.num_samples {
         schedule.apply_through(sample_offset, params, settings);
         let revision = params.curve_revision();
-        if revision != *last_curve_revision {
-            engine.set_target_curve(params.curve_snapshot());
+        if revision != *last_curve_revision
+            && engine.try_set_target_curve_from_params(params, revision)
+        {
             *last_curve_revision = revision;
         }
         // Read both inputs before either output is written so exact in-place
@@ -302,11 +316,17 @@ pub(crate) unsafe fn process_stereo_block_raw(
         let mut right = unsafe { block.input_right.add(sample_offset).read() };
         let input_left = left;
         let input_right = right;
-        let (telemetry, raw_cycle_phase) = engine.process_sample_with_raw_cycle_phase(
+        let (telemetry, raw_cycle_phase) = engine.process_sample_with_detector(
             &mut left,
             &mut right,
             *settings,
             transport_for_sample,
+            block.sidechain.map(|(side_left, side_right)| unsafe {
+                [
+                    side_left.add(sample_offset).read(),
+                    side_right.add(sample_offset).read(),
+                ]
+            }),
         );
         if !telemetry.bypassed && input_left.abs().max(input_right.abs()) > 1.0e-5 {
             input_active = true;
@@ -397,6 +417,96 @@ mod tests {
     }
 
     #[test]
+    fn live_compression_capture_publishes_one_complete_playing_cycle() {
+        const FRAMES: usize = 1000;
+        let params = PumpParams::new();
+        params.set_compressor_control(0, 1.0);
+        params.set_compressor_control(1, -20.0);
+        params.set_compressor_control(2, 0.01);
+        params.set_compressor_control(4, 4.0);
+        let mut settings = dsp_settings_from_params(&params);
+        let mut engine = PumpEngine::new(1000.0, params.curve_snapshot());
+        let exchange = std::sync::Arc::new(crate::compressor_capture::CaptureExchange::default());
+        engine.set_capture_exchange(std::sync::Arc::clone(&exchange));
+        exchange.request();
+        let mut schedule = ParamEventSchedule::default();
+        let mut revision = params.curve_revision();
+        let mut left = vec![1.0; FRAMES];
+        let mut right = vec![1.0; FRAMES];
+        for block in 0..3 {
+            left.fill(1.0);
+            right.fill(1.0);
+            schedule.begin_block(FRAMES);
+            let transport = TransportState {
+                is_playing: true,
+                song_pos_beats: Some(block as f64),
+                tempo_bpm: 60.0,
+            };
+            crate::test_alloc::assert_no_alloc(|| {
+                process_stereo_block(
+                    &mut engine,
+                    StereoBlockSlices {
+                        left: &mut left,
+                        right: &mut right,
+                        sidechain: None,
+                    },
+                    &params,
+                    &mut schedule,
+                    &mut settings,
+                    &mut revision,
+                    transport,
+                    None,
+                );
+            });
+            if block == 0 {
+                assert!(exchange.snapshot().is_none());
+            }
+        }
+        let capture = exchange.snapshot().expect("complete cycle published");
+        let expected = 10.0_f32.powf(-15.0 / 20.0);
+        assert!(capture.iter().all(|gain| (*gain - expected).abs() < 0.001));
+    }
+
+    #[test]
+    fn stereo_block_consumes_external_detector_samples_without_allocating() {
+        const FRAMES: usize = 8192;
+        let params = PumpParams::new();
+        params.set_compressor_control(0, 1.0);
+        params.set_compressor_control(1, -20.0);
+        params.set_compressor_control(2, 0.01);
+        params.set_compressor_control(4, 4.0);
+        params.set_compressor_control(9, 1.0);
+        let mut settings = dsp_settings_from_params(&params);
+        let mut engine = PumpEngine::new(48_000.0, params.curve_snapshot());
+        let mut schedule = ParamEventSchedule::default();
+        schedule.begin_block(FRAMES);
+        let mut revision = params.curve_revision();
+        let mut left = vec![1.0; FRAMES];
+        let mut right = vec![0.5; FRAMES];
+        let side_left = vec![1.0; FRAMES];
+        let side_right = vec![0.0; FRAMES];
+        crate::test_alloc::assert_no_alloc(|| {
+            process_stereo_block(
+                &mut engine,
+                StereoBlockSlices {
+                    left: &mut left,
+                    right: &mut right,
+                    sidechain: Some((&side_left, &side_right)),
+                },
+                &params,
+                &mut schedule,
+                &mut settings,
+                &mut revision,
+                TransportState::default(),
+                None,
+            );
+        });
+        let expected = 10.0_f32.powf(-15.0 / 20.0);
+        assert!((left[FRAMES - 1] - expected).abs() < 0.001);
+        assert!((right[FRAMES - 1] - expected * 0.5).abs() < 0.001);
+    }
+
+    #[test]
     fn sound_automation_retargets_at_zero_and_keeps_revision_owned_by_processor() {
         let params = params_with_distinct_sound_curves();
         let mut engine = PumpEngine::new(1_000.0, constant_curve(0.0));
@@ -414,6 +524,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -437,6 +548,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -472,6 +584,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -516,6 +629,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -550,6 +664,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -605,6 +720,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut [],
                 right: &mut [],
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -639,6 +755,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -659,6 +776,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut silent_left,
                 right: &mut silent_right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -692,6 +810,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -792,6 +911,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -814,6 +934,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut next_left,
                 right: &mut next_right,
+                sidechain: None,
             },
             &params,
             &mut schedule,
@@ -848,6 +969,7 @@ mod tests {
             StereoBlockSlices {
                 left: &mut left,
                 right: &mut right,
+                sidechain: None,
             },
             &params,
             &mut schedule,

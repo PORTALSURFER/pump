@@ -69,6 +69,7 @@ pub struct GuiStatus {
     phase_extrapolation_enabled: AtomicBool,
     last_update_micros: AtomicU64,
     incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer,
+    compressor_capture: Arc<crate::compressor_capture::CaptureExchange>,
 }
 
 const GAIN_REDUCTION_STALE_MICROS: u64 = 250_000;
@@ -98,11 +99,18 @@ impl Default for GuiStatus {
             phase_extrapolation_enabled: AtomicBool::new(true),
             last_update_micros: AtomicU64::new(0),
             incoming_waveform: crate::incoming_waveform::IncomingWaveformBuffer::default(),
+            compressor_capture: Arc::new(crate::compressor_capture::CaptureExchange::default()),
         }
     }
 }
 
 impl GuiStatus {
+    pub(crate) fn compressor_capture_exchange(
+        &self,
+    ) -> &Arc<crate::compressor_capture::CaptureExchange> {
+        &self.compressor_capture
+    }
+
     /// Update transport plus linear reduction gain for deterministic UI tests.
     #[cfg(test)]
     pub fn update(&self, phase: f32, reduction_gain: f32, transport: GuiTransportTelemetry) {

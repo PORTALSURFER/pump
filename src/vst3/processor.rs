@@ -72,7 +72,10 @@ pub(super) struct PumpVst3Processor {
 impl PumpVst3Processor {
     pub(super) fn new(shared: Arc<PumpVst3Shared>) -> Self {
         Self {
-            runtime: RealtimeRuntime::new(PumpVst3Runtime::new(shared.params.as_ref())),
+            runtime: RealtimeRuntime::new(PumpVst3Runtime::new(
+                shared.params.as_ref(),
+                shared.status.as_ref(),
+            )),
             runtime_handoff: RuntimeHandoff::new(),
             shared,
         }
@@ -81,7 +84,11 @@ impl PumpVst3Processor {
     fn apply_pending_runtime_changes(&self, runtime: &mut PumpVst3Runtime) {
         let pending = self.runtime_handoff.take_pending();
         if let Some(sample_rate) = pending.sample_rate {
-            runtime.set_sample_rate(sample_rate.into(), self.shared.params.as_ref());
+            runtime.set_sample_rate(
+                sample_rate.into(),
+                self.shared.params.as_ref(),
+                self.shared.status.as_ref(),
+            );
         }
         if pending.processing_reset {
             self.shared
@@ -94,10 +101,15 @@ impl PumpVst3Processor {
                 .reset_with_bypass(self.shared.params.bypassed());
         }
         if pending.state_restored {
-            runtime
+            let revision = self.shared.params.curve_revision();
+            if runtime
                 .engine
-                .set_target_curve(self.shared.params.curve_snapshot());
-            runtime.last_curve_revision = self.shared.params.curve_revision();
+                .try_set_target_curve_from_params(self.shared.params.as_ref(), revision)
+            {
+                runtime.last_curve_revision = revision;
+            } else {
+                runtime.last_curve_revision = revision.wrapping_sub(1);
+            }
         }
     }
 
@@ -114,10 +126,11 @@ impl PumpVst3Processor {
         let input_latency_samples = self.runtime_handoff.input_presentation_latency_samples();
 
         let revision = self.shared.params.curve_revision();
-        if revision != runtime.last_curve_revision {
-            runtime
+        if revision != runtime.last_curve_revision
+            && runtime
                 .engine
-                .set_target_curve(self.shared.params.curve_snapshot());
+                .try_set_target_curve_from_params(self.shared.params.as_ref(), revision)
+        {
             runtime.last_curve_revision = revision;
         }
 
@@ -199,7 +212,7 @@ impl IComponentTrait for PumpVst3Processor {
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
         match media_type as MediaTypes {
             MediaTypes_::kAudio => match dir as BusDirections {
-                BusDirections_::kInput => 1,
+                BusDirections_::kInput => 2,
                 BusDirections_::kOutput => 1,
                 _ => 0,
             },
@@ -228,6 +241,7 @@ impl IComponentTrait for PumpVst3Processor {
                 BusTypes_::kMain as BusType,
                 BusInfo_::BusFlags_::kDefaultActive as u32,
             ),
+            BusDirections_::kInput if index == 1 => ("Sidechain", BusTypes_::kAux as BusType, 0),
             BusDirections_::kOutput if index == 0 => (
                 "Output",
                 BusTypes_::kMain as BusType,
@@ -266,7 +280,7 @@ impl IComponentTrait for PumpVst3Processor {
             return kInvalidArgument;
         }
         match dir as BusDirections {
-            BusDirections_::kInput if index == 0 => {}
+            BusDirections_::kInput if index == 0 || index == 1 => {}
             BusDirections_::kOutput if index == 0 => {}
             _ => return kInvalidArgument,
         }
@@ -321,7 +335,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         outputs: *mut SpeakerArrangement,
         num_outs: i32,
     ) -> tresult {
-        if num_ins != 1 || num_outs != 1 {
+        if !(1..=2).contains(&num_ins) || num_outs != 1 {
             return kResultFalse;
         }
         if inputs.is_null() || outputs.is_null() {
@@ -329,6 +343,9 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         if unsafe { *inputs } != SpeakerArr::kStereo || unsafe { *outputs } != SpeakerArr::kStereo {
+            return kResultFalse;
+        }
+        if num_ins == 2 && unsafe { *inputs.add(1) } != SpeakerArr::kStereo {
             return kResultFalse;
         }
         kResultTrue
@@ -345,7 +362,7 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         }
 
         match dir as BusDirections {
-            BusDirections_::kInput if index == 0 => {
+            BusDirections_::kInput if index == 0 || index == 1 => {
                 unsafe { *arr = SpeakerArr::kStereo };
                 kResultOk
             }
@@ -483,10 +500,11 @@ impl IAudioProcessorTrait for PumpVst3Processor {
         let input_latency_samples = self.runtime_handoff.input_presentation_latency_samples();
 
         let revision = self.shared.params.curve_revision();
-        if revision != runtime.last_curve_revision {
-            runtime
+        if revision != runtime.last_curve_revision
+            && runtime
                 .engine
-                .set_target_curve(self.shared.params.curve_snapshot());
+                .try_set_target_curve_from_params(self.shared.params.as_ref(), revision)
+        {
             runtime.last_curve_revision = revision;
         }
 
@@ -566,6 +584,8 @@ impl IAudioPresentationLatencyTrait for PumpVst3Processor {
                     .publish_input_presentation_latency(latency_in_samples);
                 kResultOk
             }
+            // The sidechain bus does not define the main signal timeline.
+            BusDirections_::kInput if bus_index == 1 => kResultOk,
             // Pump does not report or use output presentation latency, but a
             // valid main output bus is still accepted per the VST3 contract.
             BusDirections_::kOutput if bus_index == 0 => kResultOk,
@@ -577,7 +597,7 @@ impl IAudioPresentationLatencyTrait for PumpVst3Processor {
 /// Validate a VST3 stereo f32 block while retaining raw pointers so exact
 /// in-place input/output channel aliases never become overlapping Rust slices.
 unsafe fn raw_stereo_f32_buffers(data: &ProcessData) -> Option<RawStereoBlock> {
-    if data.numInputs != 1
+    if !(1..=2).contains(&data.numInputs)
         || data.numOutputs != 1
         || data.inputs.is_null()
         || data.outputs.is_null()
@@ -604,12 +624,31 @@ unsafe fn raw_stereo_f32_buffers(data: &ProcessData) -> Option<RawStereoBlock> {
         return None;
     }
 
+    let sidechain = if data.numInputs >= 2 {
+        // SAFETY: the host supplies an array of `numInputs` bus records.
+        let bus = unsafe { &*data.inputs.add(1) };
+        if bus.numChannels == 2 && !unsafe { bus.__field0.channelBuffers32 }.is_null() {
+            // SAFETY: a stereo bus supplies two channel pointers. Valid sample ranges
+            // are a host contract, as for the main input above.
+            let channels = unsafe { slice::from_raw_parts(bus.__field0.channelBuffers32, 2) };
+            if channels.iter().all(|channel| !channel.is_null()) {
+                Some((channels[0] as *const f32, channels[1] as *const f32))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let main = RawStereoBlock {
         num_samples,
         input_left: input_channels[0],
         input_right: input_channels[1],
         output_left: output_channels[0],
         output_right: output_channels[1],
+        sidechain,
     };
     Some(main)
 }

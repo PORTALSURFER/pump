@@ -8,10 +8,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, panic::AssertUnwindSafe};
 
 const CURVE_SLOT_STORE_MAGIC: &[u8; 4] = b"PCSL";
-const CURVE_SLOT_STORE_VERSION: u32 = 3;
+const CURVE_SLOT_STORE_VERSION: u32 = 4;
 const PHASE_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"PHAS");
 const PHASE_SOURCE_ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"SORG");
 const ORIGIN_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"ORIG");
+const HIGH_RESOLUTION_METADATA_MAGIC: u32 = u32::from_le_bytes(*b"HRES");
 const CURVE_SLOT_STORE_PATH_ENV: &str = "PUMP_GLOBAL_CURVE_SLOTS_PATH";
 const CURVE_SLOT_STORE_FILE_NAME: &str = "curve-slots.bin";
 
@@ -252,6 +253,9 @@ fn encode_phase_metadata(payload: &mut Vec<u8>, curve: &EditableCurve) {
     if curve.origin_is_clip {
         payload.extend_from_slice(&ORIGIN_METADATA_MAGIC.to_le_bytes());
     }
+    if curve.high_resolution {
+        payload.extend_from_slice(&HIGH_RESOLUTION_METADATA_MAGIC.to_le_bytes());
+    }
 }
 
 fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlot>, String> {
@@ -289,6 +293,7 @@ fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlo
                     node_count,
                     version >= 2,
                     version >= 3,
+                    version >= 4,
                 )?)
             }
             _ => return Err("invalid curve slot occupancy flag".to_string()),
@@ -306,6 +311,7 @@ fn decode_curve(
     node_count: usize,
     with_phase_metadata: bool,
     with_origin_metadata: bool,
+    with_high_resolution_metadata: bool,
 ) -> Result<EditableCurve, String> {
     if !(2..=MAX_EDITABLE_NODES).contains(&node_count) {
         return Err("invalid node count bounds".to_string());
@@ -346,7 +352,7 @@ fn decode_curve(
                     let source_count = read_u32(cursor)
                         .map(|value| value as usize)
                         .ok_or_else(|| "invalid phase source node count".to_string())?;
-                    let mut source = decode_curve(cursor, source_count, false, false)?;
+                    let mut source = decode_curve(cursor, source_count, false, false, false)?;
                     if with_origin_metadata && remaining_bytes(cursor) >= 4 {
                         let marker_position = cursor.position();
                         if read_u32(cursor) == Some(PHASE_SOURCE_ORIGIN_METADATA_MAGIC) {
@@ -359,6 +365,9 @@ fn decode_curve(
                 }
                 ORIGIN_METADATA_MAGIC if with_origin_metadata => {
                     curve.origin_is_clip = true;
+                }
+                HIGH_RESOLUTION_METADATA_MAGIC if with_high_resolution_metadata => {
+                    curve.high_resolution = true;
                 }
                 _ => {
                     cursor.set_position(marker_position);
@@ -409,6 +418,16 @@ mod tests {
             "pump-global-curve-slots-{label}-{}-{stamp}.bin",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn captured_curve_precision_survives_global_slot_storage() {
+        let mut slots = empty_global_curve_slots();
+        let mut curve = default_editable_curve();
+        curve.high_resolution = true;
+        slots[0].curve = Some(curve);
+        let payload = encode_global_curve_slot_payload(&slots);
+        assert_eq!(decode_global_curve_slot_payload(&payload).unwrap(), slots);
     }
 
     #[test]

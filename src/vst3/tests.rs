@@ -417,7 +417,7 @@ fn stereo_process_fixture(samples: usize, output_value: f32) -> StereoProcessFix
 fn controller_reports_expected_parameter_count() {
     let controller = PumpVst3Controller::new(Arc::new(PumpVst3Shared::new()));
     let count = unsafe { controller.getParameterCount() };
-    assert_eq!(count, 28);
+    assert_eq!(count, 47);
 }
 
 #[test]
@@ -725,48 +725,110 @@ fn vst3_ui_sink_commits_accepted_value_when_component_handler_rejects_end() {
 }
 
 #[test]
-fn processor_declares_only_main_stereo_bus() {
+fn processor_declares_optional_stereo_sidechain_bus() {
     let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
-
+    let input = BusDirections_::kInput as BusDirection;
+    let output = BusDirections_::kOutput as BusDirection;
+    let audio = MediaTypes_::kAudio as MediaType;
+    assert_eq!(unsafe { processor.getBusCount(audio, input) }, 2);
+    assert_eq!(unsafe { processor.getBusCount(audio, output) }, 1);
+    let mut info = unsafe { std::mem::zeroed::<BusInfo>() };
     assert_eq!(
-        unsafe {
-            processor.getBusCount(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-            )
-        },
-        1
+        unsafe { processor.getBusInfo(audio, input, 1, &mut info) },
+        kResultOk
+    );
+    assert_eq!(info.busType, BusTypes_::kAux as BusType);
+    assert_eq!(info.channelCount, 2);
+    assert_eq!(info.flags & BusInfo_::BusFlags_::kDefaultActive, 0);
+    assert_eq!(
+        unsafe { processor.activateBus(audio, input, 1, 1) },
+        kResultOk
     );
     assert_eq!(
-        unsafe {
-            processor.getBusCount(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kOutput as BusDirection,
-            )
-        },
-        1
-    );
-
-    let mut removed = unsafe { std::mem::zeroed::<BusInfo>() };
-    assert_eq!(
-        unsafe {
-            processor.getBusInfo(
-                MediaTypes_::kAudio as MediaType,
-                BusDirections_::kInput as BusDirection,
-                1,
-                &mut removed,
-            )
-        },
+        unsafe { processor.getBusInfo(audio, input, 2, &mut info) },
         kInvalidArgument
     );
     let mut arrangement = SpeakerArrangement::default();
     assert_eq!(
-        unsafe {
-            processor.getBusArrangement(BusDirections_::kInput as BusDirection, 0, &mut arrangement)
-        },
+        unsafe { processor.getBusArrangement(input, 1, &mut arrangement) },
         kResultOk
     );
     assert_eq!(arrangement, SpeakerArr::kStereo);
+    let mut inputs = [SpeakerArr::kStereo, SpeakerArr::kStereo];
+    let mut outputs = [SpeakerArr::kStereo];
+    assert_eq!(
+        unsafe { processor.setBusArrangements(inputs.as_mut_ptr(), 1, outputs.as_mut_ptr(), 1) },
+        kResultTrue
+    );
+    assert_eq!(
+        unsafe { processor.setBusArrangements(inputs.as_mut_ptr(), 2, outputs.as_mut_ptr(), 1) },
+        kResultTrue
+    );
+    inputs[1] = SpeakerArr::kMono;
+    assert_eq!(
+        unsafe { processor.setBusArrangements(inputs.as_mut_ptr(), 2, outputs.as_mut_ptr(), 1) },
+        kResultFalse
+    );
+}
+
+#[test]
+fn processor_keeps_main_audio_working_with_sidechain_bus_present() {
+    let processor = PumpVst3Processor::new(Arc::new(PumpVst3Shared::new()));
+    let mut fixture = stereo_process_fixture(32, -10.0);
+    let mut side_left = [0.75_f32; 32];
+    let mut side_right = [0.25_f32; 32];
+    let mut side_channels = [side_left.as_mut_ptr(), side_right.as_mut_ptr()];
+    fixture._input_buses.push(AudioBusBuffers {
+        numChannels: 2,
+        silenceFlags: 0,
+        __field0: AudioBusBuffers__type0 {
+            channelBuffers32: side_channels.as_mut_ptr(),
+        },
+    });
+    fixture.process_data.inputs = fixture._input_buses.as_mut_ptr();
+    fixture.process_data.numInputs = 2;
+    assert_eq!(
+        unsafe { processor.process(&mut fixture.process_data) },
+        process_ok()
+    );
+    assert!(fixture
+        .output_left
+        .iter()
+        .all(|sample| *sample != -10.0 && sample.is_finite()));
+}
+
+#[test]
+fn processor_uses_external_sidechain_for_live_compression() {
+    const FRAMES: usize = 8192;
+    let shared = Arc::new(PumpVst3Shared::new());
+    shared.params.set_compressor_control(0, 1.0);
+    shared.params.set_compressor_control(1, -20.0);
+    shared.params.set_compressor_control(2, 0.01);
+    shared.params.set_compressor_control(4, 4.0);
+    shared.params.set_compressor_control(9, 1.0);
+    let processor = PumpVst3Processor::new(shared);
+    let mut fixture = stereo_process_fixture(FRAMES, -10.0);
+    let mut side_left = vec![1.0_f32; FRAMES];
+    let mut side_right = vec![0.0_f32; FRAMES];
+    let mut side_channels = [side_left.as_mut_ptr(), side_right.as_mut_ptr()];
+    fixture._input_buses.push(AudioBusBuffers {
+        numChannels: 2,
+        silenceFlags: 0,
+        __field0: AudioBusBuffers__type0 {
+            channelBuffers32: side_channels.as_mut_ptr(),
+        },
+    });
+    fixture.process_data.inputs = fixture._input_buses.as_mut_ptr();
+    fixture.process_data.numInputs = 2;
+    crate::test_alloc::assert_no_alloc(|| {
+        assert_eq!(
+            unsafe { processor.process(&mut fixture.process_data) },
+            process_ok()
+        );
+    });
+    let expected = 10.0_f32.powf(-15.0 / 20.0);
+    assert!((fixture.output_left[FRAMES - 1] - expected).abs() < 0.001);
+    assert!((fixture.output_right[FRAMES - 1] - expected * 0.5).abs() < 0.001);
 }
 
 #[test]
@@ -817,8 +879,25 @@ fn processor_rejects_invalid_presentation_latency_buses_without_mutation() {
         .runtime_handoff
         .publish_input_presentation_latency(512);
 
+    assert_eq!(
+        unsafe {
+            processor.setAudioPresentationLatencySamples(
+                BusDirections_::kInput as BusDirection,
+                1,
+                1024,
+            )
+        },
+        kResultOk
+    );
+    assert_eq!(
+        processor
+            .runtime_handoff
+            .input_presentation_latency_samples(),
+        512
+    );
+
     for (direction, bus_index) in [
-        (BusDirections_::kInput as BusDirection, 1),
+        (BusDirections_::kInput as BusDirection, 2),
         (BusDirections_::kOutput as BusDirection, 1),
         (999, 0),
     ] {
@@ -1836,4 +1915,14 @@ fn release_shared_for_role_clears_controller_claim_only() {
             .map(|candidate| Arc::ptr_eq(&candidate, &shared))
             .unwrap_or(false)
     });
+}
+
+#[test]
+fn sample_rate_reconfiguration_does_not_allocate() {
+    let shared = PumpVst3Shared::new();
+    let mut runtime = PumpVst3Runtime::new(&shared.params, &shared.status);
+    crate::test_alloc::assert_no_alloc(|| {
+        runtime.set_sample_rate(96_000.0, &shared.params, &shared.status);
+    });
+    assert_eq!(runtime.sample_rate, 96_000.0);
 }
