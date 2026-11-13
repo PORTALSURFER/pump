@@ -611,7 +611,7 @@ mod macos {
 
     unsafe fn exercise_native_input(fixture: &NativeFixture) {
         let app = NSApp();
-        let (mut gui, params, _status) = new_screenshot_gui_with_params();
+        let (mut gui, params, status) = new_screenshot_gui_with_params();
         gui.set_parent_raw(fixture.parent_handle());
         assert!(gui.open(), "Pump GPUI input fixture should open");
         gui.request_resize(OUTPUT_WIDTH, OUTPUT_HEIGHT);
@@ -760,6 +760,62 @@ mod macos {
         let slope = params.effects()[2];
         click_control(fixture, "dual-slope", 0);
         assert_ne!(params.effects()[2], slope);
+
+        // Compressor controls remain within the minimum editor and use native input.
+        click_control(fixture, "compressor-panel", 0);
+        pump_appkit(app, &gui, 0.04);
+        for index in 0..19 {
+            let key = format!("compressor-{index}");
+            wait_for_control(app, &gui, &key);
+            let [x, y, w, h] = pump::gui_gpui::screenshot_bounds(&key);
+            assert!(
+                x >= 0.
+                    && y >= 0.
+                    && w > 0.
+                    && h > 0.
+                    && x + w <= OUTPUT_WIDTH as f32
+                    && y + h <= OUTPUT_HEIGHT as f32,
+                "{key} outside editor: {x},{y},{w},{h}"
+            );
+        }
+        click_control(fixture, "compressor-0", 0);
+        assert_eq!(params.compressor()[0], 1.0);
+        let before_threshold = params.compressor()[1];
+        let (x, y) = center("compressor-1");
+        send_mouse_down(fixture.window, x, y, 0);
+        send_mouse_dragged(fixture.window, x, y - 40.0, 0);
+        send_mouse_up(fixture.window, x, y - 40.0, 0);
+        pump_appkit(app, &gui, 0.04);
+        assert!(
+            params.compressor()[1] > before_threshold,
+            "compressor threshold must track native drag"
+        );
+        params.set_delay_beats(0.0);
+        let previous_curve = params.editable_curve_snapshot();
+        click_control(fixture, "compressor-capture", 0);
+        pump_appkit(app, &gui, 0.04);
+        assert!(pump::gui_gpui::complete_screenshot_compressor_capture(
+            status.as_ref(),
+            0.5
+        ));
+        pump_appkit(app, &gui, 0.1);
+        assert_eq!(
+            params.compressor()[0],
+            0.0,
+            "a completed capture must turn compression off"
+        );
+        assert!((params.editable_curve_snapshot().nodes[0].y - 0.5).abs() < 0.001);
+        send_key(app, fixture.window, &gui, "z", 6, COMMAND);
+        assert_eq!(
+            params.editable_curve_snapshot(),
+            previous_curve,
+            "capture must be undoable"
+        );
+        assert_eq!(params.compressor()[0], 1.0);
+        click_control(fixture, "compressor-0", 0);
+        assert_eq!(params.compressor()[0], 0.0);
+        click_control(fixture, "compressor-panel", 0);
+        pump_appkit(app, &gui, 0.04);
 
         // Mix/Output are retained knobs with independent editable values.
         type_value(app, fixture, &gui, "value-Mix", "62");

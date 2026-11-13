@@ -58,6 +58,7 @@ fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
         && left.filter_hp_slope == right.filter_hp_slope
         && left.filter_lp_slope == right.filter_lp_slope
         && left.effects == right.effects
+        && left.compressor == right.compressor
         && curve_near_eq(&left.editable_curve, &right.editable_curve)
         && left.quick_slots.len() == right.quick_slots.len()
         && left
@@ -68,6 +69,27 @@ fn sound_state_near_eq(left: &PumpSoundState, right: &PumpSoundState) -> bool {
 }
 
 impl PumpParams {
+    /// Snapshot the active sound's compressor controls.
+    pub fn compressor(&self) -> [f32; crate::compressor_controls::COUNT] {
+        self.compressor_for_side(self.realtime_index())
+    }
+
+    fn compressor_for_side(&self, side: usize) -> [f32; crate::compressor_controls::COUNT] {
+        std::array::from_fn(|i| self.realtime_compressor[side][i].load(Ordering::Relaxed))
+    }
+
+    /// Set one compressor control for the active sound.
+    pub fn set_compressor_control(&self, index: usize, value: f32) {
+        if index >= crate::compressor_controls::COUNT {
+            return;
+        }
+        self.realtime_compressor[self.realtime_index()][index].store(
+            crate::compressor_controls::sanitize(index, value),
+            Ordering::Relaxed,
+        );
+        self.mark_active_sound_dirty();
+    }
+
     pub fn effects_for_side(&self, index: usize) -> [f32; crate::dual_band::COUNT] {
         std::array::from_fn(|i| self.realtime_effects[index][i].load(Ordering::Relaxed))
     }
@@ -93,6 +115,10 @@ impl PumpParams {
         let editable_curve = default_editable_curve();
         let default_curve = editable_curve_to_table(&editable_curve);
         let params = Self {
+            precise_curves: crate::precise_curve::SharedPreciseCurves::default(),
+            realtime_compressor: std::array::from_fn(|_| {
+                crate::compressor_controls::DEFAULTS.map(AtomicF32::new)
+            }),
             realtime_effects: std::array::from_fn(|_| {
                 crate::dual_band::DEFAULTS.map(AtomicF32::new)
             }),
@@ -576,6 +602,14 @@ impl PumpParams {
         values
     }
 
+    /// Copy the active side's precise curve without locking the audio thread.
+    /// Returns `None` if publication or an A/B switch overlapped the copy.
+    pub(crate) fn try_copy_precise_curve(&self, output: &mut [f32]) -> Option<bool> {
+        let side = self.realtime_index();
+        let precise = self.precise_curves.try_read(side, output)?;
+        (self.realtime_index() == side).then_some(precise)
+    }
+
     /// Snapshot the editable spline curve.
     pub fn editable_curve_snapshot(&self) -> EditableCurve {
         self.editable_curve
@@ -602,6 +636,8 @@ impl PumpParams {
     fn set_editable_curve_internal(&self, editable_curve: &EditableCurve) {
         let normalized = editable_curve.clone().normalized();
         let curve_table = editable_curve_to_table(&normalized);
+        self.precise_curves
+            .publish(self.realtime_index(), &normalized);
         if let Ok(mut guard) = self.editable_curve.write() {
             *guard = normalized;
         }
@@ -612,8 +648,11 @@ impl PumpParams {
 
     /// Replace the whole curve table and advance revision.
     pub fn set_curve(&self, values: &[f32; CURVE_TABLE_LEN]) {
+        let editable = curve_table_to_editable(values);
+        self.precise_curves
+            .publish(self.realtime_index(), &editable);
         if let Ok(mut guard) = self.editable_curve.write() {
-            *guard = curve_table_to_editable(values);
+            *guard = editable;
         }
         self.store_curve_table(values);
         self.curve_revision.fetch_add(1, Ordering::AcqRel);
@@ -845,6 +884,7 @@ impl PumpParams {
             filter_hp_slope: self.filter_hp_slope(),
             filter_lp_slope: self.filter_lp_slope(),
             effects: self.effects(),
+            compressor: self.compressor(),
             filter_enabled: self.filter_enabled(),
             filter_hp_freq_hz: self.filter_hp_freq_hz(),
             filter_hp_q: self.filter_hp_q(),
@@ -918,6 +958,7 @@ impl PumpParams {
                 filter_lp_slope: self.realtime_filter_lp_slope[index].load(Ordering::Acquire)
                     as usize,
                 effects: self.effects_for_side(index),
+                compressor: self.compressor_for_side(index),
                 editable_curve,
                 quick_slots,
             };
@@ -1097,8 +1138,15 @@ impl PumpParams {
             self.realtime_effects[index][i]
                 .store(crate::dual_band::sanitize(i, *value), Ordering::Relaxed);
         }
+        for (i, value) in state.compressor.iter().enumerate() {
+            self.realtime_compressor[index][i].store(
+                crate::compressor_controls::sanitize(i, *value),
+                Ordering::Relaxed,
+            );
+        }
         let normalized = state.editable_curve.clone().normalized();
         let curve_table = editable_curve_to_table(&normalized);
+        self.precise_curves.publish(index, &normalized);
         for (curve, value) in self.realtime_curve[index]
             .iter()
             .zip(curve_table.iter().copied())
@@ -1161,6 +1209,7 @@ impl PumpParams {
             filter_hp_slope: self.filter_hp_slope(),
             filter_lp_slope: self.filter_lp_slope(),
             effects: self.effects(),
+            compressor: self.compressor(),
             editable_curve: self.editable_curve_snapshot(),
             quick_slots: self.sound_state_snapshot(self.active_sound()).quick_slots,
         }
@@ -1206,6 +1255,9 @@ impl PumpParams {
             preset.name = sanitize_preset_name(&preset.name, index);
             for (i, value) in preset.effects.iter_mut().enumerate() {
                 *value = crate::dual_band::sanitize(i, *value);
+            }
+            for (i, value) in preset.compressor.iter_mut().enumerate() {
+                *value = crate::compressor_controls::sanitize(i, *value);
             }
             // Persist the field for backward-compatible serialization, but keep
             // runtime behavior fully writable across all presets.
@@ -1286,6 +1338,9 @@ impl PumpParams {
         self.set_filter_lp_q(preset.filter_lp_q);
         for (i, value) in preset.effects.iter().enumerate() {
             self.set_effect(i, *value);
+        }
+        for (i, value) in preset.compressor.iter().enumerate() {
+            self.set_compressor_control(i, *value);
         }
         self.set_editable_curve_preserving_phase(&preset.editable_curve);
         let _ = self.set_active_sound_quick_slots(preset.quick_slots.clone());
@@ -1606,6 +1661,7 @@ impl PumpParams {
                 existing.filter_lp_freq_hz = snapshot.filter_lp_freq_hz;
                 existing.filter_lp_q = snapshot.filter_lp_q;
                 existing.effects = snapshot.effects;
+                existing.compressor = snapshot.compressor;
                 existing.editable_curve = snapshot.editable_curve;
                 existing.quick_slots = snapshot.quick_slots;
             }
@@ -1657,6 +1713,7 @@ impl PumpParams {
             || !float_near_eq(current.free_rate_hz, selected.free_rate_hz)
             || current.delay_beats != selected.delay_beats
             || current.effects != selected.effects
+            || current.compressor != selected.compressor
             || current.filter_enabled != selected.filter_enabled
             || !float_near_eq(current.filter_hp_freq_hz, selected.filter_hp_freq_hz)
             || !float_near_eq(current.filter_hp_q, selected.filter_hp_q)

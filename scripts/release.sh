@@ -411,20 +411,22 @@ PY
 
 clap_notary_id=""
 artifact_version="${publication_version}"
-clap_target="${tmp_root}/clap-target"
-vst3_target="${tmp_root}/vst3-target"
+# Package and audit CLAP before the VST3 build replaces the root cdylib. A
+# shared target reuses their common dependencies while keeping release outputs
+# isolated from the worktree's ordinary build cache.
+release_target="${tmp_root}/cargo-target"
 
 echo "[release] building CLAP"
-CARGO_TARGET_DIR="${clap_target}" cargo build --locked --release
-clap_binary="${clap_target}/release/libpump.dylib"
+CARGO_TARGET_DIR="${release_target}" cargo build --locked --release
+clap_binary="${release_target}/release/libpump.dylib"
 [[ -f "${clap_binary}" ]] || { echo "missing CLAP build output: ${clap_binary}" >&2; exit 1; }
 clap_archive="${release_dir}/pump-v${artifact_version}-macos.clap.zip"
 build_bundle clap "${clap_archive}" "${clap_binary}"
 audit_zip clap "${clap_archive}" "${signing_team_id}"
 
 echo "[release] building VST3"
-VST3_SDK_DIR="${VST3_SDK_DIR}" CARGO_TARGET_DIR="${vst3_target}" cargo rustc --locked --release --features vst3 --lib -- -C link-arg=-Wl,-bundle
-vst3_binary="${vst3_target}/release/libpump.dylib"
+VST3_SDK_DIR="${VST3_SDK_DIR}" CARGO_TARGET_DIR="${release_target}" cargo rustc --locked --release --features vst3 --lib -- -C link-arg=-Wl,-bundle
+vst3_binary="${release_target}/release/libpump.dylib"
 [[ -f "${vst3_binary}" ]] || { echo "missing VST3 build output: ${vst3_binary}" >&2; exit 1; }
 vst3_archive="${release_dir}/pump-v${artifact_version}-macos.vst3.zip"
 build_bundle vst3 "${vst3_archive}" "${vst3_binary}"

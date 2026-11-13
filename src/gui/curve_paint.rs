@@ -2286,6 +2286,7 @@ fn fit_candidate(
         curve: EditableCurve {
             nodes,
             segments,
+            high_resolution: origin.high_resolution,
             ..EditableCurve::default()
         },
         max_error,

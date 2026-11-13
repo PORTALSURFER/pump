@@ -7,7 +7,7 @@
 use super::*;
 
 pub(crate) const STATE_MAGIC: &[u8; 4] = b"PMP2";
-pub(crate) const STATE_VERSION: u32 = 22;
+pub(crate) const STATE_VERSION: u32 = 23;
 
 /// The two independently editable Pump sound sides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +82,8 @@ pub struct PumpSoundState {
     /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
     pub filter_lp_slope: usize,
     pub effects: [f32; crate::dual_band::COUNT],
+    /// Compressor settings for this sound.
+    pub compressor: [f32; crate::compressor_controls::COUNT],
     pub editable_curve: EditableCurve,
     pub quick_slots: Vec<QuickShapeSlot>,
 }
@@ -110,6 +112,7 @@ impl PumpSoundState {
             filter_hp_slope: DEFAULT_FILTER_SLOPE,
             filter_lp_slope: DEFAULT_FILTER_SLOPE,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
             editable_curve: default_editable_curve(),
             quick_slots: seeded_quick_shape_slots(),
         }
@@ -541,6 +544,8 @@ pub struct PumpPreset {
     /// Low-pass slope index: 0 = 12, 1 = 24, 2 = 48 dB/oct.
     pub filter_lp_slope: usize,
     pub effects: [f32; crate::dual_band::COUNT],
+    /// Compressor settings for this sound.
+    pub compressor: [f32; crate::compressor_controls::COUNT],
     /// Editable curve shape.
     pub editable_curve: EditableCurve,
     /// Overwriteable quick-slot curves shown below the editor for this preset.
@@ -620,6 +625,7 @@ impl PumpPresetBank {
                 filter_hp_slope: DEFAULT_FILTER_SLOPE,
                 filter_lp_slope: DEFAULT_FILTER_SLOPE,
                 effects: crate::dual_band::DEFAULTS,
+                compressor: crate::compressor_controls::DEFAULTS,
                 editable_curve: default_editable_curve(),
                 quick_slots: seeded_quick_shape_slots(),
             }],
@@ -674,11 +680,13 @@ pub(crate) fn curve_near_eq(left: &EditableCurve, right: &EditableCurve) -> bool
         && phase_source_equal
         && float_near_eq(left.phase_offset, right.phase_offset)
         && left.origin_is_clip == right.origin_is_clip
+        && left.high_resolution == right.high_resolution
 }
 
 /// Shared atomic parameter/state storage across threads.
 pub struct PumpParams {
     pub(super) realtime_effects: [[AtomicF32; crate::dual_band::COUNT]; 2],
+    pub(super) realtime_compressor: [[AtomicF32; crate::compressor_controls::COUNT]; 2],
     pub(super) mix: AtomicF32,
     pub(super) depth_db: AtomicF32,
     pub(super) floor_db: AtomicF32,
@@ -731,6 +739,7 @@ pub struct PumpParams {
     pub(super) realtime_filter_hp_slope: [AtomicU32; 2],
     pub(super) realtime_filter_lp_slope: [AtomicU32; 2],
     pub(super) realtime_curve: [[AtomicF32; CURVE_TABLE_LEN]; 2],
+    pub(super) precise_curves: crate::precise_curve::SharedPreciseCurves,
     pub(super) sound_states: RwLock<[PumpSoundState; 2]>,
     /// Durable per-side reference states used for A/B dirty indicators.
     pub(super) stored_sound_states: RwLock<[PumpSoundState; 2]>,

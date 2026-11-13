@@ -113,6 +113,28 @@ band and frequencies outside it pass through normally. See
 mapping and compatibility behavior.
 - `Division`: beat-synced cycle length from `1/16` to `8 Bars`.
 
+## Sidechain compression and capture
+
+Open `COMP` to enable live compression and adjust its threshold, ratio, attack,
+release, range, makeup and dry/wet controls. The detector can use the main
+input, the host's external stereo sidechain, or a blend of the two; its gain,
+filter and listen controls affect the detector. Route the external signal to
+Pump's sidechain input in your DAW. The compressor also offers automatic
+release, soft clipping and a lightweight 2× oversampling option. This is Pump's
+own compressor, not a model of Ableton's Glue Compressor.
+
+While live compression is on it replaces the drawn envelope. To freeze it,
+choose Sync with Delay at zero, turn detector listen and bypass off, start host
+playback, then press `CAPTURE`. Pump waits for the next cycle boundary and
+records one full cycle. It turns compression off and replaces the drawn curve
+with an editable approximation. Capture accounts for Pump's Mix and adjusts
+Depth, Floor, Smooth, Mix and, when needed for makeup gain, Output Gain; undo
+restores the previous settings and curve. Capture needs a host beat timeline.
+If band processing is enabled, reduce makeup until the captured gain does not
+exceed unity. Soft clipping is nonlinear and cannot be frozen into a gain curve.
+Changing the curve, sound, timing or transport during a take cancels or restarts
+it as appropriate.
+
 ## Quick Shape Strip
 
 - The row between the curve editor and knobs provides 8 globally persisted curve

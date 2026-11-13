@@ -35,11 +35,15 @@ use crate::sample_automation::{
 use crate::time_utils::monotonic_micros;
 
 mod automation_queue;
+mod compressor;
+mod compressor_capture;
+mod compressor_controls;
 mod curve;
 mod curve_presets;
 mod dsp;
 mod dual_band;
 mod gui;
+mod precise_curve;
 #[cfg(all(
     any(target_os = "macos", target_os = "windows"),
     feature = "screenshot-test"

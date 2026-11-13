@@ -9,30 +9,40 @@ use super::*;
 impl<'a> PluginMainThread<'a, PumpShared> for PumpMainThread<'a> {}
 
 impl PluginAudioPortsImpl for PumpMainThread<'_> {
-    fn count(&mut self, _is_input: bool) -> u32 {
-        1
+    fn count(&mut self, is_input: bool) -> u32 {
+        if is_input {
+            2
+        } else {
+            1
+        }
     }
 
     fn get(&mut self, index: u32, is_input: bool, writer: &mut AudioPortInfoWriter) {
-        match (is_input, index) {
-            (true, 0) => writer.set(&AudioPortInfo {
-                id: ClapId::new(0),
-                name: b"main",
-                channel_count: 2,
-                flags: AudioPortFlags::IS_MAIN,
-                port_type: Some(AudioPortType::STEREO),
-                in_place_pair: None,
-            }),
-            (false, 0) => writer.set(&AudioPortInfo {
-                id: ClapId::new(0),
-                name: b"main",
-                channel_count: 2,
-                flags: AudioPortFlags::IS_MAIN,
-                port_type: Some(AudioPortType::STEREO),
-                in_place_pair: None,
-            }),
-            _ => {}
+        if let Some(info) = audio_port_info(index, is_input) {
+            writer.set(&info);
         }
+    }
+}
+
+fn audio_port_info(index: u32, is_input: bool) -> Option<AudioPortInfo<'static>> {
+    match (is_input, index) {
+        (true, 0) | (false, 0) => Some(AudioPortInfo {
+            id: ClapId::new(0),
+            name: b"main",
+            channel_count: 2,
+            flags: AudioPortFlags::IS_MAIN,
+            port_type: Some(AudioPortType::STEREO),
+            in_place_pair: None,
+        }),
+        (true, 1) => Some(AudioPortInfo {
+            id: ClapId::new(1),
+            name: b"Sidechain",
+            channel_count: 2,
+            flags: AudioPortFlags::empty(),
+            port_type: Some(AudioPortType::STEREO),
+            in_place_pair: None,
+        }),
+        _ => None,
     }
 }
 
@@ -95,5 +105,24 @@ impl PluginStateImpl for PumpMainThread<'_> {
         let payload = read_versioned_payload(input, STATE_MAGIC, &[STATE_VERSION])?;
         decode_state_payload(self.shared.params.as_ref(), &payload.payload)
             .map_err(PluginError::Message)
+    }
+}
+
+#[cfg(test)]
+mod audio_port_tests {
+    use super::*;
+
+    #[test]
+    fn clap_sidechain_is_distinct_stereo_input_without_output_pair() {
+        let main = audio_port_info(0, true).unwrap();
+        let sidechain = audio_port_info(1, true).unwrap();
+        assert_ne!(main.id, sidechain.id);
+        assert!(main.flags.contains(AudioPortFlags::IS_MAIN));
+        assert!(!sidechain.flags.contains(AudioPortFlags::IS_MAIN));
+        assert_eq!(sidechain.channel_count, 2);
+        assert_eq!(sidechain.port_type, Some(AudioPortType::STEREO));
+        assert!(sidechain.in_place_pair.is_none());
+        assert!(audio_port_info(1, false).is_none());
+        assert!(audio_port_info(2, true).is_none());
     }
 }

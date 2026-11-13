@@ -352,6 +352,33 @@ mod macos {
             let default_capture =
                 capture(app, &fixture, &gui, &root, "pump-default-640x400", 640, 400);
 
+            let (comp_x, comp_y) = center("compressor-panel");
+            send_click(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                comp_x,
+                comp_y,
+            );
+            pump_appkit(app, &gui, 0.10);
+            capture(
+                app,
+                &fixture,
+                &gui,
+                &root,
+                "pump-compressor-640x400",
+                640,
+                400,
+            );
+            send_click(
+                fixture.window,
+                CAPTURE_WIDTH,
+                CAPTURE_HEIGHT,
+                comp_x,
+                comp_y,
+            );
+            pump_appkit(app, &gui, 0.10);
+
             params.set_filter_enabled(1.0);
             params.set_filter_hp_freq_hz(320.0);
             params.set_filter_hp_q(1.25);

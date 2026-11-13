@@ -177,6 +177,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         };
         let transport = TransportState {
             tempo_bpm: 120.0,
@@ -236,6 +237,7 @@ mod tests {
             filter_hp_slope: 0,
             filter_lp_slope: 0,
             effects: crate::dual_band::DEFAULTS,
+            compressor: crate::compressor_controls::DEFAULTS,
         };
         let transition_settings = DspSettings {
             phase_offset: target_phase_offset,
