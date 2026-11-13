@@ -203,6 +203,7 @@ pub struct PumpEngine {
     compressor: crate::compressor::CompressorDetector,
     compressor_2x: crate::compressor::CompressorDetector,
     oversampling_blend: OnePole,
+    clip_blend: OnePole,
     oversampling_was_enabled: bool,
     previous_detector: [f32; 2],
     previous_clip_input: [f32; 2],
@@ -231,6 +232,8 @@ pub struct PumpEngine {
     curve_pending: [f32; CURVE_TABLE_LEN],
     precise_current: Box<[f32]>,
     precise_pending: Box<[f32]>,
+    // Readers can reject a partially copied snapshot without damaging a morph.
+    precise_staging: Box<[f32]>,
     precise_current_enabled: bool,
     precise_pending_enabled: bool,
     morph_remaining: usize,
@@ -257,8 +260,9 @@ impl PumpEngine {
             sample_rate,
             curve,
             bypassed,
-            vec![1.0; crate::precise_curve::PRECISE_CURVE_LEN].into_boxed_slice(),
-            vec![1.0; crate::precise_curve::PRECISE_CURVE_LEN].into_boxed_slice(),
+            std::array::from_fn(|_| {
+                vec![1.0; crate::precise_curve::PRECISE_CURVE_LEN].into_boxed_slice()
+            }),
             crate::compressor_capture::CaptureRunner::default(),
         )
     }
@@ -267,14 +271,14 @@ impl PumpEngine {
         sample_rate: f32,
         curve: [f32; CURVE_TABLE_LEN],
         bypassed: bool,
-        precise_current: Box<[f32]>,
-        precise_pending: Box<[f32]>,
+        [precise_current, precise_pending, precise_staging]: [Box<[f32]>; 3],
         capture: crate::compressor_capture::CaptureRunner,
     ) -> Self {
         let mut engine = Self {
             compressor: crate::compressor::CompressorDetector::new(sample_rate),
             compressor_2x: crate::compressor::CompressorDetector::new(sample_rate * 2.0),
             oversampling_blend: OnePole::new(0.0, sample_rate, 0.005),
+            clip_blend: OnePole::new(0.0, sample_rate, 0.005),
             oversampling_was_enabled: false,
             previous_detector: [0.0; 2],
             previous_clip_input: [0.0; 2],
@@ -319,6 +323,7 @@ impl PumpEngine {
             curve_pending: curve,
             precise_current,
             precise_pending,
+            precise_staging,
             precise_current_enabled: false,
             precise_pending_enabled: false,
             morph_remaining: 0,
@@ -341,12 +346,19 @@ impl PumpEngine {
     ) {
         let current = std::mem::take(&mut self.precise_current);
         let pending = std::mem::take(&mut self.precise_pending);
+        let staging = std::mem::take(&mut self.precise_staging);
         let capture = std::mem::replace(
             &mut self.capture,
             crate::compressor_capture::CaptureRunner::empty(),
         );
         let exchange = self.capture_exchange.take();
-        *self = Self::new_with_buffers(sample_rate, curve, bypassed, current, pending, capture);
+        *self = Self::new_with_buffers(
+            sample_rate,
+            curve,
+            bypassed,
+            [current, pending, staging],
+            capture,
+        );
         self.capture_exchange = exchange;
     }
 
@@ -375,12 +387,13 @@ impl PumpEngine {
         params: &crate::params::PumpParams,
         revision: u32,
     ) -> bool {
-        let Some(enabled) = params.try_copy_precise_curve(&mut self.precise_current) else {
+        let Some(enabled) = params.try_copy_precise_curve(&mut self.precise_staging) else {
             return false;
         };
         if params.curve_revision() != revision {
             return false;
         }
+        std::mem::swap(&mut self.precise_current, &mut self.precise_staging);
         self.precise_current_enabled = enabled;
         true
     }
@@ -392,13 +405,14 @@ impl PumpEngine {
         params: &crate::params::PumpParams,
         revision: u32,
     ) -> bool {
-        let Some(enabled) = params.try_copy_precise_curve(&mut self.precise_pending) else {
+        let Some(enabled) = params.try_copy_precise_curve(&mut self.precise_staging) else {
             return false;
         };
         let curve = params.curve_snapshot();
         if params.curve_revision() != revision {
             return false;
         }
+        std::mem::swap(&mut self.precise_pending, &mut self.precise_staging);
         self.precise_pending_enabled = enabled;
         self.curve_pending = curve;
         self.morph_remaining = self.morph_total;
@@ -417,6 +431,7 @@ impl PumpEngine {
         self.compressor.reset();
         self.compressor_2x.reset();
         self.oversampling_blend.value = 0.0;
+        self.clip_blend.value = 0.0;
         self.oversampling_was_enabled = false;
         self.previous_detector = [0.0; 2];
         self.previous_clip_input = [0.0; 2];
@@ -659,11 +674,11 @@ impl PumpEngine {
             [pumped_left, pumped_right],
             output_gain,
         );
-        let clip_blend = if controls[8] >= 0.5 {
+        let clip_blend = self.clip_blend.next(if controls[8] >= 0.5 {
             compressor_blend
         } else {
             0.0
-        };
+        });
         let clip_input = [pumped_left, pumped_right];
         let (pumped_left, pumped_right) = if clip_blend > 0.0 {
             let clipped_left = lerp(
@@ -1639,6 +1654,60 @@ mod tests {
     }
 
     #[test]
+    fn rejected_precise_snapshot_preserves_the_active_morph_target() {
+        let params = crate::params::PumpParams::new();
+        let mut curve = crate::curve::precise_test_curve();
+        params.set_editable_curve(&curve);
+        let mut engine = PumpEngine::new(48_000.0, params.curve_snapshot());
+        assert!(engine.initialize_precise_curve(&params, params.curve_revision()));
+        curve.nodes[2].y = 0.3;
+        params.set_editable_curve(&curve);
+        assert!(engine.try_set_target_curve_from_params(&params, params.curve_revision()));
+        let pending = engine.precise_pending.to_vec();
+        curve.nodes[2].y = 0.8;
+        params.set_editable_curve(&curve);
+        let stale = params.curve_revision().wrapping_sub(1);
+        assert!(!engine.try_set_target_curve_from_params(&params, stale));
+        assert_eq!(&*engine.precise_pending, pending.as_slice());
+    }
+
+    #[test]
+    fn soft_clip_toggle_crossfades_without_a_sample_jump() {
+        let params = crate::params::PumpParams::new();
+        params.set_compressor_control(0, 1.0);
+        params.set_compressor_control(1, 0.0);
+        let mut settings = crate::sample_automation::dsp_settings_from_params(&params);
+        let mut engine = PumpEngine::new(48_000.0, [1.0; crate::curve::CURVE_TABLE_LEN]);
+        let mut run = |settings| {
+            let mut left = 0.9;
+            let mut right = 0.9;
+            engine.process_sample_with_detector(
+                &mut left,
+                &mut right,
+                settings,
+                TransportState::default(),
+                None,
+            );
+            left
+        };
+        for _ in 0..4_000 {
+            run(settings);
+        }
+        let before = run(settings);
+        settings.compressor[8] = 1.0;
+        let first = run(settings);
+        assert!((first - before).abs() < 0.01);
+        for _ in 0..4_000 {
+            run(settings);
+        }
+        let clipped = run(settings);
+        assert!(clipped < before - 0.05);
+        settings.compressor[8] = 0.0;
+        let first_off = run(settings);
+        assert!((first_off - clipped).abs() < 0.01);
+    }
+
+    #[test]
     fn compressor_meter_shows_reduction_before_makeup() {
         let params = crate::params::PumpParams::new();
         params.set_compressor_control(0, 1.0);
@@ -1689,15 +1758,18 @@ mod tests {
         }
         assert!((output - 0.25 * db_to_linear(6.0)).abs() < 0.001);
         settings.compressor[8] = 1.0;
-        let mut left = 4.0;
-        let mut right = 4.0;
-        engine.process_sample_with_detector(
-            &mut left,
-            &mut right,
-            settings,
-            TransportState::default(),
-            None,
-        );
+        let mut left = 0.0;
+        for _ in 0..100 {
+            left = 4.0;
+            let mut right = 4.0;
+            engine.process_sample_with_detector(
+                &mut left,
+                &mut right,
+                settings,
+                TransportState::default(),
+                None,
+            );
+        }
         assert!(left.abs() < 0.95);
         settings.compressor[9] = 1.0;
         settings.compressor[16] = 1.0;

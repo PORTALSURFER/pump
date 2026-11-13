@@ -407,7 +407,8 @@ fn decode_preset_bank_payload(payload: &[u8]) -> Result<PumpPresetBank, String> 
             version >= 3,
             version >= 12,
             version >= 17,
-        )?;
+        )?
+        .normalized();
         let quick_slots = if version >= 2 {
             decode_quick_slots(&mut cursor, version >= 3, version >= 12, version >= 17)?
         } else {
@@ -653,7 +654,9 @@ fn decode_curve(
             }
         }
     }
-    Ok(curve.normalized())
+    // The outer precision marker follows the phase source. Normalize only
+    // after the whole curve is decoded, so narrow source points survive.
+    Ok(curve)
 }
 
 fn decode_quick_slots(
@@ -682,7 +685,8 @@ fn decode_quick_slots(
             with_phase_metadata,
             with_origin_metadata,
             with_high_resolution_metadata,
-        )?;
+        )?
+        .normalized();
         slots.push(QuickShapeSlot { curve });
     }
     Ok(slots)
@@ -1086,8 +1090,12 @@ mod tests {
     #[test]
     fn captured_curve_precision_survives_preset_store() {
         let mut bank = PumpPresetBank::default_init();
-        bank.presets[0].editable_curve.high_resolution = true;
-        bank.presets[0].quick_slots[0].curve.high_resolution = true;
+        let curve = crate::curve::cyclically_offset_editable_curve(
+            &crate::curve::precise_test_curve(),
+            0.3,
+        );
+        bank.presets[0].editable_curve = curve.clone();
+        bank.presets[0].quick_slots[0].curve = curve;
         let payload = encode_preset_bank_payload(&bank);
         assert_eq!(decode_preset_bank_payload(&payload).unwrap(), bank);
     }

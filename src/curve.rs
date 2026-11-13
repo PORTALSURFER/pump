@@ -93,6 +93,7 @@ impl EditableCurve {
             &segment_sources,
         );
         if let Some(source) = self.phase_source.as_mut() {
+            source.high_resolution |= self.high_resolution;
             source.normalize_in_place();
         }
         if self.origin_is_clip && self.nodes.len() < 3 {
@@ -287,6 +288,7 @@ fn exact_phase_source(curve: &EditableCurve) -> EditableCurve {
             nodes: curve.nodes.clone(),
             segments: curve.segments.clone(),
             origin_is_clip: curve.origin_is_clip,
+            high_resolution: curve.high_resolution,
             ..EditableCurve::default()
         })
 }
@@ -298,6 +300,23 @@ fn exact_phase_offset(curve: &EditableCurve, delta: f32) -> f32 {
         delta
     })
     .rem_euclid(1.0)
+}
+
+#[cfg(test)]
+pub(crate) fn precise_test_curve() -> EditableCurve {
+    EditableCurve {
+        nodes: vec![
+            CurveNode { x: 0.0, y: 1.0 },
+            CurveNode { x: 0.2, y: 1.0 },
+            CurveNode { x: 0.20003, y: 0.1 },
+            CurveNode { x: 0.20006, y: 1.0 },
+            CurveNode { x: 1.0, y: 1.0 },
+        ],
+        segments: vec![CurveSegment { tension: 0.0 }; 4],
+        high_resolution: true,
+        ..EditableCurve::default()
+    }
+    .normalized()
 }
 
 /// Build the default editable curve used by the spline GUI.
@@ -646,6 +665,14 @@ mod tests {
         editable_curve_to_table, sample_curve, sample_editable_curve, CurveNode, CurveSegment,
         EditableCurve, CURVE_TABLE_LEN, MAX_EDITABLE_NODES,
     };
+
+    #[test]
+    fn captured_curve_translation_preserves_narrow_transient() {
+        let origin = super::precise_test_curve();
+        let shifted = cyclically_offset_editable_curve(&origin, 0.3);
+        assert!(shifted.phase_source.as_ref().unwrap().high_resolution);
+        assert!((sample_editable_curve(&shifted, 0.50003) - 0.1).abs() < 0.001);
+    }
 
     #[test]
     fn default_curve_stays_bounded() {

@@ -288,13 +288,16 @@ fn decode_global_curve_slot_payload(payload: &[u8]) -> Result<Vec<GlobalCurveSlo
                 let node_count = read_u32(&mut cursor)
                     .map(|value| value as usize)
                     .ok_or_else(|| "invalid curve slot node count".to_string())?;
-                Some(decode_curve(
-                    &mut cursor,
-                    node_count,
-                    version >= 2,
-                    version >= 3,
-                    version >= 4,
-                )?)
+                Some(
+                    decode_curve(
+                        &mut cursor,
+                        node_count,
+                        version >= 2,
+                        version >= 3,
+                        version >= 4,
+                    )?
+                    .normalized(),
+                )
             }
             _ => return Err("invalid curve slot occupancy flag".to_string()),
         };
@@ -376,7 +379,9 @@ fn decode_curve(
             }
         }
     }
-    Ok(curve.normalized())
+    // The outer precision marker follows the phase source. Normalize only
+    // after the whole curve is decoded, so narrow source points survive.
+    Ok(curve)
 }
 
 fn read_f32(cursor: &mut Cursor<&[u8]>) -> Option<f32> {
@@ -423,8 +428,10 @@ mod tests {
     #[test]
     fn captured_curve_precision_survives_global_slot_storage() {
         let mut slots = empty_global_curve_slots();
-        let mut curve = default_editable_curve();
-        curve.high_resolution = true;
+        let curve = crate::curve::cyclically_offset_editable_curve(
+            &crate::curve::precise_test_curve(),
+            0.3,
+        );
         slots[0].curve = Some(curve);
         let payload = encode_global_curve_slot_payload(&slots);
         assert_eq!(decode_global_curve_slot_payload(&payload).unwrap(), slots);
