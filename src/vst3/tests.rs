@@ -739,7 +739,10 @@ fn processor_declares_optional_stereo_sidechain_bus() {
     );
     assert_eq!(info.busType, BusTypes_::kAux as BusType);
     assert_eq!(info.channelCount, 2);
-    assert_eq!(info.flags & BusInfo_::BusFlags_::kDefaultActive, 0);
+    assert_eq!(
+        u64::from(info.flags) & BusInfo_::BusFlags_::kDefaultActive as u64,
+        0
+    );
     assert_eq!(
         unsafe { processor.activateBus(audio, input, 1, 1) },
         kResultOk
